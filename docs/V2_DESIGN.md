@@ -144,12 +144,14 @@ A piece is checked when something happens to it, after its contact solve in the 
      the piece through the crack (crushed material in between still transmits it). They leave
      the solve, and the loads redistribute.
   3. Repeat, up to 8 rounds, until nothing is overloaded, the impact's energy is spent, or a
-     part of some size comes apart. (Pieces of more than 800 fragments are solved on fragment
-     clusters, 1 m cells; they break finer once smaller.)
+     part of some size comes apart. (Pieces of more than 400 fragments are solved on fragment
+     clusters, 1 m cells, 2 m beyond 1,200: a large piece cracks along coarse seams first and
+     breaks finer once smaller.)
 - **Separation.** The parts of a piece broken in a collision do not touch each other for the rest
-  of that substep: the failed interface carried its strength and then no more. The contact step
-  is solved again with the new pieces (only they are collided afresh), so the part above a
-  failed storey keeps falling and meets what is below in its own collision. Collapse and breakup
+  of that substep: the failed interface carried its strength and then no more. When a part of
+  some size (500 voxels) comes apart, the contact step is solved again with the new pieces (only
+  they are collided afresh), so the part above a failed storey keeps falling and meets what is
+  below in its own collision; chips take the velocity the step left the piece with. Collapse and breakup
   proceed through collisions, storey by storey and crack by crack, instead of one overloaded
   solve pulverizing everything at once.
 - **Energy.** An impact pays for its cracks from the kinetic energy its contacts take out of the
@@ -175,9 +177,12 @@ and joins results in a fixed order:
 A session replays bit for bit on any thread count (tested on 1 and 4 threads).
 
 Tower collapse (the engine demo's "pillars" scenario: 920k voxels, 200k of them coming down,
-about 1,600 pieces at rest, asleep by ~12 s): rigid work at the peak about 10–14 ms a tick
-natively on 8 threads; in the browser (WASM, 8 threads) the peak runs at 20–35 ticks a second
-on a busy machine, so its heaviest seconds play slower than real time.
+about 1,400 pieces at rest, asleep by ~10 s): ticks of 10–17 ms at the peak natively on 8
+threads. In the browser (WASM, 8 threads) the collapse runs at 17–50 ticks a second (about 35 on
+average) on a busy machine: its heaviest seconds play somewhat slower than real time.
+
+Design pass of the Freedoom maps (68 maps, up to 1.7 G voxels and 19 M structural voxels): all
+stand, idle and with every sector mover run; 1–19 s a map natively (8 threads).
 
 ## 7. What is kept from v1
 
