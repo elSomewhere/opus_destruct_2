@@ -184,11 +184,13 @@ TEST_CASE("capi: extension points: layers, damage, loads, a host's system, force
   svxc_world* w = svxc_create(0.125);
   Host host;
   svxc_add_system(w, "host", host_step, &host);
-  const int soot = svxc_add_layer(w, "soot", 1);
+  const int soot = svxc_add_layer(w, "soot", 1, SVXC_BIND_PLACE);
   CHECK(soot > 0);
   CHECK(svxc_layer_index(w, "soot") == soot);
   CHECK(svxc_layer_index(w, "damage") == SVXC_DAMAGE_LAYER);
-  CHECK(svxc_add_layer(w, "", 1) == -1);
+  CHECK(svxc_add_layer(w, "", 1, SVXC_BIND_PLACE) == -1);
+  CHECK(svxc_add_layer(w, "soot", 0, SVXC_BIND_PLACE) == -1);  // (another layer under that name)
+  CHECK(svxc_add_layer(w, "soot", 1, SVXC_BIND_PLACE) == soot);
   int nx, ny, nz;
   const std::vector<uint8_t> v = scene(&nx, &ny, &nz);
   svxc_load_box(w, v.data(), nx, ny, nz, -8, -8, -4);
@@ -257,5 +259,78 @@ TEST_CASE("capi: extension points: layers, damage, loads, a host's system, force
   CHECK(svxc_set_piece_layer(w, big.id, SVXC_DAMAGE_LAYER, sv, &d, 1) == 1);
   CHECK(svxc_piece_layer(w, big.id, SVXC_DAMAGE_LAYER, sv[0], sv[1], sv[2]) == 200);
   CHECK(svxc_remove_piece_voxels(w, big.id, sv, 1, 1) == 1);
+  svxc_destroy(w);
+}
+
+namespace {
+
+struct HostSys {
+  int loads = 0, changed = 0, steps = 0;
+};
+
+}  // namespace
+
+TEST_CASE("capi: a host's system with all its callbacks; layer changes and chunk layers") {
+  svxc_world* w = svxc_create(0.125);
+  HostSys hs;
+  svxc_system s{};
+  s.name = "host";
+  s.user = &hs;
+  s.step = [](void* u, svxc_world*, double) { ++static_cast<HostSys*>(u)->steps; };
+  s.on_load = [](void* u, svxc_world*) { ++static_cast<HostSys*>(u)->loads; };
+  s.on_chunks = [](void* u, svxc_world*, int kind, const int32_t*, int n) {
+    if (kind == SVXC_CHUNKS_CHANGED) static_cast<HostSys*>(u)->changed += n;
+  };
+  s.memory_bytes = [](void*) -> int64_t { return 4321; };
+  s.state_hash = [](void* u) -> uint64_t { return static_cast<uint64_t>(static_cast<HostSys*>(u)->steps); };
+  CHECK(svxc_add_system_ex(w, &s) == 1);
+  svxc_system bad{};
+  CHECK(svxc_add_system_ex(w, &bad) == 0);  // (no step)
+  const int soot = svxc_add_layer(w, "soot", 1, SVXC_BIND_SOLID);
+  int nx, ny, nz;
+  const std::vector<uint8_t> v = scene(&nx, &ny, &nz);
+  svxc_load_box(w, v.data(), nx, ny, nz, -8, -8, -4);
+  CHECK(hs.loads == 1);
+  const uint64_t h1 = svxc_session_hash(w);
+  svxc_tick(w);
+  CHECK(svxc_session_hash(w) != h1);  // (its state hash is part of the session's)
+  svxc_carve(w, 0.0, 0.0, 2.0, 0.3);
+  svxc_tick(w);
+  CHECK(hs.changed > 0);
+  const int32_t p[3] = {4, 4, 20};
+  const uint8_t val = 33;
+  REQUIRE(svxc_set_layer(w, soot, p, &val, 1) == 1);
+  const int32_t* chunks = nullptr;
+  REQUIRE(svxc_poll_layer_changes(w, soot, &chunks) == 1);
+  CHECK(chunks[0] == 0);
+  CHECK(chunks[2] == 0);
+  CHECK(svxc_poll_layer_changes(w, soot, &chunks) == 0);
+  std::vector<uint8_t> buf(32768, 7);
+  CHECK(svxc_chunk_layer(w, soot, 0, 0, 0, buf.data()) == 1);
+  CHECK(buf[(4 * 32 + 4) * 32 + 20] == 33);
+  CHECK(svxc_chunk_layer(w, soot, 5, 5, 5, buf.data()) == 0);
+  CHECK(buf[0] == 0);
+  svxc_memory m;
+  svxc_get_memory(w, &m);
+  CHECK(m.systems == 4321);
+  // n > 0 without arrays: nothing changes (it does not clear the group)
+  const int32_t lv[3] = {4, 4, 30};
+  const double lf[3] = {0.0, 0.0, -10.0};
+  svxc_set_loads(w, 3, lv, lf, 1);
+  svxc_set_loads(w, 3, nullptr, nullptr, 1);
+  svxc_destroy(w);
+}
+
+TEST_CASE("capi: every tunable by name reads back what was set") {
+  svxc_world* w = svxc_create(0.125);
+  CHECK(svxc_set(w, "rigid.gravity", 7.5) == 0);
+  CHECK(svxc_get(w, "rigid.gravity") == 7.5);
+  CHECK(svxc_set(w, "pulverize", 0.0) == 0);
+  CHECK(svxc_get(w, "pulverize") == 0.0);
+  CHECK(svxc_set(w, "paused", 1.0) == 0);
+  CHECK(svxc_get(w, "paused") == 1.0);
+  CHECK(svxc_set(w, "max_bodies", 1e12) == 0);  // (clamped to the field's range)
+  CHECK(svxc_get(w, "max_bodies") <= 2e9);
+  CHECK(svxc_set(w, "fragility", NAN) == -1);
   svxc_destroy(w);
 }

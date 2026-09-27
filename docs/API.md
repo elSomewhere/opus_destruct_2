@@ -34,6 +34,10 @@ Conventions:
 | `ignite` (**ext**) | `pos:[3], radius` | Sets fire to what burns in the sphere; the rest heats up ([`ENV.md`](ENV.md)). Recorded in replays. |
 | `extinguish` (**ext**) | `pos:[3], radius` | Puts out and cools the sphere. Recorded in replays. |
 | `pour` (**ext**) | `pos:[3], radius` | Fills the air in the sphere with water. Recorded in replays. |
+| `drain` (**ext**) | `pos:[3], radius` | Removes the water in the sphere. Recorded in replays. |
+| `heat` (**ext**) | `pos:[3], radius, celsius` | Brings the solids in the sphere to (at least) that temperature. Recorded in replays. |
+| `setEnv` (**ext**) | `name, value` | An environment setting by name (`fire.flame_reach`, `fire.wood.burn_s`, `smoke.wind_x`, `water.loads`, ...: the engine's `svx_env_param_*` list). Kept across loads; recorded in replays; unknown names are ignored. |
+| `setTunable` (**ext**) | `name, value` | A world tunable by name (`rigid.gravity`, `max_bodies`, ...: `svx_tunable_*`). As `setEnv`. |
 
 `params` fields:
 
@@ -129,6 +133,9 @@ A v1 extension, kept in the protocol and the renderer; v2 engines send no fields
   contacts dissipated, J, at the contacts' centre). Used for camera shake, dust and particles.
 - `{kind:'splash', pos:[3], strength}` (**ext**): a piece hit the water hard; `strength` is its
   momentum into the water (kg m/s).
+- A `detached` event with `remesh: true` (**ext**): a new mesh for a piece already shown (its
+  charring or glow changed), in world coordinates at its pose now; it replaces the old one,
+  without the effects of a detachment, and the `debris` poses that follow are relative to it.
 - (v1 engines also sent `{kind:'bubble', ...}` debug events; v2 engines do not.)
 
 ### Environment
@@ -143,7 +150,10 @@ draws them:
 - **Water.** The `water` meshes in a translucent pass. Vertices have texture id `0xFFFE`, light
   255, and uv set to world x, y.
 - **Charring.** Burnt voxels come darker in the ordinary chunk and piece meshes (the vertex
-  light byte).
+  light byte); burning and red-hot voxels glow (texture id `0xFE00 + material`: the material's
+  colour and a flickering ember glow). Chunks re-meshed for that alone are flagged
+  decoration-only in `svx_mesh_info` (their occupancy is unchanged: the worker does not send it
+  again).
 
 ### Rigid debris
 

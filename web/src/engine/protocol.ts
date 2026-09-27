@@ -231,6 +231,37 @@ export interface PourCommand {
   radius: number;
 }
 
+/** (front-end extension) Removes the water in the sphere. */
+export interface DrainCommand {
+  type: 'drain';
+  pos: Vec3;
+  radius: number;
+}
+
+/** (front-end extension) Brings the solids in the sphere to (at least) `celsius`. */
+export interface HeatCommand {
+  type: 'heat';
+  pos: Vec3;
+  radius: number;
+  celsius: number;
+}
+
+/**
+ * (front-end extension) A setting by name, recorded in replays: the environment's
+ * ("fire.flame_reach", "smoke.wind_x", "water.loads", ...: `svx_env_param_*`) or the world's
+ * ("rigid.gravity", "max_bodies", ...: `svx_tunable_*`). Unknown names are ignored.
+ */
+export interface SetEnvCommand {
+  type: 'setEnv';
+  name: string;
+  value: number;
+}
+export interface SetTunableCommand {
+  type: 'setTunable';
+  name: string;
+  value: number;
+}
+
 /** (front-end extension) Puts out and cools the sphere (a fire extinguisher). */
 export interface ExtinguishCommand {
   type: 'extinguish';
@@ -282,7 +313,11 @@ export type EngineCommand =
   | UseCommand
   | IgniteCommand
   | ExtinguishCommand
-  | PourCommand;
+  | PourCommand
+  | DrainCommand
+  | HeatCommand
+  | SetEnvCommand
+  | SetTunableCommand;
 
 export type EngineCommandType = EngineCommand['type'];
 
@@ -422,6 +457,11 @@ export interface DetachedEvent {
    * fade).
    */
   rigid?: boolean;
+  /**
+   * (front-end extension) A new mesh for a piece already shown (its charring or glow changed):
+   * it replaces the old one, at the piece's pose now, without the effects of a detachment.
+   */
+  remesh?: boolean;
 }
 
 /** Bond ruptures (decals and particles); `strength` is the utilization, about 1..2. */
@@ -635,7 +675,7 @@ export interface DebrisMessage {
 /**
  * (front-end extension) Water surface meshes (the engine's water: translucent, drawn after the
  * opaque world) of chunks whose water changed, replacing earlier ones with the same key, and
- * the keys of chunks whose water is gone.
+ * the keys of chunks whose water is gone (to be applied first: a key is never in both).
  */
 export interface WaterMessage {
   type: 'water';
@@ -651,8 +691,8 @@ export const SMOKE_STRIDE = 4;
 export const SMOKE_CELL_VOXELS = 4;
 
 /**
- * (front-end extension) The environment's state for the renderer, sent when it changes (about
- * ten times a second while anything burns or smokes, plus one empty set when all is clear):
+ * (front-end extension) The environment's state for the renderer, sent about ten times a second
+ * while anything burns or smokes, plus one empty set when all is clear (and on a load):
  * the flames (burning voxels, an even sample of at most a few thousand) and the smoke (the
  * densest cells of the smoke field).
  */
@@ -676,10 +716,10 @@ export interface StatsMessage {
 
 /**
  * Per-tick timeline sample: ms per part of the engine tick (structure solves, rigid pieces,
- * event processing, streaming, the rest), the worker's flush after it (meshes, events, poses),
- * then the awake pieces.
+ * event processing, streaming, the environment systems, the rest), the worker's flush after it
+ * (meshes, events, poses), then the awake pieces.
  */
-export const TIMELINE_FIELDS = ['structural', 'rigid', 'events', 'stream', 'other', 'flush', 'awake'] as const;
+export const TIMELINE_FIELDS = ['structural', 'rigid', 'events', 'stream', 'env', 'other', 'flush', 'awake'] as const;
 export const TIMELINE_STRIDE = TIMELINE_FIELDS.length;
 
 /** (front-end extension) Something failed. `fatal` means the engine cannot continue. */
@@ -754,6 +794,10 @@ const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set<EngineCommandType>([
   'ignite',
   'extinguish',
   'pour',
+  'drain',
+  'heat',
+  'setEnv',
+  'setTunable',
 ]);
 
 function typeField(data: unknown): string | undefined {

@@ -104,3 +104,43 @@ TEST_CASE("smoke: bounded by its budget, deterministic, gone with evicted chunks
   CHECK(a.env.smoke()->memory_bytes() < 6 * 8192 + 64 * 1024);
   CHECK(a.w.memory().systems >= a.env.smoke()->memory_bytes());
 }
+
+// ---- hardening (audit regressions)
+
+TEST_CASE("smoke: a burning plank wall smokes (flames in closed cells find an open one); a point emit counts") {
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-16, -16, -4}, {80, 80, 0}, kRock);
+  box(g, {0, 4, 0}, {24, 5, 24}, kWood);  // (1 voxel thick: its cells are closed by the wall rule)
+  g.compact();
+  Setup s(std::move(g));
+  s.env.fire()->ignite(s.w, at({12, 4, 8}), 0.3);
+  s.run(6.0);
+  REQUIRE(s.env.fire()->stats().burning > 5);
+  CHECK(s.env.smoke()->stats().cells > 10);
+  // a point emit, anywhere in its cell
+  Setup t(room());
+  t.env.smoke()->emit(at({70, 70, 5}), 2.0);  // (a voxel off the cell's centre)
+  t.run(0.15);
+  CHECK(t.env.smoke()->stats().cells > 0);
+}
+
+TEST_CASE("smoke: settings are brought into range; emits are bounded") {
+  SmokeConfig c;
+  c.lifetime = -1.0;
+  c.wind = V3{1e9, std::nan(""), 0.0};
+  c.max_blocks = -3;
+  SmokeSystem sm(c);
+  CHECK(sm.config().lifetime >= 0.5);
+  CHECK(sm.config().wind.x <= 50.0);
+  CHECK(sm.config().wind.y == 0.0);
+  CHECK(sm.config().max_blocks == 0);
+  EnvConfig e;
+  e.smoke_config.max_blocks = 4;
+  Setup s(room(), e);
+  for (int k = 0; k < 5000; ++k) s.env.smoke()->emit_sphere(at({70, 70, 8}), 100.0, 1.0);  // (capped: radius, count)
+  s.env.smoke()->emit({std::nan(""), 0, 0}, 1.0);
+  s.run(0.15);
+  CHECK(s.env.smoke()->stats().blocks <= 4);
+  CHECK(s.env.smoke()->density(s.w, {1e300, 0, 0}) == 0.0);
+}

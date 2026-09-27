@@ -213,3 +213,149 @@ TEST_CASE("ext: systems are told of loads, streaming and voxel changes, and step
   CHECK(sys->evicted > 0);
   CHECK(w.memory().systems == 1234);
 }
+
+// ---- hardening (audit regressions)
+
+TEST_CASE("ext: layer values belong to their voxel, to the air, or to the place") {
+  World w;
+  const int soot = w.add_layer({"soot", true, LayerBind::Solid});
+  const int wet = w.add_layer({"wet", true, LayerBind::Air});
+  const int mark = w.add_layer({"mark", true, LayerBind::Place});
+  CHECK(w.add_layer({"soot", true, LayerBind::Place}) == -1);  // (another layer under that name)
+  w.load(wall());
+  w.bake();
+  const IVec3 p{10, 4, 10}, air{10, 3, 10};
+  w.set_layer(soot, {{p, 50}});
+  w.set_layer(World::kDamageLayer, {{p, 40}});
+  w.set_layer(mark, {{p, 60}, {air, 61}});
+  w.set_layer(wet, {{air, 200}});
+  REQUIRE(w.layer(soot, p) == 50);
+  // the wall's voxel is carved away: what belonged to it goes, the place keeps its mark
+  w.carve({kH * p[0], kH * p[1], kH * p[2]}, 0.05);
+  w.tick();
+  REQUIRE_FALSE(vox_solid(w.grid().get(p)));
+  CHECK(w.layer(soot, p) == 0);
+  CHECK(w.layer(World::kDamageLayer, p) == 0);
+  CHECK(w.layer(mark, p) == 60);
+  // a solid placed in the wet air: the water there goes
+  w.set_voxels({{air, kConc}});
+  CHECK(w.layer(wet, air) == 0);
+  CHECK(w.layer(mark, air) == 61);
+}
+
+TEST_CASE("ext: full damage is no strength at all (it breaks), never a 0 / 0 that holds") {
+  World w;
+  w.load(cantilever());
+  w.bake();
+  for (int t = 0; t < 30; ++t) w.tick();
+  REQUIRE(w.pieces().empty());
+  std::vector<LayerEdit> dmg;
+  for (i32 y = 0; y < 3; ++y)
+    for (i32 z = 24; z < 27; ++z) dmg.push_back({{0, y, z}, 255});
+  w.set_layer(World::kDamageLayer, dmg);
+  for (int t = 0; t < 120 && w.pieces().empty(); ++t) w.tick();
+  CHECK_FALSE(w.pieces().empty());
+}
+
+TEST_CASE("ext: damage extracts a structure nobody holds, even where its fragments are cached") {
+  WorldConfig c;
+  c.memory.structure_mb = 0.0;  // (idle structures are dropped at once: their fragment caches stay)
+  World w;
+  w.configure(c);
+  w.load(cantilever());
+  // extracted by a load, then dropped as idle
+  w.set_loads(1, {{{8, 1, 26}, V3{0, 0, -1.0}}});
+  for (int t = 0; t < 30; ++t) w.tick();
+  w.set_loads(1, {});
+  for (int t = 0; t < 30; ++t) w.tick();
+  REQUIRE(w.pieces().empty());
+  std::vector<LayerEdit> dmg;
+  for (i32 y = 0; y < 3; ++y)
+    for (i32 z = 24; z < 27; ++z) dmg.push_back({{0, y, z}, 250});
+  w.set_layer(World::kDamageLayer, dmg);
+  for (int t = 0; t < 120 && w.pieces().empty(); ++t) w.tick();
+  CHECK_FALSE(w.pieces().empty());
+}
+
+namespace {
+
+struct Reentrant final : WorldSystem {
+  int steps = 0;
+  const char* name() const override { return "reentrant"; }
+  void step(World& w, f64) override {
+    ++steps;
+    w.tick();                // (refused: inside a tick)
+    w.load(VoxelGrid{});     // (refused)
+    w.add_system(std::make_shared<Counting>());  // (added: stepped from the next tick)
+  }
+};
+
+}  // namespace
+
+TEST_CASE("ext: a system cannot tick or load the world from inside its tick") {
+  World w;
+  auto r = std::make_shared<Reentrant>();
+  w.add_system(r);
+  w.load(wall());
+  for (int t = 0; t < 3; ++t) w.tick();
+  CHECK(r->steps == 3);
+  CHECK(w.ticks() == 3);
+  CHECK(w.grid().get(10, 4, 10) == kConc);  // (the world was not replaced)
+  CHECK(w.systems().size() == 4);
+}
+
+TEST_CASE("ext: forces set while paused do not pile up") {
+  WorldParams p;
+  World w;
+  w.load(cantilever());
+  std::vector<VoxelEdit> cut;
+  for (i32 y = 0; y < 3; ++y)
+    for (i32 z = 24; z < 27; ++z) cut.push_back({{0, y, z}, kAir});
+  w.set_voxels(cut);
+  for (int t = 0; t < 3; ++t) w.tick();
+  REQUIRE(w.pieces().size() == 1);
+  const i64 id = w.pieces()[0].id;
+  p.paused = true;
+  w.set_params(p);
+  for (int t = 0; t < 60; ++t) {
+    const PieceState ps = w.pieces()[0];
+    w.apply_force(id, ps.pos, V3{1e6, 0, 0});
+    w.tick();
+  }
+  p.paused = false;
+  w.set_params(p);
+  const f64 vx0 = w.pieces()[0].vel.x;
+  w.tick();
+  const PieceState ps = w.pieces()[0];
+  // (at most one tick of the force: F dt / m, not sixty)
+  CHECK(ps.vel.x - vx0 < 1.5 * 1e6 * w.config().dt / ps.mass);
+}
+
+TEST_CASE("ext: invalid voxel values are refused or cleaned; layer writes skip chunks not generated") {
+  World w;
+  w.load(wall());
+  CHECK(w.set_voxels({{{0, 0, 30}, Vox{0x80}}}) == 0);  // ("anchored air")
+  VoxelGrid g = wall();
+  g.set(1, 1, 30, Vox{0x80});
+  World b;
+  b.load(std::move(g));
+  CHECK(b.grid().get(1, 1, 30) == kAir);
+  // streamed: a layer write where nothing is generated yet is dropped (no chunk made for it)
+  World s;
+  const int soot = s.add_layer({"soot", true});
+  VoxelGrid e;
+  e.h = kH;
+  s.load(std::move(e));
+  StreamConfig sc;
+  sc.load_radius = 8.0;
+  sc.evict_radius = 12.0;
+  sc.chunks_per_tick = 400;
+  s.enable_streaming(std::make_shared<Flat>(), sc);
+  s.set_focus(V3{0, 0, 0});
+  for (int t = 0; t < 5; ++t) s.tick();
+  const IVec3 far{400, 0, -3};  // (chunk 12: in the source's range, 50 m away)
+  REQUIRE_FALSE(s.chunk_resident(chunk_of(far)));
+  CHECK(s.set_layer(soot, {{far, 9}}) == 0);
+  CHECK(s.grid().chunk(chunk_of(far)) == nullptr);
+  CHECK(s.set_layer(soot, {{{2, 2, -3}, 9}}) == 1);
+}

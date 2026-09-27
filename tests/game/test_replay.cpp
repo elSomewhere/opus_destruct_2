@@ -46,7 +46,7 @@ TEST_CASE("replay: command logs round-trip bit-exactly and reject damaged input"
   std::vector<u8> cut(bytes.begin(), bytes.end() - 3);
   CHECK_FALSE(CommandLog::parse(cut, &back));
   std::vector<u8> bad = bytes;
-  bad[16 + 8] = 9;  // unknown command type
+  bad[16 + 8] = 13;  // unknown command type
   CHECK_FALSE(CommandLog::parse(bad, &back));
   bad = bytes;
   bad[0] ^= 1;  // magic
@@ -153,4 +153,39 @@ TEST_CASE("replay: fire replays bit for bit (the yard's timber house, on 1 and 4
   const std::vector<u64> b = run(4, nullptr, &back);
   CHECK(a == b);
   set_num_threads(1);
+}
+
+TEST_CASE("replay: every environment command and setting replays bit for bit") {
+  auto run = [](CommandLog* rec, const CommandLog* play) {
+    Game g;
+    ProcWorld w = make_procedural("yard", 1);
+    g.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+    g.bake();
+    if (rec) g.record_to(rec);
+    const f64 h = g.world().voxel_size();
+    for (int t = 0; t < 600; ++t) {
+      if (play) {
+        for (const Command& c : play->commands())
+          if (c.tick == g.ticks()) apply_command(g, c);
+      } else if (t == 5) {
+        g.set_env("fire.wood.burn_s", 20.0);
+        g.set_env("smoke.wind_x", 2.0);
+        g.set_tunable("rigid.gravity", 9.5);
+        g.ignite({h * 30, h * 30, h * 2.5}, 0.4);
+        g.heat({h * 262, h * 41, h * 12}, 0.4, 700.0);
+        g.pour({h * 120, h * 60, h * 20}, 0.4);
+      } else if (t == 300) {
+        g.drain({h * 268, h * 180, h * 8}, 1.0);
+        g.extinguish({h * 30, h * 30, h * 4}, 0.8);
+      }
+      g.tick();
+    }
+    return g.session_hash();
+  };
+  CommandLog log;
+  const u64 a = run(&log, nullptr);
+  REQUIRE(log.commands().size() == 8);
+  CommandLog back;
+  REQUIRE(CommandLog::parse(log.serialize(), &back));
+  CHECK(run(nullptr, &back) == a);
 }

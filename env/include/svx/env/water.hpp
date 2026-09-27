@@ -13,8 +13,9 @@
 //     floors: free voxels), as World::set_loads (a dam or a tank breaks when it cannot hold);
 //   - pieces: buoyancy and drag (World::apply_force), woken when they would float; splashes;
 //   - fire: through the layer (FireSystem quenches wet voxels).
-// Pressure is not propagated (water does not rise in a U-tube); a budget (max_active) bounds
-// the work of a step (beyond it, water waits its turn).
+// Pressure is not propagated (water does not rise in a U-tube). A budget (max_active) bounds
+// the voxels a step moves (beyond it, water waits its turn); water at rest - full voxels held
+// by solids and full water - is never stepped, even when woken.
 #pragma once
 
 #include <unordered_map>
@@ -25,7 +26,8 @@
 namespace svx {
 
 struct WaterConfig {
-  f64 step_s = 1.0 / 30.0;    // the fluid steps this often (a multiple of the world's tick)
+  bool enabled = true;        // (off: nothing flows; loads and buoyancy stay as they are)
+  f64 step_s = 1.0 / 30.0;    // the fluid steps this often (at least the world's tick, at most 0.1 s)
   i32 fall = 4;               // voxels water falls in a step at most
   u8 min_spread = 16;         // thinner water does not spread (a puddle) ...
   u8 min_amount = 3;          // ... and thinner still dries up
@@ -42,9 +44,12 @@ struct WaterConfig {
 
 class WaterSystem final : public WorldSystem {
  public:
-  explicit WaterSystem(const WaterConfig& c = {}) : cfg_(c) {}
-  void configure(const WaterConfig& c) { cfg_ = c; }
+  static constexpr i32 kMaxReach = 32;  // voxels: the largest sphere a command acts on
+
+  explicit WaterSystem(const WaterConfig& c = {});
+  void configure(const WaterConfig& c);  // (values are brought into their ranges)
   const WaterConfig& config() const { return cfg_; }
+  bool ok() const { return water_ >= 0; }  // (attached: its layer registered)
 
   // Commands (taking effect at once; the world must have attached the system).
   void pour(World& w, const V3& pos, f64 radius);   // fills the air in the sphere
@@ -61,7 +66,8 @@ class WaterSystem final : public WorldSystem {
   struct Stats {
     i32 active = 0, moved = 0, loads = 0, floating = 0;  // (of the last step)
     i64 steps = 0;
-    f64 step_ms = 0.0;
+    f64 step_ms = 0.0;   // (this tick)
+    f64 total_ms = 0.0;  // (since the load)
   };
   const Stats& stats() const { return st_; }
 
@@ -69,6 +75,7 @@ class WaterSystem final : public WorldSystem {
   const char* name() const override { return "water"; }
   void attach(World& w) override;
   void on_load(World& w) override;
+  void on_generated(World& w, const std::vector<u64>& chunks) override;
   void on_evicted(World& w, const std::vector<u64>& chunks) override;
   void on_voxels_changed(World& w, const std::vector<u64>& chunks) override;
   void step(World& w, f64 dt) override;
@@ -80,7 +87,8 @@ class WaterSystem final : public WorldSystem {
   void update_loads(World& w);
   void chunk_loads(const World& w, const IVec3& chunk, std::vector<VoxelLoad>& out) const;
   void float_pieces(World& w);
-  void wake_chunk(const World& w, u64 chunk);
+  void wake_chunk(const World& w, u64 chunk);  // (its water that can move)
+  void loads_dirty(const World& w, u64 chunk);  // (its loads and those of the water columns below it)
 
   WaterConfig cfg_;
   int water_ = -1;
@@ -91,6 +99,13 @@ class WaterSystem final : public WorldSystem {
   bool loads_changed_ = false;                               // (chunks with loads left)
   std::unordered_map<u64, std::vector<VoxelLoad>> loads_;    // chunk -> its loads
   std::unordered_map<i64, u8> wet_;                          // pieces in the water last tick
+  struct Samples {
+    i32 count = -1;           // (the shape's voxel count they were taken for)
+    std::vector<i32> cells;   // shape cells sampled for buoyancy
+  };
+  std::unordered_map<i64, Samples> samples_;                 // per piece
+  u64 loads_group_ = 0;                                      // (the group its loads are in the world under)
+  bool loads_set_ = false;
   std::vector<Splash> splashes_;
   f64 clock_ = 0.0, load_clock_ = 0.0;
   Stats st_;

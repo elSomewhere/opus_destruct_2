@@ -180,6 +180,7 @@ std::vector<u8> World::save_delta() const {
 }
 
 bool World::load_delta(const std::vector<u8>& bytes) {
+  if (in_tick_) return false;  // (from inside a tick: refused)
   std::vector<u64> touched;
   if (source_) {
     std::vector<std::pair<u64, std::vector<u8>>> recs;
@@ -189,8 +190,17 @@ bool World::load_delta(const std::vector<u8>& bytes) {
     for (auto& [k, r] : recs) {
       if (generated_.count(k)) {
         u64 key = 0;
+        const Chunk* c0 = grid_.chunk(unkey3(k));
+        const std::vector<Vox> before = c0 && !c0->uniform ? c0->v : std::vector<Vox>{};
+        const Vox before_value = c0 && c0->uniform ? c0->value : kAir;
         if (!grid_.apply_record(r, &key)) return false;
         touched.push_back(key);
+        // (voxels or bonds changed by the delta: a player's; only layers: not)
+        const Chunk* c1 = grid_.chunk(unkey3(key));
+        bool same = c1 && c1->broken.empty();
+        if (same && !before.empty()) same = !c1->uniform && c1->v == before;
+        else if (same) same = c1->uniform ? c1->value == before_value : std::all_of(c1->v.begin(), c1->v.end(), [&](Vox x) { return x == before_value; });
+        if (!same) grid_.note_voxels_modified(key);
       } else {
         archive_record(k, r);  // (as if seen now; a bounded archive may forget the oldest to take it)
       }
@@ -268,7 +278,11 @@ bool World::generate_chunk(u64 key) {
   const IVec3 lo = source_->chunk_lo(), hi = source_->chunk_hi();
   if (cc[0] < lo[0] || cc[1] < lo[1] || cc[2] < lo[2] || cc[0] >= hi[0] || cc[1] >= hi[1] || cc[2] >= hi[2]) return false;
   std::vector<Vox> v;
-  const bool any = source_->generate(cc, v);
+  bool any = source_->generate(cc, v);
+  if (any && v.size() != size_t(kChunkVox)) any = false;  // (a source that did not fill it: air)
+  if (any)
+    for (Vox& x : v)
+      if (!vox_valid(x)) x = kAir;  // (invalid values from the source: air)
   insert_generated(key, any, std::move(v));
   return true;
 }
@@ -303,9 +317,21 @@ void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
     changed = true;
   }
   if (archive_->has(key)) {
+    // its changes back. Whether they touched its voxels or bonds - or only persistent layers
+    // (water, burn marks): then it is the generator's chunk still, to be designed when first
+    // touched (a chunk changed by play was designed before it was changed)
+    std::vector<Vox> generated;
+    if (const Chunk* g0 = grid_.chunk(cc); any && g0 && !g0->uniform) generated = g0->v;
+    const Vox generated_value = grid_.chunk(cc) && grid_.chunk(cc)->uniform ? grid_.chunk(cc)->value : kAir;
     grid_.track_changes(true);
     changed = grid_.apply_record(archive_->get(key)) || changed;  // (records were checked when archived or loaded)
     archive_->erase(key);
+    const Chunk* ch = grid_.chunk(cc);
+    bool same = ch && ch->broken.empty();
+    if (same && !generated.empty()) same = !ch->uniform && ch->v == generated;
+    else if (same) same = ch->uniform ? ch->value == generated_value : std::all_of(ch->v.begin(), ch->v.end(), [&](Vox x) { return x == generated_value; });
+    if (!same) grid_.note_voxels_modified(key);
+    else if (ch->free_count() > 0) undesigned_.insert(key);
   } else if (any) {
     // (fresh from the generator: designed when first touched; an archived chunk was designed
     // before it was changed)

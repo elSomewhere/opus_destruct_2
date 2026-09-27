@@ -33,7 +33,7 @@ void ground(VoxelGrid& g, int x0, int x1, int y0, int y1, int depth) {
 // Water at rest in the box (the "water" layer: svx_env's WaterSystem).
 void water(VoxelGrid& g, int x0, int x1, int y0, int y1, int z0, int z1) {
   int L = g.layer_index("water");
-  if (L < 0) L = g.add_layer({"water", true});
+  if (L < 0) L = g.add_layer({"water", true, LayerBind::Air});
   for (int x = x0; x < x1; ++x)
     for (int y = y0; y < y1; ++y)
       for (int z = z0; z < z1; ++z) g.set_layer(L, {x, y, z}, 255);

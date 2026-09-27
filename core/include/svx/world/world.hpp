@@ -207,6 +207,9 @@ enum class DebugField : u8 {
 
 struct WorldStats {
   f64 tick_ms = 0.0, structural_ms = 0.0, event_ms = 0.0, rigid_ms = 0.0;
+  f64 loads_ms = 0.0;    // (pieces' and blasts' loads on the structures)
+  f64 systems_ms = 0.0;  // (WorldSystem::step of every system)
+  f64 upkeep_ms = 0.0;   // (the rest: budgets, piece changes and announcements)
   i64 ticks = 0, events = 0;
   i64 voxels = 0, chunks = 0;
   f64 memory_mb = 0.0;
@@ -366,7 +369,9 @@ class World {
   // damage (0 intact .. 255 no strength left) takes the strength of every bond section it is in
   // (fire, corrosion, rot, ... write it). Pieces carry their voxels' layer values.
   static constexpr int kDamageLayer = 0;
-  int add_layer(const LayerSpec& spec);  // its index (the existing one for a name added before); -1: full
+  // Its index (the existing one for the same layer added before); -1: full (kMaxLayers), or a
+  // different layer (persistence, binding) under that name.
+  int add_layer(const LayerSpec& spec);
   int layer_index(const std::string& name) const { return grid_.layer_index(name); }
   u8 layer(int L, const IVec3& p) const { return grid_.layer(L, p); }
   i32 set_layer(int L, const std::vector<LayerEdit>& edits);  // returns the values changed
@@ -389,6 +394,8 @@ class World {
   const std::vector<std::shared_ptr<WorldSystem>>& systems() const { return systems_; }
 
   // ---- queries (no state change)
+  // A point commands and queries accept: finite, and within the voxel key range (kVoxelLimit).
+  bool in_range(const V3& p) const;
   RayHit raycast(const V3& origin, const V3& dir, f64 max_dist) const;  // the world's voxels and the pieces
   // Moves the box [min, max] by `move` (per axis, x then y then z) as far as the world's voxels
   // let it (not the pieces): a character controller's sweep; stepping up ledges is the host's
@@ -422,6 +429,8 @@ class World {
 
   // ---- fragments
   FragChunk& frag_chunk(const IVec3& cc);   // (re)builds when stale
+  FragChunk& adopt_fragments(u64 key, FragChunk&& nf);        // (a chunk's new fragments into the cache)
+  void prefragment(const IVec3& seed_chunk, f64 max_radius);  // (the chunks a walk can reach, in parallel)
   FragChunk* frag_chunk_if(u64 key);         // current or nullptr (no rebuild)
   bool frag_at(const IVec3& p, FragKey* out); // the free fragment holding voxel p
   i64 owner_of(const FragKey& f) const;      // structure id holding it (0: none)
@@ -438,7 +447,6 @@ class World {
   void blast_world(const PendingEvent& e);
   void seed_near(const std::vector<IVec3>& removed);
   void support_changed(const IVec3& p, std::vector<u64>* chunks);  // (before an anchored voxel goes / after one comes)
-  bool in_range(const V3& p) const;  // finite and within the voxel key range (commands and queries elsewhere are refused)
   void prune_caches();
   // Extracts the structure holding fragment f (bounded: max_nodes / max_radius, 0 = config): a
   // new Structure, or nullptr after detaching it (it reaches no support).
@@ -555,6 +563,7 @@ class World {
   std::unordered_map<u64, Judged> judged_;     // bond identity -> load at its last judged state
   u64 node_chunk(const Structure& s, i32 node) const;
   bool designed_all_ = false;
+  bool in_tick_ = false;  // (a system calling tick / load from inside a tick is refused)
   struct DeadLoad {
     IVec3 vox;
     V3 p, F;
@@ -600,9 +609,9 @@ class World {
   std::unordered_set<u64> host_dirty_;            // chunks changed since the host last took them
   bool host_dirty_all_ = false;
   std::vector<u64> sys_changed_, sys_generated_, sys_evicted_;  // (for the systems' next step)
-  void refresh_strengths(const std::vector<u64>& chunks);  // (the damage layer changed there)
+  void refresh_strengths(const std::vector<IVec3>& voxels);  // (their damage changed)
   void finish_tick_changes();                              // voxel changes: to the systems and the host
-  void step_systems();
+  void step_systems(bool step = true);  // (notifications; and the steps unless paused)
   void add_external_loads();                               // (finish_loads)
   void add_loads_to(const Structure& s, std::vector<f64>& F) const;  // (design solves)
 

@@ -35,9 +35,9 @@ struct BodyShape {
   std::array<std::vector<u8>, kMaxLayers> layer;
   i32 count = 0;                      // solid voxels
   i32 index(const IVec3& p) const {   // -1 outside
-    const i32 x = p[0] - lo[0], y = p[1] - lo[1], z = p[2] - lo[2];
+    const i64 x = i64(p[0]) - lo[0], y = i64(p[1]) - lo[1], z = i64(p[2]) - lo[2];  // (no overflow at any input)
     if (x < 0 || y < 0 || z < 0 || x >= dim[0] || y >= dim[1] || z >= dim[2]) return -1;
-    return (x * dim[1] + y) * dim[2] + z;
+    return static_cast<i32>((x * dim[1] + y) * dim[2] + z);
   }
   IVec3 voxel(i32 i) const { return {lo[0] + i / (dim[1] * dim[2]), lo[1] + (i / dim[2]) % dim[1], lo[2] + i % dim[2]}; }
   Vox get(const IVec3& p) const {

@@ -4,6 +4,7 @@
 #include <array>
 #include <chrono>
 #include <cmath>
+#include <cstring>
 #include <unordered_set>
 
 namespace svx {
@@ -23,14 +24,16 @@ inline IVec3 voxel_at(const V3& X, f64 h) {
   return {static_cast<i32>(std::floor(X.x / h + 0.5)), static_cast<i32>(std::floor(X.y / h + 0.5)), static_cast<i32>(std::floor(X.z / h + 0.5))};
 }
 
-// The water of a step: dense copies of the chunks it touches (the grid's layer, with this
-// step's changes), their voxels and residency, the last chunk remembered.
+// The water of a step: the grid's layer of the chunks it touches, a copy of those it changes
+// (made at the first change), their voxels and residency, the last chunks remembered.
 struct Fluid {
   struct Buf {
-    std::vector<u8> w, before;
-    std::vector<u64> mark;  // (voxels already in the next active set)
+    const u8* src = nullptr;  // (the grid's values: unchanged until the step's end)
+    std::vector<u8> w;        // (this step's, once changed)
+    std::vector<u64> mark;    // (voxels already in the next active set)
     const Chunk* c = nullptr;
-    bool resident = false, touched = false;
+    bool resident = false;
+    u8 at(i32 i) const { return !w.empty() ? w[size_t(i)] : src ? src[size_t(i)] : 0; }
   };
   const World& w;
   int L;
@@ -57,20 +60,19 @@ struct Fluid {
       const IVec3 cc = chunk_of(p);
       b.c = w.grid().chunk(cc);
       b.resident = w.chunk_resident(cc);
-      if (b.c && !b.c->layer[size_t(L)].empty()) b.w = b.c->layer[size_t(L)];
-      else b.w.assign(kChunkVox, 0);
+      if (b.c && !b.c->layer[size_t(L)].empty()) b.src = b.c->layer[size_t(L)].data();
     }
     last_key = k;
     last = &it->second;
     recent[next_slot++ & 7] = {k, last};
     return it->second;
   }
-  u8 get(const IVec3& p) { return buf(p).w[size_t(chunk_index(p))]; }
+  u8 get(const IVec3& p) { return buf(p).at(chunk_index(p)); }
   void set(const IVec3& p, u8 v) {
     Buf& b = buf(p);
-    if (!b.touched) {
-      b.touched = true;
-      b.before = b.w;
+    if (b.w.empty()) {
+      if (b.src) b.w.assign(b.src, b.src + kChunkVox);
+      else b.w.assign(kChunkVox, 0);
     }
     b.w[size_t(chunk_index(p))] = v;
   }
@@ -95,22 +97,103 @@ struct Fluid {
   }
 };
 
+inline f64 clampf(f64 v, f64 lo, f64 hi, f64 fallback) { return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback; }
+
+WaterConfig sanitized(WaterConfig c) {
+  c.step_s = clampf(c.step_s, 0.0, 0.1, 1.0 / 30.0);
+  c.fall = std::clamp(c.fall, 1, 16);
+  c.min_amount = std::clamp<u8>(c.min_amount, 1, 64);
+  c.min_spread = std::clamp<u8>(c.min_spread, c.min_amount, 128);
+  c.max_active = std::clamp(c.max_active, 1, 4000000);
+  c.density = clampf(c.density, 1.0, 20000.0, 1000.0);
+  c.load_s = clampf(c.load_s, 0.0, 10.0, 0.5);
+  c.max_loads = std::clamp(c.max_loads, 0, 1 << 22);
+  c.drag = clampf(c.drag, 0.0, 20.0, 1.5);
+  c.samples = std::clamp(c.samples, 8, 4096);
+  return c;
+}
+
+// A full voxel of water held on every side it could go to - below and around: solids, full
+// water, chunks not generated - cannot move (its step would change nothing).
+bool held(const World& w, int L, const Chunk& c, const IVec3& cc, i32 i) {
+  const IVec3 l{i / (kChunk * kChunk), (i / kChunk) % kChunk, i % kChunk};
+  constexpr int kHold[5][3] = {{0, 0, -1}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}};
+  const std::vector<u8>& a = c.layer[size_t(L)];
+  for (const auto& d : kHold) {
+    const IVec3 q{l[0] + d[0], l[1] + d[1], l[2] + d[2]};
+    if (q[0] >= 0 && q[0] < kChunk && q[1] >= 0 && q[1] < kChunk && q[2] >= 0 && q[2] < kChunk) {
+      const i32 j = (q[0] * kChunk + q[1]) * kChunk + q[2];
+      if (!(vox_solid(c.uniform ? c.value : c.v[size_t(j)]) || a[size_t(j)] == 255)) return false;
+      continue;
+    }
+    const IVec3 p{cc[0] * kChunk + q[0], cc[1] * kChunk + q[1], cc[2] * kChunk + q[2]};
+    if (d[2] < 0 && p[2] < w.grid().lo[2] - 2 * kChunk) return false;  // (below the world: it goes)
+    if (!w.chunk_resident(chunk_of(p))) continue;
+    if (!(vox_solid(w.grid().get(p)) || w.layer(L, p) == 255)) return false;
+  }
+  return true;
+}
+
 }  // namespace
 
-void WaterSystem::attach(World& w) { water_ = w.add_layer({"water", true}); }
+WaterSystem::WaterSystem(const WaterConfig& c) : cfg_(sanitized(c)) {}
+
+void WaterSystem::configure(const WaterConfig& c) {
+  const bool loads_were = cfg_.loads;
+  cfg_ = sanitized(c);
+  clock_ = std::min(clock_, cfg_.step_s);
+  if (cfg_.loads && !loads_were) loads_all_ = true;  // (on again: all of them anew)
+  // (loads off, or another group: the world's are taken back at the next step)
+}
+
+void WaterSystem::attach(World& w) { water_ = w.add_layer({"water", true, LayerBind::Air}); }
 
 void WaterSystem::on_load(World& w) {
-  (void)w;
   active_.clear();
   wake_.clear();
   load_dirty_.clear();
   loads_.clear();
   loads_all_ = true;
+  loads_set_ = false;  // (the world dropped every load group with its old level)
   wet_.clear();
+  samples_.clear();
   splashes_.clear();
   clock_ = load_clock_ = 0.0;
+  st_ = Stats{};  // (a session replayed from a load: the same sweeps)
   // (the level's water presses on its structures from the start: a bake designs for it)
-  if (cfg_.loads) update_loads(w);
+  if (ok() && cfg_.loads) update_loads(w);
+}
+
+void WaterSystem::loads_dirty(const World& w, u64 k) {
+  // (a chunk's water, and the columns below it: their depth counts its water)
+  if (!cfg_.loads) return;
+  load_dirty_.push_back(k);
+  IVec3 c = unkey3(k);
+  for (int n = 0; n < 8; ++n) {
+    --c[2];
+    const Chunk* ch = w.grid().chunk(c);
+    if (!ch || ch->layer[size_t(water_)].empty()) break;
+    load_dirty_.push_back(key3(c[0], c[1], c[2]));
+  }
+}
+
+void WaterSystem::on_generated(World& w, const std::vector<u64>& chunks) {
+  // water resting against chunks not generated yet moves on once they are (and a chunk made
+  // with water presses on what holds it)
+  if (!ok()) return;
+  std::vector<u64> near;
+  for (u64 k : chunks) {
+    const IVec3 c = unkey3(k);
+    near.push_back(k);
+    for (const auto& f : kFace) near.push_back(key3(c[0] + f[0], c[1] + f[1], c[2] + f[2]));
+  }
+  std::sort(near.begin(), near.end());
+  near.erase(std::unique(near.begin(), near.end()), near.end());
+  for (u64 k : near) {
+    wake_chunk(w, k);
+    const Chunk* c = w.grid().chunk(unkey3(k));
+    if (c && !c->layer[size_t(water_)].empty()) loads_dirty(w, k);
+  }
 }
 
 void WaterSystem::on_evicted(World& w, const std::vector<u64>& chunks) {
@@ -128,7 +211,7 @@ void WaterSystem::wake_chunk(const World& w, u64 k) {
   const IVec3 cc = unkey3(k);
   const std::vector<u8>& a = c->layer[size_t(water_)];
   for (i32 i = 0; i < kChunkVox; ++i)
-    if (a[size_t(i)]) {
+    if (a[size_t(i)] && !(a[size_t(i)] == 255 && held(w, water_, *c, cc, i))) {
       const IVec3 l{i / (kChunk * kChunk), (i / kChunk) % kChunk, i % kChunk};
       wake_.push_back(key3(cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]));
     }
@@ -144,17 +227,20 @@ void WaterSystem::on_voxels_changed(World& w, const std::vector<u64>& chunks) {
   }
   std::sort(near.begin(), near.end());
   near.erase(std::unique(near.begin(), near.end()), near.end());
-  for (u64 k : near) wake_chunk(w, k);
-  load_dirty_.insert(load_dirty_.end(), near.begin(), near.end());
+  if (!ok()) return;
+  for (u64 k : near) {
+    wake_chunk(w, k);
+    loads_dirty(w, k);
+  }
 }
 
 u8 WaterSystem::amount(const World& w, const IVec3& p) const { return water_ < 0 ? 0 : w.layer(water_, p); }
 
 void WaterSystem::pour(World& w, const V3& pos, f64 radius) {
   const f64 h = w.voxel_size();
-  if (water_ < 0 || !(radius > 0.0) || !std::isfinite(pos.x + pos.y + pos.z)) return;
-  radius = std::min(radius, 4.0);
-  const i32 R = static_cast<i32>(std::ceil(radius / h));
+  if (!cfg_.enabled || !ok() || !w.in_range(pos) || !(radius > 0.0) || !std::isfinite(radius)) return;
+  const i32 R = std::min(kMaxReach, static_cast<i32>(std::ceil(std::min(radius, 1e6) / h)));
+  radius = std::min(radius, h * R);
   const IVec3 c = voxel_at(pos, h);
   std::vector<LayerEdit> edits;
   for (i32 x = c[0] - R; x <= c[0] + R; ++x)
@@ -166,13 +252,17 @@ void WaterSystem::pour(World& w, const V3& pos, f64 radius) {
         wake_.push_back(key3(x, y, z));
       }
   w.set_layer(water_, edits);
+  // (water poured into a closed cavity may never move: its loads now)
+  u64 last = ~0ull;
+  for (const LayerEdit& e : edits)
+    if (ckey(e.p) != last) loads_dirty(w, last = ckey(e.p));
 }
 
 void WaterSystem::drain(World& w, const V3& pos, f64 radius) {
   const f64 h = w.voxel_size();
-  if (water_ < 0 || !(radius > 0.0) || !std::isfinite(pos.x + pos.y + pos.z)) return;
-  radius = std::min(radius, 8.0);
-  const i32 R = static_cast<i32>(std::ceil(radius / h));
+  if (!ok() || !w.in_range(pos) || !(radius > 0.0) || !std::isfinite(radius)) return;
+  const i32 R = std::min(kMaxReach, static_cast<i32>(std::ceil(std::min(radius, 1e6) / h)));
+  radius = std::min(radius, h * R);
   const IVec3 c = voxel_at(pos, h);
   std::vector<LayerEdit> edits;
   for (i32 x = c[0] - R; x <= c[0] + R; ++x)
@@ -184,26 +274,41 @@ void WaterSystem::drain(World& w, const V3& pos, f64 radius) {
           if (w.layer(water_, {x + f[0], y + f[1], z + f[2]})) wake_.push_back(key3(x + f[0], y + f[1], z + f[2]));
       }
   w.set_layer(water_, edits);
-  for (const LayerEdit& e : edits) load_dirty_.push_back(ckey(e.p));
+  u64 last = ~0ull;
+  for (const LayerEdit& e : edits)
+    if (ckey(e.p) != last) loads_dirty(w, last = ckey(e.p));
 }
 
 void WaterSystem::step(World& w, f64 dt) {
-  if (water_ < 0) return;
   const auto t0 = std::chrono::steady_clock::now();
-  clock_ += dt;
-  const f64 s = std::max(cfg_.step_s, w.config().dt);
-  while (clock_ >= s - 1e-9) {
-    clock_ -= s;
-    flow_step(w);
-  }
-  load_clock_ += dt;
-  if (cfg_.loads && load_clock_ >= cfg_.load_s && (loads_all_ || loads_changed_ || !load_dirty_.empty())) {
-    load_clock_ = 0.0;
-    update_loads(w);
-  }
   splashes_.clear();
-  if (cfg_.buoyancy) float_pieces(w);
+  if (ok()) {
+    if (cfg_.enabled) {
+      const f64 s = std::max(cfg_.step_s, w.config().dt);
+      clock_ = std::min(clock_ + dt, 4.0 * s);  // (a long pause does not come back as a burst)
+      while (clock_ >= s - 1e-9) {
+        clock_ -= s;
+        flow_step(w);
+      }
+    }
+    // loads: taken back when switched off or moved to another group
+    if (loads_set_ && (!cfg_.loads || loads_group_ != cfg_.load_group)) {
+      w.set_loads(loads_group_, {});
+      loads_set_ = false;
+      loads_.clear();
+      load_dirty_.clear();
+      loads_all_ = true;
+      st_.loads = 0;
+    }
+    load_clock_ = std::min(load_clock_ + dt, cfg_.load_s);
+    if (cfg_.loads && load_clock_ >= cfg_.load_s && (loads_all_ || loads_changed_ || !load_dirty_.empty())) {
+      load_clock_ = 0.0;
+      update_loads(w);
+    }
+    if (cfg_.buoyancy) float_pieces(w);
+  }
   st_.step_ms = std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  st_.total_ms += st_.step_ms;
 }
 
 void WaterSystem::flow_step(World& w) {
@@ -349,7 +454,7 @@ void WaterSystem::flow_step(World& w) {
   // the step's water, into the layer (chunk by chunk, in key order)
   std::vector<u64> ks;
   for (const auto& [k, b] : f.bufs)
-    if (b.touched) ks.push_back(k);
+    if (!b.w.empty()) ks.push_back(k);
   std::sort(ks.begin(), ks.end());
   std::vector<LayerEdit> edits;
   for (u64 k : ks) {
@@ -357,9 +462,9 @@ void WaterSystem::flow_step(World& w) {
     const IVec3 cc = unkey3(k);
     const size_t before = edits.size();
     for (i32 i = 0; i < kChunkVox; ++i)
-      if (b.w[size_t(i)] != b.before[size_t(i)])
+      if (b.w[size_t(i)] != (b.src ? b.src[size_t(i)] : 0))
         edits.push_back({{cc[0] * kChunk + i / (kChunk * kChunk), cc[1] * kChunk + (i / kChunk) % kChunk, cc[2] * kChunk + i % kChunk}, b.w[size_t(i)]});
-    if (cfg_.loads && edits.size() > before) load_dirty_.push_back(k);
+    if (edits.size() > before) loads_dirty(w, k);
   }
   st_.moved = w.set_layer(water_, edits);
   st_.active = static_cast<i32>(next.size());
@@ -381,6 +486,15 @@ void WaterSystem::chunk_loads(const World& w, const IVec3& cc, std::vector<Voxel
   for (i32 i = 0; i < kChunkVox; ++i) {
     if (!a[size_t(i)]) continue;
     const IVec3 p{cc[0] * kChunk + i / (kChunk * kChunk), cc[1] * kChunk + (i / kChunk) % kChunk, cc[2] * kChunk + i % kChunk};
+    // (free solids beside or below it: those it presses on)
+    bool any = false;
+    bool free_at[5];
+    for (int s = 0; s < 5; ++s) {
+      const int* d = s < 4 ? kFace[s] : kFace[5];
+      free_at[s] = vox_free(w.grid().get({p[0] + d[0], p[1] + d[1], p[2] + d[2]}));
+      any = any || free_at[s];
+    }
+    if (!any) continue;
     // (the water above it: its depth)
     f64 above = 0.0;
     for (i32 z = p[2] + 1, k = 0; k < 256; ++z, ++k) {
@@ -392,7 +506,7 @@ void WaterSystem::chunk_loads(const World& w, const IVec3& cc, std::vector<Voxel
     for (int s = 0; s < 5; ++s) {
       const int* d = s < 4 ? kFace[s] : kFace[5];
       const IVec3 q{p[0] + d[0], p[1] + d[1], p[2] + d[2]};
-      if (!vox_free(w.grid().get(q))) continue;
+      if (!free_at[s]) continue;
       // sideways: the mean pressure over the wet part of the face; below: the column's weight
       const f64 depth = s < 4 ? h * (above + 0.5 * fill) : h * (above + fill);
       const f64 area = s < 4 ? h * h * fill : h * h;
@@ -403,6 +517,7 @@ void WaterSystem::chunk_loads(const World& w, const IVec3& cc, std::vector<Voxel
 }
 
 void WaterSystem::update_loads(World& w) {
+  if (!ok()) return;
   std::vector<u64> dirty;
   if (loads_all_) {
     loads_.clear();
@@ -451,46 +566,72 @@ void WaterSystem::update_loads(World& w) {
   }
   st_.loads = static_cast<i32>(all.size());
   w.set_loads(cfg_.load_group, std::move(all));
+  loads_group_ = cfg_.load_group;
+  loads_set_ = true;
 }
 
 void WaterSystem::float_pieces(World& w) {
-  // Buoyancy and drag on the pieces in the water: their voxels (a sample) that are in water
-  // voxels are pushed up by the water they displace and slowed.
-  const f64 h = w.voxel_size(), vol = h * h * h, rho = cfg_.density;
+  // Buoyancy and drag on the pieces in the water: their voxels (an even sample, the same while
+  // the piece keeps its shape) that are in water voxels are pushed up by the water they
+  // displace and slowed.
+  const f64 h = w.voxel_size(), vol = h * h * h, rho = cfg_.density, dt = w.config().dt;
   st_.floating = 0;
   std::unordered_map<i64, u8> wet;
+  std::unordered_map<i64, Samples> kept;
   for (const PieceState& ps : w.pieces()) {
     const Body* b = w.piece(ps.id);
     if (!b || b->shape.count <= 0) continue;
-    // (no water near: nothing to do)
-    const IVec3 lo = chunk_of(voxel_at(b->box_lo, h)), hi = chunk_of(voxel_at(b->box_hi, h));
-    if ((hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1) > 27) continue;
-    bool water_near = false;
+    // (no water near: nothing to do; a vast piece is looked at voxel by voxel)
+    const V3 r{b->radius, b->radius, b->radius};
+    if (!w.in_range(b->x - r) || !w.in_range(b->x + r)) continue;
+    const IVec3 lo = chunk_of(voxel_at(b->x - r, h)), hi = chunk_of(voxel_at(b->x + r, h));
+    bool water_near = i64(hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1) > 512;
     for (i32 x = lo[0]; x <= hi[0] && !water_near; ++x)
       for (i32 y = lo[1]; y <= hi[1] && !water_near; ++y)
         for (i32 z = lo[2]; z <= hi[2] && !water_near; ++z) {
           const Chunk* c = w.grid().chunk({x, y, z});
           water_near = c && !c->layer[size_t(water_)].empty();
         }
-    if (!water_near) continue;
+    if (!water_near) {
+      // (the water it floated in is gone: it falls)
+      if (ps.asleep && wet_.count(ps.id)) w.wake_piece(ps.id);
+      continue;
+    }
     const BodyShape& S = b->shape;
-    const i32 stride = std::max<i32>(1, (S.count + cfg_.samples - 1) / std::max(1, cfg_.samples));
-    f64 lift = 0.0;
-    i32 seen = 0, in = 0;
+    // its sample: cells picked by a hash of their index (no stripes of a shape's layout)
+    Samples& smp = kept[ps.id];
+    if (const auto it = samples_.find(ps.id); it != samples_.end() && it->second.count == S.count) smp = std::move(it->second);
+    if (smp.count != S.count) {
+      smp.count = S.count;
+      smp.cells.clear();
+      const u64 stride = static_cast<u64>(std::max<i32>(1, (S.count + cfg_.samples - 1) / cfg_.samples));
+      for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
+        if (!vox_solid(S.vox[size_t(i)])) continue;
+        u64 x = static_cast<u64>(i) * 0x9E3779B97F4A7C15ull;
+        x ^= x >> 29;
+        if (x % stride == 0) smp.cells.push_back(i);
+      }
+      if (smp.cells.empty())
+        for (i32 i = 0; i < static_cast<i32>(S.vox.size()) && smp.cells.empty(); ++i)
+          if (vox_solid(S.vox[size_t(i)])) smp.cells.push_back(i);
+    }
+    const f64 each = vol * static_cast<f64>(S.count) / static_cast<f64>(smp.cells.size());  // (the volume a sample stands for)
+    f64 lift = 0.0, msub = 0.0;
     std::vector<std::pair<V3, f64>> pts;
-    for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
-      if (!vox_solid(S.vox[size_t(i)])) continue;
-      if (seen++ % stride) continue;
+    for (i32 i : smp.cells) {
       const IVec3 sp = S.voxel(i);
       const V3 X = b->to_world(V3{h * sp[0], h * sp[1], h * sp[2]});
       const u8 a = w.layer(water_, voxel_at(X, h));
       if (!a) continue;
-      ++in;
-      const f64 m = rho * vol * stride * (a / 255.0);  // (the water it displaces)
+      const f64 m = rho * each * (a / 255.0);  // (the water it displaces)
       lift += m * kG;
+      msub += m;
       pts.push_back({X, m});
     }
-    if (!in) continue;
+    if (pts.empty()) {
+      if (ps.asleep && wet_.count(ps.id)) w.wake_piece(ps.id);  // (it floated here: it falls)
+      continue;
+    }
     wet[ps.id] = 1;
     ++st_.floating;
     // it would float: a sleeping piece wakes
@@ -498,27 +639,36 @@ void WaterSystem::float_pieces(World& w) {
       if (lift > 1.02 * ps.mass * kG) w.wake_piece(ps.id);
       else continue;
     }
+    // (drag: at most what stops it in a few ticks, never an overshoot)
+    const f64 k = std::min(cfg_.drag, 0.5 / (dt * std::max(1e-9, msub / std::max(1e-9, ps.mass))));
     for (const auto& [X, m] : pts) {
       const V3 v = b->v + cross(b->w, X - b->x);
-      w.apply_force(ps.id, X, V3{0.0, 0.0, m * kG} - v * (cfg_.drag * m));
+      w.apply_force(ps.id, X, V3{0.0, 0.0, m * kG} - v * (k * m));
     }
     // a hard landing in the water: a splash
     if (!wet_.count(ps.id) && ps.vel.z < -2.0) splashes_.push_back({ps.pos, static_cast<f32>(ps.mass * -ps.vel.z)});
   }
   wet_.swap(wet);
+  samples_.swap(kept);
 }
 
 i64 WaterSystem::memory_bytes() const {
   i64 b = static_cast<i64>((active_.capacity() + wake_.capacity()) * sizeof(u64) + load_dirty_.capacity() * sizeof(u64) +
                            splashes_.capacity() * sizeof(Splash) + wet_.size() * 32 + sizeof(*this));
+  for (const auto& [id, smp] : samples_) b += static_cast<i64>(smp.cells.capacity() * sizeof(i32) + 64);
   for (const auto& [k, l] : loads_) b += static_cast<i64>(l.capacity() * sizeof(VoxelLoad) + 64);
   return b;
 }
 
 u64 WaterSystem::state_hash() const {
   u64 hsh = 1469598103934665603ull;
-  for (u64 k : active_) hsh = (hsh ^ k) * 1099511628211ull;
-  return hsh ^ static_cast<u64>(st_.steps);
+  auto add = [&](u64 v) { hsh = (hsh ^ v) * 1099511628211ull; };
+  for (u64 k : active_) add(k);
+  add(static_cast<u64>(st_.steps));
+  u64 cb;
+  std::memcpy(&cb, &clock_, sizeof cb);
+  add(cb);
+  return hsh;
 }
 
 }  // namespace svx

@@ -12,6 +12,7 @@
 #include "svx/game/city.hpp"
 #include "svx/game/game.hpp"
 #include "svx/game/procgen.hpp"
+#include "svx/world/tunables.hpp"
 
 using namespace svx;
 
@@ -190,6 +191,43 @@ void svx_ignite(svx_engine* e, double x, double y, double z, double radius) { e-
 
 void svx_pour(svx_engine* e, double x, double y, double z, double radius) { e->eng.pour(V3{x, y, z}, radius); }
 
+void svx_heat(svx_engine* e, double x, double y, double z, double radius, double celsius) { e->eng.heat(V3{x, y, z}, radius, celsius); }
+
+void svx_drain(svx_engine* e, double x, double y, double z, double radius) { e->eng.drain(V3{x, y, z}, radius); }
+
+int svx_set_env(svx_engine* e, const char* name, double value) { return e->eng.set_env(name, value) ? 0 : -1; }
+
+double svx_get_env(svx_engine* e, const char* name) { return e->eng.env().get(name); }
+
+int svx_env_param_count(void) { return env_param_count(); }
+
+const char* svx_env_param_name(int i) {
+  const EnvParamInfo* p = env_param(i);
+  return p ? p->name : "";
+}
+
+void svx_env_param_range(int i, double* out2) {
+  const EnvParamInfo* p = env_param(i);
+  out2[0] = p ? p->min : 0.0;
+  out2[1] = p ? p->max : 0.0;
+}
+
+int svx_set_tunable(svx_engine* e, const char* name, double value) { return e->eng.set_tunable(name, value) ? 0 : -1; }
+
+double svx_get_tunable(svx_engine* e, const char* name) { return get_tunable(e->eng.world(), name); }
+
+int svx_tunable_count(void) { return tunable_count(); }
+
+const char* svx_tunable_name(int i) {
+  const TunableInfo* t = tunable(i);
+  return t ? t->name : "";
+}
+
+int svx_tunable_setup(int i) {
+  const TunableInfo* t = tunable(i);
+  return t && t->setup ? 1 : 0;
+}
+
 int svx_poll_water(svx_engine* e) {
   e->water = e->eng.take_water_meshes();
   return static_cast<int>(e->water.size());
@@ -286,7 +324,7 @@ int svx_poll_meshes(svx_engine* e) {
 
 void svx_mesh_info(svx_engine* e, int i, double* out) {
   if (!in_range(e->meshes, i)) {
-    std::fill(out, out + 8, 0.0);
+    std::fill(out, out + 9, 0.0);
     return;
   }
   const ChunkMesh& m = e->meshes[i];
@@ -296,6 +334,7 @@ void svx_mesh_info(svx_engine* e, int i, double* out) {
   }
   out[6] = static_cast<double>(m.vertices.size());
   out[7] = static_cast<double>(m.indices.size());
+  out[8] = e->eng.decoration_only(key3(m.chunk[0], m.chunk[1], m.chunk[2])) ? 1.0 : 0.0;
 }
 
 const void* svx_mesh_vertices(svx_engine* e, int i) { return in_range(e->meshes, i) ? e->meshes[i].vertices.data() : nullptr; }
@@ -376,7 +415,7 @@ int svx_poll_events(svx_engine* e) {
 
 // Worker protocol (web/src/worker/wasm-worker.ts): kind 0 detached (a rigid piece and its mesh),
 // 1 crack (voxels > 0: dust or a shard; strength: utilization, dust 2, a shard 1.5), 2 impact,
-// 4 splash (strength: kg m/s).
+// 4 splash (strength: kg m/s), 5 remesh (a piece's new mesh: as detached, no effects).
 void svx_event_info(svx_engine* e, int i, double* out) {
   std::fill(out, out + 21, 0.0);
   if (!in_range(e->events, i)) return;
@@ -389,6 +428,7 @@ void svx_event_info(svx_engine* e, int i, double* out) {
     case GameEvent::Kind::Impact: kind = 2; break;
     case GameEvent::Kind::Dust: kind = 1; strength = v.strength > 0.5 ? 2.0 : 1.5; break;
     case GameEvent::Kind::Splash: kind = 4; break;
+    case GameEvent::Kind::Remesh: kind = 5; break;
   }
   out[0] = kind;
   out[1] = static_cast<double>(v.id);
@@ -404,7 +444,7 @@ void svx_event_info(svx_engine* e, int i, double* out) {
   out[17] = 0;
   out[18] = static_cast<double>(v.mesh.vertices.size());
   out[19] = static_cast<double>(v.mesh.indices.size());
-  out[20] = v.kind == GameEvent::Kind::Detached ? 1.0 : 0.0;
+  out[20] = v.kind == GameEvent::Kind::Detached || v.kind == GameEvent::Kind::Remesh ? 1.0 : 0.0;
 }
 
 const void* svx_event_vertices(svx_engine* e, int i) { return in_range(e->events, i) ? e->events[i].mesh.vertices.data() : nullptr; }
@@ -458,6 +498,8 @@ void svx_set_debris(svx_engine* e, int enabled) {
   (void)e;
   (void)enabled;
 }
+
+int svx_stats_count(void) { return 51; }
 
 void svx_stats(svx_engine* e, double* out) {
   const GameStats gs = e->eng.stats();

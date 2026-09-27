@@ -2,6 +2,8 @@
 #include <cmath>
 #include <vector>
 
+#include <unordered_set>
+
 #include "doctest.h"
 #include "svx/base/parallel.hpp"
 #include "svx/game/game.hpp"
@@ -218,4 +220,52 @@ TEST_CASE("game: a streamed world keeps to its byte budget, farthest chunks firs
   CHECK(ev1 > 0);
   CHECK(mb1 <= budget * 1.05);
   CHECK(near1);
+}
+
+TEST_CASE("game: a level loaded again keeps its meshes (chunks and water): no removal of what was just sent") {
+  Game g;
+  auto load = [&] {
+    ProcWorld w = make_procedural("yard", 1);
+    g.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+    g.bake();
+  };
+  load();
+  for (int t = 0; t < 60; ++t) {
+    g.tick();
+    g.take_meshes({});
+    g.take_removed_chunks();
+    g.take_water_meshes();
+    g.take_water_removed();
+  }
+  load();
+  std::unordered_set<u64> sent, water_sent;
+  for (int t = 0; t < 12; ++t) {
+    g.tick();
+    for (const ChunkMesh& m : g.take_meshes({})) sent.insert(key3(m.chunk[0], m.chunk[1], m.chunk[2]));
+    for (u64 k : g.take_removed_chunks()) CHECK_FALSE(sent.count(k));
+    for (const ChunkMesh& m : g.take_water_meshes()) water_sent.insert(key3(m.chunk[0], m.chunk[1], m.chunk[2]));
+    for (u64 k : g.take_water_removed()) CHECK_FALSE(water_sent.count(k));
+  }
+  CHECK(sent.size() > 50);
+  CHECK(water_sent.size() > 3);  // (the reservoir, the water tower)
+}
+
+TEST_CASE("game: burning pieces are meshed again (charring, glow); charring chunks for their decoration only") {
+  Game g;
+  ProcWorld w = make_procedural("yard", 1);
+  g.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+  g.bake();
+  g.set_env("fire.wood.burn_s", 12.0);
+  const f64 h = g.world().voxel_size();
+  // the water tower's legs burn: it falls, burning
+  for (int x : {250, 263})
+    for (int y : {92, 105}) g.ignite({h * (x + 1), h * (y + 1), h * 2}, 0.35);
+  int remesh = 0, decor = 0;
+  for (int t = 0; t < 60 * 60 && remesh == 0; ++t) {
+    g.tick();
+    for (const ChunkMesh& m : g.take_meshes({})) decor += g.decoration_only(key3(m.chunk[0], m.chunk[1], m.chunk[2])) ? 1 : 0;
+    for (const GameEvent& e : g.take_events()) remesh += e.kind == GameEvent::Kind::Remesh ? 1 : 0;
+  }
+  CHECK(decor > 0);
+  CHECK(remesh > 0);
 }

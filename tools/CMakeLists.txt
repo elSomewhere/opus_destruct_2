@@ -38,7 +38,8 @@ if(SVX_WASM)
     _svx_debris _svx_debris_data _svx_set_debris _svx_set_gpu_displacement _svx_poll_fields
     _svx_field_info _svx_field_data _svx_poll_far _svx_far_info _svx_far_vertices _svx_far_indices
     _svx_poll_far_removed _svx_far_removed _svx_state_hash _svx_ignite _svx_extinguish _svx_poll_env _svx_env_flames _svx_env_smoke_count _svx_env_smoke
-    _svx_pour _svx_poll_water _svx_water_info _svx_water_vertices _svx_water_indices _svx_poll_water_removed _svx_water_removed
+    _svx_pour _svx_drain _svx_heat _svx_set_env _svx_get_env _svx_env_param_count _svx_env_param_name _svx_env_param_range
+    _svx_set_tunable _svx_get_tunable _svx_tunable_count _svx_tunable_name _svx_tunable_setup _svx_stats_count _svx_poll_water _svx_water_info _svx_water_vertices _svx_water_indices _svx_poll_water_removed _svx_water_removed
     _malloc _free)
   string(REPLACE ";" "," _svx_exports_csv "${_svx_exports}")
   target_link_options(svx_web PRIVATE
@@ -56,6 +57,10 @@ endif()
 add_executable(svx_soak soak/main.cpp)
 target_link_libraries(svx_soak PRIVATE svx_game)
 svx_wasm_exe_options(svx_soak)
+
+add_executable(svx_env_bench env_bench/main.cpp)
+target_link_libraries(svx_env_bench PRIVATE svx_game)
+svx_wasm_exe_options(svx_env_bench)
 endif()  # SVX_BUILD_GAME
 
 # The physics core alone for JavaScript hosts (docs/CORE.md): the C API of svx/svx_core.h.
@@ -63,7 +68,7 @@ if(SVX_WASM)
   add_executable(svx_core_web wasm_core/module.cpp)
   target_link_libraries(svx_core_web PRIVATE svx_core)
   set(_svxc_exports
-    _svxc_apply_impulse _svxc_bake _svxc_blast _svxc_carve _svxc_chunk_voxels _svxc_collide _svxc_create _svxc_destroy _svxc_enable_streaming _svxc_event_at _svxc_get _svxc_get_stats _svxc_load_box _svxc_load_delta _svxc_material_find _svxc_material_get _svxc_material_set _svxc_materials_reset _svxc_modified _svxc_piece_at _svxc_piece_voxels _svxc_poll_changed_chunks _svxc_poll_events _svxc_poll_evicted_chunks _svxc_poll_pieces _svxc_raycast _svxc_remove_piece _svxc_save_delta _svxc_session_hash _svxc_set _svxc_set_focus _svxc_set_threads _svxc_set_voxels _svxc_state_hash _svxc_tick _svxc_add_layer _svxc_layer_index _svxc_set_layer _svxc_layer _svxc_set_piece_layer _svxc_piece_layer _svxc_remove_piece_voxels _svxc_set_loads _svxc_apply_force _svxc_wake_piece _svxc_add_system
+    _svxc_apply_impulse _svxc_bake _svxc_blast _svxc_carve _svxc_chunk_voxels _svxc_collide _svxc_create _svxc_destroy _svxc_enable_streaming _svxc_event_at _svxc_get _svxc_get_stats _svxc_load_box _svxc_load_delta _svxc_material_find _svxc_material_get _svxc_material_set _svxc_materials_reset _svxc_modified _svxc_piece_at _svxc_piece_voxels _svxc_poll_changed_chunks _svxc_poll_events _svxc_poll_evicted_chunks _svxc_poll_pieces _svxc_raycast _svxc_remove_piece _svxc_save_delta _svxc_session_hash _svxc_set _svxc_set_focus _svxc_set_threads _svxc_set_voxels _svxc_state_hash _svxc_tick _svxc_add_layer _svxc_layer_index _svxc_set_layer _svxc_layer _svxc_set_piece_layer _svxc_piece_layer _svxc_remove_piece_voxels _svxc_set_loads _svxc_apply_force _svxc_wake_piece _svxc_add_system _svxc_add_system_ex _svxc_chunk_layer _svxc_poll_layer_changes
     _malloc _free)
   string(REPLACE ";" "," _svxc_exports_csv "${_svxc_exports}")
   target_link_options(svx_core_web PRIVATE

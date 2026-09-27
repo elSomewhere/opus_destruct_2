@@ -1,5 +1,8 @@
 // Fire (svx_env): burning, heat, and what they do to structures, on the core's extension points.
+#include <algorithm>
+#include <cmath>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "doctest.h"
@@ -110,16 +113,36 @@ TEST_CASE("fire: flames climb a wall, hardly descend, and burn out") {
 }
 
 TEST_CASE("fire: steel weakens with heat, for good") {
-  Fire f(cantilever(kSteel));
-  f.fire->heat(f.w, at({2, 1, 25}), 0.3, 1000.0);
-  f.run(0.2);
-  const u8 d = f.w.layer(World::kDamageLayer, {2, 1, 25});
-  CHECK(d > 150);
-  CHECK(f.w.layer(f.fire->heat_layer(), {2, 1, 25}) > 0);
-  f.run(60.0);  // (cold again)
-  CHECK(f.w.layer(f.fire->heat_layer(), {2, 1, 25}) < 30);
-  CHECK(f.w.layer(World::kDamageLayer, {2, 1, 25}) >= d);
-  CHECK(f.fire->stats().burning == 0);  // (steel does not burn)
+  // a voxel's layer values, wherever it is now: in the world, or on the piece it left with
+  auto at_voxel = [](const World& w, int L, const IVec3& p) -> u8 {
+    if (const u8 v = w.layer(L, p)) return v;
+    u8 best = 0;
+    for (const PieceState& ps : w.pieces()) best = std::max(best, w.piece_layer(ps.id, L, p));
+    return best;
+  };
+  {
+    // a warm spot (500 degC): weaker, still standing
+    Fire f(cantilever(kSteel));
+    f.fire->heat(f.w, at({2, 1, 25}), 0.3, 500.0);
+    f.run(0.2);
+    const u8 d = f.w.layer(World::kDamageLayer, {2, 1, 25});
+    CHECK(d > 20);
+    CHECK(d < 100);
+    f.run(60.0);  // (cold again)
+    CHECK(f.w.layer(f.fire->heat_layer(), {2, 1, 25}) < 30);
+    CHECK(f.w.layer(World::kDamageLayer, {2, 1, 25}) >= d);  // (for good)
+    CHECK(f.w.pieces().empty());
+  }
+  {
+    // red hot (1000 degC) at the root: nothing left of the section, the beam comes down
+    Fire f(cantilever(kSteel));
+    f.fire->heat(f.w, at({1, 1, 25}), 0.4, 1000.0);
+    f.run(0.2);
+    CHECK(at_voxel(f.w, World::kDamageLayer, {1, 1, 25}) > 200);
+    f.run(3.0);
+    CHECK_FALSE(f.w.pieces().empty());
+    CHECK(f.fire->stats().burning == 0);  // (steel does not burn)
+  }
 }
 
 TEST_CASE("fire: water quenches, an extinguisher puts it out") {
@@ -251,4 +274,105 @@ TEST_CASE("fire: streamed: evicted chunks take their heat with them, the burns s
   CHECK(again > 0);  // (the burns came back with the chunk; the fire did not)
   CHECK(w.layer(fire->heat_layer(), {4, 10, 5}) == 0);
   CHECK(w.memory().systems > 0);
+}
+
+// ---- hardening (audit regressions)
+
+TEST_CASE("fire: the budget keeps the fire, not the cold edge; commands stay within it") {
+  FireConfig c;
+  c.max_hot = 150;
+  Fire f(plank_wall(), c);
+  f.fire->ignite(f.w, at({12, 4, 12}), 3.0);  // (a sphere of hundreds of voxels)
+  CHECK(f.fire->stats().hot == 0);  // (counted at the next step)
+  f.run(0.2);
+  CHECK(f.fire->stats().hot <= 150);
+  CHECK(f.fire->stats().dropped > 0);
+  f.run(10.0);
+  CHECK(f.fire->stats().burning > 20);  // (burning voxels are not let go for cooler ones)
+  CHECK(f.fire->stats().hot <= 150);
+}
+
+TEST_CASE("fire: bad settings are brought into range; a world without room for its layers has no fire") {
+  FireConfig c;
+  c.max_hot = -5;
+  c.step_s = std::nan("");
+  c.quench_c = 1e9;
+  c.damage_quantum = 0;
+  FireSystem fs(c);
+  CHECK(fs.config().max_hot == 0);
+  CHECK(fs.config().step_s == doctest::Approx(0.1));
+  CHECK(fs.config().quench_c <= 1020.0);
+  CHECK(fs.config().damage_quantum == 1);
+  FireMaterial m;
+  m.char_damage = -3.0;
+  m.flame_c = -100.0;
+  fs.set_material(MaterialId::Wood, m);
+  CHECK(fs.fire_material(MaterialId::Wood).char_damage == 0.0);
+  CHECK(fs.fire_material(MaterialId::Wood).flame_c == 0.0);
+  // (all eight layers taken: attached, but inert - no crash)
+  World w;
+  for (int k = 0; k < 7; ++k) w.add_layer({"l" + std::to_string(k), true});
+  auto fire = std::make_shared<FireSystem>();
+  w.add_system(fire);
+  CHECK_FALSE(fire->ok());
+  w.load(plank_wall());
+  fire->ignite(w, at({12, 4, 8}), 0.5);
+  for (int t = 0; t < 30; ++t) w.tick();
+  CHECK(fire->stats().burning == 0);
+  // positions out of range do nothing
+  Fire g(plank_wall());
+  g.fire->ignite(g.w, {1e12, -1e12, 5.0}, 1.0);
+  g.fire->heat(g.w, {std::nan(""), 0.0, 0.0}, 1.0, 500.0);
+  g.fire->extinguish(g.w, {0.0, 0.0, 1e300}, 1.0);
+  g.run(0.5);
+  CHECK(g.fire->stats().hot == 0);
+}
+
+TEST_CASE("fire: the same session from a load, whatever came before it") {
+  auto session = [](FireSystem& fire, World& w) {
+    w.load(plank_wall());
+    fire.ignite(w, at({12, 4, 8}), 0.3);
+    for (int t = 0; t < 300; ++t) w.tick();
+    return w.session_hash();
+  };
+  World a, b;
+  auto fa = std::make_shared<FireSystem>(), fb = std::make_shared<FireSystem>();
+  a.add_system(fa);
+  b.add_system(fb);
+  // b burns something else first
+  b.load(cantilever(kWood));
+  fb->ignite(b, at({1, 1, 23}), 0.3);
+  for (int t = 0; t < 200; ++t) b.tick();
+  CHECK(session(*fa, a) == session(*fb, b));
+}
+
+TEST_CASE("fire: heat a level comes with is tracked; glow and pieces' changes are reported") {
+  VoxelGrid g = cantilever(kSteel);
+  const int heat = g.add_layer({"heat", false, LayerBind::Solid});
+  for (i32 x = 4; x < 8; ++x) g.set_layer(heat, {x, 1, 25}, 200);  // (800 degC)
+  Fire f(std::move(g));
+  f.run(0.2);
+  CHECK(f.fire->stats().hot >= 4);  // (stepped: it cools)
+  f.fire->take_glow_changes();
+  f.run(20.0);
+  CHECK_FALSE(f.fire->take_glow_changes().empty());  // (it stopped glowing)
+  CHECK(f.w.layer(f.fire->heat_layer(), {5, 1, 25}) < 100);
+}
+
+TEST_CASE("fire: an extinguisher cools the sphere of a long piece, not all of it") {
+  Fire f(cantilever(kWood));
+  std::vector<VoxelEdit> cut;
+  for (i32 y = 0; y < 3; ++y)
+    for (i32 z = 24; z < 27; ++z) cut.push_back({{0, y, z}, kAir});
+  f.w.set_voxels(cut);
+  f.run(4.0);
+  REQUIRE(f.w.pieces().size() == 1);
+  const i64 id = f.w.pieces()[0].id;
+  f.fire->heat(f.w, f.w.pieces()[0].pos, 3.0, 400.0);  // (the whole beam)
+  const Body* b = f.w.piece(id);
+  const V3 tip = b->to_world(V3{kH * 15, kH * 1, kH * 25});
+  f.fire->extinguish(f.w, tip, 0.3);
+  // (the tip is cool, the other end still hot)
+  CHECK(f.w.piece_layer(id, f.fire->heat_layer(), {15, 1, 25}) <= 15);
+  CHECK(f.w.piece_layer(id, f.fire->heat_layer(), {2, 1, 25}) >= 90);
 }

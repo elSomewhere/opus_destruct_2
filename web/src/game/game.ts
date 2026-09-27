@@ -71,6 +71,10 @@ export class Game {
         this.params = p;
         this.engine.setParams(p);
       },
+      onSetting: (kind, name, value) => {
+        if (kind === 'env') this.engine.setEnv(name, value);
+        else this.engine.setTunable(name, value);
+      },
       onLoadProcedural: (kind, seed) => this.loadProcedural(kind, seed),
       onLoadWad: (file, map, options) => {
         this.beginLoad(`Reading ${file.name}`);
@@ -160,8 +164,8 @@ export class Game {
     e.on('occupancy', (msg) => this.occupancy.apply(msg));
     e.on('debris', (msg) => this.renderer.islands.applyDebris(msg.poses, performance.now() / 1000));
     e.on('water', (msg) => {
-      for (const m of msg.meshes) this.renderer.water.upsert(m);
       for (const k of msg.removed) this.renderer.water.remove(k);
+      for (const m of msg.meshes) this.renderer.water.upsert(m);
     });
     e.on('env', (msg) => {
       this.effects.setFlames(msg.flames);
@@ -198,7 +202,7 @@ export class Game {
       switch (ev.kind) {
         case 'detached':
           this.renderer.islands.add(ev, now);
-          this.effects.detached(ev);
+          if (!ev.remesh) this.effects.detached(ev);
           break;
         case 'crack':
           this.effects.crack(ev);
@@ -252,7 +256,7 @@ export class Game {
     if (this.frameCount % 2 === 0) this.engine.viewer(eye, forward);
     this.effects.update(dt);
     this.effects.fire(dt, eye, t / 1000);
-    this.effects.smokeField(t / 1000, this.voxelSize);
+    this.effects.smokeField(t / 1000, this.voxelSize, eye);
     this.renderer.particles.update(dt);
 
     // Camera shake perturbs only the rendered view, not aiming.

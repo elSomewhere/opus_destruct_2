@@ -7,7 +7,8 @@ namespace svx {
 namespace {
 
 constexpr u32 kMagic = 0x4C585653;  // "SVXL"
-constexpr u32 kVersion = 1;
+constexpr u32 kVersion = 2;
+constexpr u8 kMaxType = static_cast<u8>(Command::Type::Tunable);
 
 template <typename T>
 void put(std::vector<u8>& out, T v) {
@@ -45,7 +46,7 @@ bool CommandLog::parse(const std::vector<u8>& bytes, CommandLog* out) {
   u32 magic = 0, version = 0;
   u64 n = 0;
   if (!get(bytes, at, &magic) || !get(bytes, at, &version) || !get(bytes, at, &n)) return false;
-  if (magic != kMagic || version != kVersion || n > (bytes.size() - at) / 57) return false;
+  if (magic != kMagic || version < 1 || version > kVersion || n > (bytes.size() - at) / 57) return false;
   CommandLog log;
   log.cmds_.reserve(n);
   i64 last = 0;
@@ -53,7 +54,7 @@ bool CommandLog::parse(const std::vector<u8>& bytes, CommandLog* out) {
     Command c;
     u8 type = 0;
     if (!get(bytes, at, &c.tick) || !get(bytes, at, &type)) return false;
-    if (type < 1 || type > 8 || c.tick < last) return false;  // unknown type or out of order
+    if (type < 1 || type > (version == 1 ? 5 : kMaxType) || c.tick < last) return false;  // unknown type or out of order
     c.type = static_cast<Command::Type>(type);
     for (f64& v : c.a)
       if (!get(bytes, at, &v)) return false;
@@ -87,6 +88,18 @@ void apply_command(Game& e, const Command& c) {
       break;
     case Command::Type::Pour:
       e.pour({c.a[0], c.a[1], c.a[2]}, c.a[3]);
+      break;
+    case Command::Type::Heat:
+      e.heat({c.a[0], c.a[1], c.a[2]}, c.a[3], c.a[4]);
+      break;
+    case Command::Type::Drain:
+      e.drain({c.a[0], c.a[1], c.a[2]}, c.a[3]);
+      break;
+    case Command::Type::EnvParam:
+      e.set_env(static_cast<i32>(c.a[0]), c.a[1]);
+      break;
+    case Command::Type::Tunable:
+      e.set_tunable(static_cast<i32>(c.a[0]), c.a[1]);
       break;
     case Command::Type::Params: {
       GameParams p;

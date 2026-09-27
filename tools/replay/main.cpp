@@ -2,12 +2,13 @@
 // across thread counts, x86 / ARM and native / WASM; Phase 7: deterministic lockstep).
 //
 //   svx_replay record --world W --seconds S --out session.svxl [--threads T] [--seed N]
-//                     [--spawn-latency N] [--sync-steps]
+//                     [--spawn-latency N] [--sync-steps] [--env]
 //   svx_replay play   --world W --log session.svxl --seconds S [--threads T]
 //
 // W: rooms | tower | city (streamed 1 km^2) | wad:PATH:MAP. `record` plays a scripted session
 // (a moving viewer; bullet bursts every second and a rocket every 4 s, aimed by a fixed LCG
-// through ray casts into the live world) and writes the command log. Both modes print the
+// through ray casts into the live world; with --env also a fire every 5 s and a bucket of water
+// every 7 s) and writes the command log. Both modes print the
 // session hash every 10 s of simulated time and at the end: diff the outputs of any two runs.
 #include <chrono>
 #include <cstdio>
@@ -108,6 +109,7 @@ int main(int argc, char** argv) {
   f64 seconds = 60.0;
   // engine configuration is not part of the log: pass the same switches to record and play
   u64 seed = 0;  // record: varies the scripted session
+  bool env = false;  // record: fires and water too
   f64 fragility = 1.0;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
@@ -117,6 +119,7 @@ int main(int argc, char** argv) {
     else if (a == "--log" && i + 1 < argc) in = argv[++i];
     else if (a == "--threads" && i + 1 < argc) set_num_threads(std::atoi(argv[++i]));
     else if (a == "--seed" && i + 1 < argc) seed = std::strtoull(argv[++i], nullptr, 10);
+    else if (a == "--env") env = true;
     else if (a == "--fragility" && i + 1 < argc) fragility = std::atof(argv[++i]);
   }
   Game eng;
@@ -184,6 +187,14 @@ int main(int argc, char** argv) {
     if (t % 240 == 120) {
       const RayHit h = aim(travel ? -0.9 : -0.1, travel ? -0.2 : 0.6);
       if (h.hit) eng.blast(h.pos, 0.6, 1e6);
+    }
+    if (env && t % 300 == 60) {
+      const RayHit h = aim(-0.4, 0.3);
+      if (h.hit) eng.ignite(h.pos, 0.5);
+    }
+    if (env && t % 420 == 200) {
+      const RayHit h = aim(-0.6, 0.0);
+      if (h.hit) eng.pour(h.pos + h.normal * 0.4, 0.4);
     }
     eng.tick();
     (void)eng.take_events();

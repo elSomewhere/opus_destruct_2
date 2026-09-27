@@ -79,7 +79,10 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
 - **Controls:** WASD move, mouse look, Space jump, Shift run; 1 to 5 or the wheel select pistol,
   shotgun, rocket launcher, flamethrower, water hose, click fires; E uses, V toggles noclip, R respawns; G cycles debug
   views (bond utilization, fragments); H toggles the HUD and its tick timeline; Esc opens the
-  menu (fragility, impact and dynamic-factor sliders).
+  menu: fragility, impact and dynamic-factor sliders, gravity and the piece budget, and the
+  environment (fire and its spread, wood's burn time, smoke and its lifetime, wind, water flow,
+  pressure and buoyancy). Every engine and environment setting is also settable by name
+  (`setEnv` / `setTunable`, recorded in replays).
 - **Checks** (dev server running):
   - `npm run typecheck && npm test` for the front end.
   - `node scripts/smoke-wasm.mjs http://localhost:5190/`: the browser smoke test.
@@ -97,6 +100,7 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
 | `svx_replay record\|play --world W --seconds S [--out F \| --log F] [--threads T]` | Records and replays sessions from command logs; checkpoint hashes are the determinism check. |
 | `svx_map_check [--threads T] [--movers] WAD...` | Imports, bakes and design-checks every map, then runs it idle. |
 | `svx_soak [--world city\|tower\|rooms\|yard] [--wad F --map M] [--minutes M] [--archive-mb MB] [--forget-s S] [--no-shoot] [--no-env]` | Long sessions and their memory: a streamed city crossed for minutes with continuous destruction, fires and water (or a bounded level shot at), printing the world's memory by kind (the environment systems included), the change archive, forgotten regions and the process's physical footprint. |
+| `svx_env_bench [--scenario fire\|flood\|city\|all] [--threads T] [--repeat N] [--slow MS]` | Deterministic environment scenarios, timed: the yard's timber house burning, the reservoir breached, the streamed city crossed with fires and water. Prints the tick cost (mean, 99th percentile, max), the environment's share and the session hash (an optimization that changes no result keeps every hash); `--slow` breaks down the slow ticks by phase. |
 | `svx_stream_bench`, `svx_wad_textures` | Streaming cost of the city; WAD graphics. |
 
 Diagnostics of the core (printing only, never changing results; compiled out with

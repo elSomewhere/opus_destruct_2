@@ -10,6 +10,7 @@
 
 #include "svx/base/parallel.hpp"
 #include "svx/material/material.hpp"
+#include "svx/world/tunables.hpp"
 #include "svx/world/world.hpp"
 
 using namespace svx;
@@ -20,7 +21,7 @@ struct svxc_world {
   std::vector<u8> delta;
   std::vector<WorldEvent> events;
   std::vector<PieceState> pieces;
-  std::vector<i32> changed, evicted;
+  std::vector<i32> changed, evicted, layer_changed;
   std::vector<u8> piece_vox;
 };
 
@@ -49,118 +50,6 @@ class CallbackSource final : public ChunkSource {
   i32 region_;
 };
 
-// Tunables by name: a field of WorldConfig (config) or WorldParams (params).
-struct Field {
-  const char* name;
-  f64* (*cfg_f64)(WorldConfig&);
-  i32* (*cfg_i32)(WorldConfig&);
-  i64* (*cfg_i64)(WorldConfig&);
-  bool* (*cfg_bool)(WorldConfig&);
-};
-#define SVXC_F64(n, m) {n, [](WorldConfig& c) -> f64* { return &c.m; }, nullptr, nullptr, nullptr}
-#define SVXC_I32(n, m) {n, nullptr, [](WorldConfig& c) -> i32* { return &c.m; }, nullptr, nullptr}
-#define SVXC_INT(n, m) {n, nullptr, [](WorldConfig& c) -> i32* { return reinterpret_cast<i32*>(&c.m); }, nullptr, nullptr}
-#define SVXC_I64(n, m) {n, nullptr, nullptr, [](WorldConfig& c) -> i64* { return &c.m; }, nullptr}
-#define SVXC_BOOL(n, m) {n, nullptr, nullptr, nullptr, [](WorldConfig& c) -> bool* { return &c.m; }}
-static_assert(sizeof(int) == sizeof(i32), "int fields");
-const Field kFields[] = {
-    SVXC_F64("dt", dt),
-    SVXC_F64("stress_rtol", stress_rtol),
-    SVXC_I64("stress_work", stress_work),
-    SVXC_I32("structure_max_nodes", structure_max_nodes),
-    SVXC_I32("cluster_nodes", cluster_nodes),
-    SVXC_I32("body_cluster_nodes", body_cluster_nodes),
-    SVXC_F64("structure_max_radius", structure_max_radius),
-    SVXC_I32("max_breaks_per_round", max_breaks_per_round),
-    SVXC_F64("break_band", break_band),
-    SVXC_I32("max_rounds", max_rounds),
-    SVXC_I32("idle_drop_ticks", idle_drop_ticks),
-    SVXC_F64("load_trigger", load_trigger),
-    SVXC_F64("load_trigger_abs", load_trigger_abs),
-    SVXC_F64("dead_load_ema", dead_load_ema),
-    SVXC_I32("max_bodies", max_bodies),
-    SVXC_I32("body_stress_maxit", body_stress_maxit),
-    SVXC_F64("body_stress_rtol", body_stress_rtol),
-    SVXC_F64("body_trigger", body_trigger),
-    SVXC_F64("body_impact_speed", body_impact_speed),
-    SVXC_F64("small_impact_speed", small_impact_speed),
-    SVXC_F64("small_piece_mass", small_piece_mass),
-    SVXC_I32("min_fracture_frags", min_fracture_frags),
-    SVXC_I32("big_piece_voxels", big_piece_voxels),
-    SVXC_I32("impact_rounds", impact_rounds),
-    SVXC_F64("impact_chip_fraction", impact_chip_fraction),
-    SVXC_F64("impact_round_fraction", impact_round_fraction),
-    SVXC_F64("crush_energy", crush_energy),
-    SVXC_BOOL("pulverize", pulverize),
-    SVXC_BOOL("spread_contacts", spread_contacts),
-    SVXC_F64("fracture_energy", fracture_energy),
-    SVXC_F64("impact_wave_speed", impact_wave_speed),
-    SVXC_I32("body_check_ticks", body_check_ticks),
-    SVXC_I32("rollback_part_voxels", rollback_part_voxels),
-    SVXC_I32("min_body_voxels", min_body_voxels),
-    SVXC_F64("blast_shatter", blast_shatter),
-    SVXC_F64("blast_reach", blast_reach),
-    SVXC_F64("blast_kinetic", blast_kinetic),
-    SVXC_F64("blast_max_speed", blast_max_speed),
-    SVXC_F64("max_event_radius", max_event_radius),
-    SVXC_F64("design_utilization", design_utilization),
-    SVXC_I32("crack_events_per_tick", crack_events_per_tick),
-    SVXC_I32("impact_events_per_tick", impact_events_per_tick),
-    SVXC_F64("impact_event_energy", impact_event_energy),
-    SVXC_I32("frag.min_voxels", frag.min_voxels),
-    SVXC_F64("frag.noise_scale", frag.noise_scale),
-    SVXC_F64("rigid.gravity", rigid.gravity),
-    SVXC_INT("rigid.substeps", rigid.substeps),
-    SVXC_INT("rigid.iterations", rigid.iterations),
-    SVXC_INT("rigid.position_iterations", rigid.position_iterations),
-    SVXC_INT("rigid.busy_bodies", rigid.busy_bodies),
-    SVXC_F64("rigid.busy_speed", rigid.busy_speed),
-    SVXC_INT("rigid.busy_iterations", rigid.busy_iterations),
-    SVXC_F64("rigid.restitution", rigid.restitution),
-    SVXC_F64("rigid.bounce_speed", rigid.bounce_speed),
-    SVXC_F64("rigid.friction", rigid.friction),
-    SVXC_F64("rigid.slop", rigid.slop),
-    SVXC_F64("rigid.baumgarte", rigid.baumgarte),
-    SVXC_F64("rigid.max_correction", rigid.max_correction),
-    SVXC_F64("rigid.max_speed", rigid.max_speed),
-    SVXC_F64("rigid.rest_damping", rigid.rest_damping),
-    SVXC_F64("rigid.rest_speed", rigid.rest_speed),
-    SVXC_F64("rigid.rest_radius", rigid.rest_radius),
-    SVXC_F64("rigid.linear_damping", rigid.linear_damping),
-    SVXC_F64("rigid.angular_damping", rigid.angular_damping),
-    SVXC_F64("rigid.sleep_speed", rigid.sleep_speed),
-    SVXC_INT("rigid.sleep_substeps", rigid.sleep_substeps),
-    SVXC_INT("rigid.max_points", rigid.max_points),
-    SVXC_INT("rigid.manifold", rigid.manifold),
-    SVXC_F64("rigid.manifold_per_m", rigid.manifold_per_m),
-    SVXC_F64("rigid.kill_depth", rigid.kill_depth),
-    SVXC_F64("memory.fragment_cache_mb", memory.fragment_cache_mb),
-    SVXC_F64("memory.structure_mb", memory.structure_mb),
-    SVXC_F64("memory.piece_mb", memory.piece_mb),
-    SVXC_F64("memory.cache_mb", memory.cache_mb),
-    SVXC_I32("memory.max_events", memory.max_events),
-};
-#undef SVXC_F64
-#undef SVXC_I32
-#undef SVXC_INT
-#undef SVXC_I64
-#undef SVXC_BOOL
-
-const Field* field(const char* name) {
-  if (!name) return nullptr;
-  for (const Field& f : kFields)
-    if (std::strcmp(f.name, name) == 0) return &f;
-  return nullptr;
-}
-
-f64* param_field(WorldParams& p, const char* name) {
-  if (!name) return nullptr;
-  if (!std::strcmp(name, "fragility")) return &p.fragility;
-  if (!std::strcmp(name, "impact")) return &p.impact;
-  if (!std::strcmp(name, "dif")) return &p.dif;
-  return nullptr;
-}
-
 void put3(double* out, const V3& v) {
   out[0] = v.x;
   out[1] = v.y;
@@ -183,19 +72,35 @@ std::vector<LayerEdit> layer_edits(const int32_t* xyz, const uint8_t* values, in
   return e;
 }
 
-// A host's system: its step callback.
+// A host's system: its callbacks.
 class CallbackSystem final : public WorldSystem {
  public:
-  CallbackSystem(svxc_world* owner, const char* name, svxc_step_fn fn, void* user)
-      : owner_(owner), name_(name ? name : "host"), fn_(fn), user_(user) {}
+  CallbackSystem(svxc_world* owner, const svxc_system& s) : owner_(owner), s_(s), name_(s.name ? s.name : "host") {}
   const char* name() const override { return name_.c_str(); }
-  void step(World&, f64 dt) override { fn_(user_, owner_, dt); }
+  void on_load(World&) override {
+    if (s_.on_load) s_.on_load(s_.user, owner_);
+  }
+  void on_generated(World&, const std::vector<u64>& c) override { chunks(SVXC_CHUNKS_GENERATED, c); }
+  void on_evicted(World&, const std::vector<u64>& c) override { chunks(SVXC_CHUNKS_EVICTED, c); }
+  void on_voxels_changed(World&, const std::vector<u64>& c) override { chunks(SVXC_CHUNKS_CHANGED, c); }
+  void step(World&, f64 dt) override { s_.step(s_.user, owner_, dt); }
+  i64 memory_bytes() const override { return s_.memory_bytes ? s_.memory_bytes(s_.user) : 0; }
+  u64 state_hash() const override { return s_.state_hash ? s_.state_hash(s_.user) : 0; }
 
  private:
+  void chunks(int kind, const std::vector<u64>& c) {
+    if (!s_.on_chunks || c.empty()) return;
+    std::vector<int32_t> xyz;
+    xyz.reserve(3 * c.size());
+    for (u64 k : c) {
+      const IVec3 p = unkey3(k);
+      xyz.insert(xyz.end(), {p[0], p[1], p[2]});
+    }
+    s_.on_chunks(s_.user, owner_, kind, xyz.data(), static_cast<int>(c.size()));
+  }
   svxc_world* owner_;
+  svxc_system s_;
   std::string name_;
-  svxc_step_fn fn_;
-  void* user_;
 };
 
 }  // namespace
@@ -277,48 +182,10 @@ void svxc_set_threads(int threads) { set_num_threads(std::max(1, threads)); }
 
 int svxc_set(svxc_world* w, const char* name, double value) {
   if (!w || !std::isfinite(value)) return -1;
-  WorldParams p = w->w.params();
-  if (f64* f = param_field(p, name)) {
-    *f = value;
-    w->w.set_params(p);
-    return 0;
-  }
-  if (name && !std::strcmp(name, "paused")) {
-    p.paused = value != 0.0;
-    w->w.set_params(p);
-    return 0;
-  }
-  if (name && !std::strcmp(name, "debug_fields")) {
-    p.debug_fields = value != 0.0;
-    w->w.set_params(p);
-    return 0;
-  }
-  const Field* f = field(name);
-  if (!f) return -1;
-  WorldConfig c = w->w.config();
-  if (f->cfg_f64) *f->cfg_f64(c) = value;
-  if (f->cfg_i32) *f->cfg_i32(c) = static_cast<i32>(std::clamp(value, -2e9, 2e9));
-  if (f->cfg_i64) *f->cfg_i64(c) = static_cast<i64>(std::clamp(value, -9e18, 9e18));
-  if (f->cfg_bool) *f->cfg_bool(c) = value != 0.0;
-  w->w.configure(c);
-  return 0;
+  return set_tunable(w->w, name, value) ? 0 : -1;
 }
 
-double svxc_get(svxc_world* w, const char* name) {
-  if (!w) return NAN;
-  WorldParams p = w->w.params();
-  if (f64* f = param_field(p, name)) return *f;
-  if (name && !std::strcmp(name, "paused")) return p.paused ? 1.0 : 0.0;
-  if (name && !std::strcmp(name, "debug_fields")) return p.debug_fields ? 1.0 : 0.0;
-  const Field* f = field(name);
-  if (!f) return NAN;
-  WorldConfig c = w->w.config();
-  if (f->cfg_f64) return *f->cfg_f64(c);
-  if (f->cfg_i32) return *f->cfg_i32(c);
-  if (f->cfg_i64) return static_cast<double>(*f->cfg_i64(c));
-  if (f->cfg_bool) return *f->cfg_bool(c) ? 1.0 : 0.0;
-  return NAN;
-}
+double svxc_get(svxc_world* w, const char* name) { return w ? get_tunable(w->w, name) : NAN; }
 
 void svxc_load_box(svxc_world* w, const uint8_t* vox, int nx, int ny, int nz, int ox, int oy, int oz) {
   if (!w) return;
@@ -426,9 +293,9 @@ int svxc_apply_impulse(svxc_world* w, int64_t piece, const double point[3], cons
 
 int svxc_remove_piece(svxc_world* w, int64_t piece) { return w && w->w.remove_piece(piece) ? 1 : 0; }
 
-int svxc_add_layer(svxc_world* w, const char* name, int persistent) {
-  if (!w || !name || !*name) return -1;
-  return w->w.add_layer({name, persistent != 0});
+int svxc_add_layer(svxc_world* w, const char* name, int persistent, int bind) {
+  if (!w || !name || !*name || bind < SVXC_BIND_PLACE || bind > SVXC_BIND_AIR) return -1;
+  return w->w.add_layer({name, persistent != 0, static_cast<LayerBind>(bind)});
 }
 
 int svxc_layer_index(svxc_world* w, const char* name) { return w && name ? w->w.layer_index(name) : -1; }
@@ -457,9 +324,9 @@ int svxc_remove_piece_voxels(svxc_world* w, int64_t piece, const int32_t* xyz, i
 }
 
 void svxc_set_loads(svxc_world* w, uint64_t group, const int32_t* xyz, const double* forces, int n) {
-  if (!w) return;
+  if (!w || (n > 0 && (!xyz || !forces))) return;
   std::vector<VoxelLoad> loads;
-  if (xyz && forces)
+  if (n > 0)
     for (int i = 0; i < n; ++i)
       loads.push_back({{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]}, {forces[3 * i], forces[3 * i + 1], forces[3 * i + 2]}});
   w->w.set_loads(group, std::move(loads));
@@ -474,8 +341,29 @@ void svxc_wake_piece(svxc_world* w, int64_t piece) {
 }
 
 void svxc_add_system(svxc_world* w, const char* name, svxc_step_fn step, void* user) {
-  if (w && step) w->w.add_system(std::make_shared<CallbackSystem>(w, name, step, user));
+  svxc_system s{};
+  s.name = name;
+  s.user = user;
+  s.step = step;
+  svxc_add_system_ex(w, &s);
 }
+
+int svxc_add_system_ex(svxc_world* w, const svxc_system* s) {
+  if (!w || !s || !s->step) return 0;
+  w->w.add_system(std::make_shared<CallbackSystem>(w, *s));
+  return 1;
+}
+
+int svxc_chunk_layer(svxc_world* w, int layer, int cx, int cy, int cz, uint8_t* out) {
+  if (!out) return 0;
+  std::fill(out, out + kChunkVox, u8{0});
+  if (!w || layer < 0 || layer >= kMaxLayers) return 0;
+  const Chunk* c = w->w.grid().chunk({cx, cy, cz});
+  if (!c || c->layer[size_t(layer)].empty()) return 0;
+  std::copy(c->layer[size_t(layer)].begin(), c->layer[size_t(layer)].end(), out);
+  return 1;
+}
+
 
 void svxc_tick(svxc_world* w) {
   if (w) w->w.tick();
@@ -563,6 +451,14 @@ int svxc_poll_evicted_chunks(svxc_world* w, const int32_t** chunks) {
   return w ? poll_chunks(w->w.take_evicted_chunks(), w->evicted, chunks) : 0;
 }
 
+int svxc_poll_layer_changes(svxc_world* w, int layer, const int32_t** chunks) {
+  if (!w || layer < 0 || layer >= kMaxLayers) {
+    if (chunks) *chunks = nullptr;
+    return 0;
+  }
+  return poll_chunks(w->w.take_layer_changes(layer), w->layer_changed, chunks);
+}
+
 int svxc_chunk_voxels(svxc_world* w, int cx, int cy, int cz, uint8_t* out) {
   if (!w || !out) return 0;
   const Chunk* c = w->w.grid().chunk({cx, cy, cz});
@@ -642,6 +538,7 @@ void svxc_get_memory(svxc_world* w, svxc_memory* out) {
   out->caches = m.caches;
   out->queues = m.queues;
   out->total = m.total();
+  out->systems = m.systems;
 }
 
 uint64_t svxc_state_hash(svxc_world* w) { return w ? w->w.state_hash() : 0; }

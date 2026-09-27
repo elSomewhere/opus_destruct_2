@@ -12,6 +12,17 @@ const Chunk* VoxelGrid::chunk(const IVec3& c) const {
 
 Chunk& VoxelGrid::chunk_mut(const IVec3& c) { return chunks_[key3(c[0], c[1], c[2])]; }
 
+void VoxelGrid::sanitize() {
+  for (auto& [k, c] : chunks_) {
+    if (c.uniform) {
+      if (!vox_valid(c.value)) c.value = kAir;
+      continue;
+    }
+    for (Vox& v : c.v)
+      if (!vox_valid(v)) v = kAir;
+  }
+}
+
 Vox VoxelGrid::get(i32 x, i32 y, i32 z) const {
   const IVec3 p{x, y, z};
   const Chunk* c = chunk(chunk_of(p));
@@ -32,9 +43,20 @@ void VoxelGrid::set(i32 x, i32 y, i32 z, Vox v) {
   }
   Vox& slot = c.v[chunk_index(p)];
   if (slot == v) return;
+  const Vox old = slot;
   c.solid += (vox_solid(v) ? 1 : 0) - (vox_solid(slot) ? 1 : 0);
   c.free += (vox_free(v) ? 1 : 0) - (vox_free(slot) ? 1 : 0);
   slot = v;
+  note_voxels_modified(key3(cc[0], cc[1], cc[2]));
+  // values bound to the voxel that was there, or to the air a solid took
+  if (c.has_layers())
+    for (int L = 0; L < static_cast<int>(layers_.size()); ++L) {
+      const LayerBind b = layers_[size_t(L)].bind;
+      if ((b == LayerBind::Solid && vox_solid(old)) || (b == LayerBind::Air && vox_solid(v))) {
+        const std::vector<u8>& a = c.layer[size_t(L)];
+        if (!a.empty() && a[size_t(chunk_index(p))]) set_layer(L, p, 0);
+      }
+    }
   c.vox_version = ++vox_seq_;
   note_modified(cc);
   const u64 key = key3(cc[0], cc[1], cc[2]);
@@ -112,6 +134,7 @@ void VoxelGrid::compact_changed() {
 }
 
 void VoxelGrid::forget_modified(u64 k) {
+  voxel_modified_.erase(k);
   const auto it = modified_.find(k);
   if (it == modified_.end()) return;
   const u32 i = it->second;
@@ -151,6 +174,8 @@ void VoxelGrid::break_bond(const IVec3& p, int axis) {
   b = static_cast<u8>(b | (1u << axis));
   // (a broken bond changes no surface: the chunk is not reported changed)
   note_modified(chunk_of(p));
+  const IVec3 bc = chunk_of(p);
+  note_voxels_modified(key3(bc[0], bc[1], bc[2]));
 }
 
 u8 VoxelGrid::strength(const IVec3& p) const {
@@ -188,7 +213,11 @@ std::vector<u64> VoxelGrid::take_dirty() {
 
 int VoxelGrid::add_layer(const LayerSpec& spec) {
   const int existing = layer_index(spec.name);
-  if (existing >= 0) return existing;
+  if (existing >= 0) {
+    // (the same layer again; a different one under the same name is refused)
+    const LayerSpec& l = layers_[size_t(existing)];
+    return l.persistent == spec.persistent && l.bind == spec.bind ? existing : -1;
+  }
   if (static_cast<int>(layers_.size()) >= kMaxLayers || spec.name.empty() || spec.name.size() > 255) return -1;
   layers_.push_back(spec);
   return static_cast<int>(layers_.size()) - 1;
@@ -573,9 +602,9 @@ bool parse_record(const std::vector<u8>& rec, ChunkDelta* cd) {
     cd->layers.emplace_back(std::move(name), std::move(data));
   }
   if (!in.ok || in.p != rec.size()) return false;
-  // valid voxel values only: a material id beyond the registry's range is refused
+  // valid voxel values only (air, or a material; not "anchored air")
   for (u8 v : cd->vox)
-    if ((v & 0x7F) > kMaxMaterials) return false;
+    if (!vox_valid(v)) return false;
   return true;
 }
 
@@ -622,6 +651,8 @@ bool VoxelGrid::apply_record(const std::vector<u8>& rec, u64* key_out) {
     std::vector<u8>* data = nullptr;
     for (auto& [name, d] : cd.layers)
       if (name == layers_[L].name) data = &d;
+    // (a layer cleared by the record is a change too)
+    if (c.layer_count[L]) layer_dirty_[L].insert(cd.key);
     release_buffer(std::move(c.layer[L]));
     c.layer[L] = {};
     c.layer_count[L] = 0;

@@ -20,12 +20,16 @@ namespace svx {
 class Game;
 
 struct Command {
-  enum class Type : u8 { Carve = 1, Blast = 2, Viewer = 3, Params = 4, Use = 5, Ignite = 6, Extinguish = 7, Pour = 8 };
+  enum class Type : u8 {
+    Carve = 1, Blast = 2, Viewer = 3, Params = 4, Use = 5, Ignite = 6, Extinguish = 7, Pour = 8,
+    Heat = 9, Drain = 10, EnvParam = 11, Tunable = 12
+  };
   i64 tick = 0;
   Type type = Type::Carve;
   // Carve: pos xyz, radius. Blast: pos xyz, radius, energy. Viewer: pos xyz.
   // Params: fragility, impact, dif, (unused), debug_view, paused.
-  // Use: eye xyz, direction xyz. Ignite, Extinguish, Pour: pos xyz, radius.
+  // Use: eye xyz, direction xyz. Ignite, Extinguish, Pour, Drain: pos xyz, radius. Heat: pos
+  // xyz, radius, degC. EnvParam: index (env_param_*), value. Tunable: index (tunable_*), value.
   std::array<f64, 6> a{};
 };
 
@@ -34,8 +38,8 @@ class CommandLog {
   void clear() { cmds_.clear(); }
   void push(const Command& c) { cmds_.push_back(c); }
   const std::vector<Command>& commands() const { return cmds_; }
-  // Binary format "SVXL" v1: magic, version, count, then per command tick (i64), type (u8)
-  // and 6 f64 (little-endian, bit-exact).
+  // Binary format "SVXL" v2: magic, version, count, then per command tick (i64), type (u8)
+  // and 6 f64 (little-endian, bit-exact). (v1 logs - types 1..5 - read the same.)
   std::vector<u8> serialize() const;
   static bool parse(const std::vector<u8>& bytes, CommandLog* out);
 

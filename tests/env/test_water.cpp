@@ -290,3 +290,142 @@ TEST_CASE("water: deterministic, and within its step budget") {
   CHECK(a.water().stats().active == 0);
   CHECK(a.water_in({2, 2, 0}, {18, 18, 0}).second == 0);
 }
+
+// ---- hardening (audit regressions)
+
+TEST_CASE("water: a tank across a chunk boundary: its bottom walls feel the water above the boundary") {
+  // a concrete tank from z = 16 to z = 50, full to z = 46 (the chunk boundary at z = 32)
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-40, -40, -4}, {80, 80, 16}, kRock);
+  box(g, {0, 0, 16}, {20, 20, 50}, kConc);
+  box(g, {2, 2, 16}, {18, 18, 50}, kAir);
+  const int L = g.add_layer({"water", true, LayerBind::Air});
+  for (i32 x = 2; x < 18; ++x)
+    for (i32 y = 2; y < 18; ++y)
+      for (i32 z = 16; z < 46; ++z) g.set_layer(L, {x, y, z}, 255);
+  g.compact();
+  Setup s(std::move(g));
+  s.w.bake();
+  s.run(2.0);
+  const IVec3 wall{1, 10, 17};  // (a bottom wall voxel: in the lower chunk)
+  const f64 full = s.w.probe_utilization(wall);
+  REQUIRE(full > 0.0);
+  // most of the water above the boundary drained: the lower chunk's water did not change, its
+  // load did
+  for (i32 x = 3; x < 18; x += 3)
+    for (i32 y = 3; y < 18; y += 3) s.water().drain(s.w, at({x, y, 40}), 0.75);
+  s.run(3.0);
+  i64 upper = 0;
+  for (i32 x = 2; x < 18; ++x)
+    for (i32 y = 2; y < 18; ++y)
+      for (i32 z = 32; z < 46; ++z) upper += s.w.layer(s.water().water_layer(), {x, y, z}) > 0;
+  REQUIRE(upper < 16 * 16 * 14 / 3);
+  for (i32 x = 2; x < 18; x += 5)
+    for (i32 y = 2; y < 18; y += 5) REQUIRE(s.w.layer(s.water().water_layer(), {x, y, 31}) == 255);
+  const f64 half = s.w.probe_utilization(wall);
+  CHECK(half < 0.8 * full);
+}
+
+TEST_CASE("water: switched off, its loads leave the world; bad settings are brought into range") {
+  Setup s(basin());
+  for (int k = 0; k < 6; ++k) s.water().pour(s.w, at({10, 10, 24 + 7 * k}), 0.45);
+  s.run(10.0);
+  REQUIRE(s.water().stats().loads > 0);
+  WaterConfig c = s.water().config();
+  c.loads = false;
+  s.water().configure(c);
+  s.run(0.2);
+  CHECK(s.water().stats().loads == 0);
+  WaterConfig bad;
+  bad.step_s = -1.0;
+  bad.fall = 0;
+  bad.max_active = -5;
+  bad.density = std::nan("");
+  bad.drag = 1e9;
+  WaterSystem ws(bad);
+  CHECK(ws.config().fall >= 1);
+  CHECK(ws.config().max_active >= 1);
+  CHECK(ws.config().density == 1000.0);
+  CHECK(ws.config().drag <= 20.0);
+  s.water().pour(s.w, {1e12, 0, 0}, 1.0);  // (out of range: nothing)
+  s.water().drain(s.w, {0, std::nan(""), 0}, 1.0);
+}
+
+TEST_CASE("water: the same session from a load, whatever came before it") {
+  auto session = [](Setup& s) {
+    s.w.load(basin());
+    for (int k = 0; k < 3; ++k) s.water().pour(s.w, at({10, 10, 24 + 7 * k}), 0.45);
+    for (int t = 0; t < 240; ++t) s.w.tick();
+    return s.w.session_hash();
+  };
+  Setup a(basin()), b(basin());
+  b.water().pour(b.w, at({10, 10, 30}), 0.45);
+  b.run(3.0);
+  CHECK(session(a) == session(b));
+}
+
+namespace {
+
+// Rock ground and a rock wall, a 4 m concrete cantilever out of it (it stands only designed).
+class Ledge final : public ChunkSource {
+ public:
+  bool generate(const IVec3& c, std::vector<Vox>& out) const override {
+    out.assign(kChunkVox, kAir);
+    bool any = false;
+    for (i32 x = 0; x < kChunk; ++x)
+      for (i32 y = 0; y < kChunk; ++y)
+        for (i32 z = 0; z < kChunk; ++z) {
+          const IVec3 p{c[0] * kChunk + x, c[1] * kChunk + y, c[2] * kChunk + z};
+          Vox v = kAir;
+          if (p[2] < 0 || (p[0] < 0 && p[0] >= -8 && p[2] < 40 && p[1] >= -8 && p[1] < 16)) v = kRock;
+          else if (p[0] >= 0 && p[0] < 31 && p[1] >= 0 && p[1] < 3 && p[2] >= 24 && p[2] < 27) v = kConc;
+          if (v != kAir) {
+            out[size_t(chunk_index({x, y, z}))] = v;
+            any = true;
+          }
+        }
+    return any;
+  }
+  IVec3 chunk_lo() const override { return {-8, -8, -1}; }
+  IVec3 chunk_hi() const override { return {8, 8, 3}; }
+};
+
+}  // namespace
+
+TEST_CASE("water: water on a streamed structure (also archived and back) does not stop its design on first touch") {
+  auto run = [](bool evict) {
+    World w;
+    Environment env;
+    env.attach(w);
+    VoxelGrid g;
+    g.h = kH;
+    w.load(std::move(g));
+    StreamConfig sc;
+    sc.load_radius = 14.0;
+    sc.evict_radius = 18.0;
+    sc.chunks_per_tick = 400;
+    w.enable_streaming(std::make_shared<Ledge>(), sc);
+    w.set_focus(V3{2, 0, 3});
+    for (int t = 0; t < 10; ++t) w.tick();
+    REQUIRE(w.grid().get(20, 1, 25) == kConc);
+    // a puddle on the beam (a persistent layer: the chunk's changes)
+    env.water()->pour(w, at({20, 1, 28}), 0.2);
+    for (int t = 0; t < 120; ++t) w.tick();
+    if (evict) {
+      w.set_focus(V3{90, 0, 3});
+      for (int t = 0; t < 10; ++t) w.tick();
+      REQUIRE_FALSE(w.chunk_resident({0, 0, 0}));
+      w.set_focus(V3{2, 0, 3});
+      for (int t = 0; t < 10; ++t) w.tick();
+      REQUIRE(w.chunk_resident({0, 0, 0}));
+    }
+    // touched: designed (strengthened), it stands
+    w.set_loads(7, {{{30, 1, 26}, V3{0, 0, -1}}});
+    for (int t = 0; t < 180; ++t) w.tick();
+    CHECK(w.pieces().empty());
+    CHECK(w.stats().strengthened_voxels > 0);
+  };
+  run(false);
+  run(true);
+}

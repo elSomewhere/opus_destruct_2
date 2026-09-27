@@ -70,6 +70,8 @@ export class Effects {
   /** The engine's smoke cells (SMOKE_STRIDE floats each), and their sprites. */
   private smoke: Float32Array = new Float32Array(0);
   private readonly smokeSprites = new Float32Array(FIELD_CAPACITY * FLOATS_PER_INSTANCE);
+  private smokeBuilt = -1;
+  private smokeDirty = true;
   private fireCarry = 0;
   private emberCarry = 0;
   private smokeCarry = 0;
@@ -266,19 +268,33 @@ export class Effects {
 
   setSmoke(smoke: Float32Array): void {
     this.smoke = smoke;
+    this.smokeDirty = true;
   }
 
   /**
    * The smoke field as soft sprites (one per cell, a little bigger than it, jittered and slowly
-   * drifting so the grid does not show), handed to the particle system every frame.
+   * drifting so the grid does not show), handed to the particle system. Built again when new
+   * smoke comes and ten times a second for the drift (not every frame); sprites near the eye
+   * fade (no screen-filling layers).
    */
-  smokeField(timeS: number, voxelSize: number): void {
+  smokeField(timeS: number, voxelSize: number, eye: Vec3): void {
+    if (!this.smokeDirty && timeS - this.smokeBuilt < 0.1) return;
+    this.smokeDirty = false;
+    this.smokeBuilt = timeS;
     const s = this.smoke;
-    const n = Math.min(s.length / SMOKE_STRIDE, FIELD_CAPACITY);
+    const total = Math.min(s.length / SMOKE_STRIDE, FIELD_CAPACITY);
     const cell = voxelSize * SMOKE_CELL_VOXELS;
     const out = this.smokeSprites;
-    for (let k = 0; k < n; k++) {
-      const i = k * SMOKE_STRIDE;
+    let n = 0;
+    for (let q = 0; q < total; q++) {
+      const i = q * SMOKE_STRIDE;
+      const dx = s[i]! - eye[0];
+      const dy = s[i + 1]! - eye[1];
+      const dz = s[i + 2]! - eye[2];
+      const near = Math.hypot(dx, dy, dz);
+      if (near < 0.35 * cell) continue;
+      const fade = Math.min(1, (near - 0.35 * cell) / (2.5 * cell));
+      const k = n++;
       const x = s[i]!;
       const y = s[i + 1]!;
       const z = s[i + 2]!;
@@ -294,7 +310,7 @@ export class Effects {
       out[o + 4] = g;
       out[o + 5] = g;
       out[o + 6] = g * 0.95;
-      out[o + 7] = 0.6 * (1 - Math.exp(-1.6 * s[i + 3]!));
+      out[o + 7] = fade * 0.6 * (1 - Math.exp(-1.6 * s[i + 3]!));
     }
     this.particles.setField(out.subarray(0, n * FLOATS_PER_INSTANCE));
   }

@@ -30,6 +30,8 @@ inline bool vox_solid(Vox v) { return v != kAir; }
 inline bool vox_anchored(Vox v) { return (v & kAnchorBit) != 0; }
 inline bool vox_free(Vox v) { return v != kAir && (v & kAnchorBit) == 0; }  // structure (not rock)
 inline MaterialId vox_mat(Vox v) { return static_cast<MaterialId>((v & 0x7F) - 1); }
+// A value a voxel may hold: air, or a material (anchored or not); 0x80 ("anchored air") is not.
+inline bool vox_valid(Vox v) { return v == kAir || (v & 0x7F) != 0; }
 
 constexpr int kChunkBits = 5;
 constexpr int kChunk = 1 << kChunkBits;  // 32
@@ -38,6 +40,14 @@ constexpr int kBrickBits = 3;
 constexpr int kBrick = 1 << kBrickBits;  // 8
 
 using IVec3 = std::array<i32, 3>;
+
+// Voxel coordinates a world accepts: keys pack 21 bits per axis, less a margin for the reach of
+// events around a voxel (edits, loads, layers and commands beyond are refused).
+constexpr i32 kVoxelLimit = (1 << 20) - 4096;
+inline bool in_voxel_range(const IVec3& p) {
+  auto ok = [](i32 v) { return (v < 0 ? -static_cast<i64>(v) : static_cast<i64>(v)) < kVoxelLimit; };
+  return ok(p[0]) && ok(p[1]) && ok(p[2]);
+}
 
 inline u64 key3(i32 x, i32 y, i32 z) {
   constexpr i64 off = i64(1) << 20;
@@ -53,11 +63,16 @@ inline IVec3 unkey3(u64 k) {
 // ...): registered by name; a chunk allocates a layer's array when it first holds a nonzero
 // value there, and drops it when the layer is all zero again.
 constexpr int kMaxLayers = 8;
+// What a layer's value belongs to: a solid voxel (damage, heat, char: cleared when the voxel is
+// removed or replaced), an air voxel (water, gas: cleared when a solid takes its place), or the
+// place (kept whatever the voxel becomes).
+enum class LayerBind : u8 { Place = 0, Solid = 1, Air = 2 };
 struct LayerSpec {
   std::string name;
   // Persistent: part of the chunk's changes (deltas, the change archive: it comes back with the
   // chunk). Transient: dropped with the chunk (a fire's heat).
   bool persistent = true;
+  LayerBind bind = LayerBind::Place;
 };
 
 struct Chunk {
@@ -99,6 +114,7 @@ class VoxelGrid {
 
   // Layers: add_layer returns a layer's index (the existing one for a name already added).
   int add_layer(const LayerSpec& spec);
+  void sanitize();  // invalid voxel values (vox_valid) become air
   int layer_index(const std::string& name) const;  // -1: none
   const std::vector<LayerSpec>& layers() const { return layers_; }
   // Takes these layers (by name: the values of layers it has move to their index in specs; its
@@ -140,6 +156,12 @@ class VoxelGrid {
   bool tracking() const { return track_; }
   const std::vector<u64>& modified_chunks() const { return modified_list_; }
   bool is_modified(u64 key) const { return modified_.count(key) > 0; }
+  // Whether its voxels or bonds changed (not only its persistent layers): what a structure's
+  // design (a first touch) must not undo.
+  bool voxels_modified(u64 key) const { return voxel_modified_.count(key) > 0; }
+  void note_voxels_modified(u64 key) {
+    if (track_) voxel_modified_.insert(key);
+  }
   std::vector<u8> save_delta() const;
   // Applies a delta (returns false on a malformed buffer; the grid is then unchanged).
   bool load_delta(const std::vector<u8>& bytes, std::vector<u64>* touched = nullptr);
@@ -168,6 +190,7 @@ class VoxelGrid {
   static constexpr size_t kMaxSpare = 256;
   bool track_ = false;
   std::unordered_map<u64, u32> modified_;  // key -> index in modified_list_
+  std::unordered_set<u64> voxel_modified_;  // (of those: voxels or bonds changed)
   std::vector<u64> modified_list_;
   void note_modified(const IVec3& chunk_coord) {
     if (!track_) return;

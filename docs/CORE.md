@@ -282,27 +282,38 @@ The core simulates destruction and structural integrity, and nothing else. Other
 (fire, fluids, weather, corrosion, a game's own rules) plug in through five public extension
 points, without touching the core. `svx_env` ([`ENV.md`](ENV.md)) is built on them alone.
 
-- **Voxel layers** (`add_layer(LayerSpec{name, persistent})`, `set_layer`, `layer`,
+- **Voxel layers** (`add_layer(LayerSpec{name, persistent, bind})`, `set_layer`, `layer`,
   `take_layer_changes`): up to 8 named byte channels per voxel, stored sparsely per chunk.
   - A persistent layer is part of the chunk's changes: saved in deltas, archived when the
     chunk is evicted, forgotten with its region.
   - A transient one leaves with the chunk.
+  - Its binding says what a value belongs to: `Solid` (damage, heat, char: cleared when the
+    voxel is removed or replaced), `Air` (water, gas: cleared when a solid takes the place) or
+    `Place` (kept). Adding a layer again returns its index; a different layer under the same
+    name is refused (-1).
+  - In a streamed world, writes to chunks not generated yet are dropped. Layer changes do not
+    count as a player's for the design pass (only changed voxels and bonds do).
   - Layers are matched by name when a grid is loaded, so a level can carry them. A
     `ChunkSource` fills them for generated chunks (`generate_layer`).
   - Pieces carry their voxels' layer values (`piece_layer`, `set_piece_layer`).
-- **Damage** (`kDamageLayer`, always present): 0 intact to 255 no strength left. It scales the
-  strengths of every bond section it is in. Changing it re-measures the sections and judges the
-  structure again, and extracts the structure if nobody had yet. On pieces it rebuilds their
-  bond graph.
+- **Damage** (`kDamageLayer`, always present, bound to the solid voxel): 0 intact to 255 no
+  strength left (a section at 255 fails under any load). It scales the strengths of every bond
+  section it is in. Changing it re-measures the bonds of the voxels written (those of their
+  nodes) and judges their structures again at the next tick, and extracts a structure nobody
+  holds. On pieces it rebuilds their bond graph.
 - **Loads on the static world** (`set_loads(group, loads)`): forces on voxels by group. They
   are replaced as a whole, stay until replaced, and are added to the structures' load cases
   every solve. New or changed loads extract the structures under them, and the design pass
-  designs for them.
+  designs for them. (A producer writing its loads chunk by chunk makes them cheap to apply
+  every tick.)
 - **Forces on pieces** (`apply_force`, for the next tick only; `wake_piece`).
 - **Systems** (`add_system(std::shared_ptr<WorldSystem>)`): objects stepped at the end of every
   tick, in the order added.
   - The world tells them what they could not see coming: `on_load`, `on_generated` and
-    `on_evicted` (streaming), and `on_voxels_changed`.
+    `on_evicted` (streaming), and `on_voxels_changed` (only chunks resident when they are
+    told). Paused, they are told but not stepped.
+  - From a system, `tick`, `load` and `load_delta` are refused (the world is inside its tick);
+    a system added by a system is stepped from the next tick.
   - Their `memory_bytes` joins `MemoryReport::systems`, and their `state_hash` joins
     `session_hash`, so determinism checks cover them.
   - Two more hooks change the world from outside the core: `remove_piece_voxels` (burnt out,
@@ -316,9 +327,14 @@ points, without touching the core. `svx_env` ([`ENV.md`](ENV.md)) is built on th
 - Voxels come in as dense boxes (`svxc_load_box`), edits, or a streaming callback
   (`svxc_enable_streaming`).
 - Every `WorldConfig` / `WorldParams` field is settable by name (`svxc_set(w, "rigid.gravity",
-  9.81)`).
+  9.81)`): the registry of `svx/world/tunables.hpp`, which C++ hosts use as well (settings UIs,
+  command logs: an index is stable within a build; setup tunables are meant for before a load).
 - Events, pieces (with their voxels), changed chunks and queries come out as plain structs and
   arrays.
+
+- The extension points (§5) are there too: layers (`svxc_add_layer`, `svxc_set_layer`,
+  `svxc_chunk_layer`, `svxc_poll_layer_changes`), piece layers and voxel removal, loads, piece
+  forces, and systems with all their callbacks (`svxc_add_system_ex`).
 
 `examples/c_api/main.c` is a complete C host.
 

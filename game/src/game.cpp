@@ -10,6 +10,7 @@
 
 #include "svx/base/parallel.hpp"
 #include "svx/game/replay.hpp"
+#include "svx/world/tunables.hpp"
 
 namespace svx {
 
@@ -25,9 +26,9 @@ inline u64 mix64(u64 x) {
   return x ^ (x >> 31);
 }
 
-// Voxels hotter than this (heat units: 4 degC) glow (texture 0xFE00 + material: burning wood,
-// red-hot steel).
-constexpr u8 kGlowHeat = 130;
+// The heat (units of the fire's heat layer) from which a voxel glows (texture 0xFE00 +
+// material: burning wood, red-hot steel).
+inline u8 glow_units(const FireSystem& f) { return static_cast<u8>(std::min(255.0, std::ceil(f.config().glow_c / FireSystem::kHeatUnit))); }
 
 // A face's light darkened by its voxel's charring (burn 0..255).
 inline u8 char_light(u8 light, u8 burn) {
@@ -52,7 +53,7 @@ void Game::set_params(const GameParams& p) {
     log_->push(c);
   }
   if (p.debug_view != par_.debug_view)
-    for (const auto& [k, c] : world_.grid().chunks()) remesh_.push_back(k);
+    for (const auto& [k, c] : world_.grid().chunks()) remesh_.insert(k);
   par_ = p;
   WorldParams wp;
   wp.fragility = p.fragility;
@@ -88,6 +89,9 @@ void Game::load(VoxelGrid&& g, const V3& spawn_pos, const V3& spawn_dir) {
   fading_.clear();
   events_.clear();
   remesh_.clear();
+  decor_only_.clear();
+  meshed_.clear();
+  piece_remesh_.clear();
   charred_.clear();
   for (u64 k : wet_sent_) wet_removed_.push_back(k);
   wet_sent_.clear();
@@ -178,11 +182,38 @@ std::vector<ChunkMesh> Game::take_water_meshes() {
 
 std::vector<u64> Game::take_water_removed() {
   std::vector<u64> out;
-  out.swap(wet_removed_);
+  // (a chunk with a water mesh sent since its removal was queued stays)
+  for (u64 k : wet_removed_)
+    if (!wet_sent_.count(k)) out.push_back(k);
+  wet_removed_.clear();
   std::sort(out.begin(), out.end());
   out.erase(std::unique(out.begin(), out.end()), out.end());
   return out;
 }
+
+void Game::heat(const V3& pos, f64 radius, f64 celsius) {
+  if (log_) log_->push({world_.ticks(), Command::Type::Heat, {pos.x, pos.y, pos.z, radius, celsius, 0.0}});
+  if (env_.fire()) env_.fire()->heat(world_, pos, radius, celsius);
+}
+
+void Game::drain(const V3& pos, f64 radius) {
+  if (log_) log_->push({world_.ticks(), Command::Type::Drain, {pos.x, pos.y, pos.z, radius, 0.0, 0.0}});
+  if (env_.water()) env_.water()->drain(world_, pos, radius);
+}
+
+bool Game::set_env(i32 index, f64 value) {
+  if (!env_param(index) || !std::isfinite(value)) return false;
+  if (log_) log_->push({world_.ticks(), Command::Type::EnvParam, {static_cast<f64>(index), value, 0.0, 0.0, 0.0, 0.0}});
+  return env_.set(index, value);
+}
+
+bool Game::set_tunable(i32 index, f64 value) {
+  if (!tunable(index) || !std::isfinite(value)) return false;
+  if (log_) log_->push({world_.ticks(), Command::Type::Tunable, {static_cast<f64>(index), value, 0.0, 0.0, 0.0, 0.0}});
+  return svx::set_tunable(world_, index, value);
+}
+
+bool Game::set_tunable(const char* name, f64 value) { return set_tunable(tunable_index(name), value); }
 
 void Game::extinguish(const V3& pos, f64 radius) {
   if (log_) log_->push({world_.ticks(), Command::Type::Extinguish, {pos.x, pos.y, pos.z, radius, 0.0, 0.0}});
@@ -239,14 +270,36 @@ void Game::tick() {
       events_.push_back(std::move(g));
     }
   }
-  if (const FireSystem* f = env_.fire()) {
+  if (FireSystem* f = env_.fire(); f && f->ok()) {
+    // charring (burn changes) and glow (voxels crossing the glow temperature): meshed again at
+    // most every char_remesh_s; pieces too (a Remesh event)
     for (u64 k : world_.take_layer_changes(f->burn_layer())) charred_.insert(k);
-    for (u64 k : world_.take_layer_changes(f->heat_layer())) charred_.insert(k);  // (glowing, or no more)
+    world_.take_layer_changes(f->heat_layer());  // (heat itself: not shown)
+    for (u64 k : f->take_glow_changes()) charred_.insert(k);
+    for (i64 id : f->take_piece_changes()) piece_remesh_.push_back(id);
     char_clock_ += world_.config().dt;
     if (char_clock_ >= char_remesh_s) {
       char_clock_ = 0.0;
-      remesh_.insert(remesh_.end(), charred_.begin(), charred_.end());
+      remesh_.insert(charred_.begin(), charred_.end());
       charred_.clear();
+      std::sort(piece_remesh_.begin(), piece_remesh_.end());
+      piece_remesh_.erase(std::unique(piece_remesh_.begin(), piece_remesh_.end()), piece_remesh_.end());
+      for (i64 id : piece_remesh_) {
+        const Body* b = world_.piece(id);
+        const auto vt = views_.find(id);
+        if (!b || vt == views_.end()) continue;
+        GameEvent g;
+        g.kind = GameEvent::Kind::Remesh;
+        g.id = id;
+        g.pos = b->x;
+        g.vel = b->v;
+        g.ang = b->w;
+        g.voxels = b->shape.count;
+        g.mesh = piece_mesh(*b);
+        vt->second = {b->x, b->q};  // (its poses from now on: from this mesh's frame)
+        events_.push_back(std::move(g));
+      }
+      piece_remesh_.clear();
     }
   }
 }
@@ -329,16 +382,17 @@ ChunkMesh Game::piece_mesh(const Body& b) const {
       return static_cast<u8>(1 + (mix64(static_cast<u64>(b.id) * 131 + S.frag[size_t(i)]) % 254));
     };
   }
-  if (const FireSystem* f = env_.fire(); f && !S.layer[size_t(f->burn_layer())].empty()) {
+  if (const FireSystem* f = env_.fire(); f && f->ok() && !S.layer[size_t(f->burn_layer())].empty()) {
     const int L = f->burn_layer();
     mo.light = [&S, L](const IVec3& p, int) -> u8 { return char_light(255, S.layer_at(L, S.index(p))); };
   }
-  if (const FireSystem* f = env_.fire(); f && !S.layer[size_t(f->heat_layer())].empty()) {
+  if (const FireSystem* f = env_.fire(); f && f->ok() && !S.layer[size_t(f->heat_layer())].empty()) {
     const int H = f->heat_layer();
+    const u8 glow = glow_units(*f);
     auto base_tex = mo.texture;
-    mo.texture = [&S, H, base_tex](const IVec3& p, int face) -> u16 {
+    mo.texture = [&S, H, glow, base_tex](const IVec3& p, int face) -> u16 {
       const i32 i = S.index(p);
-      if (S.layer_at(H, i) >= kGlowHeat && i >= 0) return static_cast<u16>(0xFE00 + static_cast<u16>(vox_mat(S.vox[size_t(i)])));
+      if (i >= 0 && S.layer_at(H, i) >= glow) return static_cast<u16>(0xFE00 + static_cast<u16>(vox_mat(S.vox[size_t(i)])));
       return base_tex ? base_tex(p, face) : static_cast<u16>(0xFF00 + static_cast<u16>(vox_mat(S.get(p))));
     };
   }
@@ -363,6 +417,13 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
   const auto t0 = Clock::now();
   mesh_base_ = base;
   std::vector<u64> keys = world_.take_changed_chunks();
+  // (chunks meshed again for their decoration only: their voxels did not change)
+  decor_only_.clear();
+  {
+    std::unordered_set<u64> voxel_changed(keys.begin(), keys.end());
+    for (u64 k : remesh_)
+      if (!voxel_changed.count(k)) decor_only_.insert(k);
+  }
   if (const WaterSystem* ws = env_.water())
     for (u64 k : keys) {  // (new chunks with water, water uncovered or covered by voxels)
       const Chunk* ch = world_.grid().chunk(unkey3(k));
@@ -370,6 +431,7 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
     }
   keys.insert(keys.end(), remesh_.begin(), remesh_.end());
   remesh_.clear();
+  if (par_.debug_view != 0) decor_only_.clear();  // (a debug view change: all of it)
   std::sort(keys.begin(), keys.end());
   keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
   MeshOptions mo = base;
@@ -389,7 +451,7 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
   }
   // charred voxels are darker (the burn layer)
   const VoxelGrid& g = world_.grid();
-  if (const FireSystem* f = env_.fire()) {
+  if (const FireSystem* f = env_.fire(); f && f->ok()) {
     const int L = f->burn_layer();
     auto base_light = mo.light;
     mo.light = [&g, L, base_light](const IVec3& p, int face) -> u8 {
@@ -398,9 +460,10 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
     };
     // (and burning or red-hot voxels glow)
     const int H = f->heat_layer();
+    const u8 glow = glow_units(*f);
     auto base_tex = mo.texture;
-    mo.texture = [&g, H, base_tex](const IVec3& p, int face) -> u16 {
-      if (g.layer(H, p) >= kGlowHeat) return static_cast<u16>(0xFE00 + static_cast<u16>(vox_mat(g.get(p))));
+    mo.texture = [&g, H, glow, base_tex](const IVec3& p, int face) -> u16 {
+      if (g.layer(H, p) >= glow) return static_cast<u16>(0xFE00 + static_cast<u16>(vox_mat(g.get(p))));
       return base_tex ? base_tex(p, face) : static_cast<u16>(0xFF00 + static_cast<u16>(vox_mat(g.get(p))));
     };
   }
@@ -414,8 +477,10 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
   for (size_t j = 0; j < keys.size(); ++j) {
     if (meshes[j].vertices.empty()) {
       removed_chunks_.push_back(keys[j]);
+      meshed_.erase(keys[j]);
       continue;
     }
+    meshed_.insert(keys[j]);  // (a removal queued before - an old level's - is void)
     out.push_back(std::move(meshes[j]));
   }
   mesh_ms_ = ms_since(t0);
@@ -426,10 +491,15 @@ std::vector<u64> Game::take_removed_chunks() {
   std::vector<u64> out = world_.take_evicted_chunks();
   for (u64 k : out) {
     wet_dirty_.erase(k);
+    meshed_.erase(k);
     if (wet_sent_.erase(k)) wet_removed_.push_back(k);
   }
-  out.insert(out.end(), removed_chunks_.begin(), removed_chunks_.end());
+  // (a chunk meshed since its removal was queued - the old level's key, the new level's chunk -
+  // stays)
+  for (u64 k : removed_chunks_)
+    if (!meshed_.count(k)) out.push_back(k);
   removed_chunks_.clear();
+  meshed_.clear();
   std::sort(out.begin(), out.end());
   out.erase(std::unique(out.begin(), out.end()), out.end());
   return out;

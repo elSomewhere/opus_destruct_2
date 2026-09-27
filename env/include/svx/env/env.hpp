@@ -20,13 +20,35 @@ struct EnvConfig {
   WaterConfig water_config;
 };
 
+// The environment's settings by name - "fire.flame_reach", "smoke.wind_x", "water.loads",
+// "fire.wood.burn_s", ...: every field of the systems' configs, and the fire properties of the
+// main materials - for hosts, settings UIs and command logs (an index is stable within a build;
+// values are brought into their ranges).
+struct EnvParamInfo {
+  const char* name;
+  f64 min, max;  // (the range a UI offers; the systems clamp to their own)
+};
+i32 env_param_count();
+const EnvParamInfo* env_param(i32 index);  // nullptr: out of range
+i32 env_param_index(const char* name);     // -1: unknown
+
 class Environment {
  public:
   // Adds the configured systems to w (once, before its first load).
   void attach(World& w, const EnvConfig& c = {});
-  FireSystem* fire() const { return fire_.get(); }
-  SmokeSystem* smoke() const { return smoke_.get(); }
-  WaterSystem* water() const { return water_.get(); }
+  FireSystem* fire() { return fire_.get(); }
+  SmokeSystem* smoke() { return smoke_.get(); }
+  WaterSystem* water() { return water_.get(); }
+  const FireSystem* fire() const { return fire_.get(); }
+  const SmokeSystem* smoke() const { return smoke_.get(); }
+  const WaterSystem* water() const { return water_.get(); }
+
+  // Settings by name or index (env_param_*): false / NaN for an unknown one, or a system that
+  // is not there.
+  bool set(i32 index, f64 value);
+  f64 get(i32 index) const;
+  bool set(const char* name, f64 value) { return set(env_param_index(name), value); }
+  f64 get(const char* name) const { return get(env_param_index(name)); }
 
  private:
   std::shared_ptr<FireSystem> fire_;

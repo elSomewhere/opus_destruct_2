@@ -12,6 +12,7 @@ const TICKS = 240;         // 4 s at 60 Hz
 const MS_TOP = 33.3;        // full height: two frames
 const AWAKE_TOP_MIN = 50;   // the awake line's full height is at least this many pieces
 const COLORS: Record<(typeof TIMELINE_FIELDS)[number], string> = {
+  env: '#e8703a',
   structural: '#e0a040',
   rigid: '#a070e0',
   events: '#e05050',

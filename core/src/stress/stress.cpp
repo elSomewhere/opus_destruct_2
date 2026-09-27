@@ -21,7 +21,13 @@ BondStrength bond_strength(const SBond& b, f64 fragility) {
 }
 
 f64 bond_utilization(const SBond& b, const BondLoad& L, f64 fragility, FailMode* mode) {
-  const BondStrength S = bond_strength(b, fragility);
+  BondStrength S = bond_strength(b, fragility);
+  // (a section with no strength left - full damage, a material without tensile strength -
+  // fails under any load of that kind: never 0 / 0)
+  constexpr f64 kWeakest = 1e-9;
+  S.ft = std::max(S.ft, kWeakest);
+  S.fb = std::max(S.fb, kWeakest);
+  S.fc = std::max(S.fc, kWeakest);
   const f64 A = std::max(b.area, 1e-12);
   const f64 sN = L.N / A;
   const f64 sb = (b.s2 > 0 ? std::abs(L.M1) * b.c2 / b.s2 : 0.0) + (b.s1 > 0 ? std::abs(L.M2) * b.c1 / b.s1 : 0.0);
@@ -34,7 +40,7 @@ f64 bond_utilization(const SBond& b, const BondLoad& L, f64 fragility, FailMode*
   const f64 phi_c = std::max(0.0, sb - sN) / S.fc;
   const f64 J = std::max(b.s1 + b.s2, 1e-18);
   const f64 tau = 1.5 * std::sqrt(L.V1 * L.V1 + L.V2 * L.V2) / A + std::abs(L.T) * b.rmax / J;
-  const f64 cap = S.coh + S.mu * std::max(0.0, -sN);
+  const f64 cap = std::max(S.coh + S.mu * std::max(0.0, -sN), kWeakest);
   const f64 phi_s = tau / cap;
   f64 phi = phi_t;
   FailMode m = FailMode::Tension;

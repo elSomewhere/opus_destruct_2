@@ -120,12 +120,17 @@ export class ChunkStore {
    * Draws frustum-visible chunks within `maxDistance`, nearest first (early depth
    * rejection). The pipeline and bind groups must already be set.
    */
+  /**
+   * `backToFront`: farthest first (translucent surfaces blended over what is behind them)
+   * instead of nearest first.
+   */
   draw(
     pass: GPURenderPassEncoder,
     planes: Float32Array,
     eye: Vec3,
     maxDistance: number,
     inflation?: (min: Vec3, max: Vec3) => number,
+    backToFront = false,
   ): ChunkDrawStats {
     const vis = this.visible;
     vis.length = 0;
@@ -150,7 +155,7 @@ export class ChunkStore {
       c.d2 = d2;
       vis.push(c);
     }
-    vis.sort((a, b) => a.d2 - b.d2);
+    vis.sort(backToFront ? (a, b) => b.d2 - a.d2 : (a, b) => a.d2 - b.d2);
     let triangles = 0;
     for (const c of vis) {
       pass.setVertexBuffer(0, c.vbuf);

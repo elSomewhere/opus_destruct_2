@@ -26,7 +26,7 @@ inline f64 ms_since(Clock::time_point t0) { return std::chrono::duration<f64, st
 }  // namespace
 
 World::World() : archive_(std::make_unique<ChangeArchive>()) {
-  add_layer({"damage", true});  // (kDamageLayer)
+  add_layer({"damage", true, LayerBind::Solid});  // (kDamageLayer)
 }
 World::~World() = default;
 World::World(World&&) noexcept = default;
@@ -60,6 +60,7 @@ void World::set_params(const WorldParams& p) {
 }
 
 void World::load(VoxelGrid&& g) {
+  if (in_tick_) return;  // (from inside a tick: refused)
   queue_.clear();
   std::vector<i64> ids;
   for (const auto& b : rigid_.bodies) ids.push_back(b->id);
@@ -88,6 +89,7 @@ void World::load(VoxelGrid&& g) {
         static_cast<int>(layer_specs_.size()) < kMaxLayers)
       layer_specs_.push_back(spec);
   g.adopt_layers(layer_specs_);
+  g.sanitize();
   grid_ = std::move(g);
   for (u64 k : old_keys) grid_.mark_dirty(unkey3(k));
   grid_.mark_all_dirty();
@@ -152,7 +154,11 @@ FragChunk& World::frag_chunk(const IVec3& cc) {
     it->second.used = st_.ticks;
     return it->second;
   }
-  FragChunk nf = fragment_chunk(grid_, cc, cfg_.frag);
+  return adopt_fragments(key, fragment_chunk(grid_, cc, cfg_.frag));
+}
+
+FragChunk& World::adopt_fragments(u64 key, FragChunk&& nf) {
+  const auto it = frags_.find(key);
   if (it != frags_.end()) {
     const FragChunk& of = it->second;
     bool same = of.id == nf.id && of.frags.size() == nf.frags.size();
@@ -169,6 +175,37 @@ FragChunk& World::frag_chunk(const IVec3& cc) {
   slot = std::move(nf);
   slot.used = st_.ticks;
   return slot;
+}
+
+void World::prefragment(const IVec3& seed, f64 max_radius) {
+  // The chunks a structure walk from here can reach - face-connected chunks holding free
+  // voxels, within its reach - fragmented at once, in parallel (fragment_chunk only reads the
+  // grid): the walk then finds them cached. The fragments are the ones the walk would make
+  // chunk by chunk.
+  constexpr size_t kMaxFlood = 4096, kMin = 4;
+  const i32 R = static_cast<i32>(std::ceil(max_radius / (grid_.h * kChunk))) + 1;
+  std::vector<IVec3> queue{seed}, todo;
+  std::unordered_set<u64> seen{key3(seed[0], seed[1], seed[2])};
+  for (size_t i = 0; i < queue.size() && queue.size() < kMaxFlood; ++i) {
+    const IVec3 cc = queue[i];
+    const Chunk* ch = grid_.chunk(cc);
+    if (!ch || ch->free_count() == 0) continue;
+    // (only chunks never fragmented: a stale cache is rebuilt when the walk comes to it, which
+    // is also when the structures holding its old fragments learn of it)
+    if (!frags_.count(key3(cc[0], cc[1], cc[2]))) todo.push_back(cc);
+    for (int d = 0; d < 6; ++d) {
+      IVec3 q = cc;
+      q[d / 2] += (d & 1) ? -1 : 1;
+      if (std::abs(q[0] - seed[0]) > R || std::abs(q[1] - seed[1]) > R || std::abs(q[2] - seed[2]) > R) continue;
+      if (seen.insert(key3(q[0], q[1], q[2])).second) queue.push_back(q);
+    }
+  }
+  if (todo.size() < kMin) return;  // (a few: the walk does them as well)
+  std::vector<FragChunk> out(todo.size());
+  parallel_for(static_cast<i64>(todo.size()), 1, [&](i64 a, i64 b) {
+    for (i64 j = a; j < b; ++j) out[size_t(j)] = fragment_chunk(grid_, todo[size_t(j)], cfg_.frag);
+  });
+  for (size_t j = 0; j < todo.size(); ++j) adopt_fragments(key3(todo[j][0], todo[j][1], todo[j][2]), std::move(out[j]));
 }
 
 FragChunk* World::frag_chunk_if(u64 key) {
@@ -228,6 +265,7 @@ u8 World::frag_class(const FragKey& f) {
 World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_radius, bool detach_free) {
   if (max_nodes <= 0) max_nodes = cfg_.structure_max_nodes;
   if (max_radius <= 0) max_radius = cfg_.structure_max_radius;
+  prefragment(unkey3(seed.chunk), max_radius);
   auto s = std::make_unique<Structure>();
   s->id = next_id_++;
   std::vector<FragKey> members;
@@ -419,8 +457,9 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
 bool World::pristine(const Structure& s) const {
   for (const SBond& B : s.P.bonds)
     if (B.broken) return false;
+  // (changed voxels or bonds: a player's; water, burn marks - persistent layers - do not count)
   for (const FragKey& f : s.frags)
-    if (f.idx >= 0 && grid_.is_modified(f.chunk)) return false;
+    if (f.idx >= 0 && grid_.voxels_modified(f.chunk)) return false;
   return true;
 }
 
@@ -643,9 +682,10 @@ void World::step_structures() {
     if (!sp) continue;
     Structure& s = *sp;
     if (s.rejudge) {
-      // (its strengths changed - damage - and its loads did not: judged again as it stands)
+      // (its strengths changed - damage - and its loads did not: judged again as it stands; the
+      // judgement reads the bonds and the solution only, not the preconditioner)
       s.rejudge = false;
-      if (!s.solving && !s.stale && s.P.assembled() && s.u.size() == 6 * s.P.nodes.size()) {
+      if (!s.solving && !s.stale && s.u.size() == 6 * s.P.nodes.size()) {
         s.shock = false;
         judge(s);
         continue;
@@ -1320,7 +1360,7 @@ f64 World::probe_utilization(const IVec3& voxel, i32* over) {
 
 bool World::in_range(const V3& p) const {
   // finite, and within the range of voxel keys (+-2^20 voxels) with room for an event's radius
-  const f64 lim = grid_.h * static_cast<f64>((1 << 20) - 4096);
+  const f64 lim = grid_.h * static_cast<f64>(kVoxelLimit);
   return finite3(p) && std::abs(p.x) < lim && std::abs(p.y) < lim && std::abs(p.z) < lim;
 }
 
@@ -1343,13 +1383,11 @@ void World::blast(const V3& pos, f64 radius, f64 energy) {
 }
 
 i32 World::set_voxels(const std::vector<VoxelEdit>& in, u32 flags) {
-  // (voxels within the key range, values of registered materials)
-  constexpr i32 kLim = (1 << 20) - 4096;
+  // (voxels within the key range, valid values)
   std::vector<VoxelEdit> edits;
   edits.reserve(in.size());
   for (const VoxelEdit& e : in)
-    if (std::abs(e.p[0]) < kLim && std::abs(e.p[1]) < kLim && std::abs(e.p[2]) < kLim && (e.v & 0x7F) <= kMaxMaterials)
-      edits.push_back(e);
+    if (in_voxel_range(e.p) && vox_valid(e.v)) edits.push_back(e);
   if (edits.empty()) return 0;
   IVec3 lo{INT32_MAX, INT32_MAX, INT32_MAX}, hi{INT32_MIN, INT32_MIN, INT32_MIN};
   for (const VoxelEdit& e : edits)
@@ -1665,10 +1703,22 @@ void World::trim_output() {
 // Tick
 
 void World::tick() {
+  if (in_tick_) return;  // (a system or callback ticking the world from inside its tick)
+  in_tick_ = true;
+  struct Done {
+    bool& f;
+    ~Done() { f = false; }
+  } done{in_tick_};
   const auto t0 = Clock::now();
   ++st_.ticks;
   stream_update();
   if (par_.paused) {
+    // (paused: forces set meanwhile do not pile up, and the systems still hear of streaming)
+    for (auto& bp : rigid_.bodies) {
+      bp->force = V3{};
+      bp->torque = V3{};
+    }
+    step_systems(false);
     st_.tick_ms = ms_since(t0);
     return;
   }
@@ -1697,6 +1747,7 @@ void World::tick() {
   apply_blast_loads();
   finish_loads(ns);
   const f64 loads_ms = ms_since(tl);
+  st_.loads_ms = loads_ms;
   const auto ts = Clock::now();
   step_structures();
   st_.structural_ms = ms_since(ts);
@@ -1718,12 +1769,15 @@ void World::tick() {
     bp->force = V3{};
     bp->torque = V3{};
   }
+  const auto tsys = Clock::now();
   step_systems();
+  st_.systems_ms = ms_since(tsys);
   flush_body_changes();
   grid_.compact_changed();
   enforce_budgets();
   announce_bodies();
   st_.tick_ms = ms_since(t0);
+  st_.upkeep_ms = std::max(0.0, st_.tick_ms - st_.stream_ms - st_.event_ms - st_.rigid_ms - loads_ms - st_.structural_ms - st_.systems_ms);
 }
 
 }  // namespace svx

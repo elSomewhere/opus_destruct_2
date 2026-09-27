@@ -8,6 +8,8 @@ import { h } from './dom.ts';
 
 export interface SettingsCallbacks {
   onParams(params: EngineParams): void;
+  /** An environment setting (`setEnv`) or a world tunable (`setTunable`) by name. */
+  onSetting(kind: 'env' | 'tunable', name: string, value: number): void;
   onLoadProcedural(kind: ProceduralKind, seed: number): void;
   onLoadWad(file: File, map: string, options: WadOptions): void;
 }
@@ -28,6 +30,57 @@ const SLIDERS: readonly SliderDef[] = [
   { key: 'impact', label: 'Impact', min: 0.25, max: 4, step: 0.01, log: true, hint: 'Impact — how hard landings hit' },
   { key: 'dif', label: 'Dynamic factor', min: 1, max: 2.5, step: 0.05, hint: 'Dynamic factor — overshoot of sudden load changes' },
 ];
+
+/**
+ * Settings by name (`setEnv` / `setTunable`): the engine's defaults are the initial values, and
+ * the engine keeps them across level loads.
+ */
+interface NamedSetting {
+  kind: 'env' | 'tunable';
+  name: string;
+  label: string;
+  /** A checkbox (0 / 1), or a slider over [min, max]. */
+  toggle?: boolean;
+  min?: number;
+  max?: number;
+  step?: number;
+  value: number;
+  hint: string;
+}
+
+const ENVIRONMENT: readonly NamedSetting[] = [
+  { kind: 'env', name: 'fire.enabled', label: 'Fire', toggle: true, value: 1, hint: 'Fire: burning, heat, charring' },
+  { kind: 'env', name: 'fire.flame_reach', label: 'Fire spread', min: 0.02, max: 0.6, step: 0.01, value: 0.15, hint: 'How fast flames heat what is above them (1/s)' },
+  { kind: 'env', name: 'fire.wood.burn_s', label: 'Wood burn time', min: 5, max: 120, step: 1, value: 40, hint: 'Seconds a voxel of wood burns before it is gone' },
+  { kind: 'env', name: 'smoke.enabled', label: 'Smoke', toggle: true, value: 1, hint: 'Smoke: rises, fills rooms, drifts, thins out' },
+  { kind: 'env', name: 'smoke.lifetime', label: 'Smoke lifetime', min: 2, max: 60, step: 1, value: 20, hint: 'Seconds smoke takes to thin out' },
+  { kind: 'env', name: 'smoke.wind_x', label: 'Wind x', min: -10, max: 10, step: 0.5, value: 0, hint: 'Wind (m/s) along x' },
+  { kind: 'env', name: 'smoke.wind_y', label: 'Wind y', min: -10, max: 10, step: 0.5, value: 0, hint: 'Wind (m/s) along y' },
+  { kind: 'env', name: 'water.enabled', label: 'Water flow', toggle: true, value: 1, hint: 'Water flows, spreads and settles' },
+  { kind: 'env', name: 'water.loads', label: 'Water pressure', toggle: true, value: 1, hint: 'Water presses on the walls that hold it' },
+  { kind: 'env', name: 'water.buoyancy', label: 'Buoyancy', toggle: true, value: 1, hint: 'Pieces float or sink' },
+];
+
+const WORLD: readonly NamedSetting[] = [
+  { kind: 'tunable', name: 'rigid.gravity', label: 'Gravity', min: 1, max: 20, step: 0.1, value: 9.81, hint: 'm/s^2' },
+  { kind: 'tunable', name: 'max_bodies', label: 'Max pieces', min: 500, max: 6000, step: 100, value: 3000, hint: 'Pieces simulated at once (beyond: the smallest are culled)' },
+];
+
+function namedRow(d: NamedSetting, onChange: (v: number) => void): HTMLElement {
+  if (d.toggle) {
+    const box = h('input', { type: 'checkbox' });
+    box.checked = d.value !== 0;
+    box.addEventListener('change', () => onChange(box.checked ? 1 : 0));
+    return h('label', { class: 'row', title: d.hint }, h('span', {}, d.label), box);
+  }
+  const input = h('input', { type: 'range', min: d.min ?? 0, max: d.max ?? 1, step: d.step ?? 0.01, value: d.value });
+  const value = h('span', { class: 'value' }, String(d.value));
+  input.addEventListener('input', () => {
+    value.textContent = input.value;
+    onChange(Number(input.value));
+  });
+  return h('label', { class: 'row', title: d.hint }, h('span', {}, d.label), input, value);
+}
 
 /** Log sliders run over 0..LOG_STEPS. */
 const LOG_STEPS = 1000;
@@ -119,6 +172,9 @@ export class SettingsPanel {
       ...sliders,
       h('label', { class: 'row' }, h('span', {}, 'Debug view'), this.debugSelect),
       h('label', { class: 'row' }, h('span', {}, 'Paused'), this.pausedBox),
+      ...WORLD.map((d) => namedRow(d, (v) => callbacks.onSetting(d.kind, d.name, v))),
+      h('h2', {}, 'Environment'),
+      ...ENVIRONMENT.map((d) => namedRow(d, (v) => callbacks.onSetting(d.kind, d.name, v))),
       h('h2', {}, 'World'),
       h('div', { class: 'row' }, kindSelect, h('span', {}, 'seed'), seedInput, loadProc),
       h('h2', {}, 'Doom WAD'),
@@ -128,8 +184,9 @@ export class SettingsPanel {
       h(
         'p',
         { class: 'help' },
-        'Click the view to play. WASD move, mouse look, Space jump, Shift run, 1/2/3 or wheel weapons, ' +
-          'click fire, E use (doors, lifts, switches), G debug view, V noclip, R respawn, H hud, Esc menu.',
+        'Click the view to play. WASD move, mouse look, Space jump, Shift run, 1-5 or wheel weapons ' +
+          '(pistol, shotgun, rockets, flamethrower, water hose), click fire, E use (doors, lifts, switches), ' +
+          'G debug view, V noclip, R respawn, H hud, Esc menu.',
       ),
     );
     parent.append(this.root);

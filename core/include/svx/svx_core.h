@@ -112,21 +112,32 @@ void svxc_tick(svxc_world* w);
 /* ---- extension points (docs/CORE.md §5): layers, damage, loads, piece forces, systems */
 
 enum { SVXC_DAMAGE_LAYER = 0 };
-/* A named byte channel per voxel; persistent: saved in deltas and archived with its chunk.
- * Returns its index (the existing one for a name added before), -1 when full (8 layers). */
-int svxc_add_layer(svxc_world* w, const char* name, int persistent);
+/* A named byte channel per voxel; persistent: saved in deltas and archived with its chunk; bind:
+ * what its values belong to (SVXC_BIND_SOLID: cleared when the voxel goes or is replaced;
+ * SVXC_BIND_AIR: cleared when a solid takes the place; SVXC_BIND_PLACE: kept). Returns its
+ * index (the existing one for the same layer added before), -1 when full (8 layers) or when a
+ * different layer has the name. */
+enum { SVXC_BIND_PLACE = 0, SVXC_BIND_SOLID = 1, SVXC_BIND_AIR = 2 };
+int svxc_add_layer(svxc_world* w, const char* name, int persistent, int bind);
 int svxc_layer_index(svxc_world* w, const char* name); /* -1: none */
 /* n values at voxels xyz (3 each); returns the number changed. The damage layer (0 intact ..
  * 255 no strength left) takes the strength of the bond sections it is in. */
 int svxc_set_layer(svxc_world* w, int layer, const int32_t* xyz, const uint8_t* values, int n);
 uint8_t svxc_layer(svxc_world* w, int layer, int x, int y, int z);
+/* A chunk's values of a layer (32768 bytes, index (x * 32 + y) * 32 + z): 1 if it holds any,
+ * 0 if none (out zeroed). */
+int svxc_chunk_layer(svxc_world* w, int layer, int cx, int cy, int cz, uint8_t* out);
+/* The chunks whose values of a layer changed since the last poll (chunk xyz, 3 ints each,
+ * valid until the next poll): count. */
+int svxc_poll_layer_changes(svxc_world* w, int layer, const int32_t** chunks);
 /* A piece's layer values at its shape voxels (the coordinates of svxc_piece_voxels). */
 int svxc_set_piece_layer(svxc_world* w, int64_t piece, int layer, const int32_t* xyz, const uint8_t* values, int n);
 uint8_t svxc_piece_layer(svxc_world* w, int64_t piece, int layer, int x, int y, int z);
 /* Removes n shape voxels of a piece (burnt out, melted): its remains become new pieces. */
 int svxc_remove_piece_voxels(svxc_world* w, int64_t piece, const int32_t* xyz, int n, int dust);
 /* Forces (N, 3 each) on voxels of the static world, by group: replaces the group's loads
- * (n = 0 removes them). Structures under new or changed loads are solved again. */
+ * (n = 0 removes them; n > 0 without arrays changes nothing). Structures under new or changed
+ * loads are solved again. */
 void svxc_set_loads(svxc_world* w, uint64_t group, const int32_t* xyz, const double* forces, int n);
 /* A force (N) at a world point on a piece during the next tick (it does not wake it). */
 void svxc_apply_force(svxc_world* w, int64_t piece, const double point[3], const double force[3]);
@@ -135,6 +146,22 @@ void svxc_wake_piece(svxc_world* w, int64_t piece);
  * added: its own physics on the world through this API. */
 typedef void (*svxc_step_fn)(void* user, svxc_world* w, double dt);
 void svxc_add_system(svxc_world* w, const char* name, svxc_step_fn step, void* user);
+/* The same with all of a system's callbacks (any but step may be NULL): on_load (the world
+ * loaded a new grid), on_chunks (kind SVXC_CHUNKS_*: chunks generated, evicted, or whose
+ * voxels changed this tick; xyz, 3 ints each), memory_bytes and state_hash (reported in
+ * svxc_get_memory and mixed into svxc_session_hash). A system must not tick, load or destroy
+ * the world from its callbacks (tick and load are refused). Returns 1 if added. */
+enum { SVXC_CHUNKS_GENERATED = 0, SVXC_CHUNKS_EVICTED = 1, SVXC_CHUNKS_CHANGED = 2 };
+typedef struct svxc_system {
+  const char* name;
+  void* user;
+  void (*step)(void* user, svxc_world* w, double dt);
+  void (*on_load)(void* user, svxc_world* w);
+  void (*on_chunks)(void* user, svxc_world* w, int kind, const int32_t* chunks, int n);
+  int64_t (*memory_bytes)(void* user);
+  uint64_t (*state_hash)(void* user);
+} svxc_system;
+int svxc_add_system_ex(svxc_world* w, const svxc_system* s);
 
 /* ---- output */
 
@@ -201,6 +228,7 @@ void svxc_get_stats(svxc_world* w, svxc_stats* out);
 /* What the world holds, by kind (bytes): see svx::MemoryReport. */
 typedef struct svxc_memory {
   int64_t grid, fragments, structures, pieces, archive, caches, queues, total;
+  int64_t systems; /* (in total) */
 } svxc_memory;
 void svxc_get_memory(svxc_world* w, svxc_memory* out);
 uint64_t svxc_state_hash(svxc_world* w);   /* voxels and broken bonds */

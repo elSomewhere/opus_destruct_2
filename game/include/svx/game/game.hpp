@@ -39,7 +39,9 @@ struct GameParams {
 
 // An event for the front end (the web worker protocol, docs/API.md).
 struct GameEvent {
-  enum class Kind : u8 { Detached, Crack, Impact, Dust, Splash };
+  // Remesh: a piece's new mesh (its charring or glow changed), in world coordinates at its pose
+  // now: drawn from then on at the poses that follow (as a Detached event's).
+  enum class Kind : u8 { Detached, Crack, Impact, Dust, Splash, Remesh };
   Kind kind = Kind::Crack;
   i64 id = 0;
   V3 pos, vel, ang, normal{0, 0, 1};
@@ -117,6 +119,15 @@ class Game {
   void ignite(const V3& pos, f64 radius);      // sets fire to what burns in the sphere
   void extinguish(const V3& pos, f64 radius);  // puts out and cools the sphere
   void pour(const V3& pos, f64 radius);        // fills the air in the sphere with water
+  void heat(const V3& pos, f64 radius, f64 celsius);  // brings solids in the sphere to (at least) this
+  void drain(const V3& pos, f64 radius);             // removes the water in the sphere
+  // Settings, logged like the other commands (a session replays with the same ones): the
+  // environment's (env_param_*, svx/env/env.hpp) and the world's (tunable_*,
+  // svx/world/tunables.hpp), by index or name. False: unknown (or its system is not there).
+  bool set_env(i32 index, f64 value);
+  bool set_env(const char* name, f64 value) { return set_env(env_param_index(name), value); }
+  bool set_tunable(i32 index, f64 value);
+  bool set_tunable(const char* name, f64 value);
   void tick();
   i64 ticks() const { return world_.ticks(); }
   void record_to(CommandLog* log) { log_ = log; }
@@ -153,8 +164,11 @@ class Game {
   std::vector<ChunkMesh> take_water_meshes();
   std::vector<u64> take_water_removed();
   f64 water_remesh_s = 0.1;
-  Environment& env() { return env_; }
+  // (read only: its changes go through the commands above, which are logged)
   const Environment& env() const { return env_; }
+  // Whether the chunk's last mesh (take_meshes) came from a change of its decoration only
+  // (charring, glow): its voxels, and so its occupancy, are as before.
+  bool decoration_only(u64 chunk) const { return decor_only_.count(chunk) > 0; }
   f64 char_remesh_s = 1.0;  // s: charring chunks are meshed again at most this often
 
   GameStats stats() const;
@@ -190,7 +204,10 @@ class Game {
   CommandLog* log_ = nullptr;
   MeshOptions mesh_base_;                    // (texture provider for piece meshes)
   std::vector<GameEvent> events_;
-  std::vector<u64> remesh_;                  // chunks to mesh again (debug view changes)
+  std::unordered_set<u64> remesh_;           // chunks to mesh again (debug view changes, charring)
+  std::unordered_set<u64> decor_only_;       // (of the last take_meshes: decoration changes only)
+  std::unordered_set<u64> meshed_;           // (chunks meshed since their removal was queued)
+  std::vector<i64> piece_remesh_;            // pieces whose charring or glow changed
   std::unordered_set<u64> charred_;          // chunks whose charring changed (meshed again every char_remesh_s)
   f64 char_clock_ = 0.0;
   std::unordered_set<u64> wet_dirty_;        // chunks whose water changed (meshed again every water_remesh_s)

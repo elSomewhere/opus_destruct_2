@@ -125,6 +125,26 @@ export class EngineClient {
     this.send({ type: 'pour', pos, radius });
   }
 
+  /** Removes the water in the sphere. */
+  drain(pos: Vec3, radius: number): void {
+    this.send({ type: 'drain', pos, radius });
+  }
+
+  /** Brings the solids in the sphere to (at least) `celsius`. */
+  heat(pos: Vec3, radius: number, celsius: number): void {
+    this.send({ type: 'heat', pos, radius, celsius });
+  }
+
+  /** An environment setting by name ("fire.flame_reach", ...): recorded in replays. */
+  setEnv(name: string, value: number): void {
+    this.send({ type: 'setEnv', name, value });
+  }
+
+  /** A world tunable by name ("rigid.gravity", ...): recorded in replays. */
+  setTunable(name: string, value: number): void {
+    this.send({ type: 'setTunable', name, value });
+  }
+
   /** Puts out and cools the sphere. */
   extinguish(pos: Vec3, radius: number): void {
     this.send({ type: 'extinguish', pos, radius });

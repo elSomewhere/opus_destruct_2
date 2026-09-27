@@ -468,7 +468,7 @@ export class Renderer {
     let triangles = drawn.triangles + pieces.triangles;
     if (this.water.count > 0) {
       pass.setPipeline(this.waterPipeline);
-      triangles += this.water.draw(pass, this.planes, cam.eye, MAX_VIEW_DISTANCE).triangles;
+      triangles += this.water.draw(pass, this.planes, cam.eye, MAX_VIEW_DISTANCE, undefined, true).triangles;
     }
 
     if (particleCount > 0) {

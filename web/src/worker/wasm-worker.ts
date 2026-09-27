@@ -60,6 +60,11 @@ interface SvxModule {
   _svx_ignite(e: number, x: number, y: number, z: number, r: number): void;
   _svx_extinguish(e: number, x: number, y: number, z: number, r: number): void;
   _svx_pour(e: number, x: number, y: number, z: number, r: number): void;
+  _svx_drain(e: number, x: number, y: number, z: number, r: number): void;
+  _svx_heat(e: number, x: number, y: number, z: number, r: number, celsius: number): void;
+  _svx_set_env(e: number, name: number, value: number): number;
+  _svx_set_tunable(e: number, name: number, value: number): number;
+  _svx_stats_count(): number;
   _svx_poll_water(e: number): number;
   _svx_water_info(e: number, i: number, out: number): void;
   _svx_water_vertices(e: number, i: number): number;
@@ -105,7 +110,7 @@ const STATS_MS = 250;
 // job and budget timeline: per-tick samples since the last stats message (TIMELINE_FIELDS)
 let timeline: number[] = [];
 const AUTOSAVE_MS = 5000;
-/** svx_stats fills out[0..50]. */
+/** svx_stats fills out[0..50] (svx_stats_count: checked when the module starts). */
 const STATS_COUNT = 51;
 /** Flames and smoke cells sent to the renderer at most, and how often (ticks: their step). */
 const MAX_FLAMES = 4096;
@@ -186,7 +191,8 @@ async function ensureModule(): Promise<SvxModule> {
   if (mod) return mod;
   const m = (await createSvxModule()) as unknown as SvxModule;
   mod = m;
-  scratch = m._malloc(Math.max(64, STATS_COUNT) * 8);
+  // (call scratch: at least what svx_stats writes, whatever this build's count)
+  scratch = m._malloc(Math.max(64, STATS_COUNT, m._svx_stats_count()) * 8);
   occBuf = m._malloc(4096);
   eng = m._svx_create(config.voxelSize);
   m._svx_set_threads(1);
@@ -266,7 +272,8 @@ function flushMeshes(): void {
     m._svx_mesh_info(eng, i, scratch);
     const vc = f64(6);
     const ic = f64(7);
-    occupancy.push(occupancyOf(f64(0), f64(1), f64(2)));
+    // (a decoration-only mesh - charring, glow - leaves the chunk's occupancy as it was)
+    if (f64(8) === 0) occupancy.push(occupancyOf(f64(0), f64(1), f64(2)));
     const key = chunkKey(f64(0), f64(1), f64(2));
     knownChunks.add(key);
     meshes.push({
@@ -396,6 +403,25 @@ function flushEvents(): void {
       list.push({ kind: 'impact', pos, energy: f64(15) });
     } else if (kind === 4) {
       list.push({ kind: 'splash', pos, strength: f64(15) });
+    } else if (kind === 5) {
+      const vc = f64(18);
+      const ic = f64(19);
+      list.push({
+        kind: 'detached',
+        id: f64(1),
+        voxels: f64(16),
+        centroid: pos,
+        velocity: [f64(5), f64(6), f64(7)],
+        angular: [f64(8), f64(9), f64(10)],
+        rigid: true,
+        remesh: true,
+        mesh: {
+          vertices: copyOut(m._svx_event_vertices(eng, i), vc * VERTEX_STRIDE),
+          vertexCount: vc,
+          indices: copyOut(m._svx_event_indices(eng, i), ic * 4),
+          indexCount: ic,
+        },
+      });
     }
     // (kind 3, the v1 bubble debug event, is not emitted by v2 engines)
   }
@@ -470,8 +496,9 @@ function sampleTimeline(tickMs: number, flushMs: number): void {
   const events = running ? f64(2) : 0;
   const rigid = running ? f64(3) : 0;
   const stream = f64(28);
-  const other = Math.max(0, tickMs - structural - events - rigid - stream);
-  timeline.push(structural, rigid, events, stream, other, flushMs, f64(21));
+  const env = running ? f64(45) : 0;
+  const other = Math.max(0, tickMs - structural - events - rigid - stream - env);
+  timeline.push(structural, rigid, events, stream, env, other, flushMs, f64(21));
   if (timeline.length > 600 * TIMELINE_STRIDE) timeline = timeline.slice(-300 * TIMELINE_STRIDE);
 }
 
@@ -576,6 +603,9 @@ function clearChunks(): void {
   fieldsKey = '';
   debrisLive = 0; // (the front end drops the old world's pieces when it requests a load)
   debrisSent = new Float64Array(0);
+  // (the old world's flames and smoke go now: a message sent before the load may still be on
+  // its way)
+  if (envLive) postToMain({ type: 'env', flames: new Float32Array(0), smoke: new Float32Array(0) });
   envLive = false;
 }
 
@@ -648,6 +678,23 @@ async function handle(cmd: EngineCommand): Promise<void> {
     case 'pour':
       if (mod && loaded) mod._svx_pour(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
       break;
+    case 'drain':
+      if (mod && loaded) mod._svx_drain(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
+      break;
+    case 'heat':
+      if (mod && loaded) mod._svx_heat(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius, cmd.celsius);
+      break;
+    case 'setEnv': {
+      // (kept for the next load too: the engine keeps its environment across levels)
+      const m = await ensureModule();
+      if (Number.isFinite(cmd.value)) withString(cmd.name, (p) => m._svx_set_env(eng, p, cmd.value));
+      break;
+    }
+    case 'setTunable': {
+      const m = await ensureModule();
+      if (Number.isFinite(cmd.value)) withString(cmd.name, (p) => m._svx_set_tunable(eng, p, cmd.value));
+      break;
+    }
     case 'extinguish':
       if (mod && loaded) mod._svx_extinguish(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
       break;

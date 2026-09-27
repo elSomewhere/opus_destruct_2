@@ -56,8 +56,25 @@ void svx_blast(svx_engine* e, double x, double y, double z, double radius, doubl
  * cools the sphere. */
 void svx_ignite(svx_engine* e, double x, double y, double z, double radius);
 void svx_extinguish(svx_engine* e, double x, double y, double z, double radius);
-/* Water (docs/ENV.md): fills the air in the sphere. */
+/* Water (docs/ENV.md): fills the air in the sphere; removes the water in the sphere. Heat:
+ * brings the solids in the sphere to (at least) this temperature. */
 void svx_pour(svx_engine* e, double x, double y, double z, double radius);
+void svx_drain(svx_engine* e, double x, double y, double z, double radius);
+void svx_heat(svx_engine* e, double x, double y, double z, double radius, double celsius);
+/* Settings by name, logged in replays: the environment's ("fire.flame_reach", "smoke.wind_x",
+ * "water.loads", ...: svx_env_param_*) and the world's ("fragility", "rigid.gravity",
+ * "max_bodies", ...: svx_tunable_*; setup ones are meant for before a load). Set returns 0, or
+ * -1 for an unknown name; get NaN for one. */
+int svx_set_env(svx_engine* e, const char* name, double value);
+double svx_get_env(svx_engine* e, const char* name);
+int svx_env_param_count(void);
+const char* svx_env_param_name(int i);
+void svx_env_param_range(int i, double* out2);
+int svx_set_tunable(svx_engine* e, const char* name, double value);
+double svx_get_tunable(svx_engine* e, const char* name);
+int svx_tunable_count(void);
+const char* svx_tunable_name(int i);
+int svx_tunable_setup(int i);
 /* Water surface meshes of chunks whose water changed: count, then per mesh info[8] as
  * svx_mesh_info and the buffers (texture 0xFFFE); chunks whose water is gone (3 ints each). */
 int svx_poll_water(svx_engine* e);
@@ -85,8 +102,9 @@ int svx_raycast(svx_engine* e, double ox, double oy, double oz, double dx, doubl
 void svx_collide(svx_engine* e, double minx, double miny, double minz, double maxx, double maxy, double maxz,
                  double mx, double my, double mz, double* out);
 
-/* Meshes of changed chunks: count, then per mesh info[8] = chunk xyz, origin xyz, vertex count,
- * index count, and the buffers. */
+/* Meshes of changed chunks: count, then per mesh info[9] = chunk xyz, origin xyz, vertex count,
+ * index count, decoration only (1: charring or glow changed, the voxels did not - its occupancy
+ * is as before), and the buffers. */
 int svx_poll_meshes(svx_engine* e);
 void svx_mesh_info(svx_engine* e, int i, double* out);
 const void* svx_mesh_vertices(svx_engine* e, int i);
@@ -107,7 +125,8 @@ void svx_far_removed(svx_engine* e, int i, int* out2);
  * voxel index v = (x * 32 + y) * 32 + z, local coordinates). */
 int svx_chunk_occupancy(svx_engine* e, int cx, int cy, int cz, uint8_t* out4096);
 
-/* Events: count, then per event info[21] = kind (0 detached, 1 crack, 2 impact, 3 bubble (v1), 4 splash), id,
+/* Events: count, then per event info[21] = kind (0 detached, 1 crack, 2 impact, 3 bubble (v1), 4 splash,
+ * 5 remesh: a piece's new mesh, as detached but without its effects), id,
  * pos xyz, velocity xyz, angular xyz, normal xyz, radius, strength, voxels, level, vertex count,
  * index count, rigid; detached events carry a world-space mesh (pos = its centre of mass). A
  * rigid detached piece is simulated as debris: its pose comes from svx_debris until it is gone. */
@@ -137,7 +156,9 @@ const double* svx_debris_data(svx_engine* e);
 /* Rigid debris on (default) or off (detached pieces are only reported). */
 void svx_set_debris(svx_engine* e, int enabled);
 
-/* out[35]: 0 tick ms, 1 structural ms, 2 event ms, 3 rigid ms, 4 mesh ms, 5 voxels, 6 chunks,
+/* The number of doubles svx_stats writes. */
+int svx_stats_count(void);
+/* out[svx_stats_count()]: 0 tick ms, 1 structural ms, 2 event ms, 3 rigid ms, 4 mesh ms, 5 voxels, 6 chunks,
  * 7 memory MB, 8 events, 9 ticks, 10 structures (registered), 11 structures solving, 12 their
  * nodes, 13 extractions, 14 converged solves, 15 PCG iterations, 16 bonds broken, 17 detached
  * voxels, 18 detached pieces, 19 max utilization (last judge), 20 pieces, 21 awake pieces,

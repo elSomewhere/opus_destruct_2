@@ -35,11 +35,52 @@ inline V3 cell_centre(const IVec3& c, f64 h) {
 
 }  // namespace
 
+namespace {
+
+inline f64 clampf(f64 v, f64 lo, f64 hi, f64 fallback) { return std::isfinite(v) ? std::clamp(v, lo, hi) : fallback; }
+
+SmokeConfig sanitized(SmokeConfig c) {
+  c.step_s = clampf(c.step_s, 0.0, 0.5, 0.1);
+  c.rise = clampf(c.rise, 0.0, 20.0, 0.8);
+  c.diffuse = clampf(c.diffuse, 0.0, 5.0, 0.6);
+  c.lifetime = clampf(c.lifetime, 0.5, 3600.0, 20.0);
+  for (int a = 0; a < 3; ++a) c.wind[a] = clampf(c.wind[a], -50.0, 50.0, 0.0);
+  c.per_flame = clampf(c.per_flame, 0.0, 10.0, 0.12);
+  c.ceiling_m = clampf(c.ceiling_m, 0.0, 1000.0, 24.0);
+  c.max_blocks = std::clamp(c.max_blocks, 0, 1 << 20);
+  return c;
+}
+
+// e^-x for small x, from + - * / only (the same on every platform): a [2/2] Pade approximant,
+// exact to 1e-12 below x = 0.05, applied in halvings beyond.
+f64 exp_neg(f64 x) {
+  int k = 0;
+  while (x > 0.05 && k < 60) {
+    x *= 0.5;
+    ++k;
+  }
+  const f64 x2 = x * x / 12.0;
+  f64 r = (1.0 - 0.5 * x + x2) / (1.0 + 0.5 * x + x2);
+  for (int i = 0; i < k; ++i) r *= r;
+  return r;
+}
+
+}  // namespace
+
+SmokeSystem::SmokeSystem(const SmokeConfig& c) : cfg_(sanitized(c)) {}
+
+void SmokeSystem::configure(const SmokeConfig& c) {
+  cfg_ = sanitized(c);
+  clock_ = std::min(clock_, cfg_.step_s);
+}
+
 void SmokeSystem::emit(const V3& pos, f64 amount) { emit_sphere(pos, 0.0, amount); }
 
 void SmokeSystem::emit_sphere(const V3& pos, f64 radius, f64 amount) {
-  if (!std::isfinite(pos.x + pos.y + pos.z + radius + amount) || !(amount > 0.0)) return;
-  if (pending_.size() < 4096) pending_.push_back({pos, std::clamp(radius, 0.0, 16.0), std::min(amount, 1e4)});
+  if (!std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z) || !std::isfinite(radius) || !(amount > 0.0) ||
+      !std::isfinite(amount))
+    return;
+  if (pending_.size() < kMaxPending) pending_.push_back({pos, std::clamp(radius, 0.0, kMaxEmitRadius), std::min(amount, 1e4)});
 }
 
 void SmokeSystem::on_load(World& w) {
@@ -48,6 +89,7 @@ void SmokeSystem::on_load(World& w) {
   solid_.clear();
   pending_.clear();
   clock_ = 0.0;
+  st_ = Stats{};
 }
 
 void SmokeSystem::on_evicted(World& w, const std::vector<u64>& chunks) {
@@ -75,8 +117,7 @@ const SmokeSystem::Solid& SmokeSystem::solid(const World& w, const IVec3& cc) {
   }();
   if (!w.chunk_resident(cc)) return kClosed;
   const u64 k = key3(cc[0], cc[1], cc[2]);
-  if (solid_.size() > static_cast<size_t>(4 * std::max(64, cfg_.max_blocks)) && !solid_.count(k)) solid_.clear();
-  Solid& m = solid_[k];
+  Solid& m = solid_[k];  // (never cleared within a step: the references stay valid; prune_solid after it)
   if (!m.stale) return m;
   m.stale = false;
   const Chunk* ch = w.grid().chunk(cc);
@@ -123,11 +164,47 @@ void SmokeSystem::add(World& w, const IVec3& c, f64 amount) {
   const IVec3 cc = cell_chunk(c);
   const i32 i = cell_index(c);
   if (solid(w, cc).s[size_t(i)]) return;
-  Block* b = block(cc, true);
+  // (new blocks within twice the budget: the rest waits for the step's trim)
+  Block* b = block(cc, static_cast<i32>(blocks_.size()) < 2 * cfg_.max_blocks);
+  if (!b) {
+    ++st_.dropped;
+    return;
+  }
   b->d[size_t(i)] = std::min(8.0f, b->d[size_t(i)] + static_cast<f32>(amount));
 }
 
+void SmokeSystem::add_at(World& w, const V3& pos, f64 amount) {
+  // The cell holding pos, or - a closed cell (a flame on a wall, a floor) - the first open one
+  // next to it: up, the sides, down.
+  const IVec3 c = cell_at(pos, w.voxel_size());
+  constexpr int kOrder[7][3] = {{0, 0, 0}, {0, 0, 1}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, -1}};
+  for (const auto& o : kOrder) {
+    const IVec3 q{c[0] + o[0], c[1] + o[1], c[2] + o[2]};
+    if (solid(w, cell_chunk(q)).s[size_t(cell_index(q))]) continue;
+    add(w, q, amount);
+    return;
+  }
+}
+
+void SmokeSystem::prune_solid() {
+  // (the masks of chunks with a block or next to one; the rest go once the cache has grown)
+  if (solid_.size() <= static_cast<size_t>(8 * std::max<size_t>(64, blocks_.size()))) return;
+  std::unordered_map<u64, Solid> keep;
+  for (const auto& [k, b] : blocks_) {
+    const IVec3 c = unkey3(k);
+    for (int d = -1; d < 6; ++d) {
+      IVec3 q = c;
+      if (d >= 0) q[d / 2] += (d & 1) ? -1 : 1;
+      const u64 qk = key3(q[0], q[1], q[2]);
+      const auto it = solid_.find(qk);
+      if (it != solid_.end()) keep.emplace(qk, it->second);
+    }
+  }
+  solid_.swap(keep);
+}
+
 f64 SmokeSystem::density(const World& w, const V3& pos) const {
+  if (!w.in_range(pos)) return 0.0;
   const IVec3 c = cell_at(pos, w.voxel_size());
   const IVec3 cc = cell_chunk(c);
   const auto it = blocks_.find(key3(cc[0], cc[1], cc[2]));
@@ -135,21 +212,27 @@ f64 SmokeSystem::density(const World& w, const V3& pos) const {
 }
 
 void SmokeSystem::step(World& w, f64 dt) {
-  clock_ += dt;
-  const f64 s = std::max(cfg_.step_s, w.config().dt);
-  while (clock_ >= s - 1e-9) {
-    clock_ -= s;
-    smoke_step(w, s);
+  const auto t0 = std::chrono::steady_clock::now();
+  if (cfg_.enabled) {
+    const f64 s = std::max(cfg_.step_s, w.config().dt);
+    clock_ = std::min(clock_ + dt, 4.0 * s);  // (a long pause does not come back as a burst)
+    while (clock_ >= s - 1e-9) {
+      clock_ -= s;
+      smoke_step(w, s);
+    }
   }
+  st_.step_ms = std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  st_.total_ms += st_.step_ms;
 }
 
 void SmokeSystem::smoke_step(World& w, f64 dt) {
-  const auto t0 = std::chrono::steady_clock::now();
+  ++st_.steps;
   const f64 h = w.voxel_size(), cm = h * kCell;
   // sources
   if (fire_)
-    for (const auto& f : fire_->flames()) add(w, cell_at(f.pos + V3{0.0, 0.0, h}, h), cfg_.per_flame * dt);
+    for (const auto& f : fire_->flames()) add_at(w, f.pos + V3{0.0, 0.0, h}, cfg_.per_flame * dt);
   for (const Emit& e : pending_) {
+    if (!w.in_range(e.pos)) continue;
     const i32 r = static_cast<i32>(std::ceil(e.radius / cm));
     const IVec3 c0 = cell_at(e.pos, h);
     std::vector<IVec3> in;
@@ -159,6 +242,10 @@ void SmokeSystem::smoke_step(World& w, f64 dt) {
           const IVec3 c{c0[0] + x, c0[1] + y, c0[2] + z};
           if (norm(cell_centre(c, h) - e.pos) <= e.radius + 0.5 * cm) in.push_back(c);
         }
+    if (in.empty()) {  // (a point: its cell, or an open one next to it)
+      add_at(w, e.pos, e.amount);
+      continue;
+    }
     for (const IVec3& c : in) add(w, c, e.amount / static_cast<f64>(in.size()));
   }
   pending_.clear();
@@ -167,8 +254,8 @@ void SmokeSystem::smoke_step(World& w, f64 dt) {
   const f32 dif = static_cast<f32>(std::min(0.12, cfg_.diffuse * dt));
   f32 wf[3];
   for (int a = 0; a < 3; ++a) wf[a] = static_cast<f32>(std::min(0.3, std::abs(cfg_.wind[a]) * dt / cm));
-  const f32 decay = static_cast<f32>(std::exp(-dt / std::max(0.1, cfg_.lifetime)));
-  const i32 top = static_cast<i32>(std::floor((w.grid().hi[2] * h + cfg_.ceiling_m) / cm));
+  const f32 decay = static_cast<f32>(exp_neg(dt / cfg_.lifetime));
+  const i32 top = static_cast<i32>(std::floor(std::min(1e8, (w.grid().hi[2] * h + cfg_.ceiling_m) / cm)));
   for (auto& [k, b] : blocks_) {
     solid(w, unkey3(k));  // (refreshed if stale)
     b.next.fill(0.0f);
@@ -180,10 +267,15 @@ void SmokeSystem::smoke_step(World& w, f64 dt) {
   for (u64 k : keys) {
     Block& b = blocks_.find(k)->second;
     const IVec3 cc = unkey3(k);
+    const Solid* own = &solid(w, cc);
+    // (the six neighbouring blocks' masks and blocks, looked up when a cell first needs them)
+    const Solid* nmask[6] = {};
+    Block* nblk[6] = {};
     for (i32 i = 0; i < kCells; ++i) {
       const f32 d = b.d[size_t(i)];
       if (d <= 0.0f) continue;
-      const IVec3 c{cc[0] * kSide + i / (kSide * kSide), cc[1] * kSide + (i / kSide) % kSide, cc[2] * kSide + i % kSide};
+      const i32 lx = i / (kSide * kSide), ly = (i / kSide) % kSide, lz = i % kSide;
+      const IVec3 c{cc[0] * kSide + lx, cc[1] * kSide + ly, cc[2] * kSide + lz};
       struct Flow {
         f32* to;
         f32 f;
@@ -195,15 +287,26 @@ void SmokeSystem::smoke_step(World& w, f64 dt) {
       f32 dq[6] = {};
       bool open[6] = {};
       for (int dn = 0; dn < 6; ++dn) {
-        const IVec3 q{c[0] + kDir[dn][0], c[1] + kDir[dn][1], c[2] + kDir[dn][2]};
-        if (q[2] > top) {
+        if (c[2] + kDir[dn][2] > top) {
           open[dn] = dn == 4;  // (up and away)
           continue;
         }
-        const IVec3 qc = cell_chunk(q);
-        const i32 j = cell_index(q);
-        if (solid(w, qc).s[size_t(j)]) continue;
-        Block* nb = qc == cc ? &b : block(qc, true);
+        const i32 qx = lx + kDir[dn][0], qy = ly + kDir[dn][1], qz = lz + kDir[dn][2];
+        const bool inside = qx >= 0 && qx < kSide && qy >= 0 && qy < kSide && qz >= 0 && qz < kSide;
+        const i32 j = ((qx & (kSide - 1)) * kSide + (qy & (kSide - 1))) * kSide + (qz & (kSide - 1));
+        Block* nb;
+        if (inside) {
+          if (own->s[size_t(j)]) continue;
+          nb = &b;
+        } else {
+          if (!nmask[dn]) {
+            const IVec3 qc{cc[0] + kDir[dn][0], cc[1] + kDir[dn][1], cc[2] + kDir[dn][2]};
+            nmask[dn] = &solid(w, qc);
+          }
+          if (nmask[dn]->s[size_t(j)]) continue;
+          if (!nblk[dn]) nblk[dn] = block({cc[0] + kDir[dn][0], cc[1] + kDir[dn][1], cc[2] + kDir[dn][2]}, true);
+          nb = nblk[dn];
+        }
         open[dn] = true;
         to[dn] = &nb->next[size_t(j)];
         dq[dn] = nb->d[size_t(j)];
@@ -270,7 +373,7 @@ void SmokeSystem::smoke_step(World& w, f64 dt) {
     st_.dropped += static_cast<i64>(drop);
   }
   st_.blocks = static_cast<i32>(blocks_.size());
-  st_.step_ms = std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - t0).count();
+  prune_solid();
 }
 
 std::vector<SmokeSystem::Cell> SmokeSystem::cells(const World& w, i32 max, f32 min_density) const {

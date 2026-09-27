@@ -193,7 +193,8 @@ void section_strengths(const IVec3* faces, const u8* axes, size_t n, At&& at, SB
     // (a side that is air - an unloaded neighbour, a support face - is as the other side)
     const Material& A = material(vox_solid(a.v) ? vox_mat(a.v) : vox_mat(b.v));
     const Material& M = material(vox_solid(b.v) ? vox_mat(b.v) : vox_mat(a.v));
-    const f64 cond = 1.0 - static_cast<f64>(std::max(a.damage, b.damage)) / 255.0;
+    // (full damage leaves a trace of strength: the section fails under any load, never 0 / 0)
+    const f64 cond = std::max(1e-6, 1.0 - static_cast<f64>(std::max(a.damage, b.damage)) / 255.0);
     ft += cond * std::min(A.ft, M.ft);
     fb += cond * std::min(A.fb, M.fb);
     fc += cond * std::min(A.fc, M.fc);
