@@ -224,6 +224,7 @@ struct WorldStats {
   i64 body_checks = 0, body_splits = 0, impacts = 0;
   i64 impact_breaks = 0, steady_breaks = 0;  // bonds broken in pieces by collisions / by resting loads
   i64 pulverized_voxels = 0;                 // crushed to dust
+  i64 chip_releases = 0;                     // pieces going on without the chips that broke off with their contacts
   i64 mode_breaks[4] = {0, 0, 0, 0};         // pieces' bonds broken by mode (none, tension, crush, shear)
   // streaming
   i64 resident_chunks = 0, archived_chunks = 0, generated_total = 0, evicted_total = 0, budget_evicted = 0;
@@ -502,6 +503,7 @@ class World {
     std::vector<std::pair<V3, V3>> cracks;  // world position, normal
     i64 checks = 0, pcg_iters = 0, impact_breaks = 0, steady_breaks = 0;
     i64 modes[4] = {0, 0, 0, 0};
+    f64 spent = 0.0;                        // J: what an impact's cracks cost
     f64 assemble_ms = 0.0, solve_ms = 0.0;  // (profiling)
   };
   void body_stress_run(Body& b, const std::vector<PointForce>& forces, bool inertia, f64 energy, StressOut& o);
@@ -513,7 +515,16 @@ class World {
   void refragment_body(Body& b);
   // Splits b into its components (pieces take the velocity field of the pre-solve velocities if
   // use_pre); returns true if it split or changed shape (b is then retired: pending_retire_).
-  bool split_body(Body& b, bool use_pre, bool force_replace);
+  // carried: this substep's contact impulses on b (chips that broke off with most of them take
+  // them along, but for what crushing them cost: the rest of the piece goes on without); spent:
+  // the fracture energy of the step's cracks.
+  struct Carried {
+    i32 frag = -1;
+    V3 J, p;         // (impulse on b, world point)
+    f64 e = 0.0;     // (the kinetic energy it took out of the collision, b's share)
+  };
+  bool split_body(Body& b, bool use_pre, bool force_replace, const std::vector<Carried>* carried = nullptr, f64 spent = 0.0);
+  void wake_around(const Body& b);  // (the sleepers touching b's box)
   std::unique_ptr<Body> sub_body(const Body& parent, const std::vector<i32>& voxels, const std::vector<i32>& frag_map,
                                  bool use_pre);
   void carve_bodies(const V3& c, f64 r);
@@ -572,7 +583,7 @@ class World {
   struct BlastLoad {
     i32 first;                               // the fragment's identity (chunk, first voxel)
     u64 chunk;
-    V3 F;
+    V3 F, at;                                // (at: the fragment's centre of mass)
   };
   std::vector<BlastLoad> blast_loads_;
   std::vector<std::unique_ptr<Body>> pending_add_;

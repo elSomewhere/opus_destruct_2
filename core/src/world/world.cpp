@@ -804,6 +804,9 @@ void World::prune_caches() {
 
 void World::judge(Structure& s) {
   const f64 dif = par_.dif;
+  // (an impact load case is judged, but it is no state to measure the next change from: the
+  // reference loads stay the steady state's, and the steady state is solved again after it)
+  const bool transient = s.transient;
   std::vector<std::pair<f64, i32>> over;
   f64 maxphi = 0.0;
   const i32 nb = static_cast<i32>(s.P.bonds.size());
@@ -823,10 +826,9 @@ void World::judge(Structure& s) {
       std::printf("      (no baseline) bond %d: static phi %.2f\n", b, bond_utilization(B, L, par_.fragility));
     if (s.shock && dif != 1.0 && it != judged_.end()) Le = lerp_load(it->second.load, L, dif);
     const f64 phi = bond_utilization(B, Le, par_.fragility);
-    if (it != judged_.end()) {
-      it->second.load = L;
-    } else {
-      judged_.emplace(s.bid[size_t(b)], Judged{node_chunk(s, B.a), L});
+    if (!transient) {
+      if (it != judged_.end()) it->second.load = L;
+      else judged_.emplace(s.bid[size_t(b)], Judged{node_chunk(s, B.a), L});
     }
     s.phi[size_t(b)] = static_cast<f32>(phi);
     maxphi = std::max(maxphi, phi);
@@ -841,15 +843,17 @@ void World::judge(Structure& s) {
     warm_u_[s.ident[i]] = {node_chunk(s, static_cast<i32>(i)), w};
   }
   s.ext_solved = s.pending_impact ? s.pending : s.ext;
-  const bool more = s.pending_impact || s.reload;
+  s.transient = s.pending_impact;
+  const bool more = s.pending_impact || s.reload || transient;
   s.pending_impact = false;
   s.reload = false;
   if (par_.debug_fields)
     for (const FragKey& f : s.frags)
       if (f.idx >= 0) grid_.mark_dirty(unkey3(f.chunk));
   if (over.empty() || s.rounds >= cfg_.max_rounds) {
-    s.solving = more;  // (a waiting load case: solve again)
+    s.solving = more;  // (a waiting load case, or the steady state after an impact: solve again)
     s.shock = false;
+    if (over.empty()) s.rounds = 0;  // (the cascade is over: the next one gets its own rounds)
     return;
   }
   std::sort(over.begin(), over.end(), [](const auto& x, const auto& y) { return x.first > y.first || (x.first == y.first && x.second < y.second); });
@@ -1200,6 +1204,7 @@ void World::structure_loads(f64 dt_sub) {
   for (const Contact& c : cs) {
     if (c.b >= 0) continue;
     const V3 F = c.impulse() * (-imp / dt_sub);  // on the world
+    if (!finite3(F)) continue;  // (one such force would never decay out of the loads)
     FragKey f;
     if (!frag_at(c.wvox, &f)) continue;
     const i64 o = owner_of(f);
@@ -1237,7 +1242,7 @@ void World::structure_loads(f64 dt_sub) {
       auto& dl = dead_loads_[b.id];
       dl.clear();
       for (const Contact& c : cs)
-        if (c.a == static_cast<i32>(bi) && c.b < 0) {
+        if (c.a == static_cast<i32>(bi) && c.b < 0 && finite3(c.impulse())) {
           dl.push_back({c.wvox, c.p, c.impulse() * (-1.0 / dt_sub)});
           seeds_.push_back(c.wvox);
         }
@@ -1310,7 +1315,9 @@ void World::finish_loads(int substeps) {
     }
     if ((impact || trigger) && !s.P.running()) {
       s.ext_solved = s.pending_impact ? s.pending : s.ext;
+      s.transient = s.pending_impact;
       s.pending_impact = false;
+      s.rounds = 0;  // (a new load case: a cascade of its own)
       s.solving = true;
     } else if (trigger) {
       s.reload = true;  // (the running solve finishes first)
@@ -1540,12 +1547,20 @@ void World::blast_world(const PendingEvent& e) {
       }
   if (near.empty()) return;
   // shatter: loose pieces near the crater (each its own body) thrown outwards
-  f64 m_shatter = 0.0;
-  for (const auto& [f, d] : near)
-    if (d <= rs) m_shatter += frag_chunk_if(f.chunk)->frags[size_t(f.idx)].mass;
-  const f64 vmax = m_shatter > 0 ? std::min(cfg_.blast_max_speed, std::sqrt(2.0 * cfg_.blast_kinetic * e.energy / m_shatter))
+  auto falloff = [&](f64 d) { return std::min(1.0, (e.radius * e.radius) / std::max(1e-6, d * d)); };
+  f64 m_shatter = 0.0, m_loaded = 0.0;
+  for (const auto& [f, d] : near) {
+    const f64 m = frag_chunk_if(f.chunk)->frags[size_t(f.idx)].mass;
+    if (d <= rs) m_shatter += m;
+    else m_loaded += m * falloff(d) * falloff(d);
+  }
+  // (the kinetic energy goes to the shattered mass; with little or none of it - a blast in the
+  // air, on the anchored ground - to the loaded mass around it, as its falloff has it: never more
+  // than the blast has. A blast on a solid shatters far more than its falloff loads.)
+  const f64 m_kinetic = std::max(m_shatter, m_loaded);
+  const f64 vmax = m_kinetic > 0 ? std::min(cfg_.blast_max_speed, std::sqrt(2.0 * cfg_.blast_kinetic * e.energy / m_kinetic))
                                  : cfg_.blast_max_speed;
-  auto speed = [&](f64 d) { return vmax * std::min(1.0, (e.radius * e.radius) / std::max(1e-6, d * d)); };
+  auto speed = [&](f64 d) { return vmax * falloff(d); };
   std::vector<std::pair<FragKey, f64>> shatter;
   for (const auto& fd : near)
     if (fd.second <= rs) shatter.push_back(fd);
@@ -1579,7 +1594,7 @@ void World::blast_world(const PendingEvent& e) {
     if (!fc || fc->frags[size_t(f.idx)].count <= 0) continue;
     const FragInfo& fi = fc->frags[size_t(f.idx)];
     const V3 dir = (fi.com - e.pos) * (1.0 / std::max(1e-3, d));
-    blast_loads_.push_back({fi.first, f.chunk, dir * (par_.impact * fi.mass * speed(d) / cfg_.dt)});
+    blast_loads_.push_back({fi.first, f.chunk, dir * (par_.impact * fi.mass * speed(d) / cfg_.dt), fi.com});
     const IVec3 cc = unkey3(f.chunk);
     const IVec3 l = local_of(fi.first);
     seeds_.push_back({cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]});
@@ -1601,6 +1616,13 @@ void World::apply_blast_loads() {
     pk[0] += bl.F.x;
     pk[1] += bl.F.y;
     pk[2] += bl.F.z;
+    if (s->fstart[size_t(i) + 1] - s->fstart[size_t(i)] > 1) {
+      // (a cluster of fragments: the force acts at its fragment, off the node's centre)
+      const V3 M = cross(bl.at - s->P.nodes[size_t(i)].c, bl.F);
+      pk[3] += M.x;
+      pk[4] += M.y;
+      pk[5] += M.z;
+    }
     s->peak_mag[size_t(i)] = std::sqrt(pk[0] * pk[0] + pk[1] * pk[1] + pk[2] * pk[2]);
     s->shock = true;
   }

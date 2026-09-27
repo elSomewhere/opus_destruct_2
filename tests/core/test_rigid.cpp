@@ -109,3 +109,50 @@ TEST_CASE("rigid: two free blocks colliding conserve momentum") {
   CHECK(B.v.x > 1.0);     // the struck block moves on
   CHECK(A.v.x < B.v.x);   // and they separate
 }
+
+TEST_CASE("rigid: blocks falling together in contact fall at g") {
+  // Rest damping is for held bodies: debris falling in a clump touches and pushes, but nothing
+  // holds it up. Two pairs in mid-air, pressed together: side by side (a horizontal contact), and
+  // one on the other (the upper one pushed down on the lower one: an upward contact).
+  VoxelGrid empty;
+  empty.h = 0.125;
+  RigidWorld w;
+  w.par.linear_damping = 0.0;
+  w.add(box(1, {0, 0, 40}, {4, 4, 4}, empty.h));
+  w.add(box(2, {4, 0, 40}, {4, 4, 4}, empty.h));
+  w.add(box(3, {40, 0, 40}, {4, 4, 4}, empty.h));
+  w.add(box(4, {40, 0, 44}, {4, 4, 4}, empty.h));
+  const f64 m = w.bodies[0]->mass, g = w.par.gravity;
+  w.bodies[0]->force = V3{m * g, 0.0, 0.0};
+  w.bodies[1]->force = V3{-m * g, 0.0, 0.0};
+  w.bodies[3]->force = V3{0.0, 0.0, -m * g};
+  const f64 dt = 1.0 / 120.0;
+  i32 touching = 0;
+  for (int s = 0; s < 36; ++s) {
+    w.substep(dt, empty, nullptr);
+    touching += w.contacts().size() >= 2 ? 1 : 0;
+  }
+  CHECK(touching > 30);  // (both pairs touch as they fall)
+  const f64 t = 36 * dt;
+  for (const auto& bp : w.bodies) CHECK_FALSE(bp->asleep);
+  // (the side by side pair: no net force but gravity; the stack: gravity and the push)
+  CHECK(0.5 * (w.bodies[0]->v.z + w.bodies[1]->v.z) == doctest::Approx(-g * t).epsilon(0.03));
+  CHECK(0.5 * (w.bodies[2]->v.z + w.bodies[3]->v.z) == doctest::Approx(-1.5 * g * t).epsilon(0.03));
+}
+
+TEST_CASE("rigid: a block held against a wall by friction settles and sleeps") {
+  // (held up by friction alone: the contact normal is horizontal)
+  VoxelGrid g;
+  g.h = 0.125;
+  for (i32 y = -8; y < 24; ++y) g.fill_column(20, y, 0, 48, make_vox(MaterialId::Rock, true));
+  g.compact();
+  RigidWorld w;
+  auto b = box(1, {16, 4, 24}, {4, 4, 4}, g.h);
+  b->force = V3{3.0 * b->mass * w.par.gravity / w.par.friction, 0.0, 0.0};  // (pressed against the wall)
+  w.add(std::move(b));
+  const f64 z0 = w.bodies[0]->x.z;
+  for (int s = 0; s < 2 * 60 * 3; ++s) w.substep(1.0 / 120.0, g, nullptr);
+  const Body& B = *w.bodies[0];
+  CHECK(B.asleep);
+  CHECK(std::abs(B.x.z - z0) < 0.1);
+}

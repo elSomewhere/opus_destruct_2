@@ -82,6 +82,7 @@ struct Body {
   // sleep
   bool asleep = false;
   i32 still = 0;                      // still substeps (a jitter takes some back, motion all)
+  i32 held = 0;                       // (1/120 s) held up lately (sleep: a hold that flickers in a settling pile)
   f64 sleep_ema = 1.0;                // smoothed speed (m/s)
   f64 age = 0.0;
   // (world) reported to the host (PieceAdded); the piece it broke from (0: the static world)
@@ -140,7 +141,7 @@ struct RigidParams {
   f64 baumgarte = 0.3;
   f64 max_correction = 2.0;          // m/s pseudo velocity cap
   f64 max_speed = 25.0;
-  f64 rest_damping = 0.2;            // per 1/120 s, for touching bodies slower than rest_speed
+  f64 rest_damping = 0.2;            // per 1/120 s, for held bodies (not falling) slower than rest_speed
   f64 rest_speed = 0.9;              // m/s (linear + radius x angular): settling rubble (rubble is rough) ...
   f64 rest_radius = 1.5;             // ... of pieces smaller than this (m): a large piece toppling slowly is not held
   f64 linear_damping = 0.02, angular_damping = 0.08;  // 1/s
@@ -204,6 +205,7 @@ class RigidWorld {
   void solve(f64 dt);
   void integrate_positions(f64 dt);
   void sleep_update(f64 dt);
+  const std::vector<u8>& support(f64 dt);  // (per body: held up by the world, a sleeping body or a held body)
   void refresh_boxes();
   std::vector<Contact> contacts_;
   bool busy_ = false;
@@ -211,6 +213,22 @@ class RigidWorld {
   void set_step(f64 dt);
   std::unordered_map<u64, std::array<f64, 3>> warm_;  // contact key -> (ln, l1, l2)
   std::vector<i32> island_;  // (scratch)
+  // (support: scratch)
+  struct SupportPair {
+    i32 a, b;
+    f64 jz;  // (upward impulse on a)
+    u8 up_a, up_b;
+  };
+  struct SupportEdge {
+    i32 to;
+    u8 up;
+    f64 jz;
+  };
+  std::vector<u8> held_;
+  std::vector<f64> lift_;
+  std::vector<i32> sup_start_, sup_fill_, sup_queue_;
+  std::vector<SupportPair> sup_pairs_;
+  std::vector<SupportEdge> sup_edges_;
   std::vector<V3> pseudo_v_, pseudo_w_;  // split-impulse pseudo velocities of the last solve
 };
 

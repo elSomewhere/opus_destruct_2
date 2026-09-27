@@ -676,3 +676,121 @@ TEST_CASE("materials: a blast strips concrete off its bars, and ductile bars nev
   MESSAGE("left after the blast: bars " << 100 * bars << "%, concrete " << 100 * conc << "%");
   CHECK(bars > conc);
 }
+
+TEST_CASE("world: a blast in the air loads what is around it by its energy") {
+  // (nothing within its shatter radius: the kinetic energy it has goes to what it loads)
+  auto run = [](f64 energy) {
+    VoxelGrid g;
+    g.h = kH;
+    box(g, {-8, -8, -4}, {56, 40, 0}, kRock);
+    box(g, {0, 20, 0}, {48, 23, 24}, make_vox(MaterialId::Masonry, false));  // 6 m x 3 m, 37.5 cm thick
+    g.compact();
+    World w;
+    w.load(std::move(g));
+    w.bake();
+    w.blast({3.0, kH * 21.5 - 2.2, 1.5}, 1.0, energy);  // 2.2 m in front of it
+    for (int t = 0; t < 60; ++t) w.tick();
+    return w.stats().bonds_broken;
+  };
+  const i64 weak = run(10.0), strong = run(1e7);
+  MESSAGE("bonds broken: 10 J " << weak << ", 10 MJ " << strong);
+  CHECK(weak == 0);
+  CHECK(strong > 0);
+}
+
+TEST_CASE("world: every cascade gets its own break rounds, however long a structure lives") {
+  // (a wall carrying a slab, holed by one small blast after another: the holes add up until it
+  // gives way - long after the first cascades used up max_rounds between them)
+  const i32 len = 192;
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-8, -16, -4}, {len + 8, 24, 0}, kRock);
+  box(g, {0, 0, 0}, {len, 3, 40}, make_vox(MaterialId::Masonry, false));
+  box(g, {0, 3, 36}, {len, 16, 40}, kConcrete);
+  g.compact();
+  World w;
+  WorldConfig c = w.config();
+  c.max_rounds = 6;
+  w.configure(c);
+  w.load(std::move(g));
+  w.bake();
+  for (int t = 0; t < 5; ++t) w.tick();
+  i64 early = 0, late = 0;
+  for (int k = 0; k <= 8; ++k) {
+    const i64 b0 = w.stats().bonds_broken;
+    w.blast({2.0 * k + 3.0, -0.07, 1.5}, 0.4, 3e4);
+    for (int t = 0; t < 90; ++t) w.tick();
+    (k < 6 ? early : late) += w.stats().bonds_broken - b0;
+  }
+  MESSAGE("bonds broken by the first six blasts " << early << ", by the last three " << late);
+  CHECK(late > 100);
+}
+
+TEST_CASE("world: an impact load case passes; the structure is judged in its steady state after it") {
+  // (a portal frame: a blast next to a leg loads it and breaks nothing; damage to the beam later
+  // is judged under the frame's weight, not under the blast that has passed)
+  auto run = [](bool blast) {
+    VoxelGrid g;
+    g.h = kH;
+    box(g, {-16, -16, -4}, {64, 32, 0}, kRock);
+    box(g, {0, 0, 0}, {8, 8, 48}, make_vox(MaterialId::Masonry, false));
+    box(g, {32, 0, 0}, {40, 8, 48}, make_vox(MaterialId::Masonry, false));
+    box(g, {0, 0, 48}, {40, 8, 52}, kConcrete);
+    g.compact();
+    World w;
+    WorldConfig c = w.config();
+    c.blast_max_speed = 4.0;  // (a load, nothing shattered or broken)
+    w.configure(c);
+    w.load(std::move(g));
+    w.bake();
+    for (int t = 0; t < 5; ++t) w.tick();
+    if (blast) w.blast({2.5, 0.5, 5.4}, 0.3, 1e5);
+    else w.probe_utilization({2, 2, 2});
+    for (int t = 0; t < 30; ++t) w.tick();
+    const i64 b0 = w.stats().bonds_broken;
+    std::vector<LayerEdit> ed;
+    for (i32 y = 0; y < 8; ++y)
+      for (i32 z = 48; z < 52; ++z) ed.push_back({{8, y, z}, 150});
+    w.set_layer(World::kDamageLayer, ed);
+    for (int t = 0; t < 60; ++t) w.tick();
+    CHECK(w.stats().bonds_broken == b0);
+    return w.stats().max_utilization;
+  };
+  const f64 steady = run(false), after = run(true);
+  MESSAGE("utilization after the damage: " << steady << ", with a blast before it " << after);
+  CHECK(after == doctest::Approx(steady).epsilon(0.01));
+}
+
+TEST_CASE("world: a piece landing on a thin stub of its own goes on when the stub breaks off") {
+  // (a heavy block with a post under it, cut off the slab it stands on: it falls onto the slab
+  // post first; the post's last voxels break off as dust, and the block falls on - not stopped
+  // in mid-air by a contact that went with them)
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-100, -100, -4}, {150, 100, 0}, kRock);
+  box(g, {0, 0, 0}, {4, 16, 24}, kConcrete);
+  box(g, {44, 0, 0}, {48, 16, 24}, kConcrete);
+  box(g, {0, 0, 24}, {48, 16, 25}, make_vox(MaterialId::Masonry, false));
+  box(g, {20, 4, 33}, {28, 12, 41}, kConcrete);
+  box(g, {24, 8, 25}, {25, 9, 33}, kConcrete);
+  g.compact();
+  World w;
+  w.load(std::move(g));
+  w.bake();
+  w.carve({3.0, 1.0, kH * 26}, 0.1);  // (the post just over the slab: the block drops 1 m)
+  f64 before = 0.0, after = 0.0;
+  i64 block = -1;
+  for (int t = 0; t < 40 && after == 0.0; ++t) {
+    w.tick();
+    for (const WorldEvent& e : w.take_events())
+      if (e.kind == WorldEvent::Kind::PieceAdded && e.voxels >= 400) {
+        if (block >= 0 && e.parent == block) after = e.vel.z;
+        block = e.id;
+      }
+    if (block >= 0 && after == 0.0)
+      if (const Body* b = w.piece(block)) before = b->v.z;
+  }
+  MESSAGE("block: " << before << " m/s before its stub broke, " << after << " m/s after");
+  REQUIRE(before < -1.0);
+  CHECK(after < 0.7 * before);
+}

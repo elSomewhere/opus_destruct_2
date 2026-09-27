@@ -367,6 +367,10 @@ Things a harness should not do:
   sweeps.
 - Materials are process-wide, not per world.
 - Pieces are not persisted in deltas, and sleeping rubble is unloaded with its chunks.
+- Contacts are found at the end of each substep: a piece faster than about 15 m/s can pass
+  through a wall one voxel thick (speeds are capped at `rigid.max_speed`, 25 m/s).
+- What a blast's loads break off a structure leaves at rest; only the fragments it shatters are
+  thrown (with the blast's push on nearby pieces on top).
 - Structures larger than `structure_max_nodes` (60,000 fragments or clusters) or
   `structure_max_radius` (60 m) around the event are solved in part, with their frontier held
   fixed.

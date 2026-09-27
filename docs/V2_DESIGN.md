@@ -74,9 +74,15 @@ linear-elastic equilibrium on the fragment graph:
   stresses N/A ± M/S, divided by the fragility knob.
 - **Break rounds.** On a converged state, a round breaks the bonds with φ ≥ max(1, 0.85 · φ_max)
   and at least the worst quarter of those over strength (at most 256), then solves again: a
-  cascade unfolds over ticks.
+  cascade unfolds over ticks (at most `max_rounds` rounds each).
 - **Sudden changes** (a carve, a blast, a break round) are judged with a dynamic increase factor
-  on the change of bond force since the last converged state, F_old + DIF · ΔF.
+  on the change of bond force since the last converged steady state, F_old + DIF · ΔF. An impact
+  load case (a blast, landing debris) is judged and passes: the steady state is solved again
+  after it, and stays the reference.
+- **Blasts.** Fragments within 1.7 crater radii shatter and are thrown out; those within 3.5 are
+  loaded (an impact load case) as if thrown with the speed the falloff gives them. The blast's
+  kinetic share of its energy (6 %) bounds both: it goes to the shattered mass, or, with little
+  or none of it (a blast in the air, on the anchored ground), to the loaded mass.
 - **Detachment.** After a round, what no longer reaches an anchor leaves the grid as a rigid
   piece, with its bonds (unbroken faces), at rest or with a blast's impulse.
 - **Design pass** (bake): every structure is solved under its own weight, and members above a
@@ -104,12 +110,17 @@ Each piece owns a voxel shape in its own grid-aligned frame, its fragments and i
 - **Substeps.** Two a tick (10 velocity, 4 position iterations). *Busy* (more than 150 pieces
   faster than 2 m/s, the violent part of a collapse, or more than 6,000 contacts, a large pile
   settling): one substep, 6 and 2 iterations. Both are functions of the state alone.
-- **Sleep.** A piece touching something sleeps once its smoothed speed stayed below the sleep
-  speed for 0.25 s (0.15 m/s, or 1.2 g dt if more: what gravity adds in a substep is what an
-  unconverged solve leaves). Rubble (pieces under 1.5 m) moving slower than 0.9 m/s loses 20 %
-  of its speed per 1/120 s: rubble is rough, and piles settle within seconds. A large piece
-  toppling slowly is not held. An awake piece moving near a sleeping one wakes it, as do carves
-  and blasts nearby.
+- **Held pieces.** A piece is held up when a contact with the world, a sleeping piece or a held
+  piece faces up (less steep than 84°), or when such contacts' impulses (friction too: a piece
+  wedged between walls) carry half its weight in the substep. Debris falling in a clump touches
+  and pushes, but nothing holds it: it falls at g. (Rubble settling in a pile loses and finds its
+  hold from one substep to the next: a hold lasts 0.05 s, for all but a fall.)
+- **Sleep.** A held piece sleeps once its smoothed speed stayed below the sleep speed for 0.25 s
+  (0.15 m/s, or 1.2 g dt if more: what gravity adds in a substep is what an unconverged solve
+  leaves). Held rubble (pieces under 1.5 m) moving slower than 0.9 m/s loses 20 % of its speed
+  per 1/120 s: rubble is rough, and piles settle within seconds. A large piece toppling slowly is
+  not held back. An awake piece moving near a sleeping one wakes it, as do carves and blasts
+  nearby, and a piece removed or broken (what rested on it may hang over a gap).
 - **Coupling to structures.** Contact impulses on world voxels load the fragment they touch:
   impacts as sudden load cases (pancake collapse of floors), resting pieces as dead loads.
 - **Budget.** Beyond 3,000 pieces the smallest sleeping ones fade out. Pieces that fall off the
@@ -151,7 +162,11 @@ A piece is checked when something happens to it, after its contact solve in the 
   of that substep: the failed interface carried its strength and then no more. When a part of
   some size (500 voxels) comes apart, the contact step is solved again with the new pieces (only
   they are collided afresh), so the part above a failed storey keeps falling and meets what is
-  below in its own collision; chips take the velocity the step left the piece with. Collapse and breakup
+  below in its own collision; chips take the velocity the step left the piece with. Chips that
+  broke off with most of the step's contact impulses (a stub a piece landed on) take those
+  impulses along, as far as breaking them did not cost the energy those contacts took out of the
+  motion: a piece goes on past a thin stub, while crushing columns brake a falling building.
+  Collapse and breakup
   proceed through collisions, storey by storey and crack by crack, instead of one overloaded
   solve pulverizing everything at once.
 - **Energy.** An impact pays for its cracks from the kinetic energy its contacts take out of the

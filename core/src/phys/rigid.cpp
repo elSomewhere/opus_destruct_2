@@ -19,6 +19,40 @@ inline IVec3 voxel_of(const V3& s, f64 inv_h) {
           static_cast<i32>(std::floor(s.z * inv_h + 0.5))};
 }
 
+// x^k for x in [0, 1], k >= 0, by basic arithmetic only: the same bits on every platform
+// (std::pow's last bit is the library's, and the result is state). ln x by the atanh series of
+// its mantissa, e^-y by Taylor of a small part, squared up.
+f64 pow01(f64 x, f64 k) {
+  if (!(x > 0.0)) return k > 0.0 ? 0.0 : 1.0;
+  if (x >= 1.0 || !(k > 0.0)) return 1.0;
+  f64 m = x;
+  int e = 0;
+  while (m < 0.5) {  // (exact)
+    m *= 2.0;
+    ++e;
+  }
+  const f64 z = (m - 1.0) / (m + 1.0), z2 = z * z;  // (|z| <= 1/3)
+  f64 term = z, series = 0.0;
+  for (int i = 0; i < 40; ++i) {
+    series += term / static_cast<f64>(2 * i + 1);
+    term *= z2;
+  }
+  f64 y = k * (static_cast<f64>(e) * 0.69314718055994530942 - 2.0 * series);  // -k ln x >= 0
+  if (!(y < 745.0)) return 0.0;
+  int sq = 0;
+  while (y > 0.0625) {
+    y *= 0.5;
+    ++sq;
+  }
+  f64 r = 1.0, t = 1.0;
+  for (int i = 1; i <= 14; ++i) {
+    t *= -y / static_cast<f64>(i);
+    r += t;
+  }
+  for (int i = 0; i < sq; ++i) r *= r;
+  return r;
+}
+
 inline u64 mix64(u64 x) {
   x += 0x9E3779B97F4A7C15ull;
   x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
@@ -665,15 +699,79 @@ void RigidWorld::integrate_positions(f64 dt) {
   }
 }
 
+const std::vector<u8>& RigidWorld::support(f64 dt) {
+  // A body is held up by a supporter (the world, a sleeping body, a held body) through a contact
+  // facing up (n pushes a out of b; up is +z), or through contacts whose impulses (friction too: a
+  // piece wedged between walls) carry at least half its weight this substep. Debris falling
+  // together touches, and pushes, but nothing holds it.
+  // (A resting contact may carry no impulse in a substep - the pile's solve left it at rest - and
+  // still holds: rubble in a pile is held, whatever its contacts carry at the moment.)
+  constexpr f64 kUp = 0.1;  // (a contact steeper than about 84 degrees holds nothing up)
+  const size_t n = bodies.size();
+  const f64 weight_dt = 0.5 * par.gravity * dt;
+  held_.assign(n, 0);
+  lift_.assign(n, 0.0);
+  sup_queue_.clear();
+  sup_pairs_.clear();
+  // (to: pushed up by a supporter, or lifted by jz; held once its lifts carry half its weight)
+  auto push = [&](i32 to, bool up, f64 jz) {
+    if (held_[size_t(to)]) return;
+    if (!up) {
+      if (jz <= 0.0) return;
+      lift_[size_t(to)] += jz;
+      if (lift_[size_t(to)] < weight_dt * bodies[size_t(to)]->mass) return;
+    }
+    held_[size_t(to)] = 1;
+    sup_queue_.push_back(to);
+  };
+  for (const Contact& c : contacts_) {
+    const f64 jz = c.n.z * c.ln + c.t1.z * c.l1 + c.t2.z * c.l2;  // (impulse().z: on a; b takes the opposite)
+    const bool up_a = c.n.z > kUp, up_b = c.n.z < -kUp;
+    if (c.b < 0) {
+      push(c.a, up_a, jz);
+      continue;
+    }
+    const bool sa = bodies[size_t(c.a)]->asleep, sb = bodies[size_t(c.b)]->asleep;
+    if (sa || sb) {
+      if (!sa) push(c.a, up_a, jz);
+      if (!sb) push(c.b, up_b, -jz);
+      continue;
+    }
+    sup_pairs_.push_back({c.a, c.b, jz, static_cast<u8>(up_a), static_cast<u8>(up_b)});
+  }
+  if (sup_queue_.empty() || sup_pairs_.empty()) return held_;
+  // the awake pairs' edges by the supporting body (a counting sort: in contact order)
+  sup_start_.assign(n + 1, 0);
+  for (const SupportPair& p : sup_pairs_) {
+    ++sup_start_[size_t(p.a) + 1];
+    ++sup_start_[size_t(p.b) + 1];
+  }
+  for (size_t i = 0; i < n; ++i) sup_start_[i + 1] += sup_start_[i];
+  sup_edges_.resize(2 * sup_pairs_.size());
+  sup_fill_.assign(sup_start_.begin(), sup_start_.end() - 1);
+  for (const SupportPair& p : sup_pairs_) {
+    sup_edges_[size_t(sup_fill_[size_t(p.b)]++)] = {p.a, p.up_a, p.jz};
+    sup_edges_[size_t(sup_fill_[size_t(p.a)]++)] = {p.b, p.up_b, -p.jz};
+  }
+  for (size_t q = 0; q < sup_queue_.size(); ++q) {
+    const i32 i = sup_queue_[q];
+    for (i32 e = sup_start_[size_t(i)]; e < sup_start_[size_t(i) + 1]; ++e) {
+      const SupportEdge& E = sup_edges_[size_t(e)];
+      push(E.to, E.up, E.jz);
+    }
+  }
+  return held_;
+}
+
 void RigidWorld::sleep_update(f64 dt) {
   // Bodies sleep one by one once slow for a while (a sleeping body is a static support for the
   // others); an awake body touching a sleeping one fast enough wakes it (collide). Rates are per
   // 1/120 s (the same at any substep length).
   const f64 k = dt * 120.0;
-  // x^k: by multiplication for whole k (the substeps in use: the same on every platform)
+  // x^k: by multiplication for whole k (the usual substeps), else pow01 (the same on every platform)
   auto powk = [&](f64 x) {
     const f64 kr = std::round(k);
-    if (std::abs(k - kr) > 1e-9 || kr < 1.0 || kr > 64.0) return std::pow(x, k);
+    if (std::abs(k - kr) > 1e-9 || kr < 1.0 || kr > 64.0) return pow01(x, k);
     f64 r = 1.0;
     for (int i = 0; i < static_cast<int>(kr); ++i) r *= x;
     return r;
@@ -682,24 +780,34 @@ void RigidWorld::sleep_update(f64 dt) {
   const f64 keep = powk(0.8);
   const i32 steps = std::max<i32>(1, static_cast<i32>(std::lround(k)));
   const f64 sleep_speed = sleep_speed_;
-  std::vector<u8> touching(bodies.size(), 0);
-  for (const Contact& c : contacts_) {
-    touching[size_t(c.a)] = 1;
-    if (c.b >= 0) touching[size_t(c.b)] = 1;
-  }
+  // Settling (rest damping) and sleep are for bodies held up (support) only: debris falling
+  // together touches, but nothing holds it - it falls at g.
+  const std::vector<u8>& supported = support(dt);
+  // (a hold lasts 0.05 s after it was lost - rubble settling in a pile loses and finds its hold
+  // from one substep to the next - for all but a fall: a piece falling is not held back, and soon
+  // too fast to count towards sleep)
+  constexpr i32 kHold = 6;
   for (size_t i = 0; i < bodies.size(); ++i) {
     Body& b = *bodies[i];
     if (b.asleep) continue;
     const f64 sp = norm(b.v) + b.radius * norm(b.w);
-    if (touching[i] && sp < par.rest_speed && b.radius < par.rest_radius) {
-      // rest damping: settling rubble loses its last jitter
-      b.v *= rest;
+    b.held = supported[i] ? kHold : std::max(0, b.held - steps);
+    if (b.held > 0 && sp < par.rest_speed && b.radius < par.rest_radius) {
+      // rest damping: settling rubble loses its last jitter (its hold just lost: all but its fall)
+      if (supported[i]) {
+        b.v *= rest;
+      } else {
+        b.v.x *= rest;
+        b.v.y *= rest;
+      }
       b.w *= rest;
     }
     // (a smoothed speed: a settling piece's last jitter does not restart its count; real motion does)
     b.sleep_ema = keep * b.sleep_ema + (1.0 - keep) * sp;
-    if (sp > 3.0 * sleep_speed || !touching[i]) b.still = 0;
-    else if (b.sleep_ema < sleep_speed) b.still += steps;
+    // (only a held body counts towards sleep; a resting one that loses its hold for a substep -
+    // a jitter - keeps most of its count, one that falls is soon too fast to keep any)
+    if (sp > 3.0 * sleep_speed) b.still = 0;
+    else if (b.held > 0 && b.sleep_ema < sleep_speed) b.still += steps;
     else b.still = std::max(0, b.still - 2 * steps);
     if (b.still >= par.sleep_substeps) {
       b.asleep = true;

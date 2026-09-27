@@ -479,6 +479,7 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
           break;
         }
         spent += cost;
+        o.spent += cost;
       }
       out.push_back(k);
     }
@@ -711,7 +712,7 @@ std::unique_ptr<Body> World::sub_body(const Body& parent, const std::vector<i32>
   return c;
 }
 
-bool World::split_body(Body& b, bool use_pre, bool force_replace) {
+bool World::split_body(Body& b, bool use_pre, bool force_replace, const std::vector<Carried>* carried, f64 spent) {
   if (b.graph_dirty || !b.graph) rebuild_body_graph(b);
   BodyGraph& G = *b.graph;
   const i32 n = static_cast<i32>(G.P.nodes.size());
@@ -733,7 +734,10 @@ bool World::split_body(Body& b, bool use_pre, bool force_replace) {
   }
   // A part of some size came apart in this contact step: the step is solved again without the
   // piece (its parts keep the velocity they had before it). Chips only: they take the velocity the
-  // step left the piece with, and the step stands.
+  // step left the piece with, and the step stands - but for what the chips carried: chips that
+  // broke off with most of the step's contact impulses (a stub the piece landed on) take them
+  // along, as far as breaking them did not cost what those contacts took out of the motion (a
+  // thin stub stops nothing; storeys of columns crushing brake a building as they go).
   // (One part only - the piece reshaped, e.g. crushed chips turned to dust - is no separation:
   // it keeps the step's velocity. Given the pre-solve one, it would drive on into what it hit
   // for another substep and grind itself down.)
@@ -741,14 +745,41 @@ bool World::split_body(Body& b, bool use_pre, bool force_replace) {
   if (use_pre && nc > 1) {
     std::vector<size_t> sizes;
     for (const auto& part : parts) sizes.push_back(part.size());
-    std::sort(sizes.rbegin(), sizes.rend());
-    separated = sizes.size() > 1 && static_cast<i32>(sizes[1]) >= cfg_.rollback_part_voxels;
+    size_t largest = 0;
+    for (size_t c = 1; c < sizes.size(); ++c)
+      if (sizes[c] > sizes[largest]) largest = c;
+    std::vector<size_t> sorted = sizes;
+    std::sort(sorted.rbegin(), sorted.rend());
+    separated = sorted.size() > 1 && static_cast<i32>(sorted[1]) >= cfg_.rollback_part_voxels;
     if (separated) rollback_ = true;
+    if (!separated && carried) {
+      f64 total = 0.0, lost = 0.0, e_lost = 0.0;
+      V3 J, L;
+      for (const Carried& k : *carried) {
+        const f64 j = norm(k.J);
+        total += j;
+        if (k.frag >= 0 && k.frag < static_cast<i32>(frag_comp.size()) && frag_comp[size_t(k.frag)] == static_cast<i32>(largest)) continue;
+        lost += j;
+        e_lost += k.e;
+        J += k.J;
+        L += cross(k.p - b.x, k.J);
+      }
+      const f64 release = e_lost > 0.0 ? std::clamp(1.0 - spent / e_lost, 0.0, 1.0) : 1.0;
+      if (total > 0.0 && lost > 0.5 * total && release > 0.0) {
+        b.v -= J * (release * b.inv_mass);
+        b.w -= b.inv_inertia_world() * (L * release);
+        ++st_.chip_releases;
+      }
+    }
   }
   use_pre = use_pre && separated;
+  // (voxels lost on the way - removed, crushed, carved (force_replace), or shards turned to dust:
+  // what rested on them would hover over the gap)
+  bool lost = force_replace;
   for (auto& part : parts) {
     if (part.empty()) continue;
     if (nc > 1 && static_cast<i32>(part.size()) < cfg_.min_body_voxels) {
+      lost = true;
       // (a shard: dust and a few chips, not a rigid piece)
       V3 c;
       for (i32 i : part) {
@@ -769,9 +800,15 @@ bool World::split_body(Body& b, bool use_pre, bool force_replace) {
       pending_add_.back()->family_ticks = 1;
     }
   }
+  if (lost) wake_around(b);
   pending_retire_.push_back(b.id);
   if (nc > 1) ++st_.body_splits;
   return true;
+}
+
+void World::wake_around(const Body& b) {
+  const f64 m = 2.0 * grid_.h;
+  rigid_.wake_box(b.box_lo - V3{m, m, m}, b.box_hi + V3{m, m, m});
 }
 
 void World::flush_body_changes() {
@@ -831,6 +868,7 @@ int World::fracture_hook(f64 dt) {
   const auto& cs = rigid_.contacts();
   const size_t nb = rigid_.bodies.size();
   std::vector<std::vector<PointForce>> per(nb);
+  std::vector<std::vector<Carried>> carried(nb);  // (what the contacts did to each piece this step)
   std::vector<f64> fsum(nb, 0.0), approach(nb, 0.0), dissipated(nb, 0.0);
   // A rigid contact stops a body within one substep; a real impact takes the time a stress wave
   // (slowed by the crushing zone) needs to cross the piece. Contact impulses load a piece's
@@ -861,12 +899,16 @@ int World::fracture_hook(f64 dt) {
     if (norm2(J) <= 0.0) continue;
     Body& A = *rigid_.bodies[size_t(c.a)];
     const V3 Fa = J * (resting ? 1.0 / dt : kf[size_t(c.a)]);
-    per[size_t(c.a)].push_back({static_cast<i32>(A.shape.frag[size_t(c.vox_a)]) - 1, Fa, c.p});
+    const i32 fa = static_cast<i32>(A.shape.frag[size_t(c.vox_a)]) - 1;
+    per[size_t(c.a)].push_back({fa, Fa, c.p});
+    carried[size_t(c.a)].push_back({fa, J, c.p, c.b >= 0 ? 0.5 * e : e});
     fsum[size_t(c.a)] += norm(Fa);
     if (c.b >= 0) {
       Body& B = *rigid_.bodies[size_t(c.b)];
       const V3 Fb = J * -(resting ? 1.0 / dt : kf[size_t(c.b)]);
-      per[size_t(c.b)].push_back({static_cast<i32>(B.shape.frag[size_t(c.vox_b)]) - 1, Fb, c.p});
+      const i32 fb = static_cast<i32>(B.shape.frag[size_t(c.vox_b)]) - 1;
+      per[size_t(c.b)].push_back({fb, Fb, c.p});
+      carried[size_t(c.b)].push_back({fb, J * -1.0, c.p, 0.5 * e});
       fsum[size_t(c.b)] += norm(Fb);
     }
   }
@@ -964,7 +1006,7 @@ int World::fracture_hook(f64 dt) {
   for (Check& c : checks) {
     Body& b = *rigid_.bodies[c.i];
     if (c.split) {
-      if (split_body(b, true, false)) changed = true;
+      if (split_body(b, true, false, &carried[c.i])) changed = true;
       continue;
     }
     b.stress_cooldown = c.impact ? cfg_.body_check_ticks : 3 * cfg_.body_check_ticks;
@@ -973,11 +1015,13 @@ int World::fracture_hook(f64 dt) {
     if (c.out.broken.empty()) continue;
     const bool reshaped = cfg_.pulverize && pulverize(b, c.out.crushed);
     if (reshaped && b.shape.count == 0) {
+      wake_around(b);
       pending_retire_.push_back(b.id);
       changed = true;
       continue;
     }
-    if (split_body(b, true, reshaped)) changed = true;
+    // (reshaped: its fragments are new, what carried the contacts is dust or unknown)
+    if (split_body(b, true, reshaped, reshaped ? nullptr : &carried[c.i], c.out.spent)) changed = true;
   }
   const auto f3 = FClock::now();
   flush_body_changes();
@@ -1050,6 +1094,7 @@ void World::carve_bodies(const V3& c, f64 r) {
     refragment_body(b);
     rigid_.wake(b);
     if (b.shape.count == 0) {
+      wake_around(b);
       pending_retire_.push_back(b.id);
       continue;
     }
@@ -1129,13 +1174,13 @@ void World::remove_bodies(std::vector<i64> ids, PieceEnd end) {
   if (ids.empty()) return;
   std::sort(ids.begin(), ids.end());
   ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
-  const f64 h = grid_.h;
   for (i64 id : ids) {
     const Body* b = rigid_.find(id);
     if (!b) continue;
     dead_loads_.erase(id);
-    // what rested on it falls (a split piece's parts take its place)
-    if (end != PieceEnd::Split) rigid_.wake_box(b->box_lo - V3{2 * h, 2 * h, 2 * h}, b->box_hi + V3{2 * h, 2 * h, 2 * h});
+    // what rested on it falls (a split piece's parts take its place; where it lost voxels on the
+    // way, split_body woke what rested on it)
+    if (end != PieceEnd::Split) wake_around(*b);
     if (!b->announced) continue;  // (made and gone within one tick: never reported)
     WorldEvent ev;
     ev.kind = WorldEvent::Kind::PieceRemoved;

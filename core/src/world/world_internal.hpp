@@ -380,13 +380,14 @@ struct World::Structure {
   std::vector<f64> ext, ext_solved, acc, peak;  // external loads (6 per node)
   std::vector<f64> pending;        // an impact load case waiting for the running solve
   bool pending_impact = false, reload = false;
+  bool transient = false;          // ext_solved is an impact load case (not the steady state)
   std::vector<f64> peak_mag;
   bool solving = true, stale = false, shock = true, dead = false;
   bool rejudge = false;            // strengths changed (damage): judged again at the current solution
   std::vector<u64> changed;        // chunks re-fragmented since the structure was made (stale)
   i32 gone = 0;                    // retired nodes (detached / carved away)
   i32 run_iters = 0;               // PCG iterations of the solve in progress
-  i32 rounds = 0, idle = 0;
+  i32 rounds = 0, idle = 0;        // (rounds: of the break cascade in progress)
   bool truncated = false;
   i32 node(const FragKey& f) const {
     const auto it = nodemap.find(f.chunk);

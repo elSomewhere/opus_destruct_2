@@ -359,3 +359,41 @@ TEST_CASE("ext: invalid voxel values are refused or cleaned; layer writes skip c
   CHECK(s.grid().chunk(chunk_of(far)) == nullptr);
   CHECK(s.set_layer(soot, {{{2, 2, -3}, 9}}) == 1);
 }
+
+TEST_CASE("ext: what slept on a piece falls when the piece loses the voxels under it") {
+  // (a crate asleep on a slab piece; the slab's top half burns away: the crate must not hover)
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-16, -16, -4}, {48, 48, 0}, kRock);
+  g.compact();
+  World w;
+  w.load(std::move(g));
+  w.bake();
+  std::vector<VoxelEdit> slab, crate;
+  for (i32 x = 0; x < 16; ++x)
+    for (i32 y = 0; y < 16; ++y)
+      for (i32 z = 1; z < 5; ++z) slab.push_back({{x, y, z}, make_vox(MaterialId::Rock, false)});  // (loose, over the ground)
+  w.set_voxels(slab);
+  w.tick();
+  for (i32 x = 4; x < 8; ++x)
+    for (i32 y = 4; y < 8; ++y)
+      for (i32 z = 7; z < 11; ++z) crate.push_back({{x, y, z}, kConc});
+  w.set_voxels(crate);
+  for (int t = 0; t < 300; ++t) w.tick();
+  const std::vector<PieceState> ps = w.pieces();
+  REQUIRE(ps.size() == 2);
+  const bool first_slab = ps[0].voxels > ps[1].voxels;
+  const i64 slab_id = first_slab ? ps[0].id : ps[1].id, crate_id = first_slab ? ps[1].id : ps[0].id;
+  REQUIRE(w.piece(crate_id)->asleep);
+  const f64 z0 = w.piece(crate_id)->x.z;
+  const Body* s = w.piece(slab_id);
+  std::vector<IVec3> top;
+  for (i32 i = 0; i < static_cast<i32>(s->shape.vox.size()); ++i)
+    if (vox_solid(s->shape.vox[size_t(i)]) && s->shape.voxel(i)[2] >= s->shape.lo[2] + 2) top.push_back(s->shape.voxel(i));
+  REQUIRE(w.remove_piece_voxels(slab_id, top, true));
+  for (int t = 0; t < 120; ++t) w.tick();
+  const Body* c = w.piece(crate_id);
+  REQUIRE(c);
+  MESSAGE("crate: " << z0 << " m -> " << c->x.z << " m");
+  CHECK(c->x.z < z0 - 0.2);  // (the half gone: 0.25 m)
+}
