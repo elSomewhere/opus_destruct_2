@@ -10,6 +10,7 @@
 import type { TextureInfo, Vec3 } from '../engine/protocol.ts';
 import { DebugView, Material, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { GpuAtlas } from './atlas.ts';
+import { CharacterRenderer } from './characters.ts';
 import { ChunkStore } from './chunks.ts';
 import { FIELD_UNIFORM_FLOATS, FieldStore, MAX_FIELDS } from './fields.ts';
 import { initWebGpu, type GpuContext } from './gpu.ts';
@@ -56,6 +57,9 @@ export interface RenderStats {
   islands: number;
   islandsDrawn: number;
   particles: number;
+  /** Characters and gibs submitted / drawn this frame. */
+  characters: number;
+  charactersDrawn: number;
   gpuMB: number;
   width: number;
   height: number;
@@ -87,6 +91,8 @@ export class Renderer {
   readonly islands: IslandRenderer;
   readonly particles: ParticleSystem;
   readonly fields: FieldStore;
+  /** Voxel characters, gibs, decals and voxel bits (svx_anim meshes). */
+  readonly characters: CharacterRenderer;
   private readonly canvas: HTMLCanvasElement;
   private readonly fieldBuffer: GPUBuffer;
   private readonly fieldSampler: GPUSampler;
@@ -277,6 +283,7 @@ export class Renderer {
     this.chunks = new ChunkStore(device);
     this.islands = new IslandRenderer(device, MAX_ISLANDS);
     this.particles = new ParticleSystem(device);
+    this.characters = new CharacterRenderer(device, this.frameLayout, frameWgsl, format, SAMPLES, DEPTH_FORMAT);
   }
 
   get description(): string {
@@ -396,6 +403,7 @@ export class Renderer {
     if (hi >= lo) this.device.queue.writeBuffer(this.objectBuffer, lo * this.objectStride, o, lo * stride, (hi - lo + 1) * stride);
 
     const particleCount = this.particles.upload();
+    this.characters.upload();
     if (this.fields.version !== this.boundFieldsVersion) this.rebuildFrameBindGroup();
     this.device.queue.writeBuffer(this.fieldBuffer, 0, this.fields.uniform);
 
@@ -428,7 +436,8 @@ export class Renderer {
     const fields = this.fields;
     const drawn = this.chunks.draw(pass, this.planes, cam.eye, MAX_VIEW_DISTANCE, fields.count > 0 ? (mn, mx) => fields.inflation(mn, mx) : undefined);
     const pieces = this.islands.draw(pass, this.objectBindGroup, this.objectStride, this.planes, cam.eye, MAX_VIEW_DISTANCE);
-    const triangles = drawn.triangles + pieces.triangles;
+    const chars = this.characters.draw(pass, this.planes, cam.eye, MAX_VIEW_DISTANCE);
+    const triangles = drawn.triangles + pieces.triangles + chars.triangles;
 
     if (particleCount > 0) {
       pass.setPipeline(this.particlePipeline);
@@ -445,7 +454,9 @@ export class Renderer {
       islands: this.islands.count,
       islandsDrawn: pieces.drawn,
       particles: particleCount,
-      gpuMB: (this.chunks.bytes + this.atlas.bytes) / (1024 * 1024),
+      characters: chars.instances,
+      charactersDrawn: chars.drawn,
+      gpuMB: (this.chunks.bytes + this.atlas.bytes + this.characters.gpuBytes) / (1024 * 1024),
       width,
       height,
     };

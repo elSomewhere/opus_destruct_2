@@ -1,0 +1,21 @@
+{
+  "name": "svx-anim",
+  "private": true,
+  "version": "0.1.0",
+  "description": "svx_anim: voxel character animation engine (skeletons, procedural locomotion, IK, voxel character models, gore, ragdolls, gibs, retro baking). No dependencies; renderer- and physics-agnostic.",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json",
+    "test": "node --test \"test/**/*.test.ts\""
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.6",
+    "typescript": "^7.0.2"
+  }
+}

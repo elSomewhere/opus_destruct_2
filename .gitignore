@@ -40,3 +40,6 @@ npm-debug.log*
 
 # Freedoom WADs are fetched by scripts/fetch_freedoom.sh (BSD-3-Clause)
 /data/freedoom/*.wad
+
+# svx_anim
+/anim/node_modules/

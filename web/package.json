@@ -11,14 +11,18 @@
     "dev": "vite",
     "build": "npm run typecheck && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -p tsconfig.json && tsc -p src/worker/tsconfig.json && tsc -p test/tsconfig.json && tsc -p tsconfig.node.json",
+    "typecheck": "tsc -p tsconfig.json && tsc -p src/worker/tsconfig.json && tsc -p test/tsconfig.json && tsc -p tsconfig.node.json && tsc -p ../anim/tsconfig.json",
     "test": "node --test \"test/**/*.test.ts\"",
-    "smoke": "node scripts/smoke.mjs"
+    "smoke": "node scripts/smoke.mjs",
+    "test:anim": "cd ../anim && node --test \"test/**/*.test.ts\""
   },
   "devDependencies": {
     "@types/node": "^24.13.6",
     "@webgpu/types": "^0.1.74",
     "typescript": "^7.0.2",
     "vite": "^8.3.1"
+  },
+  "dependencies": {
+    "svx-anim": "file:../anim"
   }
 }
