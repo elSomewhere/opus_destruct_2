@@ -58,19 +58,20 @@ export function materialName(id: MaterialId): string {
  * byte according to the current view and re-sends affected meshes when it changes.
  * - None: the byte is ignored.
  * - Utilization: 0..255 maps to bond utilization 0..1 (heat map).
- * - BubbleLevel: 0 = not in a bubble; 1 + L for bubble level L (fine = level 0).
+ * - Fragments: 0 = not part of a rubble fragment; 1..254 a pseudo-random value per fragment
+ *   (the pre-scored pieces a structure breaks into), drawn as distinct colours.
  */
 export const DebugView = {
   None: 0,
   Utilization: 1,
-  BubbleLevel: 2,
+  Fragments: 2,
 } as const;
 export type DebugView = (typeof DebugView)[keyof typeof DebugView];
 
 export const DEBUG_VIEW_NAMES: Readonly<Record<DebugView, string>> = {
   [DebugView.None]: 'none',
   [DebugView.Utilization]: 'utilization',
-  [DebugView.BubbleLevel]: 'bubble level',
+  [DebugView.Fragments]: 'fragments',
 };
 
 export type ProceduralKind = 'city' | 'rooms' | 'tower';
@@ -110,29 +111,22 @@ export const DOOM_TEXELS_PER_METRE = 32;
 // Main -> worker commands
 // ---------------------------------------------------------------------------------------
 
-/** Tunables (plan §B11). `setParams` always carries the complete set. */
+/** Tunables (docs/V2_DESIGN.md §6). `setParams` always carries the complete set. */
 export interface EngineParams {
-  /** Physical compliance S_p (plan §B3). */
-  compliance: number;
-  /** Render amplification A on displacements (plan §B3). */
-  amplification: number;
-  /** Fragility scale F: how easily things snap. */
+  /** Divides every bond strength: above 1 weaker bonds, more collapse. */
   fragility: number;
-  /** Damping (fraction of critical, 0..1). */
-  damping: number;
+  /** Scale on contact forces of pieces (force = impact x impulse / dt): how hard landings hit. */
+  impact: number;
+  /** Dynamic increase factor: overshoot of sudden load changes (1 = quasi-static). */
+  dif: number;
   debugView: DebugView;
   paused: boolean;
 }
 
-/**
- * Calibrated against the prototype's XPBD feel captures (docs/phase5/FEEL_SPEC.md): visible
- * event response S_p x A ~ 9 x the stiff response, time to quiet best at S_p 9 and light damping.
- */
 export const DEFAULT_PARAMS: Readonly<EngineParams> = {
-  compliance: 9,
-  amplification: 1,
   fragility: 1,
-  damping: 0.05,
+  impact: 1,
+  dif: 1.5,
   debugView: DebugView.None,
   paused: false,
 };
@@ -153,7 +147,7 @@ export interface InitConfig {
   /**
    * (front-end extension) Move chunks inside physics bubbles on the GPU with displacement
    * fields (`ChunkMeshesMessage.fields`) instead of re-meshing them every tick. Default on for
-   * engines that support it.
+   * engines that support it (v1 engines; v2 has no displacement and sends no fields).
    */
   gpuDisplacement?: boolean;
 }
@@ -304,7 +298,8 @@ export interface ChunkMesh extends MeshData {
 }
 
 /**
- * (front-end extension) Displacement of the chunks inside one physics bubble: a voxel grid of
+ * (front-end extension, v1 engines only: v2 sends none) Displacement of the chunks inside one
+ * physics bubble: a voxel grid of
  * rgba16float texels (x fastest, then y, then z) holding (w dx, w dy, w dz, w), with w = 1 for
  * solid voxels and 0 for air. The renderer samples it trilinearly at each chunk vertex (the
  * texel centres are voxel centres) and adds xyz / w, which is the displacement averaged over the
@@ -364,7 +359,11 @@ export interface ChunkRemovedMessage {
   keys: string[];
 }
 
-/** A piece that lost support. The physics already removed it; the front end animates it. */
+/**
+ * A piece that lost support. The physics already removed it from the world; the front end
+ * draws it. A rigid piece that later splits disappears from the `debris` poses and its parts
+ * are announced as new detached events.
+ */
 export interface DetachedEvent {
   kind: 'detached';
   id: number;
@@ -377,14 +376,16 @@ export interface DetachedEvent {
   /** World-space mesh at the moment of detachment. */
   mesh: MeshData;
   /**
-   * (front-end extension) The engine simulates this piece as rigid debris and sends its pose
-   * in `debris` messages until it is gone; `centroid` is then its centre of mass (the pivot).
-   * Absent or false: the front end animates the piece itself (ballistic fade).
+   * (front-end extension) The engine simulates this piece as a rigid body and sends its pose in
+   * `debris` messages until it is gone (pieces at rest persist as rubble; the engine fades the
+   * oldest ones through the pose opacity when over its budget); `centroid` is then its centre
+   * of mass (the pivot). Absent or false: the front end animates the piece itself (ballistic
+   * fade).
    */
   rigid?: boolean;
 }
 
-/** Bond ruptures (decals and particles). */
+/** Bond ruptures (decals and particles); `strength` is the utilization, about 1..2. */
 export interface CrackEvent {
   kind: 'crack';
   pos: Vec3;
@@ -399,16 +400,7 @@ export interface ImpactEvent {
   energy: number;
 }
 
-/** Debug: an active structural bubble. */
-export interface BubbleEvent {
-  kind: 'bubble';
-  id: number;
-  center: Vec3;
-  radius: number;
-  level: number;
-}
-
-export type EngineEvent = DetachedEvent | CrackEvent | ImpactEvent | BubbleEvent;
+export type EngineEvent = DetachedEvent | CrackEvent | ImpactEvent;
 
 export interface EventsMessage {
   type: 'events';
@@ -435,40 +427,116 @@ export interface CollideResultMessage {
   onGround: boolean;
 }
 
+/**
+ * Engine counters, in the order of `svx_stats` (core/include/svx/api/svx_api.h). Times are ms
+ * of the last tick; "total" counters are cumulative since the world was loaded.
+ */
 export interface EngineStats {
   tickMs: number;
   structuralMs: number;
-  activeBubbles: number;
-  activeNodes: number;
+  eventMs: number;
+  rigidMs: number;
+  meshMs: number;
   voxels: number;
   chunks: number;
   memoryMB: number;
   /** Events emitted since the previous stats message. */
   events: number;
+  ticks: number;
+  /** Structures registered / being solved now, and the nodes of those being solved. */
+  structures: number;
+  structuresSolving: number;
+  solvingNodes: number;
+  /** Totals: structure extractions, converged solves, PCG iterations, broken bonds. */
+  extractions: number;
+  convergedSolves: number;
+  pcgIterations: number;
+  bondsBroken: number;
+  /** Totals of detached voxels and pieces. */
+  detachedVoxels: number;
+  detachedPieces: number;
+  /** Largest bond utilization of the last judged round. */
+  maxUtilization: number;
+  /** Rigid pieces alive (moving or resting rubble), awake ones, and their contacts. */
+  pieces: number;
+  awakePieces: number;
+  contacts: number;
+  /** Totals: piece stress checks, piece splits, impact load cases. */
+  pieceChecks: number;
+  pieceSplits: number;
+  impactLoads: number;
+  residentChunks: number;
+  archivedChunks: number;
+  streamMs: number;
+  evictedChunks: number;
+  movers: number;
+  /** Bake (design pass) results. */
+  designMaxUtilization: number;
+  strengthenedVoxels: number;
+  floatingVoxelsRemoved: number;
+  bakeMs: number;
   /** Engine-specific extras are shown generically by the HUD. */
   [extra: string]: number | string | boolean;
 }
 
-/** (front-end extension) Pose of one rigid debris piece (see DetachedEvent.rigid). */
-export interface DebrisPose {
-  /** Id of the piece's detached event. */
-  id: number;
-  /** Current centre of mass. */
-  pos: Vec3;
-  /** Rotation since detachment, unit quaternion [x, y, z, w]; the pivot is the event centroid. */
-  rot: [number, number, number, number];
-  /** 1 while visible, falling to 0 as the piece fades out. */
-  opacity: number;
+/** All-zero stats, for engines that fill only part of them. */
+export function emptyEngineStats(): EngineStats {
+  return {
+    tickMs: 0,
+    structuralMs: 0,
+    eventMs: 0,
+    rigidMs: 0,
+    meshMs: 0,
+    voxels: 0,
+    chunks: 0,
+    memoryMB: 0,
+    events: 0,
+    ticks: 0,
+    structures: 0,
+    structuresSolving: 0,
+    solvingNodes: 0,
+    extractions: 0,
+    convergedSolves: 0,
+    pcgIterations: 0,
+    bondsBroken: 0,
+    detachedVoxels: 0,
+    detachedPieces: 0,
+    maxUtilization: 0,
+    pieces: 0,
+    awakePieces: 0,
+    contacts: 0,
+    pieceChecks: 0,
+    pieceSplits: 0,
+    impactLoads: 0,
+    residentChunks: 0,
+    archivedChunks: 0,
+    streamMs: 0,
+    evictedChunks: 0,
+    movers: 0,
+    designMaxUtilization: 0,
+    strengthenedVoxels: 0,
+    floatingVoxelsRemoved: 0,
+    bakeMs: 0,
+  };
 }
 
 /**
- * (front-end extension) Poses of all live rigid debris pieces, sent after every engine tick
- * while any exist (plus one empty list when the last one is gone). A rigid piece missing from
- * the list has been removed by the engine.
+ * Doubles per rigid piece in `DebrisMessage.poses` (the `svx_debris_data` layout): id of its
+ * detached event, centre of mass xyz, rotation since detachment as a unit quaternion xyzw (the
+ * pivot is the event centroid), opacity 0..1 (below 1 while the engine fades it out).
+ */
+export const DEBRIS_STRIDE = 9;
+
+/**
+ * (front-end extension) Poses of all live rigid pieces, sent after an engine tick while any
+ * exist (plus one empty set when the last one is gone). A rigid piece missing from the set has
+ * been removed by the engine (split, faded, or fell out of the world). Packed, because there
+ * can be thousands of pieces every tick.
  */
 export interface DebrisMessage {
   type: 'debris';
-  poses: DebrisPose[];
+  /** DEBRIS_STRIDE doubles per piece; transferred. */
+  poses: Float64Array<ArrayBuffer>;
 }
 
 export interface StatsMessage {
@@ -481,8 +549,12 @@ export interface StatsMessage {
   timeline?: Float32Array;
 }
 
-/** Per-tick timeline sample: ms per part of the worker's tick, then the active bubble nodes. */
-export const TIMELINE_FIELDS = ['structural', 'events', 'stream', 'debris', 'verify', 'mesh', 'other', 'nodes'] as const;
+/**
+ * Per-tick timeline sample: ms per part of the engine tick (structure solves, rigid pieces,
+ * event processing, streaming, the rest), the worker's flush after it (meshes, events, poses),
+ * then the awake pieces.
+ */
+export const TIMELINE_FIELDS = ['structural', 'rigid', 'events', 'stream', 'other', 'flush', 'awake'] as const;
 export const TIMELINE_STRIDE = TIMELINE_FIELDS.length;
 
 /** (front-end extension) Something failed. `fatal` means the engine cannot continue. */
@@ -596,6 +668,9 @@ export function workerMessageTransferables(msg: WorkerMessage): ArrayBuffer[] {
       break;
     case 'occupancy':
       for (const c of msg.chunks) if (c.bits) pushUnique(out, seen, c.bits);
+      break;
+    case 'debris':
+      pushUnique(out, seen, msg.poses.buffer);
       break;
     case 'events':
       for (const e of msg.list) {

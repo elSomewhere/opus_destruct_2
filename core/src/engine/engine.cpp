@@ -195,7 +195,6 @@ u8 Engine::frag_class(const FragKey& f) {
 Engine::Structure* Engine::extract(const FragKey& seed, i32 max_nodes, f64 max_radius, bool detach_free) {
   if (max_nodes <= 0) max_nodes = cfg_.structure_max_nodes;
   if (max_radius <= 0) max_radius = cfg_.structure_max_radius;
-  const f64 h = grid_.h;
   auto s = std::make_unique<Structure>();
   s->id = next_id_++;
   std::vector<FragKey> members;
@@ -313,102 +312,130 @@ Engine::Structure* Engine::extract(const FragKey& seed, i32 max_nodes, f64 max_r
     }
     return nullptr;
   }
-  // nodes
-  const i32 n = static_cast<i32>(members.size());
-  s->refs = members;
-  s->P.nodes.resize(static_cast<size_t>(n));
-  s->ident.resize(static_cast<size_t>(n));
-  s->vox0.resize(static_cast<size_t>(n));
-  s->weight.resize(static_cast<size_t>(n));
-  std::vector<MaterialId> mat(static_cast<size_t>(n));
-  std::vector<f64> strength(static_cast<size_t>(n));
-  for (i32 i = 0; i < n; ++i) {
-    const FragKey& f = members[size_t(i)];
-    FragChunk* fc = frag_chunk_if(f.chunk);
-    const FragInfo& fi = fc->frags[size_t(f.idx)];
-    s->P.nodes[size_t(i)].c = fi.com;
-    s->P.nodes[size_t(i)].mass = fi.mass;
-    s->ident[size_t(i)] = frag_ident(f.chunk, fi.first);
-    const IVec3 cc = unkey3(f.chunk);
-    const IVec3 l = local_of(fi.first);
-    s->vox0[size_t(i)] = {cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]};
-    s->weight[size_t(i)] = fi.mass * cfg_.rigid.gravity;
-    mat[size_t(i)] = fi.mat;
-    strength[size_t(i)] = class_mult(frag_class(f));
-  }
-  // bonds
-  s->face_start.push_back(0);
-  for (SecAcc& A : accs) {
-    if (A.b >= 0) {
-      A.mb = mat[size_t(A.b)];
-      A.strength_b = strength[size_t(A.b)];
-    } else {
-      A.strength_b = 1e9;  // (the anchored side never governs)
-    }
-    const V3* cb = A.b >= 0 ? &s->P.nodes[size_t(A.b)].c : nullptr;
-    SBond B = A.finish(h, s->P.nodes[size_t(A.a)].c, cb, mat[size_t(A.a)], strength[size_t(A.a)]);
-    B.tag = static_cast<i32>(s->P.bonds.size());
-    s->P.bonds.push_back(B);
-    for (size_t k = 0; k < A.faces.size(); ++k) {
-      s->face_p.push_back(A.faces[k]);
-      s->face_axis.push_back(A.fax[k]);
-    }
-    s->face_start.push_back(static_cast<i32>(s->face_p.size()));
-    const u64 ia = s->ident[size_t(A.a)];
-    const u64 ib = A.b >= 0 ? s->ident[size_t(A.b)] : 0;
-    s->bid.push_back(bond_ident(ia, ib, A.b >= 0 ? 0 : A.axis, A.b >= 0 ? 1 : A.sign));
-  }
-  s->phi.assign(s->P.bonds.size(), 0.0f);
-  // warm start and loads
-  s->u.assign(6 * size_t(n), 0.0);
-  for (i32 i = 0; i < n; ++i) {
-    const auto it = warm_u_.find(s->ident[size_t(i)]);
-    if (it != warm_u_.end())
-      for (int q = 0; q < 6; ++q) s->u[6 * size_t(i) + q] = it->second[size_t(q)];
-  }
-  s->ext.assign(6 * size_t(n), 0.0);
-  s->ext_solved.assign(6 * size_t(n), 0.0);
-  s->acc.assign(6 * size_t(n), 0.0);
-  s->peak.assign(6 * size_t(n), 0.0);
-  s->peak_mag.assign(size_t(n), 0.0);
-  // ownership (supersedes older structures holding these fragments)
   std::vector<i64> superseded;
-  for (i32 i = 0; i < n; ++i) {
-    const FragKey& f = members[size_t(i)];
-    auto& ov = owner_[f.chunk];
-    FragChunk* fc = frag_chunk_if(f.chunk);
-    if (ov.size() < fc->frags.size()) ov.resize(fc->frags.size(), 0);
-    i64& o = ov[size_t(f.idx)];
-    if (o && o != s->id) superseded.push_back(o);
-    o = s->id;
-  }
+  append_nodes(*s, members, accs, cluster_cell(static_cast<i64>(members.size())), &superseded);
   std::sort(superseded.begin(), superseded.end());
   superseded.erase(std::unique(superseded.begin(), superseded.end()), superseded.end());
-  for (i64 id : superseded) {
-    Structure* o = structure(id);
-    if (!o) continue;
-    // its external loads carry over (the next contact pass refreshes them)
-    for (i32 i = 0; i < static_cast<i32>(o->refs.size()); ++i) {
-      if (o->stale) break;
-      const i32 j = s->node(o->refs[size_t(i)]);
-      if (j < 0) continue;
-      for (int q = 0; q < 6; ++q) {
-        s->ext[6 * size_t(j) + q] = o->ext[6 * size_t(i) + q];
-        s->ext_solved[6 * size_t(j) + q] = o->ext[6 * size_t(i) + q];
-      }
-    }
-    o->dead = true;
-  }
+  for (i64 id : superseded)
+    if (Structure* o = structure(id)) o->dead = true;
   structures_.erase(std::remove_if(structures_.begin(), structures_.end(), [](const std::unique_ptr<Structure>& x) { return x->dead; }),
                     structures_.end());
   structures_.push_back(std::move(s));  // (ids ascend: the list stays sorted)
   return structures_.back().get();
 }
 
+i32 Engine::cluster_cell(i64 fragments) const {
+  if (fragments <= cfg_.cluster_nodes) return 0;
+  return fragments <= 6 * static_cast<i64>(cfg_.cluster_nodes) ? 8 : 16;
+}
+
+void Engine::append_nodes(Structure& s, const std::vector<FragKey>& frags, const std::vector<SecAcc>& fine, i32 cell,
+                          std::vector<i64>* superseded) {
+  const f64 h = grid_.h;
+  const i32 m = static_cast<i32>(frags.size());
+  const i32 n0 = static_cast<i32>(s.P.nodes.size());
+  s.cell = cell;
+  // clusters: fragments in one chunk-local cell, connected inside it
+  std::vector<u64> key(static_cast<size_t>(m));
+  for (i32 f = 0; f < m; ++f) {
+    if (cell <= 0) {
+      key[size_t(f)] = static_cast<u64>(f);
+      continue;
+    }
+    const FragInfo& fi = frag_chunk_if(frags[size_t(f)].chunk)->frags[size_t(frags[size_t(f)].idx)];
+    const IVec3 l = local_of(fi.first);
+    key[size_t(f)] = mix64(frags[size_t(f)].chunk ^ (static_cast<u64>((l[0] / cell) * 64 + (l[1] / cell) * 8 + l[2] / cell) << 58));
+  }
+  std::vector<std::pair<i32, i32>> links;
+  for (const SecAcc& A : fine)
+    if (A.a >= 0 && A.a < m && A.b >= 0 && A.b < m) links.push_back({A.a, A.b});
+  std::vector<i32> fnode;
+  const i32 K = cluster_items(key, links, &fnode);
+  // nodes
+  std::vector<std::vector<i32>> members(static_cast<size_t>(K));
+  for (i32 f = 0; f < m; ++f) members[size_t(fnode[size_t(f)])].push_back(f);
+  for (i32 c = 0; c < K; ++c) {
+    const i32 nd = n0 + c;
+    SNode node;
+    f64 mass = 0.0, heavy = -1.0, strength = 1e30;
+    V3 com;
+    MaterialId mat = MaterialId::Concrete;
+    for (i32 f : members[size_t(c)]) {
+      const FragKey& fk = frags[size_t(f)];
+      const FragInfo& fi = frag_chunk_if(fk.chunk)->frags[size_t(fk.idx)];
+      mass += fi.mass;
+      com += fi.com * fi.mass;
+      if (fi.mass > heavy) {
+        heavy = fi.mass;
+        mat = fi.mat;
+      }
+      strength = std::min(strength, class_mult(frag_class(fk)));
+      s.frags.push_back(fk);
+      auto& nm = s.nodemap[fk.chunk];
+      const size_t nf = frag_chunk_if(fk.chunk)->frags.size();
+      if (nm.size() < nf) nm.resize(nf, -1);
+      nm[size_t(fk.idx)] = nd;
+      auto& ov = owner_[fk.chunk];
+      if (ov.size() < nf) ov.resize(nf, 0);
+      if (ov[size_t(fk.idx)] && ov[size_t(fk.idx)] != s.id && superseded) superseded->push_back(ov[size_t(fk.idx)]);
+      ov[size_t(fk.idx)] = s.id;
+    }
+    s.fstart.push_back(static_cast<i32>(s.frags.size()));
+    node.c = mass > 0 ? com * (1.0 / mass) : com;
+    node.mass = mass;
+    s.P.nodes.push_back(node);
+    const FragKey& f0 = frags[size_t(members[size_t(c)].front())];
+    const FragInfo& fi0 = frag_chunk_if(f0.chunk)->frags[size_t(f0.idx)];
+    s.ident.push_back(frag_ident(f0.chunk, fi0.first));
+    const IVec3 cc = unkey3(f0.chunk);
+    const IVec3 l = local_of(fi0.first);
+    s.vox0.push_back({cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]});
+    s.weight.push_back(mass * cfg_.rigid.gravity);
+    s.nmat.push_back(mat);
+    s.nstrength.push_back(strength);
+    std::array<f32, 6> w{0, 0, 0, 0, 0, 0};
+    const auto it = warm_u_.find(s.ident.back());
+    if (it != warm_u_.end()) w = it->second;
+    for (int q = 0; q < 6; ++q) {
+      s.u.push_back(w[size_t(q)]);
+      s.ext.push_back(0.0);
+      s.ext_solved.push_back(0.0);
+      s.acc.push_back(0.0);
+      s.peak.push_back(0.0);
+      if (s.pending_impact) s.pending.push_back(0.0);
+    }
+    s.peak_mag.push_back(0.0);
+  }
+  // bonds
+  const std::vector<SecAcc> merged = merge_accs(fine, [&](i32 e) { return e >= kExisting ? e - kExisting : n0 + fnode[size_t(e)]; });
+  for (const SecAcc& A0 : merged) {
+    SecAcc A = A0;
+    const i32 ia = A.a, ib = A.b;
+    if (ib >= 0) {
+      A.mb = s.nmat[size_t(ib)];
+      A.strength_b = s.nstrength[size_t(ib)];
+    } else {
+      A.strength_b = 1e9;  // (the anchored side never governs)
+    }
+    const V3* cb = ib >= 0 ? &s.P.nodes[size_t(ib)].c : nullptr;
+    SBond B = A.finish(h, s.P.nodes[size_t(ia)].c, cb, s.nmat[size_t(ia)], s.nstrength[size_t(ia)]);
+    B.tag = static_cast<i32>(s.P.bonds.size());
+    s.P.bonds.push_back(B);
+    for (size_t k = 0; k < A.faces.size(); ++k) {
+      s.face_p.push_back(A.faces[k]);
+      s.face_axis.push_back(A.fax[k]);
+    }
+    s.face_start.push_back(static_cast<i32>(s.face_p.size()));
+    s.bid.push_back(bond_ident(s.ident[size_t(ia)], ib >= 0 ? s.ident[size_t(ib)] : 0, ib >= 0 ? 0 : A.axis, ib >= 0 ? 1 : A.sign));
+    s.phi.push_back(0.0f);
+  }
+}
+
 void Engine::drop_structure(i64 id) {
   Structure* s = structure(id);
   if (!s) return;
-  for (const FragKey& f : s->refs) {
+  for (const FragKey& f : s->frags) {
+    if (f.idx < 0) continue;
     auto it = owner_.find(f.chunk);
     if (it == owner_.end() || f.idx >= static_cast<i32>(it->second.size())) continue;
     if (it->second[size_t(f.idx)] == id) it->second[size_t(f.idx)] = 0;
@@ -528,6 +555,13 @@ void Engine::step_structures() {
                   s.P.appended(), ms_since(tq), ms_since(tq) / std::max(1, r.iters), static_cast<long long>(per));
     budget -= per * std::max(1, r.iters);
     st_.pcg_iters += r.iters;
+    if (!r.converged && s.run_iters + r.iters > 120) {
+      // a stale preconditioner (after many breaks): rebuild it, and restart from here
+      s.P.current(s.u);
+      s.P.invalidate();
+      s.run_iters = 0;
+      continue;
+    }
     if (r.converged) {
       s.P.current(s.u);
       s.P.stop();
@@ -579,7 +613,8 @@ void Engine::judge(Structure& s) {
   }
   st_.max_utilization = maxphi;
   // keep the warm start
-  for (size_t i = 0; i < s.refs.size(); ++i) {
+  for (size_t i = 0; i < s.P.nodes.size(); ++i) {
+    if (s.P.nodes[i].gone) continue;
     std::array<f32, 6> w;
     for (int q = 0; q < 6; ++q) w[size_t(q)] = static_cast<f32>(s.u[6 * i + q]);
     warm_u_[s.ident[i]] = w;
@@ -589,7 +624,8 @@ void Engine::judge(Structure& s) {
   s.pending_impact = false;
   s.reload = false;
   if (par_.debug_view == 1)
-    for (const FragKey& f : s.refs) grid_.mark_dirty(unkey3(f.chunk));
+    for (const FragKey& f : s.frags)
+      if (f.idx >= 0) grid_.mark_dirty(unkey3(f.chunk));
   if (over.empty() || s.rounds >= cfg_.max_rounds) {
     s.solving = more;  // (a waiting load case: solve again)
     s.shock = false;
@@ -658,7 +694,8 @@ void Engine::detach_unsupported(Structure& s) {
     if (pieces[size_t(c)].empty()) continue;
     std::vector<FragKey> frags;
     for (i32 i : pieces[size_t(c)]) {
-      frags.push_back(s.refs[size_t(i)]);
+      for (i32 k = s.fstart[size_t(i)]; k < s.fstart[size_t(i) + 1]; ++k)
+        if (s.frags[size_t(k)].idx >= 0) frags.push_back(s.frags[size_t(k)]);
       retire.push_back(i);
     }
     make_body_from_world(frags, V3{}, V3{});
@@ -672,12 +709,15 @@ void Engine::detach_unsupported(Structure& s) {
 void Engine::retire_structure_nodes(Structure& s, const std::vector<i32>& list) {
   s.P.retire_nodes(list);
   for (i32 i : list) {
-    const FragKey f = s.refs[size_t(i)];
-    auto it = s.nodemap.find(f.chunk);
-    if (it != s.nodemap.end() && f.idx >= 0 && f.idx < static_cast<i32>(it->second.size()) && it->second[size_t(f.idx)] == i)
-      it->second[size_t(f.idx)] = -1;
-    if (owner_of(f) == s.id) owner_[f.chunk][size_t(f.idx)] = 0;
-    s.refs[size_t(i)] = FragKey{};
+    for (i32 k = s.fstart[size_t(i)]; k < s.fstart[size_t(i) + 1]; ++k) {
+      const FragKey f = s.frags[size_t(k)];
+      if (f.idx < 0) continue;
+      auto it = s.nodemap.find(f.chunk);
+      if (it != s.nodemap.end() && f.idx < static_cast<i32>(it->second.size()) && it->second[size_t(f.idx)] == i)
+        it->second[size_t(f.idx)] = -1;
+      if (owner_of(f) == s.id) owner_[f.chunk][size_t(f.idx)] = 0;
+      s.frags[size_t(k)] = FragKey{};
+    }
     for (int q = 0; q < 6; ++q) {
       s.ext[6 * size_t(i) + q] = 0.0;
       s.ext_solved[6 * size_t(i) + q] = 0.0;
@@ -705,20 +745,35 @@ void Engine::retire_structure_nodes(Structure& s, const std::vector<i32>& list) 
 }
 
 bool Engine::patch_structure(Structure& s) {
-  const f64 h = grid_.h;
   std::vector<u64> changed = s.changed;
   std::sort(changed.begin(), changed.end());
   s.changed.clear();
   s.stale = false;
   auto is_changed = [&](u64 k) { return std::binary_search(changed.begin(), changed.end(), k); };
-  // 1. nodes in re-fragmented chunks retire (their fragments are gone or renumbered)
-  std::vector<i32> retire;
-  for (i32 i = 0; i < static_cast<i32>(s.refs.size()); ++i)
-    if (!s.P.nodes[size_t(i)].gone && s.refs[size_t(i)].idx >= 0 && is_changed(s.refs[size_t(i)].chunk)) retire.push_back(i);
+  // 1. nodes in re-fragmented chunks retire (clusters are chunk-local; the chunks' fragment
+  // numbering and ownership were reset when they were rebuilt)
   for (u64 k : changed) s.nodemap.erase(k);
+  std::vector<i32> retire;
+  for (i32 i = 0; i < static_cast<i32>(s.P.nodes.size()); ++i) {
+    if (s.P.nodes[size_t(i)].gone) continue;
+    bool hit = false;
+    for (i32 k = s.fstart[size_t(i)]; k < s.fstart[size_t(i) + 1] && !hit; ++k)
+      hit = s.frags[size_t(k)].idx >= 0 && is_changed(s.frags[size_t(k)].chunk);
+    if (hit) retire.push_back(i);
+  }
   s.P.retire_nodes(retire);
   for (i32 i : retire) {
-    s.refs[size_t(i)] = FragKey{};
+    for (i32 k = s.fstart[size_t(i)]; k < s.fstart[size_t(i) + 1]; ++k) {
+      FragKey& f = s.frags[size_t(k)];
+      if (f.idx < 0) continue;
+      if (!is_changed(f.chunk)) {
+        // (a cluster reaching out of the chunk: its other fragments are released as well)
+        auto it = s.nodemap.find(f.chunk);
+        if (it != s.nodemap.end() && f.idx < static_cast<i32>(it->second.size())) it->second[size_t(f.idx)] = -1;
+        if (owner_of(f) == s.id) owner_[f.chunk][size_t(f.idx)] = 0;
+      }
+      f = FragKey{};
+    }
     for (int q = 0; q < 6; ++q) {
       s.ext[6 * size_t(i) + q] = 0.0;
       s.ext_solved[6 * size_t(i) + q] = 0.0;
@@ -730,54 +785,46 @@ bool Engine::patch_structure(Structure& s) {
   }
   const i32 n0 = static_cast<i32>(s.P.nodes.size());
   if (s.gone > std::max<i32>(64, (n0 - s.gone) / 2)) return false;  // (mostly changed: extract again)
-  // 2. the new fragments of those chunks that touch the structure, and what they reach there
-  struct Cand {
-    FragKey f;
-    i32 node = -1;
-  };
+  // 2. the fragments of those chunks that touch the structure, and what they reach there
   std::vector<FragKey> members;
-  std::unordered_map<u64, std::vector<i32>> cand_node;  // chunk -> new node per fragment (-1)
+  std::unordered_map<u64, std::vector<i32>> member_of;  // chunk -> member index per fragment (-1)
   for (u64 k : changed) {
     FragChunk& fc = frag_chunk(unkey3(k));
-    cand_node[k].assign(fc.frags.size(), -1);
+    member_of[k].assign(fc.frags.size(), -1);
   }
+  // fragments released above (outside the changed chunks) are candidates too
   auto touches = [&](const FragKey& F) {
-    FragChunk* fc = frag_chunk_if(F.chunk);
-    const IVec3 cc = unkey3(F.chunk);
-    const IVec3 base{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
-    for (i32 k = fc->vox_start[size_t(F.idx)]; k < fc->vox_start[size_t(F.idx) + 1]; ++k) {
-      const i32 li = fc->vox[size_t(k)];
-      if (fc->id[size_t(li)] != static_cast<u16>(F.idx + 1)) continue;
-      const IVec3 l = local_of(li);
-      const IVec3 p{base[0] + l[0], base[1] + l[1], base[2] + l[2]};
+    std::vector<IVec3> vox;
+    voxels_of(F, vox);
+    for (const IVec3& p : vox)
       for (int a = 0; a < 3; ++a)
         for (int sg = -1; sg <= 1; sg += 2) {
           IVec3 q = p;
           q[a] += sg;
-          const IVec3 qc = chunk_of(q);
-          const u64 qk = key3(qc[0], qc[1], qc[2]);
-          if (is_changed(qk)) continue;
           if (!vox_free(grid_.get(q))) continue;
           if (sg > 0 ? grid_.broken(p, a) : grid_.broken(q, a)) continue;
           FragKey G;
           if (!frag_at(q, &G)) continue;
-          if (s.node(G) >= 0) return true;
+          if (s.node(G) >= 0 && !s.P.nodes[size_t(s.node(G))].gone) return true;
         }
-    }
     return false;
+  };
+  auto member_slot = [&](const FragKey& G) -> i32* {
+    auto it = member_of.find(G.chunk);
+    if (it == member_of.end()) return nullptr;
+    if (G.idx >= static_cast<i32>(it->second.size())) it->second.resize(size_t(G.idx) + 1, -1);
+    return &it->second[size_t(G.idx)];
   };
   std::vector<FragKey> stack;
   for (u64 k : changed) {
     FragChunk* fc = frag_chunk_if(k);
     for (i32 f = 0; f < static_cast<i32>(fc->frags.size()); ++f) {
       if (fc->frags[size_t(f)].count <= 0 || owner_of({k, f})) continue;
-      if (cand_node[k][size_t(f)] >= 0) continue;
-      if (!touches({k, f})) continue;
-      cand_node[k][size_t(f)] = n0 + static_cast<i32>(members.size());
+      if (member_of[k][size_t(f)] >= 0 || !touches({k, f})) continue;
+      member_of[k][size_t(f)] = static_cast<i32>(members.size());
       members.push_back({k, f});
       stack.push_back({k, f});
-      // flood through the changed chunks
-      while (!stack.empty()) {
+      while (!stack.empty()) {  // flood through the changed chunks
         const FragKey F = stack.back();
         stack.pop_back();
         std::vector<IVec3> vox;
@@ -788,68 +835,30 @@ bool Engine::patch_structure(Structure& s) {
               IVec3 q = p;
               q[a] += sg;
               const IVec3 qc = chunk_of(q);
-              const u64 qk = key3(qc[0], qc[1], qc[2]);
-              if (!is_changed(qk)) continue;
-              if (!vox_free(grid_.get(q))) continue;
+              if (!is_changed(key3(qc[0], qc[1], qc[2])) || !vox_free(grid_.get(q))) continue;
               if (sg > 0 ? grid_.broken(p, a) : grid_.broken(q, a)) continue;
               FragKey G;
-              if (!frag_at(q, &G) || (G.chunk == F.chunk && G.idx == F.idx)) continue;
-              if (owner_of(G) || cand_node[G.chunk][size_t(G.idx)] >= 0) continue;
-              cand_node[G.chunk][size_t(G.idx)] = n0 + static_cast<i32>(members.size());
+              if (!frag_at(q, &G) || (G.chunk == F.chunk && G.idx == F.idx) || owner_of(G)) continue;
+              i32* slot = member_slot(G);
+              if (!slot || *slot >= 0) continue;
+              *slot = static_cast<i32>(members.size());
               members.push_back(G);
               stack.push_back(G);
             }
       }
     }
   }
-  // 3. the members join: nodes, then their bonds (to each other through + faces, to the old
-  // nodes through faces of either side, to supports)
-  std::vector<MaterialId> mat;
-  std::vector<f64> strength;
-  auto node_of = [&](const FragKey& G) -> i32 {
-    const auto it = cand_node.find(G.chunk);
-    if (it != cand_node.end()) return G.idx < static_cast<i32>(it->second.size()) ? it->second[size_t(G.idx)] : -1;
-    return s.node(G);
-  };
-  for (const FragKey& f : members) {
-    FragChunk* fc = frag_chunk_if(f.chunk);
-    const FragInfo& fi = fc->frags[size_t(f.idx)];
-    SNode nd;
-    nd.c = fi.com;
-    nd.mass = fi.mass;
-    s.P.nodes.push_back(nd);
-    s.refs.push_back(f);
-    s.ident.push_back(frag_ident(f.chunk, fi.first));
-    const IVec3 cc = unkey3(f.chunk);
-    const IVec3 l = local_of(fi.first);
-    s.vox0.push_back({cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]});
-    s.weight.push_back(fi.mass * cfg_.rigid.gravity);
-    auto& nm = s.nodemap[f.chunk];
-    if (nm.size() < fc->frags.size()) nm.resize(fc->frags.size(), -1);
-    nm[size_t(f.idx)] = n0 + static_cast<i32>(mat.size());
-    owner_[f.chunk].resize(std::max(owner_[f.chunk].size(), fc->frags.size()), 0);
-    owner_[f.chunk][size_t(f.idx)] = s.id;
-    mat.push_back(fi.mat);
-    strength.push_back(class_mult(frag_class(f)));
-    for (int q = 0; q < 6; ++q) {
-      s.u.push_back(0.0);
-      s.ext.push_back(0.0);
-      s.ext_solved.push_back(0.0);
-      s.acc.push_back(0.0);
-      s.peak.push_back(0.0);
-      if (s.pending_impact) s.pending.push_back(0.0);
-    }
-    s.peak_mag.push_back(0.0);
-  }
-  std::vector<SecAcc> accs;
-  std::unordered_map<u64, i32> acc_index;
+  // 3. their bonds: to each other through + faces (counted once), to the structure's other
+  // nodes through faces of either side, to supports
+  std::vector<SecAcc> fine;
+  std::unordered_map<u64, i32> index;
   auto acc_for = [&](i32 a, i32 b, int axis, int sign) -> SecAcc& {
     const u64 k = acc_key(a, b, axis, sign);
-    auto it = acc_index.find(k);
-    if (it != acc_index.end()) return accs[size_t(it->second)];
-    acc_index.emplace(k, static_cast<i32>(accs.size()));
-    accs.emplace_back();
-    SecAcc& A = accs.back();
+    auto it = index.find(k);
+    if (it != index.end()) return fine[size_t(it->second)];
+    index.emplace(k, static_cast<i32>(fine.size()));
+    fine.emplace_back();
+    SecAcc& A = fine.back();
     A.a = b >= 0 ? std::min(a, b) : a;
     A.b = b >= 0 ? std::max(a, b) : b;
     A.axis = static_cast<u8>(axis);
@@ -858,7 +867,7 @@ bool Engine::patch_structure(Structure& s) {
   };
   for (size_t mi = 0; mi < members.size(); ++mi) {
     const FragKey F = members[mi];
-    const i32 nF = n0 + static_cast<i32>(mi);
+    const i32 eF = static_cast<i32>(mi);
     std::vector<IVec3> vox;
     voxels_of(F, vox);
     for (const IVec3& p : vox)
@@ -871,74 +880,44 @@ bool Engine::patch_structure(Structure& s) {
           if (sg > 0 ? grid_.broken(p, a) : grid_.broken(q, a)) continue;
           const IVec3 lower = sg > 0 ? p : q;
           if (vox_anchored(vq) || !chunk_resident(chunk_of(q))) {
-            SecAcc& A = acc_for(nF, -1, a, sg);
+            SecAcc& A = acc_for(eF, -1, a, sg);
             A.mb = vox_mat(vq);
             A.add(lower, a);
             continue;
           }
           FragKey G;
           if (!frag_at(q, &G) || (G.chunk == F.chunk && G.idx == F.idx)) continue;
-          const i32 nG = node_of(G);
-          if (nG < 0 || s.P.nodes[size_t(nG)].gone) {
+          i32 eG = -1;
+          if (i32* slot = member_slot(G); slot && *slot >= 0) {
+            if (sg < 0) continue;  // (a member: counted from its + face)
+            eG = *slot;
+          } else {
+            const i32 nd = s.node(G);
+            if (nd >= 0 && !s.P.nodes[size_t(nd)].gone) eG = kExisting + nd;
+          }
+          if (eG < 0) {
             // a fragment of no structure here (another one's, a frontier): held fixed
-            SecAcc& A = acc_for(nF, -1, a, sg);
+            SecAcc& A = acc_for(eF, -1, a, sg);
             A.mb = vox_mat(vq);
             A.add(lower, a);
             continue;
           }
-          if (nG >= n0 && sg < 0) continue;  // (a member: counted from its + face)
-          const i32 low = sg > 0 ? nF : nG;
-          acc_for(nF, nG, a, 1).add(lower, a, low == std::min(nF, nG) ? 1 : -1);
+          const i32 low = sg > 0 ? eF : eG;
+          acc_for(eF, eG, a, 1).add(lower, a, low == std::min(eF, eG) ? 1 : -1);
         }
   }
-  for (SecAcc& A : accs) {
-    const i32 ia = A.a, ib = A.b;
-    MaterialId ma, mb2;
-    f64 sa, sb;
-    auto info = [&](i32 nd, MaterialId* m, f64* st) {
-      if (nd >= n0) {
-        *m = mat[size_t(nd - n0)];
-        *st = strength[size_t(nd - n0)];
-      } else {
-        FragChunk* fc = frag_chunk_if(s.refs[size_t(nd)].chunk);
-        *m = fc->frags[size_t(s.refs[size_t(nd)].idx)].mat;
-        *st = class_mult(frag_class(s.refs[size_t(nd)]));
-      }
-    };
-    info(ia, &ma, &sa);
-    if (ib >= 0) {
-      info(ib, &mb2, &sb);
-      A.mb = mb2;
-      A.strength_b = sb;
-    } else {
-      A.strength_b = 1e9;
-    }
-    const V3* cb = ib >= 0 ? &s.P.nodes[size_t(ib)].c : nullptr;
-    SBond B = A.finish(h, s.P.nodes[size_t(ia)].c, cb, ma, sa);
-    B.tag = static_cast<i32>(s.P.bonds.size());
-    s.P.bonds.push_back(B);
-    for (size_t k = 0; k < A.faces.size(); ++k) {
-      s.face_p.push_back(A.faces[k]);
-      s.face_axis.push_back(A.fax[k]);
-    }
-    s.face_start.push_back(static_cast<i32>(s.face_p.size()));
-    s.bid.push_back(bond_ident(s.ident[size_t(ia)], ib >= 0 ? s.ident[size_t(ib)] : 0, ib >= 0 ? 0 : A.axis, ib >= 0 ? 1 : A.sign));
-    s.phi.push_back(0.0f);
-  }
+  append_nodes(s, members, fine, s.cell, nullptr);
   // 4. the new nodes start from their neighbours' motion; the solver keeps its preconditioner
   // (appended nodes: their own small multigrid) unless much changed
   s.P.extend_warm_start(s.u, n0);
   const i32 active = static_cast<i32>(s.P.nodes.size()) - s.gone;
-  if (s.P.assembled() && s.P.appended() + static_cast<i32>(members.size()) < std::max<i32>(32, active / 8)) {
-    s.P.reassemble();
-  } else {
-    s.P.invalidate();
-  }
+  const i32 added = static_cast<i32>(s.P.nodes.size()) - n0;
+  (void)active;
+  (void)added;
+  s.P.invalidate();  // (a fresh preconditioner: a stale one converges far slower than it saves)
   s.solving = true;
   s.shock = true;
-  const i64 sid = s.id;
   detach_unsupported(s);
-  (void)sid;
   return true;
 }
 

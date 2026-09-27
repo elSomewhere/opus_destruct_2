@@ -113,18 +113,108 @@ void Engine::rebuild_body_graph(Body& b) {
   if (!b.graph) b.graph = std::make_shared<BodyGraph>();
   BodyGraph& G = *b.graph;
   G.P = StressProblem{};
-  G.node_frag.clear();
-  G.frag_node.assign(b.frags.size(), -1);
-  for (size_t k = 0; k < b.frags.size(); ++k) {
-    if (b.frags[k].count <= 0) continue;
-    G.frag_node[k] = static_cast<i32>(G.node_frag.size());
-    G.node_frag.push_back(static_cast<i32>(k));
+  const i32 nf = static_cast<i32>(b.frags.size());
+  // fragment-level bonds from the shape
+  std::vector<SecAcc> fine;
+  std::unordered_map<u64, i32> index;
+  const BodyShape& S = b.shape;
+  const i32 cells = static_cast<i32>(S.vox.size());
+  for (i32 i = 0; i < cells; ++i) {
+    if (!vox_solid(S.vox[size_t(i)])) continue;
+    const i32 fp = S.frag[size_t(i)] - 1;
+    if (fp < 0) continue;
+    const IVec3 p = S.voxel(i);
+    for (int a = 0; a < 3; ++a) {
+      if ((S.brk[size_t(i)] >> a) & 1) continue;
+      IVec3 q = p;
+      q[a] += 1;
+      const i32 j = S.index(q);
+      if (j < 0 || !vox_solid(S.vox[size_t(j)])) continue;
+      const i32 fq = S.frag[size_t(j)] - 1;
+      if (fq == fp || fq < 0) continue;
+      const u64 key = acc_key(fp, fq, a, 1);
+      auto it = index.find(key);
+      i32 ai;
+      if (it == index.end()) {
+        ai = static_cast<i32>(fine.size());
+        index.emplace(key, ai);
+        fine.emplace_back();
+        SecAcc& A = fine.back();
+        A.a = std::min(fp, fq);
+        A.b = std::max(fp, fq);
+      } else {
+        ai = it->second;
+      }
+      fine[size_t(ai)].add(p, a, fp < fq ? 1 : -1);
+    }
+  }
+  // resolution: clusters of fragments for large pieces (cells in the shape frame)
+  i64 live = 0;
+  for (const BodyFrag& f : b.frags) live += f.count > 0 ? 1 : 0;
+  const i32 cell = cluster_cell(live);
+  std::vector<u64> key(static_cast<size_t>(nf));
+  for (i32 f = 0; f < nf; ++f) {
+    if (cell <= 0) {
+      key[size_t(f)] = static_cast<u64>(f);
+      continue;
+    }
+    const V3& c = b.frags[size_t(f)].com;
+    key[size_t(f)] = key3(static_cast<i32>(std::floor(c.x / (h * cell))), static_cast<i32>(std::floor(c.y / (h * cell))),
+                          static_cast<i32>(std::floor(c.z / (h * cell))));
+  }
+  std::vector<std::pair<i32, i32>> links;
+  for (const SecAcc& A : fine) links.push_back({A.a, A.b});
+  std::vector<i32> cl;
+  cluster_items(key, links, &cl);
+  // nodes: clusters of live fragments (renumbered densely)
+  G.frag_node.assign(static_cast<size_t>(nf), -1);
+  std::vector<i32> node_of_cluster(static_cast<size_t>(nf), -1);
+  G.node_com.clear();
+  G.node_mass.clear();
+  G.node_inertia.clear();
+  std::vector<MaterialId> nmat;
+  std::vector<f64> nstr, heavy;
+  for (i32 f = 0; f < nf; ++f) {
+    const BodyFrag& bf = b.frags[size_t(f)];
+    if (bf.count <= 0) continue;
+    i32& nd = node_of_cluster[size_t(cl[size_t(f)])];
+    if (nd < 0) {
+      nd = static_cast<i32>(G.node_mass.size());
+      G.node_mass.push_back(0.0);
+      G.node_com.push_back(V3{});
+      G.node_inertia.push_back(M3{});
+      nmat.push_back(bf.mat);
+      nstr.push_back(1e30);
+      heavy.push_back(-1.0);
+    }
+    G.frag_node[size_t(f)] = nd;
+    G.node_mass[size_t(nd)] += bf.mass;
+    G.node_com[size_t(nd)] += bf.com * bf.mass;
+    nstr[size_t(nd)] = std::min(nstr[size_t(nd)], bf.strength);
+    if (bf.mass > heavy[size_t(nd)]) {
+      heavy[size_t(nd)] = bf.mass;
+      nmat[size_t(nd)] = bf.mat;
+    }
+  }
+  const i32 n = static_cast<i32>(G.node_mass.size());
+  for (i32 i = 0; i < n; ++i)
+    if (G.node_mass[size_t(i)] > 0) G.node_com[size_t(i)] *= 1.0 / G.node_mass[size_t(i)];
+  for (i32 f = 0; f < nf; ++f) {
+    const i32 nd = G.frag_node[size_t(f)];
+    if (nd < 0) continue;
+    const BodyFrag& bf = b.frags[size_t(f)];
+    const V3 d = bf.com - G.node_com[size_t(nd)];
+    const f64 dd = dot(d, d);
+    M3& I = G.node_inertia[size_t(nd)];
+    for (int r = 0; r < 3; ++r)
+      for (int q = 0; q < 3; ++q) I(r, q) += bf.inertia(r, q) + bf.mass * ((r == q ? dd : 0.0) - d[r] * d[q]);
+  }
+  for (i32 i = 0; i < n; ++i) {
     SNode nd;
-    nd.c = b.frags[k].com;
-    nd.mass = b.frags[k].mass;
+    nd.c = G.node_com[size_t(i)];
+    nd.mass = G.node_mass[size_t(i)];
     G.P.nodes.push_back(nd);
   }
-  const i32 n = static_cast<i32>(G.P.nodes.size());
   // the reference node: nearest the centre of mass
   i32 pin = 0;
   f64 best = 1e300;
@@ -136,49 +226,16 @@ void Engine::rebuild_body_graph(Body& b) {
     }
   }
   if (n > 0) G.P.nodes[size_t(pin)].fixed = true;
-  std::vector<SecAcc> accs;
-  std::unordered_map<u64, i32> index;
-  const BodyShape& S = b.shape;
-  const i32 cells = static_cast<i32>(S.vox.size());
-  for (i32 i = 0; i < cells; ++i) {
-    if (!vox_solid(S.vox[size_t(i)])) continue;
-    const i32 fp = S.frag[size_t(i)] - 1;
-    const IVec3 p = S.voxel(i);
-    for (int a = 0; a < 3; ++a) {
-      if ((S.brk[size_t(i)] >> a) & 1) continue;
-      IVec3 q = p;
-      q[a] += 1;
-      const i32 j = S.index(q);
-      if (j < 0 || !vox_solid(S.vox[size_t(j)])) continue;
-      const i32 fq = S.frag[size_t(j)] - 1;
-      if (fq == fp || fp < 0 || fq < 0) continue;
-      const i32 na = G.frag_node[size_t(fp)], nb = G.frag_node[size_t(fq)];
-      if (na < 0 || nb < 0) continue;
-      const u64 key = acc_key(na, nb, a, 1);
-      auto it = index.find(key);
-      i32 ai;
-      if (it == index.end()) {
-        ai = static_cast<i32>(accs.size());
-        index.emplace(key, ai);
-        accs.emplace_back();
-        SecAcc& A = accs.back();
-        A.a = std::min(na, nb);
-        A.b = std::max(na, nb);
-        const i32 fb = G.node_frag[size_t(A.b)];
-        A.mb = b.frags[size_t(fb)].mat;
-        A.strength_b = b.frags[size_t(fb)].strength;
-      } else {
-        ai = it->second;
-      }
-      accs[size_t(ai)].add(p, a, na < nb ? 1 : -1);
-    }
-  }
+  const std::vector<SecAcc> merged = merge_accs(fine, [&](i32 f) { return G.frag_node[size_t(f)]; });
   G.face_start.assign(1, 0);
   G.face_p.clear();
   G.face_axis.clear();
-  for (const SecAcc& A : accs) {
-    const BodyFrag& fa = b.frags[size_t(G.node_frag[size_t(A.a)])];
-    SBond B = A.finish(h, G.P.nodes[size_t(A.a)].c, &G.P.nodes[size_t(A.b)].c, fa.mat, fa.strength);
+  for (const SecAcc& A0 : merged) {
+    if (A0.a < 0 || A0.b < 0) continue;
+    SecAcc A = A0;
+    A.mb = nmat[size_t(A.b)];
+    A.strength_b = nstr[size_t(A.b)];
+    SBond B = A.finish(h, G.P.nodes[size_t(A.a)].c, &G.P.nodes[size_t(A.b)].c, nmat[size_t(A.a)], nstr[size_t(A.a)]);
     B.tag = static_cast<i32>(G.P.bonds.size());
     G.P.bonds.push_back(B);
     for (size_t k = 0; k < A.faces.size(); ++k) {
@@ -264,11 +321,10 @@ std::vector<i32> Engine::body_stress(Body& b, const std::vector<PointForce>& for
     const V3 a = Ft * b.inv_mass + g;
     const V3 alpha = Iwi * (tau - cross(b.w, Iw * b.w));
     for (i32 i = 0; i < n; ++i) {
-      const BodyFrag& bf = b.frags[size_t(G.node_frag[size_t(i)])];
-      const V3 rw = R * (bf.com - b.com);
+      const V3 rw = R * (G.node_com[size_t(i)] - b.com);
       const V3 ai = a + cross(alpha, rw) + cross(b.w, cross(b.w, rw));
-      const V3 Fi = Rt * ((g - ai) * bf.mass);
-      const M3 Ii = R * bf.inertia * Rt;
+      const V3 Fi = Rt * ((g - ai) * G.node_mass[size_t(i)]);
+      const M3 Ii = R * G.node_inertia[size_t(i)] * Rt;
       const V3 Mi = Rt * ((Ii * alpha + cross(b.w, Ii * b.w)) * -1.0);
       f64* fi = &f[6 * size_t(i)];
       fi[0] += Fi.x;
@@ -391,7 +447,8 @@ bool Engine::split_body(Body& b, bool use_pre, bool force_replace) {
   const i32 nc = n > 0 ? graph_components(n, G.P.bonds, seed, &comp) : 0;
   if (nc <= 1 && !force_replace) return false;  // (its matrix lost the broken bonds in place)
   std::vector<i32> frag_comp(b.frags.size(), -1);
-  for (i32 i = 0; i < n; ++i) frag_comp[size_t(G.node_frag[size_t(i)])] = comp[size_t(i)];
+  for (size_t f = 0; f < b.frags.size(); ++f)
+    if (G.frag_node[f] >= 0) frag_comp[f] = comp[size_t(G.frag_node[f])];
   std::vector<std::vector<i32>> parts(size_t(std::max(1, nc)));
   const BodyShape& S = b.shape;
   for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
@@ -428,29 +485,40 @@ bool Engine::fracture_hook(f64 dt) {
   const size_t nb = rigid_.bodies.size();
   std::vector<std::vector<PointForce>> per(nb);
   std::vector<f64> fsum(nb, 0.0);
+  std::vector<V3> jsum(nb), lsum(nb);
   const f64 k = par_.impact / dt;
   for (const Contact& c : cs) {
-    const V3 F = c.impulse() * k;
+    const V3 J = c.impulse();
+    const V3 F = J * k;
     const f64 mag = norm(F);
     if (mag <= 0.0) continue;
-    const Body& A = *rigid_.bodies[size_t(c.a)];
+    Body& A = *rigid_.bodies[size_t(c.a)];
     per[size_t(c.a)].push_back({A.shape.frag[size_t(c.vox_a)] - 1, F, c.p});
     fsum[size_t(c.a)] += mag;
+    jsum[size_t(c.a)] += J;
+    lsum[size_t(c.a)] += cross(c.p - A.x, J);
     if (c.b >= 0) {
-      const Body& B = *rigid_.bodies[size_t(c.b)];
+      Body& B = *rigid_.bodies[size_t(c.b)];
       per[size_t(c.b)].push_back({B.shape.frag[size_t(c.vox_b)] - 1, F * -1.0, c.p});
       fsum[size_t(c.b)] += mag;
+      jsum[size_t(c.b)] -= J;
+      lsum[size_t(c.b)] -= cross(c.p - B.x, J);
     }
   }
   bool changed = false;
   for (size_t i = 0; i < nb; ++i) {
     Body& b = *rigid_.bodies[i];
-    if (b.asleep || b.frags.size() < 2) continue;
+    if (b.asleep || static_cast<i32>(b.frags.size()) < cfg_.min_fracture_frags) continue;
     if (b.stress_cooldown > 0) --b.stress_cooldown;
     const f64 weight = b.mass * cfg_.rigid.gravity;
-    const bool impact = fsum[i] > cfg_.body_trigger * weight && fsum[i] > 1.3 * b.last_load;
-    const bool steady = fsum[i] > 0.3 * weight && b.stress_cooldown <= 0 &&
-                        !(b.last_phi < 0.5 && fsum[i] < 1.3 * b.last_load && fsum[i] > 0.7 * b.last_load);
+    // a real collision changes the velocity by much more than resting contact does (g dt); small
+    // pieces need a harder knock (rubble does not grind itself to dust)
+    const f64 dv = norm(jsum[i]) * b.inv_mass + norm(b.inv_inertia_world() * lsum[i]) * b.radius;
+    const f64 dv_min = std::max(cfg_.body_impact_dv, cfg_.small_impact_dv * (1.0 - b.mass / cfg_.small_piece_mass));
+    const bool impact = dv > dv_min && fsum[i] > cfg_.body_trigger * weight;
+    // resting on new supports (a first landing, rubble shifting under it, a load put on it):
+    // checked once, again when the supporting forces changed by a good part of its weight
+    const bool steady = fsum[i] > 0.5 * weight && b.stress_cooldown <= 0 && std::abs(fsum[i] - b.last_load) > 0.3 * weight;
     const f64 wr = norm(b.w);
     const bool spin = wr * wr * b.radius > 2.0 * cfg_.rigid.gravity && b.stress_cooldown <= 0;
     if (!impact && !steady && !spin) continue;

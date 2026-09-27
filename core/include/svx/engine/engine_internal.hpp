@@ -31,6 +31,7 @@ inline IVec3 voxel_of(const V3& p, f64 h) {
 
 // Design strength classes: 1, 1.5, 2, 3, 4, 6, 8, ... x 1024 (class 20).
 constexpr int kStrengthClasses = 21;
+constexpr i32 kExisting = 1 << 30;  // (patch accumulators: endpoints >= this are existing nodes)
 inline f64 class_mult(u8 c) {
   if (c == 0) return 1.0;
   const int k = std::min<int>(c, kStrengthClasses - 1);
@@ -155,6 +156,67 @@ inline BondLoad lerp_load(const BondLoad& prev, const BondLoad& now, f64 k) {
   return r;
 }
 
+// Groups items into clusters: items with the same cell key that are linked (directly or
+// through each other). out[i] = cluster of item i, numbered in order of first appearance.
+inline i32 cluster_items(const std::vector<u64>& cell, const std::vector<std::pair<i32, i32>>& links, std::vector<i32>* out) {
+  const i32 n = static_cast<i32>(cell.size());
+  std::vector<i32> p(static_cast<size_t>(n));
+  for (i32 i = 0; i < n; ++i) p[size_t(i)] = i;
+  auto find = [&](i32 x) {
+    while (p[size_t(x)] != x) {
+      p[size_t(x)] = p[size_t(p[size_t(x)])];
+      x = p[size_t(x)];
+    }
+    return x;
+  };
+  for (const auto& [a, b] : links) {
+    if (cell[size_t(a)] != cell[size_t(b)]) continue;
+    const i32 ra = find(a), rb = find(b);
+    if (ra != rb) p[size_t(std::max(ra, rb))] = std::min(ra, rb);
+  }
+  out->assign(static_cast<size_t>(n), -1);
+  std::vector<i32> id(static_cast<size_t>(n), -1);
+  i32 k = 0;
+  for (i32 i = 0; i < n; ++i) {
+    const i32 r = find(i);
+    if (id[size_t(r)] < 0) id[size_t(r)] = k++;
+    (*out)[size_t(i)] = id[size_t(r)];
+  }
+  return k;
+}
+
+// Node-level bond accumulators from finer ones: endpoints mapped (a support stays < 0), the
+// faces of one node pair (a support: one node, axis and side) combined, pairs inside one node
+// dropped. Face signs stay relative to the merged bond's a.
+template <class Map>
+std::vector<SecAcc> merge_accs(const std::vector<SecAcc>& fine, Map&& node_of) {
+  std::vector<SecAcc> out;
+  std::unordered_map<u64, i32> index;
+  for (const SecAcc& F : fine) {
+    const i32 a = node_of(F.a);
+    const i32 b = F.b >= 0 ? node_of(F.b) : -1;
+    if (b >= 0 && a == b) continue;
+    const u64 k = acc_key(a, b, F.axis, F.sign);
+    auto it = index.find(k);
+    SecAcc* M;
+    if (it == index.end()) {
+      index.emplace(k, static_cast<i32>(out.size()));
+      out.emplace_back();
+      M = &out.back();
+      M->a = b >= 0 ? std::min(a, b) : a;
+      M->b = b >= 0 ? std::max(a, b) : b;
+      M->axis = F.axis;
+      M->sign = F.sign;
+      M->mb = F.mb;
+    } else {
+      M = &out[size_t(it->second)];
+    }
+    const bool flip = b >= 0 && a != M->a;
+    for (size_t q = 0; q < F.faces.size(); ++q) M->add(F.faces[q], F.fax[q], flip ? -F.fsg[q] : F.fsg[q]);
+  }
+  return out;
+}
+
 // Connected components over the intact bonds between nodes (supports ignored). Component 0 holds
 // every node reachable from a node with seed[i] != 0; the rest are numbered from 1 in node order.
 // Returns the number of components (at least 1).
@@ -212,8 +274,10 @@ inline i32 graph_components(i32 n, const std::vector<SBond>& bonds, const std::v
 // A body's bond graph (the fracture layer's data attached to a rigid body).
 struct BodyGraph {
   StressProblem P;
-  std::vector<i32> node_frag;  // node -> body fragment
-  std::vector<i32> frag_node;  // fragment -> node (-1: none)
+  std::vector<i32> frag_node;  // body fragment -> node (-1: none); nodes are clusters of fragments
+  std::vector<V3> node_com;    // shape frame
+  std::vector<f64> node_mass;
+  std::vector<M3> node_inertia;  // about node_com
   std::vector<i32> face_start;
   std::vector<IVec3> face_p;
   std::vector<u8> face_axis;
@@ -223,8 +287,14 @@ struct BodyGraph {
 struct Engine::Structure {
   i64 id = 0;
   StressProblem P;
-  std::vector<FragKey> refs;       // node -> fragment
-  std::vector<u64> ident;          // node -> fragment identity
+  // Nodes are clusters of fragments (single fragments for small structures): node i holds
+  // frags[fstart[i] .. fstart[i + 1]) (a retired node's entries are cleared, idx -1).
+  std::vector<i32> fstart{0};
+  std::vector<FragKey> frags;
+  std::vector<u64> ident;          // node -> identity (of its first fragment)
+  std::vector<MaterialId> nmat;    // node -> material (its heaviest fragment's)
+  std::vector<f64> nstrength;      // node -> design strength multiplier (its weakest fragment's)
+  i32 cell = 0;                    // cluster cell (voxels; 0: one node per fragment)
   std::vector<IVec3> vox0;         // node -> a voxel of it (re-seeding)
   std::vector<f64> weight;         // node -> N
   std::unordered_map<u64, std::vector<i32>> nodemap;  // chunk -> node per fragment (-1)

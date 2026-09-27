@@ -43,8 +43,8 @@ int main(int argc, char** argv) {
   }
   auto secs = [](auto t0) { return std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count(); };
   int maps = 0, failed = 0;
-  std::printf("%-8s %9s %9s %8s %7s %7s %8s %6s %6s %8s %6s %6s %s\n", "map", "voxels", "struct", "bake s", "util", "after",
-              "strength", "unfix", "float", "detached", "rupt", "S_p<=", "verdict");
+  std::printf("%-8s %9s %9s %8s %7s %8s %6s %8s %6s %s\n", "map", "voxels", "struct", "bake s", "util", "strength", "float",
+              "detached", "broken", "verdict");
   for (const std::string& path : wads) {
     std::ifstream f(path, std::ios::binary);
     std::vector<u8> bytes((std::istreambuf_iterator<char>(f)), std::istreambuf_iterator<char>());
@@ -66,15 +66,12 @@ int main(int argc, char** argv) {
       }
       Engine eng;
       EngineParams par;
-      par.fragility = 0.25;
+      par.fragility = 1.0;
       eng.set_params(par);
       eng.load(std::move(dw.grid), dw.spawn_pos, dw.spawn_dir);
       dw.live = &eng.grid();
-      eng.set_compliance_cap(dw.slenderness.max_compliance_p99);
       const auto tb = std::chrono::steady_clock::now();
-      if (!eng.bake())
-        while (eng.bake_tile()) {
-        }
+      eng.bake();
       const f64 bake_s = secs(tb);
       i64 structural = 0;
       for (const auto& [k, ch] : eng.grid().chunks()) {
@@ -90,12 +87,7 @@ int main(int argc, char** argv) {
       }
       const auto& d = eng.design_report();
       const EngineStats s = eng.stats();
-      const bool stands = d.unfixable_bonds == 0 && d.max_utilization_after < 1.0 && s.ruptures == 0 && s.detached_voxels == 0;
-      if (!stands || std::getenv("SVX_DESIGN_WORST")) {
-        static const char* comp[6] = {"N", "V1", "V2", "T", "M1", "M2"};
-        std::printf("         worst bond before design: voxel (%d %d %d) axis %d, material %d, %s-dominated\n", d.worst[0],
-                    d.worst[1], d.worst[2], d.worst_axis, int(d.worst_mat), comp[d.worst_component]);
-      }
+      const bool stands = s.bonds_broken == 0 && s.detached_voxels == 0;
       std::string mover_note;
       bool movers_ok = true;
       if (movers) {
@@ -142,7 +134,7 @@ int main(int argc, char** argv) {
           }
         }
         const EngineStats s2 = eng.stats();
-        movers_ok = failed_moves == 0 && s2.ruptures == s.ruptures && s2.detached_voxels == s.detached_voxels;
+        movers_ok = failed_moves == 0 && s2.bonds_broken == s.bonds_broken && s2.detached_voxels == s.detached_voxels;
         char buf[256];
         std::snprintf(buf, sizeof buf, " movers %d (%d doors, %d lifts, %d floors, %d ceilings): %d moves, %d arrived, %d cycling, %d stuck%s",
                       n, kinds[0], kinds[1], kinds[2], kinds[3], moves, arrived, cycling, failed_moves,
@@ -150,12 +142,10 @@ int main(int argc, char** argv) {
         mover_note = buf;
       }
       if (!stands || !movers_ok) ++failed;
-      std::printf("%-8s %9lld %9lld %8.1f %7.2f %7.2f %8lld %6lld %6lld %8lld %6lld %6.1f %s (%.0f s)\n", name.c_str(),
+      std::printf("%-8s %9lld %9lld %8.1f %7.2f %8lld %6lld %8lld %6lld %s (%.0f s)\n", name.c_str(),
                   static_cast<long long>(s.voxels), static_cast<long long>(structural), bake_s, d.max_utilization,
-                  d.max_utilization_after, static_cast<long long>(d.strengthened_voxels),
-                  static_cast<long long>(d.unfixable_bonds), static_cast<long long>(d.floating_voxels),
-                  static_cast<long long>(s.detached_voxels), static_cast<long long>(s.ruptures),
-                  std::min(eng.compliance_cap() > 0.0 ? eng.compliance_cap() : 99.9, 99.9), stands ? "stands" : "FAILS",
+                  static_cast<long long>(d.strengthened_voxels), static_cast<long long>(d.floating_voxels),
+                  static_cast<long long>(s.detached_voxels), static_cast<long long>(s.bonds_broken), stands ? "stands" : "FAILS",
                   secs(t0));
       if (movers) std::printf("%-8s%s\n", "", mover_note.c_str());
     }

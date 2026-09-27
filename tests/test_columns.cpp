@@ -35,9 +35,4 @@ TEST_CASE("run components: two walls on bedrock and a floating block") {
   CHECK(rc.comps[1].anchor_bonds >= 1);
   CHECK(rc.comps[2].voxels == 2);
   CHECK(rc.comps[2].anchor_bonds == 0);
-  const std::vector<CellIn> cells = extract_component_cells(g, rc, 0);
-  int anchored = 0;
-  for (const auto& c : cells) anchored += c.anchored;
-  CHECK(cells.size() == 5);  // 4 wall voxels + 1 bedrock voxel below
-  CHECK(anchored == 1);
 }

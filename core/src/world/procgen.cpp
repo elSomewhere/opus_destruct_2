@@ -110,10 +110,10 @@ ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h) {
     w.spawn_pos = {h * 88, h * 4, -0.5 * h + 0.02};
     w.spawn_dir = {0, 1, 0.2};
   } else if (kind == "tower") {
-    ground(g, 0, 160, 0, 160, 4);
+    ground(g, -160, 320, -160, 320, 4);  // (60 m square: room for the rubble)
     building(g, rng, 40, 40, 3, 3, 10, 26, 22);
-    g.lo = {0, 0, -4};
-    g.hi = {160, 160, 10 * 24 + 8};
+    g.lo = {-160, -160, -4};
+    g.hi = {320, 320, 10 * 24 + 8};
     w.spawn_pos = {h * 16, h * 16, -0.5 * h + 0.02};
     w.spawn_dir = {1, 1, 0.2};
   } else {

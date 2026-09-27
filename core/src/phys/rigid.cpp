@@ -1,6 +1,7 @@
 #include "svx/phys/rigid.hpp"
 
 #include <algorithm>
+#include <climits>
 #include <cmath>
 
 namespace svx {
@@ -250,18 +251,38 @@ void RigidWorld::collide(const VoxelGrid& g) {
     for (Contact& c : cs) contacts_.push_back(c);
     cs.clear();
   };
-  // world
+  // world positions of every body's samples, once per call (pairs reuse them)
+  wpts_.resize(size_t(nb));
+  for (i32 ib = 0; ib < nb; ++ib) {
+    const Body& B = *bodies[size_t(ib)];
+    const M3 R = to_matrix(B.q);
+    auto& w = wpts_[size_t(ib)];
+    w.resize(B.pts.size());
+    for (size_t k = 0; k < B.pts.size(); ++k) w[k] = B.x + R * B.pts[k];
+  }
+  // world: a chunk pointer cache (samples are spatially coherent)
+  IVec3 cache_cc{INT32_MIN, 0, 0};
+  const Chunk* cache_ch = nullptr;
+  auto world_vox = [&](const IVec3& p) -> Vox {
+    const IVec3 cc = chunk_of(p);
+    if (cc != cache_cc) {
+      cache_cc = cc;
+      cache_ch = g.chunk(cc);
+    }
+    if (!cache_ch) return kAir;
+    return cache_ch->uniform ? cache_ch->value : cache_ch->v[size_t(chunk_index(p))];
+  };
   for (i32 ia = 0; ia < nb; ++ia) {
     Body& A = *bodies[size_t(ia)];
     if (A.asleep) continue;
-    const M3 R = to_matrix(A.q);
+    const auto& W = wpts_[size_t(ia)];
     for (size_t k = 0; k < A.pts.size(); ++k) {
-      const V3 X = A.x + R * A.pts[k];
+      const V3& X = W[k];
       const IVec3 p = voxel_of(X, ih);
-      if (!vox_solid(g.get(p))) continue;
+      if (!vox_solid(world_vox(p))) continue;
       int axis = 2, sign = 1;
       f64 depth = 0.5 * h;
-      if (!exit_face(X, p, h, [&](const IVec3& q) { return vox_solid(g.get(q)); }, &axis, &sign, &depth)) {
+      if (!exit_face(X, p, h, [&](const IVec3& q) { return vox_solid(world_vox(q)); }, &axis, &sign, &depth)) {
         axis = 2;
         sign = 1;
         depth = 0.5 * h;
@@ -300,20 +321,20 @@ void RigidWorld::collide(const VoxelGrid& g) {
   }
   std::sort(pairs.begin(), pairs.end());
   for (const auto& pr : pairs) {
+    const size_t before = contacts_.size();
     for (int dir = 0; dir < 2; ++dir) {
       const i32 ia = dir == 0 ? pr.first : pr.second;
       const i32 ib = dir == 0 ? pr.second : pr.first;
       Body& A = *bodies[size_t(ia)];
       Body& B = *bodies[size_t(ib)];
-      const M3 RA = to_matrix(A.q);
       const M3 RB = to_matrix(B.q);
       const M3 RBt = transpose(RB);
+      const f64 reach2 = (B.radius + h) * (B.radius + h);
+      const auto& W = wpts_[size_t(ia)];
       auto solidB = [&](const IVec3& q) { return vox_solid(B.shape.get(q)); };
       for (size_t k = 0; k < A.pts.size(); ++k) {
-        const V3 X = A.x + RA * A.pts[k];
-        if (X.x < B.box_lo.x || X.x > B.box_hi.x || X.y < B.box_lo.y || X.y > B.box_hi.y || X.z < B.box_lo.z ||
-            X.z > B.box_hi.z)
-          continue;
+        const V3& X = W[k];
+        if (norm2(X - B.x) > reach2) continue;
         const V3 s = B.com + RBt * (X - B.x);
         const IVec3 p = voxel_of(s, ih);
         const i32 vi = B.shape.index(p);
@@ -344,17 +365,11 @@ void RigidWorld::collide(const VoxelGrid& g) {
     // an awake body moving into a sleeping one wakes it
     Body& A = *bodies[size_t(pr.first)];
     Body& B = *bodies[size_t(pr.second)];
-    if (A.asleep != B.asleep) {
+    if (A.asleep != B.asleep && contacts_.size() > before) {
       Body& moving = A.asleep ? B : A;
       Body& sleeper = A.asleep ? A : B;
       const f64 sp = norm(moving.v) + moving.radius * norm(moving.w);
-      bool touching = false;
-      for (const Contact& c : contacts_)
-        if ((c.a == pr.first && c.b == pr.second) || (c.a == pr.second && c.b == pr.first)) {
-          touching = true;
-          break;
-        }
-      if (touching && sp > 2.0 * par.sleep_speed) wake(sleeper);
+      if (sp > 2.0 * par.sleep_speed) wake(sleeper);
     }
   }
 }
@@ -426,6 +441,29 @@ void RigidWorld::solve(f64 dt) {
       c.l1 = l1;
       c.l2 = l2;
     }
+  // Squeeze guard: a light body pinned between heavy ones can come out of the iteration with a
+  // speed no contact partner has (and fly off). Contacts may slow a body down freely but speed it
+  // up only to about its fastest partner's speed.
+  {
+    std::vector<f64> partner(bodies.size(), 0.0);
+    for (const Contact& c : contacts_) {
+      if (c.b < 0) continue;
+      const Body& A = *bodies[size_t(c.a)];
+      const Body& B = *bodies[size_t(c.b)];
+      partner[size_t(c.a)] = std::max(partner[size_t(c.a)], norm(B.v_pre) + B.radius * norm(B.w_pre));
+      partner[size_t(c.b)] = std::max(partner[size_t(c.b)], norm(A.v_pre) + A.radius * norm(A.w_pre));
+    }
+    for (size_t i = 0; i < bodies.size(); ++i) {
+      Body& b = *bodies[i];
+      if (b.asleep) continue;
+      const f64 before = norm(b.v_pre), after = norm(b.v);
+      const f64 allowed = std::max(before, 1.2 * partner[i]) + 1.0;
+      if (after > allowed) b.v *= allowed / after;
+      const f64 wb = norm(b.w_pre), wa = norm(b.w);
+      const f64 wallowed = std::max(wb, 1.2 * partner[i] / std::max(b.radius, 0.1)) + 1.0 / std::max(b.radius, 0.1);
+      if (wa > wallowed) b.w *= wallowed / wa;
+    }
+  }
   warm_.clear();
   for (const Contact& c : contacts_) warm_[c.key] = {c.ln, c.l1, c.l2};
   // split-impulse position correction: pseudo velocities, normal only
@@ -468,34 +506,24 @@ void RigidWorld::integrate_positions(f64 dt) {
 
 void RigidWorld::sleep_update(f64 dt) {
   (void)dt;
-  const i32 n = static_cast<i32>(bodies.size());
-  island_.assign(size_t(n), 0);
-  for (i32 i = 0; i < n; ++i) island_[size_t(i)] = i;
-  auto find = [&](i32 x) {
-    while (island_[size_t(x)] != x) {
-      island_[size_t(x)] = island_[size_t(island_[size_t(x)])];
-      x = island_[size_t(x)];
-    }
-    return x;
-  };
+  // Bodies sleep one by one once slow for a while (a sleeping body is a static support for the
+  // others); an awake body touching a sleeping one fast enough wakes it (collide).
+  std::vector<u8> touching(bodies.size(), 0);
   for (const Contact& c : contacts_) {
-    if (c.b < 0 || bodies[size_t(c.a)]->asleep || bodies[size_t(c.b)]->asleep) continue;
-    const i32 ra = find(c.a), rb = find(c.b);
-    if (ra != rb) island_[size_t(std::max(ra, rb))] = std::min(ra, rb);
+    touching[size_t(c.a)] = 1;
+    if (c.b >= 0) touching[size_t(c.b)] = 1;
   }
-  std::vector<i32> min_still(size_t(n), 1 << 30);
-  for (i32 i = 0; i < n; ++i) {
-    Body& b = *bodies[size_t(i)];
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    Body& b = *bodies[i];
     if (b.asleep) continue;
     const f64 sp = norm(b.v) + b.radius * norm(b.w);
+    if (touching[i] && sp < 3.0 * par.sleep_speed) {
+      // rest damping: settling rubble loses its last jitter
+      b.v *= 1.0 - par.rest_damping;
+      b.w *= 1.0 - par.rest_damping;
+    }
     b.still = sp < par.sleep_speed ? b.still + 1 : 0;
-    const i32 r = find(i);
-    min_still[size_t(r)] = std::min(min_still[size_t(r)], b.still);
-  }
-  for (i32 i = 0; i < n; ++i) {
-    Body& b = *bodies[size_t(i)];
-    if (b.asleep) continue;
-    if (min_still[size_t(find(i))] >= par.sleep_substeps) {
+    if (b.still >= par.sleep_substeps) {
       b.asleep = true;
       b.v = V3{};
       b.w = V3{};

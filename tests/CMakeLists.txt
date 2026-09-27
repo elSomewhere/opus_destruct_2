@@ -7,6 +7,7 @@ add_executable(svx_tests
   test_stress.cpp
   test_fragments.cpp
   test_rigid.cpp
+  test_collapse.cpp
   test_engine.cpp
   test_movers.cpp
   test_replay.cpp)

@@ -217,3 +217,11 @@ export function aabbVisible(planes: Float32Array, min: Vec3, max: Vec3): boolean
   }
   return true;
 }
+
+/** Sphere-vs-frustum test on normalized planes (true = possibly visible). */
+export function sphereVisible(planes: Float32Array, c: Vec3, r: number): boolean {
+  for (let k = 0; k < planes.length; k += 4) {
+    if (planes[k]! * c[0] + planes[k + 1]! * c[1] + planes[k + 2]! * c[2] + planes[k + 3]! < -r) return false;
+  }
+  return true;
+}

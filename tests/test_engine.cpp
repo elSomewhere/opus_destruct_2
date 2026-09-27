@@ -34,9 +34,6 @@ void play(Engine& eng, int ticks) {
 Engine fresh_rooms() {
   ProcWorld w = make_procedural("rooms", 7);
   Engine eng;
-  EngineParams p;
-  p.fragility = 0.25;
-  eng.set_params(p);
   eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
   eng.bake();
   return eng;
@@ -96,7 +93,6 @@ TEST_CASE("engine: persistence round trip restores the exact world") {
 TEST_CASE("engine: a streamed city stays bounded, and edits survive eviction exactly") {
   Engine eng;
   EngineParams p;
-  p.fragility = 0.25;
   eng.set_params(p);
   auto src = make_city_source(3, 1000.0, 0.125);
   const auto sp = src->spawn_pos();
@@ -148,35 +144,6 @@ TEST_CASE("engine: a streamed city stays bounded, and edits survive eviction exa
   for (int t = 0; t < 30; ++t) fresh.tick();
   CHECK(!vox_solid(fresh.grid().get(hit.voxel)));
   (void)local;
-}
-
-TEST_CASE("engine: over its node budget the engine degrades deterministically (plan B5)") {
-  auto run = [](int threads, EngineStats* st) {
-    set_num_threads(threads);
-    Engine eng = fresh_rooms();
-    EngineConfig c = eng.config();
-    c.node_budget = 3000;
-    c.max_bubbles = 4;
-    c.structure_max_cells = 0;  // (windows: the rooms are one structure, whose bubble would take all four)
-    eng.configure(c);
-    // four rockets into walls of different rooms, more than two windows apart, one per tick
-    const std::array<std::array<f64, 3>, 4> at{{{52.5, 20, 12}, {153.5, 60, 12}, {1.5, 70, 12}, {103.5, 20, 12}}};
-    for (int t = 0; t < 240; ++t) {
-      if (t < 4) eng.blast({0.125 * at[t][0], 0.125 * at[t][1], 0.125 * at[t][2]}, 0.6, 1e6);
-      eng.tick();
-      (void)eng.take_events();
-    }
-    *st = eng.stats();
-    return eng.session_hash();
-  };
-  EngineStats s1, s4;
-  const u64 h1 = run(1, &s1), h4 = run(4, &s4);
-  set_num_threads(1);
-  MESSAGE("degraded spawns " << s1.degraded_spawns << ", degraded triage " << s1.degraded_triage << ", half-rate skips "
-                             << s1.skipped_steps << ", bubbles " << s1.bubbles_spawned);
-  CHECK(s1.degraded_spawns >= 1);
-  CHECK(h1 == h4);
-  CHECK(s1.degraded_spawns == s4.degraded_spawns);
 }
 
 TEST_CASE("engine: the streamed city has a far render tier beyond the resident radius (plan Phase 6)") {

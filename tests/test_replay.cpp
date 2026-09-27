@@ -19,7 +19,7 @@ void load_rooms(Engine& eng, CommandLog* log) {
   eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
   if (log) eng.record_to(log);
   EngineParams p;
-  p.fragility = 0.25;
+  p.fragility = 1.0;
   eng.set_params(p);
   eng.bake();
 }
@@ -84,7 +84,7 @@ TEST_CASE("replay: a lockstep peer on another thread count matches the host at e
       }
       if (t == 200) {
         EngineParams p = a.params();
-        p.compliance = 5.0;
+        p.fragility = 1.5;
         a.set_params(p);
       }
       if (t % 2 == 0) a.set_viewer({eye[0] + 0.01 * t, eye[1], eye[2]});
@@ -114,7 +114,7 @@ TEST_CASE("replay: a lockstep peer on another thread count matches the host at e
   set_num_threads(1);
   CHECK(checked == kTicks);
   CHECK(mismatches == 0);
-  CHECK(a.stats().bubbles_spawned >= 1);
+  CHECK(a.stats().extractions >= 1);
   CHECK(b.session_hash() == a.session_hash());
   CHECK(alog.commands().size() > 20);
 }

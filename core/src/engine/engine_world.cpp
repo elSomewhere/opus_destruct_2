@@ -56,7 +56,8 @@ bool Engine::bake(f64* ms) {
       if (is_seen(f)) continue;
       Structure* s = extract(f, 4000000, 1e9, false);
       if (!s) continue;
-      for (const FragKey& m : s->refs) mark(m);
+      for (const FragKey& m : s->frags)
+        if (m.idx >= 0) mark(m);
       StressOptions so;
       so.rtol = 1e-6;
       if (!s->P.assemble(so)) {
@@ -135,7 +136,8 @@ bool Engine::bake(f64* ms) {
           const i32 nd = side == 0 ? B.a : B.b;
           if (nd < 0) continue;
           std::vector<IVec3> vox;
-          voxels_of(s->refs[size_t(nd)], vox);
+          for (i32 k = s->fstart[size_t(nd)]; k < s->fstart[size_t(nd) + 1]; ++k)
+            if (s->frags[size_t(k)].idx >= 0) voxels_of(s->frags[size_t(k)], vox);
           for (const IVec3& p : vox)
             if (grid_.strength(p) < cls) {
               grid_.set_strength(p, cls);
@@ -143,7 +145,7 @@ bool Engine::bake(f64* ms) {
             }
         }
       }
-      for (size_t i = 0; i < s->refs.size(); ++i) {
+      for (size_t i = 0; i < s->P.nodes.size(); ++i) {
         std::array<f32, 6> w;
         for (int q = 0; q < 6; ++q) w[size_t(q)] = static_cast<f32>(s->u[6 * i + q]);
         warm_u_[s->ident[i]] = w;
@@ -360,7 +362,8 @@ int Engine::stream_update() {
   }
   for (const auto& s : structures_)
     if (s->solving)
-      for (const FragKey& f : s->refs) busy.insert(f.chunk);
+      for (const FragKey& f : s->frags)
+        if (f.idx >= 0) busy.insert(f.chunk);
   std::vector<u64> keys(generated_.begin(), generated_.end());
   std::sort(keys.begin(), keys.end());
   for (u64 k : keys) {

@@ -117,10 +117,11 @@ struct RigidParams {
   f64 slop = 0.01;                   // m of allowed penetration
   f64 baumgarte = 0.3;
   f64 max_correction = 2.0;          // m/s pseudo velocity cap
-  f64 max_speed = 35.0;
+  f64 max_speed = 25.0;
+  f64 rest_damping = 0.12;           // per substep, for touching bodies slower than 3 x sleep_speed
   f64 linear_damping = 0.02, angular_damping = 0.08;  // 1/s
-  f64 sleep_speed = 0.12;            // m/s (linear + radius x angular)
-  int sleep_substeps = 60;
+  f64 sleep_speed = 0.15;            // m/s (linear + radius x angular)
+  int sleep_substeps = 40;
   int max_points = 1024;             // collision samples per body
   int manifold = 16;                 // contacts kept per body pair
   f64 kill_depth = 30.0;             // m below the world: removed
@@ -173,6 +174,7 @@ class RigidWorld {
   std::unordered_map<u64, std::array<f64, 3>> warm_;  // contact key -> (ln, l1, l2)
   std::vector<i32> island_;  // (scratch)
   std::vector<V3> pseudo_v_, pseudo_w_;  // split-impulse pseudo velocities of the last solve
+  std::vector<std::vector<V3>> wpts_;     // (collide) world positions of the samples
 };
 
 }  // namespace svx

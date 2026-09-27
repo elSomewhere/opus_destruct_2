@@ -78,7 +78,7 @@ TEST_CASE("movers: a door opens on use, waits, closes, and is never bonded to th
   CHECK(door_closed(eng));
   // the wall is untouched: its voxels and bonds are intact
   CHECK(eng.grid().bond({20, 10, 5}, 1));
-  CHECK(eng.stats().ruptures == 0);
+  CHECK(eng.stats().bonds_broken == 0);
 }
 
 TEST_CASE("movers: a closing door goes back up when the player stands in the doorway") {
@@ -125,9 +125,6 @@ TEST_CASE("movers: Freedoom MAP01 gets its doors; using one opens it") {
   REQUIRE(w.movers[0].kind == doom::MoverInfo::Kind::Door);
   CHECK(w.movers[0].manual);
   Engine eng;
-  EngineConfig cfg = eng.config();
-  cfg.idle_bake = false;  // (movers need no baselines)
-  eng.configure(cfg);
   VoxelGrid g = std::move(w.grid);
   w.grid = VoxelGrid{};
   eng.load(std::move(g), w.spawn_pos, w.spawn_dir);
@@ -285,7 +282,7 @@ TEST_CASE("movers: a crusher cycles, waits over the player, stops and resumes") 
   CHECK(eng.mover_busy(id));
   for (int t = 0; t < 40; ++t) eng.tick();
   CHECK(eng.mover_rows(id) != held);
-  CHECK(eng.stats().ruptures == 0);
+  CHECK(eng.stats().bonds_broken == 0);
 }
 
 TEST_CASE("movers: a close-only door waits for the player in the doorway") {
@@ -322,9 +319,6 @@ bool load_doom_map(const std::string& name, doom::DoomWorld* w, Engine* eng) {
   std::string err;
   if (!wad.load_memory(std::move(bytes), &err)) return false;
   REQUIRE(doom::build_doom_world(wad, name, {}, kH, false, w, &err));
-  EngineConfig cfg = eng->config();
-  cfg.idle_bake = false;  // (movers need no baselines)
-  eng->configure(cfg);
   VoxelGrid g = std::move(w->grid);
   w->grid = VoxelGrid{};
   eng->load(std::move(g), w->spawn_pos, w->spawn_dir);
@@ -420,7 +414,7 @@ TEST_CASE("movers: Freedoom MAP04's crushers cycle; MAP05's donut; MAP08's gun l
       if (eng.mover_def(id)->ceiling() && eng.mover_busy(id) && hi[size_t(id)] > lo[size_t(id)] + 4) ++cycled;
     MESSAGE("MAP04: " << crushers << " crusher moves, " << cycled << " cycling");
     CHECK(cycled >= 1);
-    CHECK(eng.stats().ruptures == 0);
+    CHECK(eng.stats().bonds_broken == 0);
   }
   {
     doom::DoomWorld w;

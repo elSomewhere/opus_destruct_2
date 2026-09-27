@@ -49,7 +49,6 @@ bool load_world(Engine& eng, const std::string& world, std::string* err) {
     VoxelGrid g = std::move(dw.grid);
     dw.grid = VoxelGrid{};
     eng.load(std::move(g), dw.spawn_pos, dw.spawn_dir);
-    eng.set_compliance_cap(dw.slenderness.max_compliance_p99);
     dw.live = &eng.grid();
     doom::attach_doom_movers(eng, dw);
     return true;
@@ -87,17 +86,13 @@ void checkpoint(const Engine& eng, i64 tick, bool last) {
   }
   if (!last && tick % 600 != 0) return;
   const EngineStats s = eng.stats();
-  std::printf("t=%6.1fs hash %016llx voxels %lld ruptures %lld detached %lld debris %d\n", tick / 60.0,
+  std::printf("t=%6.1fs hash %016llx voxels %lld broken %lld detached %lld pieces %d\n", tick / 60.0,
               static_cast<unsigned long long>(eng.session_hash()), static_cast<long long>(s.voxels),
-              static_cast<long long>(s.ruptures), static_cast<long long>(s.detached_voxels), s.debris_bodies);
+              static_cast<long long>(s.bonds_broken), static_cast<long long>(s.detached_voxels), s.bodies);
   if (std::getenv("SVX_REPLAY_STATS"))  // (a separate line: the gate compares the hash lines)
-    std::printf("    stats: events %lld, bubbles %lld (steps %lld), settles %lld, cracks %lld, verifications %lld "
-                "(failures %lld), impact loads %lld, landings %lld\n",
-                static_cast<long long>(s.events), static_cast<long long>(s.bubbles_spawned),
-                static_cast<long long>(s.bubble_steps), static_cast<long long>(s.static_settles),
-                static_cast<long long>(s.cracks), static_cast<long long>(s.verifications),
-                static_cast<long long>(s.verify_failures), static_cast<long long>(s.impact_loads),
-                static_cast<long long>(s.debris_landings));
+    std::printf("    stats: events %lld, extractions %lld, solves %lld, piece checks %lld, splits %lld, impact loads %lld\n",
+                static_cast<long long>(s.events), static_cast<long long>(s.extractions), static_cast<long long>(s.solves),
+                static_cast<long long>(s.body_checks), static_cast<long long>(s.body_splits), static_cast<long long>(s.impacts));
 }
 
 }  // namespace
@@ -112,11 +107,8 @@ int main(int argc, char** argv) {
   std::string world = "rooms", out, in;
   f64 seconds = 60.0;
   // engine configuration is not part of the log: pass the same switches to record and play
-  bool no_contacts = false, no_plates = false;
-  u64 seed = 0;            // record: varies the scripted session
-  int spawn_latency = -1;  // < 0: engine default
-  bool sync_steps = false;
-  f64 compliance = -1.0, damping = -1.0;
+  u64 seed = 0;  // record: varies the scripted session
+  f64 fragility = 1.0;
   for (int i = 2; i < argc; ++i) {
     const std::string a = argv[i];
     if (a == "--world" && i + 1 < argc) world = argv[++i];
@@ -124,23 +116,10 @@ int main(int argc, char** argv) {
     else if (a == "--out" && i + 1 < argc) out = argv[++i];
     else if (a == "--log" && i + 1 < argc) in = argv[++i];
     else if (a == "--threads" && i + 1 < argc) set_num_threads(std::atoi(argv[++i]));
-    else if (a == "--no-contacts") no_contacts = true;
-    else if (a == "--no-plates") no_plates = true;
-    else if (a == "--compliance" && i + 1 < argc) compliance = std::atof(argv[++i]);
-    else if (a == "--damping" && i + 1 < argc) damping = std::atof(argv[++i]);
     else if (a == "--seed" && i + 1 < argc) seed = std::strtoull(argv[++i], nullptr, 10);
-    else if (a == "--spawn-latency" && i + 1 < argc) spawn_latency = std::atoi(argv[++i]);
-    else if (a == "--sync-steps") sync_steps = true;
+    else if (a == "--fragility" && i + 1 < argc) fragility = std::atof(argv[++i]);
   }
   Engine eng;
-  {
-    EngineConfig cfg = eng.config();
-    if (no_contacts) cfg.contact.enabled = false;
-    if (no_plates) cfg.plate.enabled = false;
-    if (spawn_latency >= 0) cfg.spawn_latency_ticks = spawn_latency;
-    if (sync_steps) cfg.pipeline_steps = false;
-    eng.configure(cfg);
-  }
   std::string err;
   if (!load_world(eng, world, &err)) {
     std::fprintf(stderr, "cannot load %s: %s\n", world.c_str(), err.c_str());
@@ -177,9 +156,7 @@ int main(int argc, char** argv) {
   }
   eng.record_to(&log);
   EngineParams par;
-  par.fragility = 0.25;
-  if (compliance > 0) par.compliance = compliance;
-  if (damping >= 0) par.damping = damping;
+  par.fragility = fragility;
   eng.set_params(par);
   eng.bake();
   Lcg rng;

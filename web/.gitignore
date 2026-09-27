@@ -3,4 +3,6 @@ dist/
 *.local
 .vite/
 smoke-out/
-src/wasm/
+# generated Emscripten output; the hand-written typings stay tracked
+src/wasm/*
+!src/wasm/svx_web.d.ts

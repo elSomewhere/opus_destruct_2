@@ -146,9 +146,11 @@ int main(int argc, char** argv) {
   }
   par.debug_view = debug_view;
   Engine eng;
-  if (work > 0) {
+  if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC")) {
     EngineConfig c = eng.config();
-    c.stress_work = work;
+    if (work > 0) c.stress_work = work;
+    if (std::getenv("SVX_NO_BODY_FRACTURE")) c.min_fracture_frags = 1 << 30;
+    if (const char* e = std::getenv("SVX_MIN_FRAC")) c.min_fracture_frags = std::atoi(e);
     eng.configure(c);
   }
   const f64 h = 0.125;
@@ -288,6 +290,22 @@ int main(int argc, char** argv) {
       max_tick = 0.0;
       next_report += report;
     }
+  }
+  if (std::getenv("SVX_SPEEDS")) {
+    int hist[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    const f64 edges[7] = {0.05, 0.15, 0.3, 1.0, 3.0, 10.0, 25.0};
+    int small = 0, big = 0, below = 0;
+    for (const auto& b : eng.rigid().bodies) {
+      if (b->asleep) continue;
+      if (b->x.z < -0.5) ++below;
+      const f64 sp = norm(b->v) + b->radius * norm(b->w);
+      int k = 0;
+      while (k < 7 && sp > edges[k]) ++k;
+      ++hist[k];
+      (b->shape.count < 100 ? small : big)++;
+    }
+    std::printf("awake speed histogram (m/s: <0.05 <0.15 <0.3 <1 <3 <10 <25 more): %d %d %d %d %d %d %d %d; small %d big %d, below ground %d\n",
+                hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7], small, big, below);
   }
   const f64 wall = std::chrono::duration<f64>(Clock::now() - wall0).count();
   const EngineStats s = eng.stats();

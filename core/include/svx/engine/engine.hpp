@@ -35,6 +35,10 @@
 namespace svx {
 
 class CommandLog;
+namespace engine_detail {
+struct SecAcc;
+}
+using engine_detail_SecAcc = engine_detail::SecAcc;
 
 // Runtime knobs (docs/V2_DESIGN.md §6).
 struct EngineParams {
@@ -53,6 +57,10 @@ struct EngineConfig {
   f64 stress_rtol = 3e-3;          // converged: relative residual of K u = f
   i64 stress_work = 4000000;       // solver block operations per tick (all structures)
   i32 structure_max_nodes = 60000; // extraction bound (beyond: the frontier is held fixed)
+  // Resolution: a structure or piece of more fragments than this is solved on clusters of
+  // fragments (1 m cells; 2 m beyond 6x): its cracks follow cluster seams, its pieces break
+  // finer once they are smaller (docs/V2_DESIGN.md §2).
+  i32 cluster_nodes = 2500;
   f64 structure_max_radius = 60.0; // m from the seed (beyond: held fixed)
   i32 max_breaks_per_round = 256;
   f64 break_band = 0.85;           // a round breaks the bonds with phi >= max(1, band x max phi)
@@ -66,6 +74,10 @@ struct EngineConfig {
   i32 body_stress_maxit = 60;      // PCG iterations of a body's stress solve
   f64 body_stress_rtol = 1e-2;
   f64 body_trigger = 1.8;          // contact force sum over weight that triggers a body's stress check
+  f64 body_impact_dv = 0.35;       // ... together with a velocity change of this much per substep (m/s)
+  f64 small_impact_dv = 2.5;       // pieces lighter than small_piece_mass need up to this velocity change
+  f64 small_piece_mass = 1500.0;   // kg
+  i32 min_fracture_frags = 8;      // smaller pieces never break further (the smallest rubble)
   i32 body_check_ticks = 12;       // steady contact: re-check every so many substeps
   i32 min_body_voxels = 1;
   f64 fade_time = 1.0;
@@ -297,6 +309,12 @@ class Engine {
   // Updates a structure whose chunks were re-fragmented: nodes there retire, the new fragments
   // join with their bonds; the solver keeps its preconditioner. False: re-extract instead.
   bool patch_structure(Structure& s);
+  // Appends the nodes of fragments `frags` (clusters of `cell` voxels, 0: one per fragment) and the
+  // bonds of `fine` (endpoints: fragment indices, kExisting + existing node, < 0 supports); the
+  // fragments become the structure's (the ids of structures they belonged to go to superseded).
+  void append_nodes(Structure& s, const std::vector<FragKey>& frags, const std::vector<engine_detail_SecAcc>& fine, i32 cell,
+                    std::vector<i64>* superseded);
+  i32 cluster_cell(i64 fragments) const;
   void retire_structure_nodes(Structure& s, const std::vector<i32>& list);
   void structure_loads(f64 dt_sub);          // contact forces of bodies on world fragments
   void finish_loads(int substeps);           // smoothing, dead loads, load triggers

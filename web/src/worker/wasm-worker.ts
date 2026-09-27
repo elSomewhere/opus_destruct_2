@@ -10,7 +10,6 @@
 import type {
   ChunkMesh,
   ChunkOccupancy,
-  DebrisPose,
   DisplacementField,
   EngineCommand,
   EngineEvent,
@@ -23,8 +22,7 @@ import type {
   WadOptions,
   WorldInfo,
 } from '../engine/protocol.ts';
-import { TIMELINE_STRIDE } from '../engine/protocol.ts';
-import { DEFAULT_PARAMS, VERTEX_STRIDE } from '../engine/protocol.ts';
+import { DEBRIS_STRIDE, DEFAULT_PARAMS, TIMELINE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { postToMain, reportError, serveCommands } from './host.ts';
 // Generated Emscripten ES module (see the header comment); typed by SvxModule below.
 import createSvxModule from '../wasm/svx_web.js';
@@ -41,7 +39,7 @@ interface SvxModule {
   _svx_create(h: number): number;
   _svx_destroy(e: number): void;
   _svx_set_threads(n: number): void;
-  _svx_set_params(e: number, c: number, a: number, f: number, d: number, dbg: number, paused: number): void;
+  _svx_set_params(e: number, fragility: number, impact: number, dif: number, reserved: number, dbg: number, paused: number): void;
   _svx_load_procedural(e: number, kind: number, seed: number): number;
   _svx_load_wad(e: number, data: number, size: number, map: number, mode: number, shell: number): number;
   _svx_last_error(e: number): number;
@@ -92,9 +90,9 @@ const TICK_MS = 1000 / 60;
 const STATS_MS = 250;
 // job and budget timeline: per-tick samples since the last stats message (TIMELINE_FIELDS)
 let timeline: number[] = [];
-let lastEventMs = 0;
-let lastVerifyMs = 0;
 const AUTOSAVE_MS = 5000;
+/** svx_stats fills out[0..34]. */
+const STATS_COUNT = 35;
 
 let mod: SvxModule | null = null;
 let eng = 0;
@@ -109,6 +107,7 @@ let worldId = '';
 let lastSave = 0;
 let saving = false;
 let debrisLive = 0;
+let debrisSent = new Float64Array(0); // poses of the last debris message (resting rubble is not re-sent)
 let fieldsLive = 0;
 let fieldsKey = ''; // (id:version of each field last sent: an unchanged set is not sent again)
 let occBuf = 0; // 4096-byte scratch for chunk occupancy
@@ -167,7 +166,7 @@ async function ensureModule(): Promise<SvxModule> {
   if (mod) return mod;
   const m = (await createSvxModule()) as unknown as SvxModule;
   mod = m;
-  scratch = m._malloc(64 * 8);
+  scratch = m._malloc(Math.max(64, STATS_COUNT) * 8);
   occBuf = m._malloc(4096);
   eng = m._svx_create(config.voxelSize);
   m._svx_set_threads(1);
@@ -195,7 +194,7 @@ function withString<T>(s: string, fn: (ptr: number) => T): T {
 function applyParams(p: EngineParams): void {
   params = p;
   if (!mod || !eng) return;
-  mod._svx_set_params(eng, p.compliance, p.amplification, p.fragility, p.damping, p.debugView, p.paused ? 1 : 0);
+  mod._svx_set_params(eng, p.fragility, p.impact, p.dif, 0, p.debugView, p.paused ? 1 : 0);
 }
 
 function copyOut(ptr: number, bytes: number): ArrayBuffer {
@@ -370,93 +369,83 @@ function flushEvents(): void {
       list.push({ kind: 'crack', pos, normal: [f64(11), f64(12), f64(13)], strength: f64(15) });
     } else if (kind === 2) {
       list.push({ kind: 'impact', pos, energy: f64(15) });
-    } else {
-      list.push({ kind: 'bubble', id: f64(1), center: pos, radius: f64(14), level: f64(17) });
     }
+    // (kind 3, the v1 bubble debug event, is not emitted by v2 engines)
   }
   eventsSinceStats += list.length;
-  postToMain({ type: 'events', list });
+  if (list.length > 0) postToMain({ type: 'events', list });
 }
 
-/** Poses of the rigid debris pieces (one final empty list after the last one is gone). */
+/**
+ * Poses of the rigid pieces, packed (DEBRIS_STRIDE doubles each; one final empty set after the
+ * last one is gone). A set identical to the previous one (all pieces resting) is not re-sent.
+ */
 function flushDebris(): void {
   const m = mod as SvxModule;
   const n = m._svx_debris(eng);
   if (n === 0 && debrisLive === 0) return;
   debrisLive = n;
   const b = m._svx_debris_data(eng) >> 3;
-  const h = m.HEAPF64;
-  const poses: DebrisPose[] = [];
-  for (let i = 0; i < n; i++) {
-    const o = b + 9 * i;
-    poses.push({
-      id: h[o] ?? 0,
-      pos: [h[o + 1] ?? 0, h[o + 2] ?? 0, h[o + 3] ?? 0],
-      rot: [h[o + 4] ?? 0, h[o + 5] ?? 0, h[o + 6] ?? 0, h[o + 7] ?? 1],
-      opacity: h[o + 8] ?? 1,
-    });
-  }
+  const poses = m.HEAPF64.slice(b, b + n * DEBRIS_STRIDE);
+  if (poses.length > 0 && poses.length === debrisSent.length && poses.every((v, i) => v === debrisSent[i])) return;
+  debrisSent = poses.slice();
   postToMain({ type: 'debris', poses });
 }
 
-/** One timeline sample: the tick's parts (engine counters) and the flushes after it. */
+/** One timeline sample: the tick's parts (engine timings of that tick) and the flush after it. */
 function sampleTimeline(tickMs: number, flushMs: number): void {
   (mod as SvxModule)._svx_stats(eng, scratch);
-  const structural = f64(1);
-  const events = Math.max(0, f64(2) - lastEventMs);  // (cumulative counters)
-  const verify = Math.max(0, f64(28) - lastVerifyMs);
-  lastEventMs = f64(2);
-  lastVerifyMs = f64(28);
-  const stream = f64(20);
-  const debris = f64(25);
-  const other = Math.max(0, tickMs - structural - events - stream - debris - verify);
-  timeline.push(structural, events, stream, debris, verify, flushMs, other, f64(4));
+  // a paused tick only streams: the other timings are those of the last running tick
+  const running = !params.paused;
+  const structural = running ? f64(1) : 0;
+  const events = running ? f64(2) : 0;
+  const rigid = running ? f64(3) : 0;
+  const stream = f64(28);
+  const other = Math.max(0, tickMs - structural - events - rigid - stream);
+  timeline.push(structural, rigid, events, stream, other, flushMs, f64(21));
   if (timeline.length > 600 * TIMELINE_STRIDE) timeline = timeline.slice(-300 * TIMELINE_STRIDE);
 }
 
 function sendStats(now: number): void {
   const m = mod as SvxModule;
-  m._svx_stats(eng, scratch);  // 41 values
+  m._svx_stats(eng, scratch);
+  const ms = (i: number): number => Number(f64(i).toFixed(2));
   const stats: EngineStats = {
     tickMs: f64(0),
     structuralMs: f64(1),
-    activeBubbles: f64(3),
-    activeNodes: f64(4),
+    eventMs: ms(2),
+    rigidMs: ms(3),
+    meshMs: ms(4),
     voxels: f64(5),
     chunks: f64(6),
     memoryMB: f64(7),
-    events: eventsSinceStats,
-    meshQueue: 0, // meshes are flushed after every tick
-    eventMs: f64(2),
-    bubblesSpawned: f64(9),
-    staticSettles: f64(10),
-    ruptures: f64(11),
-    detachedVoxels: f64(12),
-    designMaxUtilization: Number(f64(14).toFixed(2)),
-    strengthenedVoxels: f64(15),
-    unbakedChunks: f64(16),
-    bakeMs: Math.round(f64(17)),
-    residentChunks: f64(18),
-    archivedChunks: f64(19),
-    streamMs: Number(f64(20).toFixed(2)),
-    evictedChunks: f64(21),
-    debrisPieces: f64(22),
-    debrisLandings: f64(23),
-    impactLoads: f64(24),
-    debrisMs: Number(f64(25).toFixed(2)),
-    verifications: f64(26),
-    verifyFailures: f64(27),
-    stepMs: f64(29) > 0 ? Number((f64(30) / f64(29)).toFixed(2)) : 0,
-    pcgPerStep: f64(29) > 0 ? Number((f64(31) / f64(29)).toFixed(1)) : 0,
-    movers: f64(32),
-    cracks: f64(33),
-    coarseSummaries: f64(34),
-    coarseHydrated: f64(35),
-    compliance: Number(f64(36).toFixed(2)),
-    complianceCap: Number(f64(37).toFixed(1)),
-    mergedEvents: f64(38),
-    structureBubbles: f64(39),
-    longSteps: f64(40),
+    events: eventsSinceStats, // (8 is the engine's running total)
+    ticks: f64(9),
+    structures: f64(10),
+    structuresSolving: f64(11),
+    solvingNodes: f64(12),
+    extractions: f64(13),
+    convergedSolves: f64(14),
+    pcgIterations: f64(15),
+    bondsBroken: f64(16),
+    detachedVoxels: f64(17),
+    detachedPieces: f64(18),
+    maxUtilization: ms(19),
+    pieces: f64(20),
+    awakePieces: f64(21),
+    contacts: f64(22),
+    pieceChecks: f64(23),
+    pieceSplits: f64(24),
+    impactLoads: f64(25),
+    residentChunks: f64(26),
+    archivedChunks: f64(27),
+    streamMs: ms(28),
+    evictedChunks: f64(29),
+    movers: f64(30),
+    designMaxUtilization: ms(31),
+    strengthenedVoxels: f64(32),
+    floatingVoxelsRemoved: f64(33),
+    bakeMs: Math.round(f64(34)),
   };
   eventsSinceStats = 0;
   lastStats = now;
@@ -466,8 +455,7 @@ function sendStats(now: number): void {
 
 /**
  * Threads for loading and baking (the module is built with pthreads; the pool's threads come
- * from a pre-spawned set of 8, one of which the engine keeps for background verification).
- * Gameplay keeps up to 4: concurrent bubbles step in parallel, each serial inside.
+ * from a pre-spawned set). Gameplay keeps up to 4 for the structure solves and pieces.
  */
 function loadThreads(): number {
   return typeof SharedArrayBuffer !== 'undefined' && self.crossOriginIsolated ? Math.max(1, Math.min(6, config.threads)) : 1;
@@ -479,7 +467,7 @@ function finishLoad(texturesSent: boolean, label: string): void {
   const t0 = performance.now();
   m._svx_set_threads(loadThreads());
   const baked = m._svx_bake(eng) === 1;
-  // gameplay: concurrent bubbles step one per thread; a lone small bubble runs serial
+  // gameplay: structure solves and pieces share up to 4 threads
   m._svx_set_threads(Math.min(4, loadThreads()));
   console.info(`[wasm] ${label}: bake ${baked ? 'done' : 'skipped (world too large)'} in ${(performance.now() - t0).toFixed(0)} ms`);
   postToMain({ type: 'progress', stage: `meshing ${label}`, done: 2, total: 3 });
@@ -494,6 +482,8 @@ function clearChunks(): void {
   knownChunks.clear();
   fieldsLive = 0;
   fieldsKey = '';
+  debrisLive = 0; // (the front end drops the old world's pieces when it requests a load)
+  debrisSent = new Float64Array(0);
 }
 
 async function loadProcedural(kind: ProceduralKind, seed: number): Promise<void> {
