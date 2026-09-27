@@ -147,7 +147,7 @@ int main(int argc, char** argv) {
   }
   par.debug_view = debug_view;
   Engine eng;
-  if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC") || std::getenv("SVX_MIN_BODY") || std::getenv("SVX_RIGID") || std::getenv("SVX_ROUNDS")) {
+  if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC") || std::getenv("SVX_MIN_BODY") || std::getenv("SVX_RIGID") || std::getenv("SVX_ROUNDS") || std::getenv("SVX_REST")) {
     EngineConfig c = eng.config();
     if (const char* e = std::getenv("SVX_RIGID")) {
       // (experiments) iterations,position_iterations,manifold,manifold_per_m,substeps
@@ -162,6 +162,7 @@ int main(int argc, char** argv) {
       }
     }
     if (const char* e = std::getenv("SVX_MIN_BODY")) c.min_body_voxels = std::atoi(e);
+    if (const char* e = std::getenv("SVX_REST")) std::sscanf(e, "%lf,%lf", &c.rigid.rest_speed, &c.rigid.rest_damping);
     if (const char* e = std::getenv("SVX_ROUNDS")) {
       int r;
       double q;

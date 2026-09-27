@@ -134,7 +134,8 @@ struct RigidParams {
   f64 baumgarte = 0.3;
   f64 max_correction = 2.0;          // m/s pseudo velocity cap
   f64 max_speed = 25.0;
-  f64 rest_damping = 0.12;           // per 1/120 s, for touching bodies slower than 3 x sleep_speed
+  f64 rest_damping = 0.2;            // per 1/120 s, for touching bodies slower than rest_speed
+  f64 rest_speed = 0.9;              // m/s (linear + radius x angular): settling rubble (rubble is rough)
   f64 linear_damping = 0.02, angular_damping = 0.08;  // 1/s
   f64 sleep_speed = 0.15;            // m/s (linear + radius x angular)
   int sleep_substeps = 30;           // (of 1/120 s) still before sleeping
