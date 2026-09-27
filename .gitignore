@@ -1,0 +1,42 @@
+# Build output
+build/
+/out/
+/compile_commands.json
+.cache/
+CMakeUserPresets.json
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+/research/**/venv/
+.ipynb_checkpoints/
+
+# Node / web
+node_modules/
+dist/
+*.tsbuildinfo
+npm-debug.log*
+.env
+.env.*
+!.env.example
+
+# Generated smoke-test screenshots
+/web/smoke-out/
+/web/smoke-wasm-out/
+
+# Logs
+*.log
+!/docs/**/*.log
+
+# Freedoom WADs are fetched by scripts/fetch_freedoom.sh (BSD-3-Clause)
+/data/freedoom/*.wad

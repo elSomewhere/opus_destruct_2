@@ -1,0 +1,118 @@
+{
+  "version": 6,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 24,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "native-debug",
+      "displayName": "Native Debug",
+      "binaryDir": "${sourceDir}/build/native-debug",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    },
+    {
+      "name": "native-release",
+      "displayName": "Native Release",
+      "binaryDir": "${sourceDir}/build/native-release",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "native-x86_64",
+      "displayName": "Native Release, x86-64 (macOS: runs under Rosetta; determinism check vs ARM)",
+      "binaryDir": "${sourceDir}/build/native-x86_64",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CMAKE_OSX_ARCHITECTURES": "x86_64"
+      }
+    },
+    {
+      "name": "wasm-release",
+      "displayName": "WASM Release (Emscripten, SIMD128)",
+      "binaryDir": "${sourceDir}/build/wasm-release",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "wasm-release-threads",
+      "displayName": "WASM Release (Emscripten, SIMD128 + pthreads)",
+      "inherits": "wasm-release",
+      "binaryDir": "${sourceDir}/build/wasm-release-threads",
+      "cacheVariables": {
+        "SVX_WASM_THREADS": "ON"
+      }
+    },
+    {
+      "name": "wasm-debug",
+      "displayName": "WASM Debug",
+      "binaryDir": "${sourceDir}/build/wasm-debug",
+      "toolchainFile": "$env{EMSDK}/upstream/emscripten/cmake/Modules/Platform/Emscripten.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "native-debug",
+      "configurePreset": "native-debug"
+    },
+    {
+      "name": "native-release",
+      "configurePreset": "native-release"
+    },
+    {
+      "name": "native-x86_64",
+      "configurePreset": "native-x86_64"
+    },
+    {
+      "name": "wasm-release",
+      "configurePreset": "wasm-release"
+    },
+    {
+      "name": "wasm-release-threads",
+      "configurePreset": "wasm-release-threads"
+    },
+    {
+      "name": "wasm-debug",
+      "configurePreset": "wasm-debug"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "native-debug",
+      "configurePreset": "native-debug",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "native-release",
+      "configurePreset": "native-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "native-x86_64",
+      "configurePreset": "native-x86_64",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "wasm-release",
+      "configurePreset": "wasm-release",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}

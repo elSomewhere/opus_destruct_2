@@ -1,0 +1,10 @@
+{
+  "//": "Main-thread (DOM) code. Worker entry points live in src/worker and have their own tsconfig with the WebWorker lib.",
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "DOM", "DOM.Iterable"],
+    "types": ["@webgpu/types", "vite/client"]
+  },
+  "include": ["src/**/*.ts"],
+  "exclude": ["src/worker/**"]
+}

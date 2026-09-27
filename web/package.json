@@ -1,0 +1,24 @@
+{
+  "name": "structvox-web",
+  "private": true,
+  "version": "0.1.0",
+  "description": "structvox browser front end: engine client, WebGPU renderer, FPS sandbox, mock engine worker",
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "dev": "vite",
+    "build": "npm run typecheck && vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc -p tsconfig.json && tsc -p src/worker/tsconfig.json && tsc -p test/tsconfig.json && tsc -p tsconfig.node.json",
+    "test": "node --test \"test/**/*.test.ts\"",
+    "smoke": "node scripts/smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.13.6",
+    "@webgpu/types": "^0.1.74",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1"
+  }
+}

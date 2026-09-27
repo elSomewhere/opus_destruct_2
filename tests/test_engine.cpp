@@ -1,0 +1,254 @@
+// Engine core (plan Phases 3-6): determinism, queries, persistence round trip.
+#include <cmath>
+#include <vector>
+
+#include "doctest.h"
+#include "svx/base/parallel.hpp"
+#include "svx/engine/engine.hpp"
+#include "svx/world/procgen.hpp"
+#include "svx/world/streaming.hpp"
+
+using namespace svx;
+
+namespace {
+
+// A scripted session on the procedural rooms world: bullets into the walls and a rocket.
+void play(Engine& eng, int ticks) {
+  const auto sp = eng.spawn_pos();
+  const std::array<f64, 3> eye{sp[0], sp[1], sp[2] + 1.6};
+  for (int t = 0; t < ticks; ++t) {
+    if (t < 30 && t % 3 == 0) {
+      const f64 ang = 0.2 * t / 3 - 0.9;
+      const RayHit hit = eng.raycast(eye, {std::cos(ang), std::sin(ang), 0.05}, 60.0);
+      if (hit.hit) eng.carve(hit.pos, 0.12);
+    }
+    if (t == 40) {
+      const RayHit hit = eng.raycast(eye, {1.0, 0.1, 0.3}, 60.0);
+      if (hit.hit) eng.blast(hit.pos, 0.5, 1e6);
+    }
+    eng.tick();
+    eng.take_events();
+  }
+}
+
+Engine fresh_rooms() {
+  ProcWorld w = make_procedural("rooms", 7);
+  Engine eng;
+  EngineParams p;
+  p.fragility = 0.25;
+  eng.set_params(p);
+  eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+  eng.bake();
+  return eng;
+}
+
+}  // namespace
+
+TEST_CASE("engine: queries — ray casts hit walls, AABB sweeps stop at them") {
+  Engine eng = fresh_rooms();
+  const auto sp = eng.spawn_pos();
+  const RayHit down = eng.raycast({sp[0], sp[1], sp[2] + 1.0}, {0, 0, -1}, 10.0);
+  REQUIRE(down.hit);
+  CHECK(down.normal[2] == doctest::Approx(1.0));
+  CHECK(std::abs(down.pos[2] - (-0.0625)) < 0.02);  // floor top at the ground cells' upper face
+  // standing box moving down stays on the floor; moving into a wall stops at it
+  const CollideResult r = eng.collide({sp[0] - 0.3, sp[1] - 0.3, sp[2] + 0.01}, {sp[0] + 0.3, sp[1] + 0.3, sp[2] + 1.8}, {0, 0, -0.5});
+  CHECK(r.on_ground);
+  CHECK(r.move[2] == doctest::Approx(-(sp[2] + 0.01 + 0.0625)).epsilon(1e-2));  // lands on the floor top
+  const CollideResult w = eng.collide({sp[0] - 0.3, sp[1] - 0.3, sp[2] + 0.1}, {sp[0] + 0.3, sp[1] + 0.3, sp[2] + 1.8}, {-20.0, 0, 0});
+  CHECK(w.move[0] > -20.0);
+  CHECK(w.move[0] < 0.0);
+}
+
+TEST_CASE("engine: a scripted session is bitwise identical for 1 and N threads") {
+  const int nt = num_threads();
+  set_num_threads(1);
+  Engine a = fresh_rooms();
+  play(a, 120);
+  set_num_threads(8);
+  Engine b = fresh_rooms();
+  play(b, 120);
+  set_num_threads(nt);
+  CHECK(a.stats().events >= 10);
+  CHECK(a.session_hash() == b.session_hash());
+  MESSAGE("engine session hash " << a.session_hash());
+}
+
+TEST_CASE("engine: persistence round trip restores the exact world") {
+  Engine a = fresh_rooms();
+  play(a, 150);
+  REQUIRE(a.modified());
+  const std::vector<u8> delta = a.save_delta();
+  CHECK(delta.size() > 16);
+  Engine b = fresh_rooms();
+  CHECK(b.state_hash() != a.state_hash());
+  REQUIRE(b.load_delta(delta));
+  CHECK(b.state_hash() == a.state_hash());
+  // a corrupted delta is rejected and leaves the world unchanged
+  Engine c = fresh_rooms();
+  const u64 h0 = c.state_hash();
+  std::vector<u8> bad = delta;
+  bad.resize(bad.size() / 2);
+  CHECK(!c.load_delta(bad));
+  CHECK(c.state_hash() == h0);
+}
+
+TEST_CASE("engine: a streamed city stays bounded, and edits survive eviction exactly") {
+  Engine eng;
+  EngineParams p;
+  p.fragility = 0.25;
+  eng.set_params(p);
+  auto src = make_city_source(3, 1000.0, 0.125);
+  const auto sp = src->spawn_pos();
+  VoxelGrid g;
+  eng.load(std::move(g), sp, src->spawn_dir());
+  StreamConfig sc;
+  sc.load_radius = 48.0;
+  sc.evict_radius = 64.0;
+  sc.chunks_per_tick = 64;
+  eng.enable_streaming(std::move(src), sc);
+  eng.set_viewer(sp);
+  for (int t = 0; t < 20; ++t) eng.tick();
+  const i64 near = eng.resident_chunks();
+  CHECK(near > 50);
+  // shoot a wall near the spawn, then walk 300 m away and back
+  const RayHit hit = eng.raycast({sp[0], sp[1], sp[2] + 1.6}, {0.0, 0.6, -1.0}, 60.0);  // the street
+  REQUIRE(hit.hit);
+  eng.carve(hit.pos, 0.3);
+  for (int t = 0; t < 10; ++t) eng.tick();
+  CHECK(!vox_solid(eng.grid().get(hit.voxel)));
+  const u64 local = eng.state_hash();
+  const std::vector<u8> delta0 = eng.save_delta();
+  i64 max_resident = 0;
+  for (int s = 1; s <= 30; ++s) {
+    eng.set_viewer({sp[0] + 10.0 * s, sp[1], sp[2]});
+    for (int t = 0; t < 4; ++t) eng.tick();
+    max_resident = std::max(max_resident, eng.resident_chunks());
+  }
+  CHECK(eng.stats().archived_chunks >= 1);
+  CHECK(!vox_solid(eng.grid().get(hit.voxel)) );  // evicted: absent, not regenerated solid
+  CHECK(max_resident < 4 * near + 200);            // residency stays bounded while moving
+  for (int s = 30; s >= 0; --s) {
+    eng.set_viewer({sp[0] + 10.0 * s, sp[1], sp[2]});
+    for (int t = 0; t < 4; ++t) eng.tick();
+  }
+  for (int t = 0; t < 20; ++t) eng.tick();
+  CHECK(!vox_solid(eng.grid().get(hit.voxel)));    // the carve came back with the chunk
+  // the saved delta (resident + archived) restores the same edits in a fresh city
+  const std::vector<u8> delta1 = eng.save_delta();
+  CHECK(delta1.size() >= delta0.size() / 2);
+  Engine fresh;
+  fresh.set_params(p);
+  VoxelGrid g2;
+  auto src2 = make_city_source(3, 1000.0, 0.125);
+  fresh.load(std::move(g2), sp, src2->spawn_dir());
+  fresh.enable_streaming(std::move(src2), sc);
+  REQUIRE(fresh.load_delta(delta1));
+  fresh.set_viewer(sp);
+  for (int t = 0; t < 30; ++t) fresh.tick();
+  CHECK(!vox_solid(fresh.grid().get(hit.voxel)));
+  (void)local;
+}
+
+TEST_CASE("engine: over its node budget the engine degrades deterministically (plan B5)") {
+  auto run = [](int threads, EngineStats* st) {
+    set_num_threads(threads);
+    Engine eng = fresh_rooms();
+    EngineConfig c = eng.config();
+    c.node_budget = 3000;
+    c.max_bubbles = 4;
+    c.structure_max_cells = 0;  // (windows: the rooms are one structure, whose bubble would take all four)
+    eng.configure(c);
+    // four rockets into walls of different rooms, more than two windows apart, one per tick
+    const std::array<std::array<f64, 3>, 4> at{{{52.5, 20, 12}, {153.5, 60, 12}, {1.5, 70, 12}, {103.5, 20, 12}}};
+    for (int t = 0; t < 240; ++t) {
+      if (t < 4) eng.blast({0.125 * at[t][0], 0.125 * at[t][1], 0.125 * at[t][2]}, 0.6, 1e6);
+      eng.tick();
+      (void)eng.take_events();
+    }
+    *st = eng.stats();
+    return eng.session_hash();
+  };
+  EngineStats s1, s4;
+  const u64 h1 = run(1, &s1), h4 = run(4, &s4);
+  set_num_threads(1);
+  MESSAGE("degraded spawns " << s1.degraded_spawns << ", degraded triage " << s1.degraded_triage << ", half-rate skips "
+                             << s1.skipped_steps << ", bubbles " << s1.bubbles_spawned);
+  CHECK(s1.degraded_spawns >= 1);
+  CHECK(h1 == h4);
+  CHECK(s1.degraded_spawns == s4.degraded_spawns);
+}
+
+TEST_CASE("engine: the streamed city has a far render tier beyond the resident radius (plan Phase 6)") {
+  Engine eng;
+  VoxelGrid g;
+  g.h = 0.125;
+  auto src = make_city_source(3, 1000.0, 0.125);
+  const auto sp = src->spawn_pos(), sd = src->spawn_dir();
+  eng.load(std::move(g), sp, sd);
+  StreamConfig sc;
+  eng.enable_streaming(std::move(src), sc);
+  eng.set_viewer({sp[0], sp[1], sp[2] + 1.6});
+  std::vector<ChunkMesh> far;
+  for (int t = 0; t < 200; ++t) {
+    eng.tick();
+    for (auto& m : eng.take_far_meshes()) far.push_back(std::move(m));
+  }
+  CHECK(far.size() >= 100);  // one tile per tick once the near field is resident
+  const f64 tile_m = 0.125 * 32 * sc.far_tile;
+  size_t verts = 0;
+  for (const ChunkMesh& m : far) {
+    verts += m.vertices.size();
+    // wholly beyond the eviction radius
+    const f64 x0 = m.chunk[0] * tile_m, y0 = m.chunk[1] * tile_m;
+    const f64 vx = sp[0] + 0.0625, vy = sp[1] + 0.0625;
+    const f64 dx = vx < x0 ? x0 - vx : vx > x0 + tile_m ? vx - x0 - tile_m : 0.0;
+    const f64 dy = vy < y0 ? y0 - vy : vy > y0 + tile_m ? vy - y0 - tile_m : 0.0;
+    CHECK(std::sqrt(dx * dx + dy * dy) > sc.evict_radius);
+  }
+  MESSAGE(far.size() << " far tiles, " << verts << " vertices (" << verts * 28 / 1024 << " KB)");
+  // flying 200 m on: tiles that came near are dropped
+  eng.set_viewer({sp[0], sp[1] + 200.0, sp[2] + 20.0});
+  eng.tick();
+  CHECK_FALSE(eng.take_far_removed().empty());
+}
+
+TEST_CASE("engine: a streamed world keeps to its byte budget, farthest chunks first (plan B8)") {
+  auto fly = [](f64 budget_mb, i64* evicted_by_budget, f64* peak_mb, bool* near_resident) {
+    Engine eng;
+    auto src = make_city_source(3, 1000.0, 0.125);
+    const auto sp = src->spawn_pos();
+    VoxelGrid g;
+    eng.load(std::move(g), sp, src->spawn_dir());
+    StreamConfig sc;
+    sc.load_radius = 40.0;
+    sc.evict_radius = 80.0;
+    sc.chunks_per_tick = 64;
+    sc.max_resident_mb = budget_mb;
+    eng.enable_streaming(std::move(src), sc);
+    f64 peak = 0.0;
+    for (int t = 0; t < 360; ++t) {
+      eng.set_viewer({sp[0] + 0.25 * t, sp[1], sp[2]});
+      eng.tick();
+      if (t % 30 == 29) peak = std::max(peak, eng.stats().memory_mb);  // (right after a budget check)
+    }
+    *evicted_by_budget = eng.stats().budget_evicted;
+    *peak_mb = peak;
+    // the viewer's own neighbourhood is never given up for the budget: the street under it
+    const f64 x = sp[0] + 0.25 * 359;
+    *near_resident = vox_solid(eng.grid().get(static_cast<i32>(std::floor(x / 0.125 + 0.5)),
+                                              static_cast<i32>(std::floor(sp[1] / 0.125 + 0.5)),
+                                              static_cast<i32>(std::floor(sp[2] / 0.125 + 0.5)) - 1));
+  };
+  i64 ev0 = 0, ev1 = 0;
+  f64 mb0 = 0.0, mb1 = 0.0;
+  bool near0 = false, near1 = false;
+  fly(0.0, &ev0, &mb0, &near0);
+  const f64 budget = 0.7 * mb0;
+  fly(budget, &ev1, &mb1, &near1);
+  MESSAGE("without a budget: " << mb0 << " MB; with " << budget << " MB: " << mb1 << " MB, " << ev1 << " chunks evicted for it");
+  CHECK(ev0 == 0);
+  CHECK(ev1 > 0);
+  CHECK(mb1 <= budget * 1.05);
+  CHECK(near1);
+}

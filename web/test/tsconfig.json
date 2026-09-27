@@ -1,0 +1,9 @@
+{
+  "//": "Node unit tests (node --test with native type stripping). They exercise environment-neutral modules only.",
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023"],
+    "types": ["node"]
+  },
+  "include": ["./**/*.ts"]
+}

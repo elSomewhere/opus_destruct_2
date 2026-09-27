@@ -1,0 +1,33 @@
+scenarios: 35, compliance S=4, linear kinematics, dynamics <= 900 steps (dt 1/60)
+portal               F=0.020  lost S1    80  S4    80  S16    80  same
+wall_lintel          F=0.020  lost S1     0  S4     0  S16     0  same
+table_t2             F=0.040  lost S1     0  S4     0  S16     0  same
+portal               F=0.040  lost S1    80  S4    80  S16    80  same
+propped_cantilever   F=0.040  lost S1   128  S4   128  S16   128  same
+wall_lintel          F=0.040  lost S1     0  S4     0  S16     0  same
+table_t1             F=0.080  lost S1   254  S4   254  S16   256  same
+table_t2             F=0.080  lost S1     0  S4     0  S16     0  same
+portal               F=0.080  lost S1    80  S4    80  S16    80  same
+propped_cantilever   F=0.080  lost S1   128  S4   128  S16   128  same
+wall_lintel          F=0.080  lost S1     0  S4     0  S16     0  same
+table_t1             F=0.160  lost S1     0  S4     0  S16     0  same
+table_t2             F=0.160  lost S1     0  S4     0  S16     0  same
+portal               F=0.160  lost S1    80  S4    80  S16    80  same
+propped_cantilever   F=0.160  lost S1   128  S4   128  S16   128  same
+wall_lintel          F=0.160  lost S1     0  S4     0  S16     0  same
+table_t1             F=0.320  lost S1     0  S4     0  S16     0  same
+table_t2             F=0.320  lost S1     0  S4     0  S16     0  same
+portal               F=0.320  lost S1     0  S4     0  S16     0  same
+propped_cantilever   F=0.320  lost S1     0  S4     0  S16     0  same
+wall_lintel          F=0.320  lost S1     0  S4     0  S16     0  same
+table_t1             F=0.640  lost S1     0  S4     0  S16     0  same
+table_t2             F=0.640  lost S1     0  S4     0  S16     0  same
+portal               F=0.640  lost S1     0  S4     0  S16     0  same
+propped_cantilever   F=0.640  lost S1     0  S4     0  S16     0  same
+wall_lintel          F=0.640  lost S1     0  S4     0  S16     0  same
+table_t1             F=1.000  lost S1     0  S4     0  S16     0  same
+table_t2             F=1.000  lost S1     0  S4     0  S16     0  same
+portal               F=1.000  lost S1     0  S4     0  S16     0  same
+propped_cantilever   F=1.000  lost S1     0  S4     0  S16     0  same
+wall_lintel          F=1.000  lost S1     0  S4     0  S16     0  same
+S invariance of the classification: 31 / 31

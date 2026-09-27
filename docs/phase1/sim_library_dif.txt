@@ -1,0 +1,39 @@
+scenarios: 35, compliance S=4, corotational kinematics, dynamics <= 900 steps (dt 1/60)
+scenario                  F |  cells   lost   dyn   dyn ms  steps | DIF 1.00 DIF 1.25 DIF 1.50 DIF 1.75 DIF 2.00
+table_t1              0.020 | fails before the event: skipped
+table_t2              0.020 |    648    536  COLL      682    75 |   525C    528C    528C    524C    524C 
+portal                0.020 |    168     80  COLL      502   267 |   108C    120C    116C    136C    136C 
+propped_cantilever    0.020 |    204    128  COLL       17    34 |   128C    128C    128C    128C    128C 
+wall_lintel           0.020 |    700      0 stand       34     8 |     0s      0s      0s      0s      0s 
+table_t1              0.040 | fails before the event: skipped
+table_t2              0.040 |    648      0 stand      957    22 |     0s      0s      0s      0s      0s 
+portal                0.040 |    168    144  COLL      609    97 |    80C    116C    120C    118C    120C 
+propped_cantilever    0.040 |    204    120  COLL       44    39 |   112C    112C    128C    128C    128C 
+wall_lintel           0.040 |    700      0 stand       39     8 |     0s      0s      0s      0s      0s 
+table_t1              0.080 |    392    256  COLL      329    51 |   192C    193C    190C    191C    250C 
+table_t2              0.080 |    648      0 stand      126    15 |     0s      0s      0s      0s      0s 
+portal                0.080 |    168     80  COLL     1443   670 |   108C    108C    108C    108C    108C 
+propped_cantilever    0.080 |    204    128  COLL       48    43 |    96C     96C     96C     96C    120C 
+wall_lintel           0.080 |    700      0 stand       42     8 |     0s      0s      0s      0s      0s 
+table_t1              0.160 |    392      0 stand      124    17 |     0s      0s      0s      0s      0s 
+table_t2              0.160 |    648      0 stand      127    15 |     0s      0s      0s      0s      0s 
+portal                0.160 |    168     80  COLL     1010   597 |   132C    132C    132C    132C    132C 
+propped_cantilever    0.160 |    204    128  COLL       46    61 |   128C    128C    128C    128C    128C 
+wall_lintel           0.160 |    700      0 stand       44     8 |     0s      0s      0s      0s      0s 
+table_t1              0.320 |    392      0 stand      146    25 |     0s      0s      0s      0s      0s 
+table_t2              0.320 |    648      0 stand      141    15 |     0s      0s      0s      0s      0s 
+portal                0.320 |    168      0 stand      337   151 |     0s      0s      0s      0s      0s 
+propped_cantilever    0.320 |    204      0 stand       30    17 |     0s      0s      0s      0s      0s 
+wall_lintel           0.320 |    700      0 stand       38     8 |     0s      0s      0s      0s      0s 
+table_t1              0.640 |    392      0 stand      161    25 |     0s      0s      0s      0s      0s 
+table_t2              0.640 |    648      0 stand      154    15 |     0s      0s      0s      0s      0s 
+portal                0.640 |    168      0 stand      266   128 |     0s      0s      0s      0s      0s 
+propped_cantilever    0.640 |    204      0 stand       34    17 |     0s      0s      0s      0s      0s 
+wall_lintel           0.640 |    700      0 stand       45     8 |     0s      0s      0s      0s      0s 
+table_t1              1.000 |    392      0 stand      166    25 |     0s      0s      0s      0s      0s 
+table_t2              1.000 |    648      0 stand      147    15 |     0s      0s      0s      0s      0s 
+portal                1.000 |    168      0 stand      251   128 |     0s      0s      0s      0s      0s 
+propped_cantilever    1.000 |    204      0 stand       28    17 |     0s      0s      0s      0s      0s 
+wall_lintel           1.000 |    700      0 stand       39     8 |     0s      0s      0s      0s      0s 
+agreement with dynamics:  DIF 1.00: 33/33 (100%)  DIF 1.25: 33/33 (100%)  DIF 1.50: 33/33 (100%)  DIF 1.75: 33/33 (100%)  DIF 2.00: 33/33 (100%)
+calibrated DIF = 1.00 (100%)

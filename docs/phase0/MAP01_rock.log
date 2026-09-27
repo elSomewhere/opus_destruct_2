@@ -1,0 +1,34 @@
+map MAP01 [rock]: 211 sectors, grid 627x871x194, 3221388 structural / 81043050 anchored voxels (0.03s voxelize)
+  columns: 249196 sector, 53146 shell, 243775 rock; diagonal fixes 0
+  components: 39 (38 anchored, 1 floating with 2868 voxels) in 0.02s; size p50=1152 p90=7286 p99=1945509 max=3132004
+  largest component: 3132004 voxels, 66 PCG iters (res 8.5e-07), 82.24s, max util 4.737, levels 3132004 436015 71224 15716 3850 1075 312 73
+  statics: 38 components solved (3218520 voxels) in 84.7s, max PCG iters 66, unconverged 0; skipped 0 (0 voxels)
+  self-weight bond utilization (nominal capacity): p50=0.0024 p99=0.1702 p99.9=0.5413 max=4.737; bonds >1: 1599, >5 (SOLID onset): 0 of 9374796; max disp 0.0118 m
+  anchor distance (bonds): p50=5 p90=37 p99=80 max=130
+    validate bullet r=1.5: window util_after=0.7864 full=0.7867 (window 5293 cells 1.43s, full 34.44s)
+    validate bullet r=1.5: window util_after=0.0558 full=0.0558 (window 7840 cells 0.56s, full 24.43s)
+  window-vs-full validation: 2 events, rel err of max util_after p50=2.25e-04 max=4.50e-04
+  bullet events: 200 | detach any 112, piece>=8 vox 48 (largest piece p50=3 max=938) | newly >1: 1, newly >5: 0 | NO-BUBBLE: 75.5% (onset 1x nominal), 76.0% (onset 5x = prototype SOLID)
+      NO-BUBBLE (v1 refined: no newly-overloaded bond at onset 1x, no piece >= 1000 vox): 99.5%
+      dUtil p50=0.0122 p90=0.1279 p99=0.2819; window cells p50=9158; event eval p50=0.310s
+  rocket events: 40 | detach any 34, piece>=8 vox 24 (largest piece p50=27 max=1245) | newly >1: 2, newly >5: 0 | NO-BUBBLE: 40.0% (onset 1x nominal), 40.0% (onset 5x = prototype SOLID)
+      NO-BUBBLE (v1 refined: no newly-overloaded bond at onset 1x, no piece >= 1000 vox): 87.5%
+      dUtil p50=0.0220 p90=0.1759 p99=0.7901; window cells p50=20844; event eval p50=0.361s
+      247.19 real       445.46 user        55.77 sys
+          6726025216  maximum resident set size
+                   0  average shared memory size
+                   0  average unshared data size
+                   0  average unshared stack size
+             1393250  page reclaims
+                  12  page faults
+                   0  swaps
+                   0  block input operations
+                   0  block output operations
+                   0  messages sent
+                   0  messages received
+                   0  signals received
+               10483  voluntary context switches
+             6994282  involuntary context switches
+       3650151448821  instructions retired
+       1612592705326  cycles elapsed
+          7184438768  peak memory footprint

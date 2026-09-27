@@ -1,0 +1,29 @@
+name: ci
+on: [push, pull_request]
+jobs:
+  native:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch Freedoom (Doom pipeline tests)
+        run: scripts/fetch_freedoom.sh
+      - name: Configure + build
+        run: cmake --preset native-release && cmake --build --preset native-release -j
+      - name: Test (unit + golden parity)
+        run: ctest --test-dir build/native-release --output-on-failure
+  wasm:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 5.0.7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Fetch Freedoom
+        run: scripts/fetch_freedoom.sh
+      - name: Configure + build (Emscripten, SIMD128)
+        run: cmake --preset wasm-release && cmake --build --preset wasm-release -j
+      - name: Test under Node
+        run: node build/wasm-release/tests/svx_tests.js

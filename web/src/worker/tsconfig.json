@@ -1,0 +1,9 @@
+{
+  "//": "Worker code (mock engine, future WASM worker). WebWorker lib instead of DOM; must not import main-thread modules.",
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["ES2023", "WebWorker"],
+    "types": ["vite/client"]
+  },
+  "include": ["./**/*.ts", "../engine/protocol.ts", "../engine/vertex.ts"]
+}

@@ -1,0 +1,95 @@
+# 10-minute replay determinism check (svx_replay, rooms world, scripted session), 2026-09-26
+# recorded: native ARM (Apple M5 Pro), 1 thread; replayed as listed; every line = session hash every 10 s
+# engine: counted-work commits, events waiting for running bubbles, baseline consistency (demand-gated),
+#         plate classes from the world, nominate and marginal re-solve, Anderson statics, verification
+#         started per window; pipelined steps, trust regions, non-finite guards, solve budgets
+#         (see STATUS.md and PLAN.md §G); run by tools/replay/gate.sh
+
+## record
+t=  10.0s hash 050a09b915f61a8c voxels 168805 ruptures 0 detached 0 debris 0
+t=  20.0s hash f77d77a97595bfbc voxels 168200 ruptures 0 detached 21 debris 0
+t=  30.0s hash 1e1cb73033278b02 voxels 167776 ruptures 0 detached 23 debris 0
+t=  40.0s hash ca9b5272fa725a85 voxels 167219 ruptures 0 detached 27 debris 0
+t=  50.0s hash 9af6c880bc2f484e voxels 166849 ruptures 0 detached 30 debris 0
+t=  60.0s hash 8f52079fc0ea6918 voxels 166444 ruptures 0 detached 35 debris 0
+t=  70.0s hash 7629d924d65965d8 voxels 166166 ruptures 0 detached 42 debris 0
+t=  80.0s hash 3660797b8f5e47fa voxels 165621 ruptures 0 detached 50 debris 0
+t=  90.0s hash b8fbc8e9fa453140 voxels 165139 ruptures 0 detached 52 debris 0
+t= 100.0s hash f5d7a2956ffa6dd3 voxels 164504 ruptures 0 detached 63 debris 0
+t= 110.0s hash 04892196cb43940d voxels 164126 ruptures 0 detached 68 debris 0
+t= 120.0s hash 36fe92850c2da7c8 voxels 163885 ruptures 0 detached 69 debris 0
+t= 130.0s hash 7859bc9022bb8bc4 voxels 163697 ruptures 0 detached 71 debris 0
+t= 140.0s hash 6a58840fc327325a voxels 163143 ruptures 0 detached 81 debris 0
+t= 150.0s hash a458dfaeaae894b8 voxels 162717 ruptures 0 detached 91 debris 0
+t= 160.0s hash ea0105c5ad24a857 voxels 162491 ruptures 0 detached 98 debris 0
+t= 170.0s hash 9df9cf4a8536c40c voxels 162151 ruptures 0 detached 104 debris 0
+t= 180.0s hash 5ba606b3927fd633 voxels 161702 ruptures 3 detached 279 debris 2
+t= 190.0s hash 059552683122f2c9 voxels 161248 ruptures 3 detached 384 debris 0
+t= 200.0s hash dae4c1706aba35e4 voxels 160933 ruptures 3 detached 388 debris 0
+t= 210.0s hash a9cfc37a354d3571 voxels 160871 ruptures 3 detached 394 debris 0
+t= 220.0s hash 5fcd5dce3a03deae voxels 160434 ruptures 3 detached 410 debris 0
+t= 230.0s hash 9f7bfcfd8c281c1d voxels 160266 ruptures 3 detached 413 debris 0
+t= 240.0s hash bc79324dccc5541a voxels 159527 ruptures 3 detached 434 debris 1
+t= 250.0s hash 827197be06d26935 voxels 159132 ruptures 3 detached 445 debris 0
+t= 260.0s hash 436fdc39aa45dbe6 voxels 158696 ruptures 7 detached 496 debris 1
+t= 270.0s hash 6e0d8485791b9d3e voxels 158671 ruptures 7 detached 498 debris 0
+t= 280.0s hash ae4808119cd4b525 voxels 158621 ruptures 7 detached 499 debris 0
+t= 290.0s hash a8f5625ade7f77b4 voxels 158599 ruptures 7 detached 499 debris 0
+t= 300.0s hash abd3c16eea75cb36 voxels 158414 ruptures 7 detached 511 debris 0
+t= 310.0s hash 12fc2cc7db51fa50 voxels 158255 ruptures 7 detached 518 debris 0
+t= 320.0s hash 3559b6b716f32e95 voxels 158005 ruptures 7 detached 530 debris 0
+t= 330.0s hash c9049c4d5047fd82 voxels 157798 ruptures 7 detached 531 debris 0
+t= 340.0s hash 054628cdc1f2f000 voxels 157456 ruptures 7 detached 540 debris 0
+t= 350.0s hash 9ff4b278a9622894 voxels 157268 ruptures 7 detached 555 debris 0
+t= 360.0s hash 0da049d7f9915157 voxels 157066 ruptures 7 detached 560 debris 0
+t= 370.0s hash 5bc377b4aea003c3 voxels 156932 ruptures 7 detached 564 debris 0
+t= 380.0s hash d97ecbc6134ab611 voxels 156607 ruptures 7 detached 598 debris 0
+t= 390.0s hash bc98e0e2b5f12bd1 voxels 156387 ruptures 7 detached 603 debris 0
+t= 400.0s hash 691e9e658d4c57dc voxels 156183 ruptures 7 detached 655 debris 0
+t= 410.0s hash 918caf2b4f5f55d9 voxels 156165 ruptures 7 detached 655 debris 0
+t= 420.0s hash 8fee7e4581323cb4 voxels 155971 ruptures 7 detached 661 debris 0
+t= 430.0s hash d14e6c9ce0deaded voxels 155807 ruptures 7 detached 662 debris 0
+t= 440.0s hash b8a6b8e66e4f814a voxels 155636 ruptures 7 detached 666 debris 0
+t= 450.0s hash 00c70f687c4bc439 voxels 155412 ruptures 7 detached 667 debris 0
+t= 460.0s hash a7383c4e1f11dfc3 voxels 155395 ruptures 7 detached 667 debris 0
+t= 470.0s hash 4ada38d4510994d8 voxels 155374 ruptures 7 detached 668 debris 0
+t= 480.0s hash 1201d6eea79628eb voxels 155100 ruptures 7 detached 675 debris 0
+t= 490.0s hash 0c654097734b8992 voxels 155085 ruptures 7 detached 675 debris 0
+t= 500.0s hash ebb1217edc2a9d4b voxels 154767 ruptures 7 detached 685 debris 0
+t= 510.0s hash 8e4aac25fee8419d voxels 154747 ruptures 7 detached 685 debris 0
+t= 520.0s hash 210550268101f350 voxels 154667 ruptures 7 detached 687 debris 0
+t= 530.0s hash 131c9ffa9f170945 voxels 154644 ruptures 7 detached 687 debris 0
+t= 540.0s hash 0d7c7387dde46434 voxels 154281 ruptures 8 detached 789 debris 1
+t= 550.0s hash 26c2ae788e764b34 voxels 154191 ruptures 8 detached 791 debris 0
+t= 560.0s hash 1ab4a5219b702c23 voxels 153986 ruptures 8 detached 793 debris 0
+t= 570.0s hash 6072e1c2d2fdd02e voxels 153774 ruptures 8 detached 796 debris 0
+t= 580.0s hash e80959a610a894a4 voxels 150975 ruptures 25 detached 3490 debris 0
+t= 590.0s hash 37d845b3bacd8acb voxels 150956 ruptures 25 detached 3491 debris 0
+t= 600.0s hash c3e7bfc46d23a027 voxels 150809 ruptures 25 detached 3492 debris 0
+recorded 19236 commands (1096468 bytes), 36000 ticks in 626.4 s
+
+## engine counters at 600 s
+stats: events 1187, bubbles 97 (steps 1541), settles 1094, cracks 17, verifications 0 (failures 0), impact loads 6, landings 16
+
+## replays (checkpoint hashes diffed against the record)
+arm-t2 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 1336.3 s)
+arm-t4 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 1337.1 s)
+arm-t8 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 1337.2 s)
+x86-t1 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 1495.7 s)
+x86-t4 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 1495.5 s)
+wasm-t1 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 1795.3 s)
+
+## the final binaries (after three lookup-only refactors of the window extraction: chunk-local
+## plate runs, a flat voxel -> cell map, its pre-sizing), replaying the same log
+arm-t1 IDENTICAL to gate 17 (60 checkpoints)
+x86-t2 IDENTICAL to gate 17 (60 checkpoints)
+wasm-t1 IDENTICAL to gate 17 (60 checkpoints)
+
+## gate 18: the final engine (design classes up to x 1,024 scaling fracture energy), recorded afresh
+## record: bit-identical to the gate-17 record above at all 60 checkpoints
+arm-t2 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 2776.8 s)
+arm-t4 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 2794.1 s)
+arm-t8 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 2792.3 s)
+x86-t1 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 3072.8 s)
+x86-t4 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 3072.4 s)
+wasm-t1 IDENTICAL (60 checkpoints; replayed 19236 commands, 36000 ticks in 3253.9 s)

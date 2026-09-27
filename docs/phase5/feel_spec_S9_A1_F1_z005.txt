@@ -1,0 +1,26 @@
+feel spec: S_p 9.0, F 1.00, zeta 0.05, A 1.00
+scene                          cells | settle x/s      sag x   sag s*A | blast x/s    rupt x/s   del x/s      peak x    peak s*A | quiet x/s (s)
+analytic_beamSimplySupportedX     13 | stand/fail   1.81e-02  0.00e+00 | -/-                 -         -   0.000e+00   0.000e+00 | -
+analytic_plateSimplySupported     81 | stand/stand  1.64e-03  2.45e-03 | -/-                 -         -   0.000e+00   0.000e+00 | -
+analytic_stripCantileverX          8 | fail/fail    0.00e+00  0.00e+00 | -/-                 -         -   0.000e+00   0.000e+00 | -
+analytic_stripCantileverY          8 | fail/stand   0.00e+00  2.75e-02 | -/-                 -         -   0.000e+00   0.000e+00 | -
+asymDiaphragm                     68 | stand/fail   5.35e-03  0.00e+00 | -/-                 -         -   0.000e+00   0.000e+00 | -
+braceCorner                       86 | stand/stand  7.76e-03  5.42e-03 | -/-                 -         -   0.000e+00   0.000e+00 | -
+building3                        592 | stand/stand  3.40e-03  1.36e-03 | stand/stand       1/0       0/0   1.659e-03   1.783e-03 | 1.27/0.63
+cantilever                       100 | fail/fail    0.00e+00  0.00e+00 | -/-                 -         -   0.000e+00   0.000e+00 | -
+cascadingCollapse                 90 | stand/stand  1.42e-03  7.08e-04 | -/-                 -         -   0.000e+00   0.000e+00 | -
+clampedCantilever                 16 | fail/fail    0.00e+00  0.00e+00 | -/-                 -         -   0.000e+00   0.000e+00 | -
+contactGuidedStack                 2 | stand/fail   0.00e+00  3.02e+01 | -/-                 -         -   0.000e+00   0.000e+00 | -
+contactSmokeStack                  2 | fail/fail    0.00e+00  0.00e+00 | -/-                 -         -   0.000e+00   0.000e+00 | -
+continuationStiffStrip            36 | stand/fail   1.27e-02  0.00e+00 | -/-                 -         -   0.000e+00   0.000e+00 | -
+multiSpan                         54 | stand/stand  1.33e-03  9.49e-03 | -/-                 -         -   0.000e+00   0.000e+00 | -
+ootest_blastedTower               40 | stand/stand  7.67e-04  7.09e-05 | fail/stand        0/0      15/0   0.000e+00   3.383e-04 | 0.07/1.10
+ootest_floatingCluster             8 | fail/fail    0.00e+00  0.00e+00 | -/-                 -         -   0.000e+00   0.000e+00 | -
+ootest_gentleBlastBlock           36 | stand/stand  7.67e-05  9.46e-06 | fail/stand        6/0       4/0   5.874e-04   7.447e-04 | 0.27/0.63
+ootest_supportedBlock             36 | stand/stand  7.67e-05  9.46e-06 | -/-                 -         -   0.000e+00   0.000e+00 | -
+plasticBeam                       20 | fail/fail    0.00e+00  0.00e+00 | -/-                 -         -   0.000e+00   0.000e+00 | -
+seamCompare                      240 | stand/stand  7.90e-05  2.98e-05 | -/-                 -         -   0.000e+00   0.000e+00 | -
+simplySupported                   36 | stand/fail   1.27e-02  0.00e+00 | -/-                 -         -   0.000e+00   0.000e+00 | -
+supportCompare                    90 | stand/fail   5.77e-03  2.10e-02 | -/-                 -         -   0.000e+00   0.000e+00 | -
+wallLintel                        39 | stand/stand  6.41e-04  4.13e-04 | -/-                 -         -   0.000e+00   0.000e+00 | -
+settle classification 16/23, blast classification 1/3, peak error 0.237, quiet error 0.865
