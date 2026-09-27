@@ -29,9 +29,9 @@ export type RagdollConstraint =
    * Hinge: the joint a-m-c bends one way only. Its bend normal ((m - a) x (c - m)) must point
    * along `sign` times the body's side axis f0 -> f1 (the hips for knees, the shoulders for
    * elbows): the middle particle stays on that side of the line a-c, whatever the limb's angle
-   * to the body.
+   * to the body. Folded limbs let go of it (their side is ill-defined) unless `always`.
    */
-  | { kind: 'hinge'; a: number; m: number; c: number; f0: number; f1: number; sign: number };
+  | { kind: 'hinge'; a: number; m: number; c: number; f0: number; f1: number; sign: number; always?: boolean };
 
 export interface RagdollOptions {
   gravity?: number;
@@ -348,7 +348,7 @@ export class Ragdoll {
       // side ill-defined (enforcing it there only shakes the joint)
       const span = Math.hypot(M.p[0] - a[0], M.p[1] - a[1], M.p[2] - a[2]) + Math.hypot(cc[0] - M.p[0], cc[1] - M.p[1], cc[2] - M.p[2]);
       const straight = Math.sqrt(ll) / (span || 1);
-      const weight = straight <= 0.55 ? 0 : straight >= 0.8 ? 1 : ((straight - 0.55) / 0.25) ** 2 * (3 - (2 * (straight - 0.55)) / 0.25);
+      const weight = c.always ? 1 : straight <= 0.55 ? 0 : straight >= 0.8 ? 1 : ((straight - 0.55) / 0.25) ** 2 * (3 - (2 * (straight - 0.55)) / 0.25);
       if (weight <= 0) return;
       // back onto the allowed side (a little past the line), shared by the three joints by
       // their masses so the limb as a whole is not pushed anywhere

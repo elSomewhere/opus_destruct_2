@@ -43,7 +43,12 @@ const P = {
   toeR: 18,
   sternum: 19,
   pubis: 20,
+  /** In front of the face: which way the head turns (face down, it rolls onto a cheek). */
+  face: 21,
 } as const;
+
+/** The most a shown bone turns in one frame (rad). */
+const MAX_SHOWN_TURN = 0.52;
 
 /** Particles held up by the collapse support (the hips). */
 const SUPPORTED: readonly number[] = [P.pelvis, P.hipL, P.hipR, P.pubis];
@@ -106,13 +111,14 @@ export class HumanoidRagdoll {
         case P.ankleR: return vcopy3(w.p[H.footR]!);
         case P.toeR: return vcopy3(w.p[H.toeR]!);
         case P.sternum: return w.pointOf(H.chest, [0, rh[H.chest]![1] + 0.12 * k, rh[H.chest]![2] + 0.1 * k]);
-        default: return w.pointOf(H.pelvis, [0, rh[H.pelvis]![1] + 0.12 * k, rh[H.pelvis]![2] - 0.04 * k]);
+        case P.pubis: return w.pointOf(H.pelvis, [0, rh[H.pelvis]![1] + 0.12 * k, rh[H.pelvis]![2] - 0.04 * k]);
+        default: return w.pointOf(H.head, faceRest(rh[H.head]!, k));
       }
     };
     // (the ankles reach the ground: they are the heels a standing body rests on)
-    const radius = [0.11, 0.08, 0.08, 0.11, 0.12, 0.05, 0.1, 0.06, 0.045, 0.045, 0.06, 0.045, 0.045, 0.06, 0.085, 0.04, 0.06, 0.085, 0.04, 0.06, 0.06];
-    const mass = [12, 5, 5, 10, 14, 3, 5, 3, 2, 1, 3, 2, 1, 4, 2, 0.7, 4, 2, 0.7, 2, 2];
-    for (let i = 0; i <= P.pubis; i++) {
+    const radius = [0.11, 0.08, 0.08, 0.11, 0.12, 0.05, 0.1, 0.06, 0.045, 0.045, 0.06, 0.045, 0.045, 0.06, 0.085, 0.04, 0.06, 0.085, 0.04, 0.06, 0.06, 0.05];
+    const mass = [12, 5, 5, 10, 14, 3, 5, 3, 2, 1, 3, 2, 1, 4, 2, 0.7, 4, 2, 0.7, 2, 2, 0.6];
+    for (let i = 0; i <= P.face; i++) {
       body.addParticle(pt(world, i), radius[i]! * k, mass[i]!);
       const was = pt(prev, i);
       const now = body.particles[i]!.p;
@@ -155,6 +161,15 @@ export class HumanoidRagdoll {
     body.limit(P.head, P.shoulderR, 0.75, 1.12);
     body.limit(P.head, P.chest, 0.8, 1.06);
     body.limit(P.head, P.sternum, 0.7, 1.15);
+    // the face: fixed to the head, which turns on the neck within a range (about 70 degrees
+    // each way) and nods within its own
+    body.link(P.face, P.head);
+    body.link(P.face, P.neck);
+    body.limit(P.face, P.shoulderL, 0.78, 1.2);
+    body.limit(P.face, P.shoulderR, 0.78, 1.2);
+    body.limit(P.face, P.sternum, 0.6, 1.14);
+    // (the face stays in front of the neck: a head does not turn round to the back)
+    body.constraints.push({ kind: 'hinge', a: P.neck, m: P.face, c: P.head, f0: P.shoulderL, f1: P.shoulderR, sign: 1, always: true });
     // arms: elbows bend one way (the forearm comes forward and up, never back past straight)
     for (const [s, e, w] of [
       [P.shoulderL, P.elbowL, P.wristL],
@@ -261,7 +276,7 @@ export class HumanoidRagdoll {
     // hold their shape a moment longer
     const legs: number[] = [P.kneeL, P.ankleL, P.toeL, P.kneeR, P.ankleR, P.toeR];
     const arms: number[] = [P.elbowL, P.wristL, P.elbowR, P.wristR];
-    const neck: number[] = [P.neck, P.head];
+    const neck: number[] = [P.neck, P.head, P.face];
     body.targetShare = body.particles.map((_, i) => (legs.includes(i) ? 0 : arms.includes(i) ? 0.3 : neck.includes(i) ? 0.6 : 1));
     // the legs give way: a support under the hips sinks from where they are to a crouch
     this.collapse = collapse;
@@ -373,7 +388,9 @@ export class HumanoidRagdoll {
     q[H.spine] = frameRotation(vsub(rh[H.chest]!, rh[H.spine]!), restHips, vsub(X(P.belly), X(P.pelvis)), midRight);
     q[H.chest] = frameRotation(vsub(rh[H.neck]!, rh[H.chest]!), restShoulders, vsub(X(P.neck), X(P.belly)), shoulders);
     q[H.neck] = frameRotation(vsub(rt[H.neck]!, rh[H.neck]!), restShoulders, vsub(X(P.head), X(P.neck)), shoulders);
-    q[H.head] = q[H.neck]!;
+    // the head from its axis and where the face points (it turns and nods on the neck)
+    const headRest: V3 = [rh[H.head]![0], rh[H.head]![1] + 0.015 * this.k, rh[H.head]![2] + 0.1 * this.k];
+    q[H.head] = frameRotation(vsub(headRest, rh[H.neck]!), vsub(faceRest(rh[H.head]!, this.k), headRest), vsub(X(P.head), X(P.neck)), vsub(X(P.face), X(P.head)));
     q[H.clavicleL] = q[H.chest]!;
     q[H.clavicleR] = q[H.chest]!;
     // limbs from their joints and bend planes. The plane's normal turns about the limb towards
@@ -449,7 +466,12 @@ export class HumanoidRagdoll {
     for (const p of pp) fast = Math.max(fast, Math.hypot(p.p[0] - p.prev[0], p.p[1] - p.prev[1], p.p[2] - p.prev[2]) / this.body.substep);
     const follow = clamp(0.3 + fast / 1.2, 0.3, 1);
     for (let i = 0; i < sk.count; i++) {
-      this.shown[i] = qnlerp(this.shown[i]!, q[i]!, follow);
+      // (and never more than 30 degrees in a frame: a lag built up at rest is not let go at once)
+      const a = this.shown[i]!, b = q[i]!;
+      const cos = Math.min(1, Math.abs(a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3]));
+      const angle = 2 * Math.acos(cos);
+      const t = angle > 1e-6 ? Math.min(follow, MAX_SHOWN_TURN / angle) : 1;
+      this.shown[i] = qnlerp(a, b, t);
       q[i] = this.shown[i]!;
     }
     // positions by chaining the rest offsets from the pelvis (joints stay connected)
@@ -489,4 +511,9 @@ function restBendNormal(sk: Skeleton, b0: number, b1: number, bendsForward: bool
 function qnorm4(q: Quat): Quat {
   const l = Math.hypot(q[0], q[1], q[2], q[3]) || 1;
   return [q[0] / l, q[1] / l, q[2] / l, q[3] / l];
+}
+
+/** The face particle's rest position: in front of the head (rest space). */
+function faceRest(head: Readonly<V3>, k: number): V3 {
+  return [head[0], head[1] + 0.11 * k, head[2] + 0.06 * k];
 }

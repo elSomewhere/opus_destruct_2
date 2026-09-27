@@ -55,7 +55,11 @@ function death(opts: { speed?: number; dir?: V3; z?: number; collapse?: number; 
     if (sleptAt < 0 && c.ragdoll!.asleep) sleptAt = i * DT;
   }
   const end = c.pose.p[H.pelvis]!;
-  return { worstTwist: (worstTwist * 180) / Math.PI, pelvisZ, headZ, sleptAt, moved: [end[0] - start[0], end[1] - start[1]] as const };
+  // how far the head is turned from the chest (the face's direction about the chest's up)
+  const face = qrotate(c.pose.q[H.head]!, [0, 1, 0]);
+  const fwd = qrotate(c.pose.q[H.chest]!, [0, 1, 0]), right = qrotate(c.pose.q[H.chest]!, [1, 0, 0]);
+  const headTurn = (Math.abs(Math.atan2(face[0] * right[0] + face[1] * right[1] + face[2] * right[2], face[0] * fwd[0] + face[1] * fwd[1] + face[2] * fwd[2])) * 180) / Math.PI;
+  return { worstTwist: (worstTwist * 180) / Math.PI, pelvisZ, headZ, sleptAt, headTurn, moved: [end[0] - start[0], end[1] - start[1]] as const };
 }
 
 test('ragdolls: limbs never flip about their length, whatever the death', () => {
@@ -97,4 +101,11 @@ test('ragdolls: bodies fall the way the killing shot pushes them', () => {
   // facing +y: shot from the front they go down backwards, from behind forwards
   assert.ok(front.moved[1] < -0.1, `shot from the front, the pelvis moved ${front.moved[1].toFixed(2)} m`);
   assert.ok(back.moved[1] > 0.1, `shot from behind, the pelvis moved ${back.moved[1].toFixed(2)} m`);
+});
+
+test('ragdolls: the head rests turned within the range of the neck (face down it lies on a cheek)', () => {
+  for (const o of [{}, { dir: [0, 1, 0] as V3 }, { speed: 4.5 }, { dir: [1, 0, 0] as V3 }, { seed: 2, dir: [0, 1, 0] as V3 }, { blast: true }]) {
+    const r = death(o);
+    assert.ok(r.headTurn < 92, `${JSON.stringify(o)}: the head rests turned ${r.headTurn.toFixed(0)} deg from the chest`);
+  }
 });

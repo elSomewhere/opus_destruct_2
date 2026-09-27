@@ -216,7 +216,8 @@ Damage (`voxel/damage.ts`, `character.ts`):
   - distance, limit and hinge constraints (knees and elbows bend one way);
   - sphere contacts against the CollisionWorld, with friction and a contact skin;
   - sleep, triggered when nothing moved more than 1.5 cm for half a second.
-- **`HumanoidRagdoll`** maps the rig onto 21 particles:
+- **`HumanoidRagdoll`** maps the rig onto 22 particles (one in front of the face tells which way
+  the head turns):
   - it starts from the animated pose and its velocity (over the real frame time), so a
     character shot mid-stride keeps its momentum;
   - a killing shot pushes the whole upper body its way: shot from the front a body goes down
@@ -228,11 +229,14 @@ Damage (`voxel/damage.ts`, `character.ts`):
     never pushes the body anywhere;
   - the body does not pass through itself (arms stay out of the torso, legs out of each
     other); knees and elbows bend one way, judged against the body's side axis whatever the
-    limb's angle; a fully bent knee brings the heel to the buttock;
+    limb's angle; a fully bent knee brings the heel to the buttock; the head turns on the neck
+    within about 75 degrees each way and never round to the back (face down it lies on a
+    cheek, face up it lolls to a side);
   - every frame it rebuilds all bone frames from the particles. A straight limb has no bend
     plane: its roll carries over and turns towards the joint's plane at a limited rate (limbs
     never flip about their length); feet bend in their leg's plane within the ankle's range;
-    nearly at rest the shown rotations are smoothed.
+    nearly at rest the shown rotations are smoothed, and no shown bone turns more than 30
+    degrees in a frame.
 - **Stability.** Contacts and the collapse support are inelastic (no bounce), and constraint
   corrections beyond 1.5 m/s per substep move particles without launching them, so a folded
   body whose constraints fight never blows up; what lies on the ground settles quickly and the
@@ -392,7 +396,7 @@ the blows that landed.
 ## 9. Tests and checks
 
 ```bash
-cd anim && npm install && npm test          # 60 unit tests: models, animator, IK, gait, stances, actions,
+cd anim && npm install && npm test          # 61 unit tests: models, animator, IK, gait, stances, actions,
                                             # reactions, weapons, strikes, brawls, ragdolls, damage, gibs, retro
 cd web && npm run typecheck && npm test     # includes typechecking anim/
 node scripts/smoke-actors.mjs http://localhost:5190/   # browser: population, fighting, kills, gibs, retro,
@@ -409,7 +413,7 @@ a fist fight lands blows on both; the feet stay half a cycle apart walking and r
 keeps the trunk upright. `anim/test/ragdoll-quality.test.ts` checks deaths (front, back,
 running, head shot, blast): no bone rolls more than 60° in a frame, bodies never bounce back up,
 they sleep on the ground, a body shot crumples over a good half second (never faster than a
-fall), and bodies fall the way they were shot.
+fall), bodies fall the way they were shot, and heads rest within the neck's range.
 
 Measured on an M5 Pro:
 
