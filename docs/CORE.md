@@ -13,10 +13,13 @@ core/   svx_core   voxel grid, materials, fragments, structures, stress solver, 
                    streaming, persistence. Public API: svx::World (svx/world/world.hpp) and the
                    C API (svx/svx_core.h). Depends on the C++ standard library only.
 mesh/   svx_mesh   voxel meshing for renderers: world chunks, pieces (in their shape frame),
-                   coarse far tiles. Optional. Depends on svx_core.
+                   coarse far tiles, water surfaces. Optional. Depends on svx_core.
+env/    svx_env    environment systems on the core's extension points (§5): fire, smoke,
+                   water (docs/ENV.md). Optional. Depends on svx_core.
 game/   svx_game   the prototype harness: svx::Game (viewer, movers, triggers, command log,
-                   piece meshes and poses, fading, far tier), procedural and city levels,
-                   Doom WAD import, the web worker's C ABI. Depends on svx_core and svx_mesh.
+                   piece meshes and poses, fading, far tier, the environment), procedural and
+                   city levels, Doom WAD import, the web worker's C ABI. Depends on svx_core,
+                   svx_mesh and svx_env.
 web/               the TypeScript / WebGPU front end of the game (talks to svx_game's ABI).
 ```
 
@@ -26,7 +29,8 @@ includes no private header), so the core can change freely behind that API and t
 be rewritten without touching the core. Each layer has its own tests:
 
 - `svx_core_tests` links `svx_core` alone (stress, fragments, rigid bodies, the world API, the
-  C API, audit regressions).
+  C API, the extension points, audit regressions).
+- `svx_env_tests` links `svx_env` and the core (fire, smoke, water).
 - `svx_game_tests` exercises the harness (collapse scenarios on game levels, streaming city,
   Doom maps and movers, replays).
 - `examples/core_minimal` (C++) and `examples/c_api` (C) are complete hosts in ~80 lines.
@@ -45,11 +49,16 @@ is one byte: 0 air, else `1 + material` in the low 7 bits and bit 7 **anchored**
 - Every two face-adjacent solid voxels are **bonded**, unless both are anchored or the bond was
   broken (a bit per voxel face).
 
-**Materials** live in a process-wide registry (`svx/material/material.hpp`): seven presets
-(reinforced concrete, concrete, steel, masonry, soil, rock, indestructible bedrock), up to 127 in
-all. A material has stiffness (E, G), density, interface strengths (tension, flexural tension,
-crushing, Mohr–Coulomb cohesion and friction), a fracture energy, and a rubble size (the
-fragment spacing per axis). Register or override materials at startup, before any world steps.
+**Materials** live in a process-wide registry (`svx/material/material.hpp`): eleven presets
+(reinforced concrete, concrete, steel, masonry, soil, rock, indestructible bedrock, wood, stone,
+glass, reinforcing bar), up to 127 in all. A material has stiffness (E, G), density, interface
+strengths (tension, flexural tension, crushing, Mohr–Coulomb cohesion and friction), a fracture
+energy, and a rubble size (the fragment spacing per axis). A bond's section takes its strengths
+from the materials of its faces, so a composite section (concrete with bars in it) is as strong
+as its parts. **Ductile** materials (steel, bars) bend rather than shatter: they are not
+pulverized or carved by impacts. **Reinforcement** voxels (bars) join the fragments of the
+material around them, tying a member together. Register or override materials at startup,
+before any world steps.
 
 **Fragments** are the pre-scored rubble pieces the free voxels are grouped into (a jittered
 Voronoi partition per material, within each chunk). Fragments never break; **bonds** between
@@ -267,7 +276,39 @@ exact as long as every peer uses the same configuration.
   destruction, or a bounded level) and prints both, together with the process's physical
   footprint.
 
-## 5. The C API and WASM
+## 5. Extension points: layers, damage, loads, forces, systems
+
+The core simulates destruction and structural integrity, and nothing else. Other physics
+(fire, fluids, weather, corrosion, a game's own rules) plug in through five public extension
+points, without touching the core. `svx_env` ([`ENV.md`](ENV.md)) is built on them alone.
+
+- **Voxel layers** (`add_layer(LayerSpec{name, persistent})`, `set_layer`, `layer`,
+  `take_layer_changes`): up to 8 named byte channels per voxel, stored sparsely per chunk.
+  - A persistent layer is part of the chunk's changes: saved in deltas, archived when the
+    chunk is evicted, forgotten with its region.
+  - A transient one leaves with the chunk.
+  - Layers are matched by name when a grid is loaded, so a level can carry them. A
+    `ChunkSource` fills them for generated chunks (`generate_layer`).
+  - Pieces carry their voxels' layer values (`piece_layer`, `set_piece_layer`).
+- **Damage** (`kDamageLayer`, always present): 0 intact to 255 no strength left. It scales the
+  strengths of every bond section it is in. Changing it re-measures the sections and judges the
+  structure again, and extracts the structure if nobody had yet. On pieces it rebuilds their
+  bond graph.
+- **Loads on the static world** (`set_loads(group, loads)`): forces on voxels by group. They
+  are replaced as a whole, stay until replaced, and are added to the structures' load cases
+  every solve. New or changed loads extract the structures under them, and the design pass
+  designs for them.
+- **Forces on pieces** (`apply_force`, for the next tick only; `wake_piece`).
+- **Systems** (`add_system(std::shared_ptr<WorldSystem>)`): objects stepped at the end of every
+  tick, in the order added.
+  - The world tells them what they could not see coming: `on_load`, `on_generated` and
+    `on_evicted` (streaming), and `on_voxels_changed`.
+  - Their `memory_bytes` joins `MemoryReport::systems`, and their `state_hash` joins
+    `session_hash`, so determinism checks cover them.
+  - Two more hooks change the world from outside the core: `remove_piece_voxels` (burnt out,
+    melted) and `set_voxels`.
+
+## 6. The C API and WASM
 
 `svx/svx_core.h` wraps `World` for hosts in other languages (C, C#, Rust, Python, Zig, ...):
 
@@ -284,7 +325,7 @@ exact as long as every peer uses the same configuration.
 The `svx_core_web` target (WASM builds) packages the core alone as an ES module
 (`createSvxCore`) with the `svxc_*` functions exported, for JavaScript hosts.
 
-## 6. Writing a harness
+## 7. Writing a harness
 
 A harness turns a game's world into the core's terms and the core's output into the game's.
 `svx::Game` is a worked example:
@@ -293,7 +334,7 @@ A harness turns a game's world into the core's terms and the core's output into 
 |---|---|
 | Player / camera | `set_focus` (streaming); triggers are the harness's own business. |
 | Doors, lifts, crushers | Anchored voxels written with `set_voxels(..., kEditUntracked \| kEditIsolated)` every time they move. A carve that hollows one is noticed after the tick by looking at its voxels. |
-| Weapons | `carve` (bullets), `blast` (rockets), `apply_impulse` (pushes). |
+| Weapons | `carve` (bullets), `blast` (rockets), `apply_impulse` (pushes); fire and water through `svx_env`'s systems (`ignite`, `pour`). |
 | Level loading | Build a `VoxelGrid` (procedural, WAD voxelizer, editor), `load`, `bake`; or a `ChunkSource` for streamed levels. |
 | Replays, lockstep networking | Log the commands with their tick; replay them on the same level (`game/src/replay.cpp`). |
 | Rendering | Chunk meshes from `take_changed_chunks`, piece meshes on `PieceAdded`, poses every frame, fades on `Culled`. |
@@ -304,7 +345,7 @@ Things a harness should not do:
 - write the grid other than through `set_voxels`;
 - keep `Body` pointers across ticks (use ids).
 
-## 7. Known limits
+## 8. Known limits
 
 - `collide` sweeps against the world's voxels only. Pieces are obstacles for rays, not for box
   sweeps.

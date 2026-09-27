@@ -111,6 +111,13 @@ export const TEXTURE_NONE = 0xffff;
  * gets one neutral colour for all untextured faces. Real texture ids must stay below this.
  */
 export const TEXTURE_MATERIAL_BASE = 0xff00;
+/**
+ * (front-end extension) Ids `TEXTURE_GLOW_BASE + m`: untextured, material m's colour, glowing
+ * (burning or red-hot voxels; the engine's fire).
+ */
+export const TEXTURE_GLOW_BASE = 0xfe00;
+/** (front-end extension) Water surfaces (the `water` meshes). */
+export const TEXTURE_WATER = 0xfffe;
 
 /** Doom scale: 1 texel per map unit, 32 map units per metre (plan §A4). */
 export const DOOM_TEXELS_PER_METRE = 32;

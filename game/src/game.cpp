@@ -25,6 +25,10 @@ inline u64 mix64(u64 x) {
   return x ^ (x >> 31);
 }
 
+// Voxels hotter than this (heat units: 4 degC) glow (texture 0xFE00 + material: burning wood,
+// red-hot steel).
+constexpr u8 kGlowHeat = 130;
+
 // A face's light darkened by its voxel's charring (burn 0..255).
 inline u8 char_light(u8 light, u8 burn) {
   if (!burn) return light;
@@ -237,6 +241,7 @@ void Game::tick() {
   }
   if (const FireSystem* f = env_.fire()) {
     for (u64 k : world_.take_layer_changes(f->burn_layer())) charred_.insert(k);
+    for (u64 k : world_.take_layer_changes(f->heat_layer())) charred_.insert(k);  // (glowing, or no more)
     char_clock_ += world_.config().dt;
     if (char_clock_ >= char_remesh_s) {
       char_clock_ = 0.0;
@@ -328,6 +333,15 @@ ChunkMesh Game::piece_mesh(const Body& b) const {
     const int L = f->burn_layer();
     mo.light = [&S, L](const IVec3& p, int) -> u8 { return char_light(255, S.layer_at(L, S.index(p))); };
   }
+  if (const FireSystem* f = env_.fire(); f && !S.layer[size_t(f->heat_layer())].empty()) {
+    const int H = f->heat_layer();
+    auto base_tex = mo.texture;
+    mo.texture = [&S, H, base_tex](const IVec3& p, int face) -> u16 {
+      const i32 i = S.index(p);
+      if (S.layer_at(H, i) >= kGlowHeat && i >= 0) return static_cast<u16>(0xFE00 + static_cast<u16>(vox_mat(S.vox[size_t(i)])));
+      return base_tex ? base_tex(p, face) : static_cast<u16>(0xFF00 + static_cast<u16>(vox_mat(S.get(p))));
+    };
+  }
   ChunkMesh out = mesh_shape(S, world_.voxel_size(), mo);
   // to world coordinates at the piece's pose now
   const M3 R = to_matrix(b.q);
@@ -381,6 +395,13 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
     mo.light = [&g, L, base_light](const IVec3& p, int face) -> u8 {
       const u8 l = base_light ? base_light(p, face) : 255;
       return char_light(l, g.layer(L, p));
+    };
+    // (and burning or red-hot voxels glow)
+    const int H = f->heat_layer();
+    auto base_tex = mo.texture;
+    mo.texture = [&g, H, base_tex](const IVec3& p, int face) -> u16 {
+      if (g.layer(H, p) >= kGlowHeat) return static_cast<u16>(0xFE00 + static_cast<u16>(vox_mat(g.get(p))));
+      return base_tex ? base_tex(p, face) : static_cast<u16>(0xFF00 + static_cast<u16>(vox_mat(g.get(p))));
     };
   }
   std::vector<ChunkMesh> meshes(keys.size());

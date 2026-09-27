@@ -1,10 +1,11 @@
 // svx_soak — long sessions and what they cost in memory: a streamed city crossed for minutes
-// with continuous destruction, or a bounded level shot at and reloaded. Prints the world's
-// memory report (World::memory) and the process's resident size at intervals; the check is that
-// nothing keeps growing.
+// with continuous destruction, fires and water, or a bounded level shot at and reloaded. Prints
+// the world's memory report (World::memory, the environment systems included) and the process's
+// resident size at intervals; the check is that nothing keeps growing.
 //
-// usage: svx_soak [--world city|tower|rooms] [--wad F --map M] [--minutes M] [--report S]
+// usage: svx_soak [--world city|tower|rooms|yard] [--wad F --map M] [--minutes M] [--report S]
 //          [--speed M/S] [--extent KM] [--archive-mb MB] [--forget-s S] [--threads T] [--no-shoot]
+//          [--no-env]
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -70,7 +71,7 @@ int main(int argc, char** argv) {
   std::string world = "city", wad_path, map_name = "MAP01";
   f64 minutes = 10.0, report_s = 30.0, speed = 12.0, extent_km = 16.0, archive_mb = -1.0, forget_s = -1.0;
   int threads = 0;
-  bool shoot = true;
+  bool shoot = true, env = true;
   for (int i = 1; i < argc; ++i) {
     auto arg = [&](const char* n) { return std::strcmp(argv[i], n) == 0 && i + 1 < argc; };
     if (arg("--world")) world = argv[++i];
@@ -84,6 +85,7 @@ int main(int argc, char** argv) {
     else if (arg("--forget-s")) forget_s = std::atof(argv[++i]);
     else if (arg("--threads")) threads = std::atoi(argv[++i]);
     else if (std::strcmp(argv[i], "--no-shoot") == 0) shoot = false;
+    else if (std::strcmp(argv[i], "--no-env") == 0) env = false;
   }
   if (threads > 0) set_num_threads(threads);
   const f64 h = 0.125;
@@ -120,8 +122,9 @@ int main(int argc, char** argv) {
   const i64 ticks = static_cast<i64>(minutes * 60.0 / dt);
   const i64 every = std::max<i64>(1, static_cast<i64>(report_s / dt));
   std::printf("world %s, %.0f simulated minutes%s\n", world.c_str(), minutes, streamed ? " (streamed: travelling and shooting)" : "");
-  std::printf("%7s %8s %8s | %7s %7s %7s %7s %7s %7s %7s | %6s %5s %6s %6s %6s | %6s\n", "min", "world", "process", "grid", "frags",
-              "struct", "pieces", "archive", "caches", "queues", "chunks", "strs", "pieces", "arch", "forgot", "tick");
+  std::printf("%7s %8s %8s | %7s %7s %7s %7s %7s %7s %7s %7s | %6s %5s %6s %6s %6s | %6s %6s %6s | %6s\n", "min", "world", "process", "grid",
+              "frags", "struct", "pieces", "archive", "caches", "queues", "systems", "chunks", "strs", "pieces", "arch", "forgot", "burn",
+              "smoke", "water", "tick");
   const auto t0 = std::chrono::steady_clock::now();
   f64 tick_ms = 0.0;
   i64 n_ticks = 0;
@@ -146,6 +149,16 @@ int main(int argc, char** argv) {
           for (int k = 0; k < 6; ++k) game.carve(hit.pos + V3{0.2 * k, 0.1 * k, 0.15 * k}, 0.35);
       }
     }
+    // the environment: a fire set and a bucket of water poured every few seconds
+    if (env && t % 300 == 150) {
+      const f64 ang = 6.2831853 * rng.next();
+      const V3 dir{std::cos(ang), std::sin(ang), -0.1 + 0.4 * rng.next()};
+      const RayHit hit = game.world().raycast(eye, dir, 60.0);
+      if (hit.hit) {
+        if (rng.next() < 0.6) game.ignite(hit.pos, 0.5);
+        else game.pour(hit.pos + hit.normal * 0.4, 0.4);
+      }
+    }
     // a bounded level is reloaded now and then (a level restart)
     if (!streamed && t > 0 && t % (60 * 60 * 3) == 0) {
       if (dw) {
@@ -163,15 +176,20 @@ int main(int argc, char** argv) {
     game.take_far_meshes();
     game.take_far_removed();
     game.take_events();
+    game.take_water_meshes();
+    game.take_water_removed();
+    game.flames(4096);
+    game.smoke(4096);
     tick_ms += game.stats().tick_ms;
     ++n_ticks;
     if ((t + 1) % every == 0) {
       const MemoryReport m = game.world().memory();
-      const WorldStats st = game.stats();
-      std::printf("%7.1f %8.1f %8.1f | %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.2f | %6d %5d %6d %6d %6lld | %6.2f\n", (t + 1) * dt / 60.0,
-                  mb(m.total()), rss_mb(), mb(m.grid), mb(m.fragments), mb(m.structures), mb(m.pieces), mb(m.archive), mb(m.caches),
-                  mb(m.queues), m.chunks, m.structure_count, m.piece_count, m.archived_chunks,
-                  static_cast<long long>(st.forgotten_regions), tick_ms / std::max<i64>(1, n_ticks));
+      const GameStats st = game.stats();
+      std::printf("%7.1f %8.1f %8.1f | %7.1f %7.1f %7.1f %7.1f %7.1f %7.1f %7.2f %7.2f | %6d %5d %6d %6d %6lld | %6d %6d %6d | %6.2f\n",
+                  (t + 1) * dt / 60.0, mb(m.total()), rss_mb(), mb(m.grid), mb(m.fragments), mb(m.structures), mb(m.pieces), mb(m.archive),
+                  mb(m.caches), mb(m.queues), mb(m.systems), m.chunks, m.structure_count, m.piece_count, m.archived_chunks,
+                  static_cast<long long>(st.forgotten_regions), st.fire_burning, st.smoke_cells, st.water_active,
+                  tick_ms / std::max<i64>(1, n_ticks));
       std::fflush(stdout);
       tick_ms = 0.0;
       n_ticks = 0;

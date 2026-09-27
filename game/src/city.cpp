@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <string>
 
 namespace svx {
 
@@ -53,7 +54,33 @@ class CitySource final : public GameSource {
     const i32 bx0 = std::max(0, b[0] / kPitch - 1), bx1 = std::min(blocks_ - 1, (e[0] - 1) / kPitch);
     const i32 by0 = std::max(0, b[1] / kPitch - 1), by1 = std::min(blocks_ - 1, (e[1] - 1) / kPitch);
     for (i32 bx = bx0; bx <= bx1; ++bx)
-      for (i32 by = by0; by <= by1; ++by) building(bx, by, fill);
+      for (i32 by = by0; by <= by1; ++by) {
+        building(bx, by, fill);
+        if (pond(bx, by)) fill(pond_box(bx, by), kAir);
+      }
+    return any;
+  }
+
+  // Water at rest: the ponds of empty lots.
+  bool generate_layer(const IVec3& cc, const std::string& layer, std::vector<u8>& out) const override {
+    if (layer != "water" || cc[2] != -1) return false;
+    const IVec3 b{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
+    bool any = false;
+    const i32 bx0 = std::max(0, b[0] / kPitch - 1), bx1 = std::min(blocks_ - 1, (b[0] + kChunk - 1) / kPitch);
+    const i32 by0 = std::max(0, b[1] / kPitch - 1), by1 = std::min(blocks_ - 1, (b[1] + kChunk - 1) / kPitch);
+    for (i32 bx = bx0; bx <= bx1; ++bx)
+      for (i32 by = by0; by <= by1; ++by) {
+        if (!pond(bx, by)) continue;
+        const Box p = pond_box(bx, by);
+        const i32 x0 = std::max(p.lo[0], b[0]), x1 = std::min(p.hi[0], b[0] + kChunk);
+        const i32 y0 = std::max(p.lo[1], b[1]), y1 = std::min(p.hi[1], b[1] + kChunk);
+        if (x0 >= x1 || y0 >= y1) continue;
+        if (!any) out.assign(kChunkVox, 0);
+        any = true;
+        for (i32 x = x0; x < x1; ++x)
+          for (i32 y = y0; y < y1; ++y)
+            for (i32 z = p.lo[2]; z < p.hi[2]; ++z) out[chunk_index({x, y, z})] = 255;
+      }
     return any;
   }
 
@@ -110,14 +137,28 @@ class CitySource final : public GameSource {
   static constexpr i32 kSlab = 2;
   static constexpr i32 kMaxStoreys = 14;
 
+  u64 lot_hash(i32 bx, i32 by) const { return mix64(seed_ * 0x9E3779B97F4A7C15ull ^ (u64(u32(bx)) << 32) ^ u64(u32(by))); }
+  bool empty_lot(i32 bx, i32 by) const { return mix64(lot_hash(bx, by) + 0x632BE59BD9B4E019ull) % 10 == 0; }
+  // (a lot's other traits: a hash of its own, apart from the building's draws)
+  u64 lot_traits(i32 bx, i32 by) const { return mix64(lot_hash(bx, by) ^ 0x5EEDF00Dull); }
+  // an empty lot is a pond every other time: the ground dug out 3 voxels, full of water
+  bool pond(i32 bx, i32 by) const { return empty_lot(bx, by) && (lot_traits(bx, by) & 1) == 0; }
+  Box pond_box(i32 bx, i32 by) const {
+    const i32 ox = bx * kPitch + kStreet / 2 + 12, oy = by * kPitch + kStreet / 2 + 12, n = kPitch - kStreet - 24;
+    return {{ox, oy, -3}, {ox + n, oy + n, 0}};
+  }
+
   template <typename Fill>
   void building(i32 bx, i32 by, Fill&& fill) const {
-    u64 r = mix64(seed_ * 0x9E3779B97F4A7C15ull ^ (u64(u32(bx)) << 32) ^ u64(u32(by)));
+    u64 r = lot_hash(bx, by);
     auto next = [&](i32 lo, i32 hi) {
       r = mix64(r + 0x632BE59BD9B4E019ull);
       return lo + static_cast<i32>(r % u64(hi - lo + 1));
     };
     if (next(0, 9) == 0) return;  // an empty lot now and then
+    // a third are old: timber floors (boards on joists) between the concrete columns
+    const bool timber = lot_traits(bx, by) % 3 == 1;
+    const Vox wood = make_vox(MaterialId::Wood, false);
     const Vox rc = make_vox(MaterialId::Rc, false);
     const Vox bar = make_vox(MaterialId::Rebar, false);
     const Vox masonry = make_vox(MaterialId::Masonry, false);
@@ -134,7 +175,12 @@ class CitySource final : public GameSource {
       for (i32 ix = 0; ix <= bays; ++ix)
         for (i32 iy = 0; iy <= bays; ++iy)
           fill({{ox + ix * bay, oy + iy * bay, z0}, {ox + ix * bay + col, oy + iy * bay + col, z0 + kStorey}}, rc);
-      fill({{ox, oy, z0 + kStorey}, {ox + X, oy + X, z0 + kStorey + kSlab}}, rc);
+      if (timber) {
+        for (i32 jy = 0; jy + 2 <= X; jy += 8) fill({{ox, oy + jy, z0 + kStorey}, {ox + X, oy + jy + 2, z0 + kStorey + 1}}, wood);
+        fill({{ox, oy, z0 + kStorey + 1}, {ox + X, oy + X, z0 + kStorey + kSlab}}, wood);
+      } else {
+        fill({{ox, oy, z0 + kStorey}, {ox + X, oy + X, z0 + kStorey + kSlab}}, rc);
+      }
       // a bar down the middle of each column, on through the slab it carries
       for (i32 ix = 0; ix <= bays; ++ix)
         for (i32 iy = 0; iy <= bays; ++iy)

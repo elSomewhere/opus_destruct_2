@@ -22,7 +22,7 @@ Conventions:
 | `type` | fields | notes |
 |---|---|---|
 | `init` | `config: {voxelSize, threads, memoryMB, params, persist?, gpuDisplacement?}` | First message. `persist` (**ext**): keep gameplay changes per world in OPFS (below). `gpuDisplacement` (**ext**): displacement fields (below; v2 engines send none). |
-| `loadProcedural` | `seed, kind: 'city'\|'rooms'\|'tower'` | Test worlds. `city` is the streamed 1 km² city. |
+| `loadProcedural` | `seed, kind: 'city'\|'rooms'\|'tower'\|'yard'` | Test worlds. `city` is the streamed 1 km² city. `yard` has one construction of each kind (timber, stone, glass, steel, reinforced concrete, a reservoir, a water tower). |
 | `loadWad` | `buffer: ArrayBuffer (transfer), map: string, options: {mode:'rock'\|'air', shellVoxels, bake:boolean}` | Doom level. |
 | `viewer` | `pos:[x,y,z], dir:[x,y,z]` | Streaming, bake and LOD focus. Sent every frame or two, including while the player is not in control. |
 | `blast` | `pos:[x,y,z], radius, energy` | Rocket or explosion. `energy` is in J. |
@@ -31,6 +31,9 @@ Conventions:
 | `collide` | `id, min:[3], max:[3], move:[3]` | Player AABB sweep. The worker returns the move clipped against solid voxels (axis by axis in x, y, z order). `onGround` is set when a downward move was stopped. Never changes state. |
 | `setParams` | `params: {fragility, impact, dif, debugView, paused}` | Tunables. Always the complete set. |
 | `use` (**ext**) | `pos:[3], dir:[3]` | The player's use key (E). Operates a door in reach (2 m), or the lifts tagged by a switch line. Recorded in replays. |
+| `ignite` (**ext**) | `pos:[3], radius` | Sets fire to what burns in the sphere; the rest heats up ([`ENV.md`](ENV.md)). Recorded in replays. |
+| `extinguish` (**ext**) | `pos:[3], radius` | Puts out and cools the sphere. Recorded in replays. |
+| `pour` (**ext**) | `pos:[3], radius` | Fills the air in the sphere with water. Recorded in replays. |
 
 `params` fields:
 
@@ -52,6 +55,8 @@ Conventions:
 | `events` | `list: [...]` | See [Events](#events). |
 | `debris` (**ext**) | `poses: [{id, pos:[3], rot:[x,y,z,w], opacity}]` | Rigid debris poses after every tick while any piece exists, plus one empty list when the last piece is gone. See [Rigid debris](#rigid-debris). |
 | `occupancy` (**ext**) | `voxelSize, chunks: [{chunk:[3], state: 0\|1\|2, bits?: ArrayBuffer}]` | Solid occupancy of every chunk whose voxels changed, sent after the tick's meshes. See [Client-side collision](#client-side-collision). |
+| `env` (**ext**) | `flames: Float32Array (x, y, z, °C per flame), smoke: Float32Array (x, y, z, density per cell)` | About 10 Hz while anything burns or smokes, plus one empty set when all is clear. At most 4096 of each: an even sample of the burning voxels, the densest smoke cells (4 voxels each). See [Environment](#environment). |
+| `water` (**ext**) | `meshes: [...as chunkMeshes], removed: string[]` | Water surface meshes of chunks whose water changed (at most 10 Hz per chunk), and chunks whose water is gone. Drawn translucent after the opaque world. |
 | `raycastResult` | `id, hit: null \| {pos:[3], normal:[3], distance, material}` | |
 | `collideResult` | `id, move:[3], onGround:boolean` | |
 | `stats` | `stats: {tickMs, structuralMs, rigidMs, voxels, chunks, memoryMB, events, pieces, awakePieces, contacts, bondsBroken, ...}` | About 4 Hz. `events` counts events since the previous stats message. The full set is `EngineStats` in `protocol.ts`; extra keys are shown generically by the HUD. |
@@ -122,7 +127,23 @@ A v1 extension, kept in the protocol and the renderer; v2 engines send no fields
   to be a piece (under 16 voxels), moving at `velocity`, of size `radius`; it has left the world.
 - `{kind:'impact', pos:[3], energy}`: a blast, or a heavy landing of a piece (the energy its
   contacts dissipated, J, at the contacts' centre). Used for camera shake, dust and particles.
+- `{kind:'splash', pos:[3], strength}` (**ext**): a piece hit the water hard; `strength` is its
+  momentum into the water (kg m/s).
 - (v1 engines also sent `{kind:'bubble', ...}` debug events; v2 engines do not.)
+
+### Environment
+
+Fire, smoke and water are simulated by the engine ([`ENV.md`](ENV.md)). The front end only
+draws them:
+
+- **Flames.** Flame tongues, embers and smoke puffs as particles at the `env` message's
+  burning voxels, and a flickering firelight.
+- **Smoke.** The `env` message's smoke cells as soft sprites a little larger than a cell,
+  jittered and drifting.
+- **Water.** The `water` meshes in a translucent pass. Vertices have texture id `0xFFFE`, light
+  255, and uv set to world x, y.
+- **Charring.** Burnt voxels come darker in the ordinary chunk and piece meshes (the vertex
+  light byte).
 
 ### Rigid debris
 
@@ -204,9 +225,11 @@ the same world is loaded again. Worlds are identified by:
 (`web/src/worker/wasm-worker.ts`) wraps into the messages above:
 
 - lifecycle: `svx_create`, `svx_load_*`;
-- simulation and commands: `svx_tick`, `svx_blast`, `svx_carve`;
+- simulation and commands: `svx_tick`, `svx_blast`, `svx_carve`, `svx_use`, `svx_ignite`,
+  `svx_extinguish`, `svx_pour`;
 - queries: `svx_raycast`, `svx_collide`;
-- output: `svx_poll_meshes`, `svx_poll_events`, `svx_debris`, `svx_stats`;
+- output: `svx_poll_meshes`, `svx_poll_events`, `svx_debris`, `svx_stats`, `svx_poll_env`
+  (flames and smoke), `svx_poll_water` / `svx_poll_water_removed`;
 - persistence: `svx_save_delta` / `svx_load_delta`;
 - determinism: `svx_state_hash`, a digest of the session including debris poses, identical
   across thread counts and between native and WASM builds.

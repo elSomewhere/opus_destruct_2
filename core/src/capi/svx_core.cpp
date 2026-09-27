@@ -175,6 +175,31 @@ void put4(double* out, const Quat& q) {
 
 }  // namespace
 
+namespace {
+
+std::vector<LayerEdit> layer_edits(const int32_t* xyz, const uint8_t* values, int n) {
+  std::vector<LayerEdit> e(static_cast<size_t>(std::max(0, n)));
+  for (int i = 0; i < n; ++i) e[size_t(i)] = {{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]}, values[i]};
+  return e;
+}
+
+// A host's system: its step callback.
+class CallbackSystem final : public WorldSystem {
+ public:
+  CallbackSystem(svxc_world* owner, const char* name, svxc_step_fn fn, void* user)
+      : owner_(owner), name_(name ? name : "host"), fn_(fn), user_(user) {}
+  const char* name() const override { return name_.c_str(); }
+  void step(World&, f64 dt) override { fn_(user_, owner_, dt); }
+
+ private:
+  svxc_world* owner_;
+  std::string name_;
+  svxc_step_fn fn_;
+  void* user_;
+};
+
+}  // namespace
+
 extern "C" {
 
 // ---- materials
@@ -400,6 +425,57 @@ int svxc_apply_impulse(svxc_world* w, int64_t piece, const double point[3], cons
 }
 
 int svxc_remove_piece(svxc_world* w, int64_t piece) { return w && w->w.remove_piece(piece) ? 1 : 0; }
+
+int svxc_add_layer(svxc_world* w, const char* name, int persistent) {
+  if (!w || !name || !*name) return -1;
+  return w->w.add_layer({name, persistent != 0});
+}
+
+int svxc_layer_index(svxc_world* w, const char* name) { return w && name ? w->w.layer_index(name) : -1; }
+
+int svxc_set_layer(svxc_world* w, int layer, const int32_t* xyz, const uint8_t* values, int n) {
+  if (!w || n <= 0 || !xyz || !values) return 0;
+  return w->w.set_layer(layer, layer_edits(xyz, values, n));
+}
+
+uint8_t svxc_layer(svxc_world* w, int layer, int x, int y, int z) { return w ? w->w.layer(layer, {x, y, z}) : 0; }
+
+int svxc_set_piece_layer(svxc_world* w, int64_t piece, int layer, const int32_t* xyz, const uint8_t* values, int n) {
+  if (!w || n <= 0 || !xyz || !values) return 0;
+  return w->w.set_piece_layer(piece, layer, layer_edits(xyz, values, n));
+}
+
+uint8_t svxc_piece_layer(svxc_world* w, int64_t piece, int layer, int x, int y, int z) {
+  return w ? w->w.piece_layer(piece, layer, {x, y, z}) : 0;
+}
+
+int svxc_remove_piece_voxels(svxc_world* w, int64_t piece, const int32_t* xyz, int n, int dust) {
+  if (!w || n <= 0 || !xyz) return 0;
+  std::vector<IVec3> v(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) v[size_t(i)] = {xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]};
+  return w->w.remove_piece_voxels(piece, v, dust != 0) ? 1 : 0;
+}
+
+void svxc_set_loads(svxc_world* w, uint64_t group, const int32_t* xyz, const double* forces, int n) {
+  if (!w) return;
+  std::vector<VoxelLoad> loads;
+  if (xyz && forces)
+    for (int i = 0; i < n; ++i)
+      loads.push_back({{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]}, {forces[3 * i], forces[3 * i + 1], forces[3 * i + 2]}});
+  w->w.set_loads(group, std::move(loads));
+}
+
+void svxc_apply_force(svxc_world* w, int64_t piece, const double point[3], const double force[3]) {
+  if (w && point && force) w->w.apply_force(piece, {point[0], point[1], point[2]}, {force[0], force[1], force[2]});
+}
+
+void svxc_wake_piece(svxc_world* w, int64_t piece) {
+  if (w) w->w.wake_piece(piece);
+}
+
+void svxc_add_system(svxc_world* w, const char* name, svxc_step_fn step, void* user) {
+  if (w && step) w->w.add_system(std::make_shared<CallbackSystem>(w, name, step, user));
+}
 
 void svxc_tick(svxc_world* w) {
   if (w) w->w.tick();

@@ -151,3 +151,111 @@ TEST_CASE("capi: materials and a streamed world from a C callback") {
   CHECK(svxc_raycast(w, o, dn, 20.0).hit == 1);
   svxc_destroy(w);
 }
+
+namespace {
+
+struct Host {
+  int steps = 0;
+  svxc_world* seen = nullptr;
+  int64_t lift = 0;  // a piece to push up, with a force of five times its weight
+  double mass = 0.0;
+};
+
+void host_step(void* user, svxc_world* w, double dt) {
+  Host* h = static_cast<Host*>(user);
+  ++h->steps;
+  h->seen = w;
+  (void)dt;
+  if (h->lift) {
+    const double p[3] = {0, 0, 0}, f[3] = {0.0, 0.0, 5.0 * 9.81 * h->mass};
+    svxc_piece pc{};
+    for (int i = 0, n = svxc_poll_pieces(w); i < n; ++i)
+      if (svxc_piece_at(w, i, &pc) && pc.id == h->lift) {
+        const double at[3] = {pc.pos[0], pc.pos[1], pc.pos[2]};
+        svxc_apply_force(w, h->lift, at, f);
+      }
+    (void)p;
+  }
+}
+
+}  // namespace
+
+TEST_CASE("capi: extension points: layers, damage, loads, a host's system, forces on pieces") {
+  svxc_world* w = svxc_create(0.125);
+  Host host;
+  svxc_add_system(w, "host", host_step, &host);
+  const int soot = svxc_add_layer(w, "soot", 1);
+  CHECK(soot > 0);
+  CHECK(svxc_layer_index(w, "soot") == soot);
+  CHECK(svxc_layer_index(w, "damage") == SVXC_DAMAGE_LAYER);
+  CHECK(svxc_add_layer(w, "", 1) == -1);
+  int nx, ny, nz;
+  const std::vector<uint8_t> v = scene(&nx, &ny, &nz);
+  svxc_load_box(w, v.data(), nx, ny, nz, -8, -8, -4);
+  CHECK(svxc_bake(w) == 1);
+  const int32_t p[3] = {0, 0, 20};
+  const uint8_t val = 77;
+  CHECK(svxc_set_layer(w, soot, p, &val, 1) == 1);
+  CHECK(svxc_layer(w, soot, 0, 0, 20) == 77);
+  for (int t = 0; t < 30; ++t) svxc_tick(w);
+  CHECK(host.steps == 30);
+  CHECK(host.seen == w);
+  CHECK(svxc_poll_pieces(w) == 0);
+  // loads: 12.8 MN on the block's top: its legs give way
+  std::vector<int32_t> xyz;
+  std::vector<double> f;
+  for (int x = 4; x < 12; ++x)
+    for (int y = 4; y < 12; ++y) {
+      xyz.insert(xyz.end(), {x, y, 31});
+      f.insert(f.end(), {0.0, 0.0, -2e5});
+    }
+  svxc_set_loads(w, 7, xyz.data(), f.data(), 64);
+  for (int t = 0; t < 60; ++t) svxc_tick(w);
+  svxc_stats st;
+  svxc_get_stats(w, &st);
+  CHECK(st.bonds_broken > 0);
+  svxc_set_loads(w, 7, nullptr, nullptr, 0);
+  for (int t = 0; t < 240; ++t) svxc_tick(w);
+  // a cube dropped beside the pile comes to rest; the host's system pushes it up
+  std::vector<int32_t> cube;
+  std::vector<uint8_t> conc;
+  for (int x = 32; x < 36; ++x)
+    for (int y = 32; y < 36; ++y)
+      for (int z = 8; z < 12; ++z) {
+        cube.insert(cube.end(), {x, y, z});
+        conc.push_back(svxc_vox(SVXC_CONCRETE, 0));
+      }
+  svxc_set_voxels(w, cube.data(), conc.data(), 64, 0);
+  svxc_piece pc{}, big{};
+  for (int t = 0; t < 240; ++t) svxc_tick(w);
+  for (int i = 0, n = svxc_poll_pieces(w); i < n; ++i)
+    if (svxc_piece_at(w, i, &pc) && pc.voxels == 64 && pc.pos[0] > 3.5 && pc.pos[1] > 3.5) big = pc;
+  REQUIRE(big.id != 0);
+  host.lift = big.id;
+  host.mass = big.mass;
+  svxc_wake_piece(w, big.id);
+  for (int t = 0; t < 30; ++t) svxc_tick(w);
+  bool up = false;
+  for (int i = 0, n = svxc_poll_pieces(w); i < n; ++i)
+    if (svxc_piece_at(w, i, &pc) && pc.id == big.id) up = pc.vel[2] > 5.0 && pc.pos[2] > big.pos[2] + 1.0;
+  CHECK(up);
+  // a piece's layers, and its voxels taken away
+  int lo[3], dim[3];
+  const uint8_t* pv = svxc_piece_voxels(w, big.id, lo, dim);
+  REQUIRE(pv);
+  int32_t sv[3] = {0, 0, 0};
+  bool found = false;
+  for (int i = 0; i < dim[0] * dim[1] * dim[2] && !found; ++i)
+    if (pv[i]) {
+      sv[0] = lo[0] + i / (dim[1] * dim[2]);
+      sv[1] = lo[1] + (i / dim[2]) % dim[1];
+      sv[2] = lo[2] + i % dim[2];
+      found = true;
+    }
+  REQUIRE(found);
+  const uint8_t d = 200;
+  CHECK(svxc_set_piece_layer(w, big.id, SVXC_DAMAGE_LAYER, sv, &d, 1) == 1);
+  CHECK(svxc_piece_layer(w, big.id, SVXC_DAMAGE_LAYER, sv[0], sv[1], sv[2]) == 200);
+  CHECK(svxc_remove_piece_voxels(w, big.id, sv, 1, 1) == 1);
+  svxc_destroy(w);
+}

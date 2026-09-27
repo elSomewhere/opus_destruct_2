@@ -109,6 +109,33 @@ int svxc_apply_impulse(svxc_world* w, int64_t piece, const double point[3], cons
 int svxc_remove_piece(svxc_world* w, int64_t piece);
 void svxc_tick(svxc_world* w);
 
+/* ---- extension points (docs/CORE.md §5): layers, damage, loads, piece forces, systems */
+
+enum { SVXC_DAMAGE_LAYER = 0 };
+/* A named byte channel per voxel; persistent: saved in deltas and archived with its chunk.
+ * Returns its index (the existing one for a name added before), -1 when full (8 layers). */
+int svxc_add_layer(svxc_world* w, const char* name, int persistent);
+int svxc_layer_index(svxc_world* w, const char* name); /* -1: none */
+/* n values at voxels xyz (3 each); returns the number changed. The damage layer (0 intact ..
+ * 255 no strength left) takes the strength of the bond sections it is in. */
+int svxc_set_layer(svxc_world* w, int layer, const int32_t* xyz, const uint8_t* values, int n);
+uint8_t svxc_layer(svxc_world* w, int layer, int x, int y, int z);
+/* A piece's layer values at its shape voxels (the coordinates of svxc_piece_voxels). */
+int svxc_set_piece_layer(svxc_world* w, int64_t piece, int layer, const int32_t* xyz, const uint8_t* values, int n);
+uint8_t svxc_piece_layer(svxc_world* w, int64_t piece, int layer, int x, int y, int z);
+/* Removes n shape voxels of a piece (burnt out, melted): its remains become new pieces. */
+int svxc_remove_piece_voxels(svxc_world* w, int64_t piece, const int32_t* xyz, int n, int dust);
+/* Forces (N, 3 each) on voxels of the static world, by group: replaces the group's loads
+ * (n = 0 removes them). Structures under new or changed loads are solved again. */
+void svxc_set_loads(svxc_world* w, uint64_t group, const int32_t* xyz, const double* forces, int n);
+/* A force (N) at a world point on a piece during the next tick (it does not wake it). */
+void svxc_apply_force(svxc_world* w, int64_t piece, const double point[3], const double force[3]);
+void svxc_wake_piece(svxc_world* w, int64_t piece);
+/* A system of the host's, stepped at the end of every tick (after the mechanics), in the order
+ * added: its own physics on the world through this API. */
+typedef void (*svxc_step_fn)(void* user, svxc_world* w, double dt);
+void svxc_add_system(svxc_world* w, const char* name, svxc_step_fn step, void* user);
+
 /* ---- output */
 
 enum { SVXC_PIECE_ADDED = 0, SVXC_PIECE_REMOVED, SVXC_CRACK, SVXC_IMPACT, SVXC_DUST, SVXC_FORGOTTEN };
