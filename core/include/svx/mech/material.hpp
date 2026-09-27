@@ -1,7 +1,9 @@
-// structvox — material table.
+// structvox — material table (v2: fragment-graph mechanics, docs/V2_DESIGN.md).
 //
-// Values are ported from the prototype oracle (voxel_threed_discrete src/archetypes.js
-// material table, SI units: Pa, kg/m^3, J/m^2). They define the fine lattice model.
+// SI units (Pa, kg/m^3). Strengths are game-calibrated section strengths of the bonds between
+// fragments (pre-scored rubble pieces), not textbook material strengths: a fragment interface is
+// a weak plane (cold joint, mortar bed, crack path), and the stiffness only distributes the load
+// (an equilibrium solve), it is never seen as deformation.
 #pragma once
 
 #include "svx/base/types.hpp"
@@ -21,16 +23,18 @@ enum class MaterialId : u8 {
 
 struct Material {
   const char* name;
-  f64 E;      // Young's modulus
-  f64 G;      // shear modulus
-  f64 rho;    // density
-  f64 ft;     // tensile strength
-  f64 fc;     // compressive strength
-  f64 tau;    // shear strength
-  f64 fb;     // bending (flexural) strength
-  f64 taut;   // torsional strength
-  f64 GfI;    // mode-I fracture energy
-  f64 GfII;   // mode-II fracture energy
+  f64 E;         // Young's modulus
+  f64 G;         // shear modulus
+  f64 rho;       // density
+  f64 ft;        // direct tensile strength of an interface
+  f64 fb;        // flexural tensile strength (bending; the rebar reserve of reinforced concrete)
+  f64 fc;        // compressive (crushing) strength
+  f64 cohesion;  // shear strength at zero normal stress
+  f64 friction;  // Mohr-Coulomb friction coefficient of the interface (and of rubble contact)
+  // Fragment (rubble piece) size: jittered-Voronoi seed spacing in voxels per axis (x, y, z) and
+  // the relative jitter of the seam paths.
+  f64 frag_x, frag_y, frag_z;
+  f64 frag_noise;
 };
 
 const Material& material(MaterialId id);

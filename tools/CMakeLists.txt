@@ -1,70 +1,24 @@
-add_executable(svx_content_study content_study/main.cpp)
-target_link_libraries(svx_content_study PRIVATE svx_core)
-svx_wasm_exe_options(svx_content_study)
-
-# Matrix-free lattice kernel throughput benchmark (research/wasmbench, plan §A5).
-add_executable(svx_bench_kernel bench/lattice_kernel_bench.cpp)
-target_link_libraries(svx_bench_kernel PRIVATE svx_flags)
-if(SVX_WASM)
-  target_link_options(svx_bench_kernel PRIVATE -sENVIRONMENT=node -sEXIT_RUNTIME=1 -sINITIAL_MEMORY=768MB)
-endif()
-if(NOT SVX_WASM OR SVX_WASM_THREADS)
-  find_package(Threads REQUIRED)
-  target_link_libraries(svx_bench_kernel PRIVATE Threads::Threads)
-endif()
-
-# Event bubble step cost on the rooms world, in thread CPU time (plan Phase 2 step gate).
-add_executable(svx_step_bench bench/step_bench.cpp)
-target_link_libraries(svx_step_bench PRIVATE svx_core)
-svx_wasm_exe_options(svx_step_bench)
-
-# Streaming cost while flying through the procedural city (plan Phase 6 hitch gate).
+# Streaming cost while flying through the procedural city.
 add_executable(svx_stream_bench bench/stream_bench.cpp)
 target_link_libraries(svx_stream_bench PRIVATE svx_core)
 svx_wasm_exe_options(svx_stream_bench)
 
-add_executable(svx_wall_slenderness wall_slenderness/main.cpp)
-target_link_libraries(svx_wall_slenderness PRIVATE svx_core)
-svx_wasm_exe_options(svx_wall_slenderness)
-
-# Golden parity against the prototype oracle fixtures (native only; uses nlohmann/json).
-if(NOT SVX_WASM)
-  add_executable(svx_fixture_compare fixture_compare/main.cpp)
-  target_include_directories(svx_fixture_compare PRIVATE ${PROJECT_SOURCE_DIR}/third_party)
-  target_link_libraries(svx_fixture_compare PRIVATE svx_core)
-endif()
-
-# Doom WAD graphics: palette, TEXTURE1/2 composites and flats -> counts + PNG dump (plan §B10).
+# Doom WAD graphics: palette, TEXTURE1/2 composites and flats -> counts + PNG dump.
 add_executable(svx_wad_textures wad_textures/main.cpp)
 target_link_libraries(svx_wad_textures PRIVATE svx_core)
 svx_wasm_exe_options(svx_wad_textures)
 
-# Scenario library: static closure (+DIF) vs implicit dynamics, S invariance (plan Phase 1 gates).
-add_executable(svx_sim_library sim_library/main.cpp)
-target_link_libraries(svx_sim_library PRIVATE svx_core)
-svx_wasm_exe_options(svx_sim_library)
-
-# Composite (telescoping bubble) accuracy vs full fine solves (plan §A5 / Phase 2).
-add_executable(svx_composite_study composite_study/main.cpp)
-target_link_libraries(svx_composite_study PRIVATE svx_core)
-svx_wasm_exe_options(svx_composite_study)
-
-# Event bubble (composite dynamics) vs full-fine dynamics truth (plan Phase 2 gates).
-add_executable(svx_bubble_study bubble_study/main.cpp)
-target_link_libraries(svx_bubble_study PRIVATE svx_core)
-svx_wasm_exe_options(svx_bubble_study)
-
-# Headless end-to-end engine run (plan Phase 3).
+# Headless end-to-end engine run: scenario scripts (tower, rooms, city, WAD), stats, frames.
 add_executable(svx_engine_demo engine_demo/main.cpp)
 target_link_libraries(svx_engine_demo PRIVATE svx_core)
 svx_wasm_exe_options(svx_engine_demo)
 
-# Record / replay sessions from command logs (plan Phase 3 determinism gate, Phase 7 lockstep).
+# Record / replay sessions from command logs (determinism).
 add_executable(svx_replay replay/main.cpp)
 target_link_libraries(svx_replay PRIVATE svx_core)
 svx_wasm_exe_options(svx_replay)
 
-# Freedoom import / bake / stability check of every map (plan Phase 5 gate).
+# Freedoom import / design / stability check of every map.
 add_executable(svx_map_check map_check/main.cpp)
 target_link_libraries(svx_map_check PRIVATE svx_core)
 svx_wasm_exe_options(svx_map_check)

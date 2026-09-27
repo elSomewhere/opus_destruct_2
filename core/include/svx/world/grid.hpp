@@ -57,6 +57,7 @@ struct Chunk {
   std::vector<u8> broken;       // lazily allocated: bit a = bond to the +a neighbour broken
   std::vector<u8> strength;     // lazily allocated: design strength class per voxel
   u32 version = 0;              // bumped on every change (mesh invalidation)
+  u32 vox_version = 0;          // changes (unique value) when voxels change: fragment caches
   i32 solid = 0;                // solid voxel count (mixed chunks)
   i32 free = 0;                 // ... of them not anchored: structure, not rock (mixed chunks)
   i32 free_count() const { return uniform ? (vox_free(value) ? kChunkVox : 0) : free; }
@@ -154,6 +155,7 @@ class VoxelGrid {
  private:
   Chunk& chunk_mut(const IVec3& c);
   std::unordered_map<u64, Chunk> chunks_;
+  u32 vox_seq_ = 0;  // source of Chunk::vox_version (unique over the grid's life)
   std::array<std::unordered_map<u64, f32>, 3> damage_;  // per axis: voxel key -> d
   // Bricks are shared with snapshots and copied before a write while shared. Only the owning
   // (simulation) thread creates and drops snapshots, so the use counts it reads are exact.

@@ -5,15 +5,19 @@
 namespace svx {
 
 namespace {
-// name, E, G, rho, ft, fc, tau, fb, taut, GfI, GfII  (prototype archetypes.js)
+// Interface strengths are those of joints and crack planes (weaker than the intact material):
+// plain concrete ~1 MPa in tension, reinforced concrete keeps a flexural reserve from its rebar,
+// masonry fails along its mortar beds (a fraction of an MPa). The fragility knob divides all of
+// them at run time.
+//                name        E       G      rho    ft       fb       fc      cohesion friction  frag x y z  noise
 constexpr Material kMaterials[static_cast<int>(MaterialId::Count)] = {
-    {"rc", 35e9, 14e9, 2500, 8e6, 35e6, 8e6, 12e6, 4e6, 250, 450},
-    {"concrete", 30e9, 12.5e9, 2400, 3e6, 30e6, 5e6, 4e6, 2e6, 120, 220},
-    {"steel", 200e9, 80e9, 7800, 250e6, 250e6, 145e6, 200e6, 100e6, 5e4, 8e4},
-    {"masonry", 15e9, 6e9, 1800, 0.5e6, 15e6, 1.5e6, 1e6, 0.5e6, 40, 60},
-    {"soil", 60e6, 22e6, 1600, 0.02e6, 0.4e6, 0.05e6, 0.03e6, 0.02e6, 5, 8},
-    {"rock", 50e9, 20e9, 2700, 4e6, 120e6, 10e6, 6e6, 4e6, 80, 140},
-    {"bedrock", 80e9, 33e9, 2900, 20e6, 400e6, 40e6, 30e6, 20e6, 400, 700},
+    {"rc",       30e9,  12.5e9, 2400, 1.2e6,   3.5e6,   30e6,  1.6e6,   0.7,     3.6, 3.6, 3.6, 0.35},
+    {"concrete", 28e9,  11.5e9, 2300, 0.8e6,   1.2e6,   25e6,  1.2e6,   0.7,     3.4, 3.4, 3.4, 0.45},
+    {"steel",    200e9, 80e9,   7850, 180e6,   180e6,   200e6, 100e6,   0.35,    6.0, 6.0, 6.0, 0.15},
+    {"masonry",  10e9,  4e9,    1900, 0.15e6,  0.3e6,   8e6,   0.35e6,  0.75,    3.0, 2.0, 1.6, 0.25},
+    {"soil",     0.1e9, 0.04e9, 1700, 0.01e6,  0.01e6,  0.4e6, 0.03e6,  0.55,    2.5, 2.5, 2.5, 0.5},
+    {"rock",     40e9,  16e9,   2600, 2.5e6,   3.0e6,   80e6,  4e6,     0.8,     4.0, 4.0, 4.0, 0.5},
+    {"bedrock",  60e9,  25e9,   2800, 10e6,    10e6,    200e6, 15e6,    0.8,     5.0, 5.0, 5.0, 0.5},
 };
 }  // namespace
 

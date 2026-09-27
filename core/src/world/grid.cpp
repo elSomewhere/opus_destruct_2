@@ -45,6 +45,7 @@ void VoxelGrid::set(i32 x, i32 y, i32 z, Vox v) {
   c.free += (vox_free(v) ? 1 : 0) - (vox_free(slot) ? 1 : 0);
   slot = v;
   ++c.version;
+  c.vox_version = ++vox_seq_;
   note_modified(cc);
   dirty_.push_back(key3(cc[0], cc[1], cc[2]));
   // a changed voxel also changes the faces of its neighbours in adjacent chunks
@@ -99,10 +100,8 @@ void VoxelGrid::break_bond(const IVec3& p, int axis) {
   if (c.broken.empty()) c.broken.assign(kChunkVox, 0);
   u8& b = c.broken[chunk_index(p)];
   b = static_cast<u8>((b | (1u << axis)) & ~(1u << (3 + axis)));
-  ++c.version;
-  const IVec3 cc = chunk_of(p);
-  note_modified(cc);
-  dirty_.push_back(key3(cc[0], cc[1], cc[2]));
+  // (v2: a broken bond between fragments changes no surface: no remesh)
+  note_modified(chunk_of(p));
 }
 
 u8 VoxelGrid::strength(const IVec3& p) const {
@@ -299,6 +298,7 @@ void VoxelGrid::fill_column(i32 x, i32 y, i32 z0, i32 z1, Vox v) {
         slot = v;
       }
       ++c.version;
+      c.vox_version = ++vox_seq_;
     }
     z = zend;
   }
@@ -551,6 +551,7 @@ bool VoxelGrid::apply_record(const std::vector<u8>& rec, u64* key_out) {
   if (anyb) c.broken = std::move(cd.brk);
   else std::vector<u8>().swap(c.broken);
   ++c.version;
+  c.vox_version = ++vox_seq_;
   const IVec3 b{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
   for (int i = 0; i < kChunkVox; ++i) {
     const IVec3 p{b[0] + i / (kChunk * kChunk), b[1] + (i / kChunk) % kChunk, b[2] + i % kChunk};
@@ -622,6 +623,7 @@ void VoxelGrid::insert_chunk(const IVec3& cc, std::vector<Vox>&& voxels) {
     std::vector<Vox>().swap(c.v);
   }
   ++c.version;
+  c.vox_version = ++vox_seq_;
 }
 
 void VoxelGrid::remove_chunk(const IVec3& cc) {

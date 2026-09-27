@@ -19,8 +19,11 @@ typedef struct svx_engine svx_engine;
 svx_engine* svx_create(double voxel_size);
 void svx_destroy(svx_engine* e);
 void svx_set_threads(int threads);
-void svx_set_params(svx_engine* e, double compliance, double amplification, double fragility, double damping,
-                    int debug_view, int paused);
+/* Knobs (docs/V2_DESIGN.md §6): fragility (divides every bond strength), impact (contact force =
+ * impact x impulse / dt), dif (dynamic increase factor of sudden changes), reserved, debug view
+ * (0 none, 1 utilization, 2 fragments), paused. */
+void svx_set_params(svx_engine* e, double fragility, double impact, double dif, double reserved, int debug_view,
+                    int paused);
 
 /* Worlds. Return 0 on success. */
 int svx_load_procedural(svx_engine* e, const char* kind, double seed);
@@ -90,7 +93,7 @@ void svx_event_info(svx_engine* e, int i, double* out);
 const void* svx_event_vertices(svx_engine* e, int i);
 const void* svx_event_indices(svx_engine* e, int i);
 
-/* GPU displacement (off by default): chunks under running bubbles are meshed per face once and
+/* GPU displacement (v1; v2 has none: svx_poll_fields returns 0): chunks under running bubbles are meshed per face once and
  * move by displacement fields instead of being re-meshed every tick. svx_poll_fields returns
  * the complete current set; per field info[10] = bubble id, world position of texel (0,0,0)'s
  * centre xyz, size xyz (texels), max displacement (m), stride (voxels per texel and axis: a
@@ -111,16 +114,13 @@ const double* svx_debris_data(svx_engine* e);
 /* Rigid debris on (default) or off (detached pieces are only reported). */
 void svx_set_debris(svx_engine* e, int enabled);
 
-/* out[38]: tick ms, structural ms, event ms, active bubbles, active nodes, voxels, chunks,
- * memory MB, events, bubbles spawned, static settles, ruptures, detached voxels, ticks,
- * design max utilization, strengthened voxels, unbaked chunks, bake ms, resident chunks,
- * archived chunks, stream ms, evicted chunks, debris pieces, debris landings, impact loads,
- * debris ms, verifications, verification failures, verification ms (main thread), bubble
- * steps, bubble step ms (cumulative), bubble PCG iterations (cumulative), movers (doors / lifts),
- * cracks (ruptures kept as contacts), coarse chunk summaries made (streamed worlds: non-resident
- * chunks a detachment search crossed), chunks made resident for a detached piece, S_p in
- * effect, S_p cap (the map's buckling margin; 0 = none), events merged into the running bubble
- * of their structure, bubbles that extracted a whole structure, bubble steps longer than a tick */
+/* out[35]: 0 tick ms, 1 structural ms, 2 event ms, 3 rigid ms, 4 mesh ms, 5 voxels, 6 chunks,
+ * 7 memory MB, 8 events, 9 ticks, 10 structures (registered), 11 structures solving, 12 their
+ * nodes, 13 extractions, 14 converged solves, 15 PCG iterations, 16 bonds broken, 17 detached
+ * voxels, 18 detached pieces, 19 max utilization (last judge), 20 pieces, 21 awake pieces,
+ * 22 contacts, 23 piece stress checks, 24 piece splits, 25 impact load cases, 26 resident
+ * chunks, 27 archived chunks, 28 stream ms, 29 evicted chunks, 30 movers, 31 design max
+ * utilization, 32 strengthened voxels, 33 floating voxels removed, 34 bake ms. */
 void svx_stats(svx_engine* e, double* out);
 /* Deterministic digest of the session (voxels, bonds, damage, debris poses), split in two
  * 32-bit halves (JS numbers). */

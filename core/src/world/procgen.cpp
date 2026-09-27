@@ -79,6 +79,36 @@ ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h) {
     g.hi = {extent, extent, 5 * 24 + 8};
     w.spawn_pos = {h * street / 2.0, h * street / 2.0, -0.5 * h + 0.02};
     w.spawn_dir = {1, 1, 0};
+  } else if (kind == "slab") {
+    // physics test: a 6 x 6 m RC slab (0.25 m) on four 2 x 2 voxel columns, 8 m up
+    ground(g, 0, 96, 0, 96, 4);
+    const int x0 = 24, x1 = 72, z0 = 64;
+    for (int cx : {x0, x1 - 3})
+      for (int cy : {x0, x1 - 3}) box(g, cx, cx + 3, cy, cy + 3, 0, z0, rc);
+    box(g, x0, x1, x0, x1, z0, z0 + 2, rc);
+    g.lo = {0, 0, -4};
+    g.hi = {96, 96, z0 + 8};
+    w.spawn_pos = {h * 4, h * 4, -0.5 * h + 0.02};
+    w.spawn_dir = {1, 1, 0.3};
+  } else if (kind == "chimney") {
+    // physics test: a 24 m masonry chimney (1.5 m square, 0.25 m walls) on the ground
+    ground(g, 0, 160, 0, 160, 4);
+    const int c0 = 74, c1 = 86, H = 192;
+    box(g, c0, c1, c0, c1, 0, H, masonry);
+    box(g, c0 + 2, c1 - 2, c0 + 2, c1 - 2, 0, H, kAir);
+    g.lo = {0, 0, -4};
+    g.hi = {160, 160, H + 8};
+    w.spawn_pos = {h * 20, h * 20, -0.5 * h + 0.02};
+    w.spawn_dir = {1, 1, 0.3};
+  } else if (kind == "bridge") {
+    // physics test: a 16 m RC deck (0.5 m, 3 m wide) on two piers, 6 m up
+    ground(g, 0, 176, 0, 64, 4);
+    for (int px : {16, 144}) box(g, px, px + 16, 20, 44, 0, 48, rc);
+    box(g, 8, 168, 20, 44, 48, 52, rc);
+    g.lo = {0, 0, -4};
+    g.hi = {176, 64, 60};
+    w.spawn_pos = {h * 88, h * 4, -0.5 * h + 0.02};
+    w.spawn_dir = {0, 1, 0.2};
   } else if (kind == "tower") {
     ground(g, 0, 160, 0, 160, 4);
     building(g, rng, 40, 40, 3, 3, 10, 26, 22);

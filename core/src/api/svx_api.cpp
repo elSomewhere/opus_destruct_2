@@ -24,7 +24,6 @@ struct svx_engine {
   std::unique_ptr<doom::DoomWorld> doom;  // texturing / light for Doom worlds
   std::vector<u8> delta;
   std::vector<f64> debris;
-  std::vector<DisplacementField> fields;
   std::vector<ChunkMesh> far;
   std::vector<std::array<i32, 2>> far_removed;
   MeshOptions mesh_base() const {
@@ -51,16 +50,13 @@ void svx_destroy(svx_engine* e) { delete e; }
 
 void svx_set_threads(int threads) { set_num_threads(threads < 1 ? 1 : threads); }
 
-void svx_set_params(svx_engine* e, double compliance, double amplification, double fragility, double damping,
-                    int debug_view, int paused) {
+void svx_set_params(svx_engine* e, double fragility, double impact, double dif, double reserved, int debug_view,
+                    int paused) {
+  (void)reserved;
   EngineParams p;
-  p.compliance = compliance;
-  p.amplification = amplification;
-  p.fragility = fragility;
-  // The front end's damping is a fraction of critical damping (0..1); the engine uses
-  // mass-proportional Rayleigh damping alpha = 2 zeta omega at a reference frequency of 5 Hz
-  // (the sway range of storey-scale members under compliance S_p ~ 4-9).
-  p.damping = 2.0 * std::clamp(damping, 0.0, 1.0) * (2.0 * 3.14159265358979 * 5.0);
+  p.fragility = std::clamp(fragility, 0.05, 50.0);
+  p.impact = std::clamp(impact, 0.0, 20.0);
+  p.dif = std::clamp(dif, 1.0, 3.0);
   p.debug_view = debug_view;
   p.paused = paused != 0;
   e->eng.set_params(p);
@@ -104,7 +100,6 @@ int svx_load_wad(svx_engine* e, const uint8_t* data, size_t size, const char* ma
   w->grid.h = g.h;
   const std::array<f64, 3> sp = w->spawn_pos, sd = w->spawn_dir;
   e->eng.load(std::move(g), sp, sd);
-  e->eng.set_compliance_cap(w->slenderness.max_compliance_p99);  // (before the bake)
   w->live = &e->eng.grid();  // texturing reads the live (mutated) grid
   doom::attach_doom_movers(e->eng, *w);  // doors and lifts (the world object outlives them)
   e->doom = std::move(w);
@@ -288,96 +283,95 @@ void svx_event_info(svx_engine* e, int i, double* out) {
 const void* svx_event_vertices(svx_engine* e, int i) { return e->events[i].mesh.vertices.data(); }
 const void* svx_event_indices(svx_engine* e, int i) { return e->events[i].mesh.indices.data(); }
 
+// v2 has no displacement fields (pieces are rigid; structures stand still until they break).
 void svx_set_gpu_displacement(svx_engine* e, int enabled) {
-  EngineConfig c = e->eng.config();
-  c.gpu_displacement = enabled != 0;
-  e->eng.configure(c);
+  (void)e;
+  (void)enabled;
 }
 
 int svx_poll_fields(svx_engine* e) {
-  e->fields = e->eng.take_fields();
-  return static_cast<int>(e->fields.size());
+  (void)e;
+  return 0;
 }
 
 void svx_field_info(svx_engine* e, int i, double* out) {
-  const DisplacementField& f = e->fields[i];
-  out[0] = static_cast<double>(f.id);
-  for (int q = 0; q < 3; ++q) {
-    out[1 + q] = e->h * (f.lo[q] + 0.5 * (f.stride - 1));  // (texel 0's centre)
-    out[4 + q] = f.size[q];
-  }
-  out[7] = f.max_disp;
-  out[8] = f.stride;
-  out[9] = static_cast<double>(f.version);
+  (void)e;
+  (void)i;
+  (void)out;
 }
 
-const void* svx_field_data(svx_engine* e, int i) { return e->fields[i].rgba.data(); }
+const void* svx_field_data(svx_engine* e, int i) {
+  (void)e;
+  (void)i;
+  return nullptr;
+}
 
 int svx_debris(svx_engine* e) {
-  const auto& bodies = e->eng.debris();
-  e->debris.resize(9 * bodies.size());
+  const std::vector<PiecePose> ps = e->eng.pieces();
+  e->debris.resize(9 * ps.size());
   f64* o = e->debris.data();
-  for (const DebrisBody& b : bodies) {
-    o[0] = static_cast<double>(b.id);
-    for (int q = 0; q < 3; ++q) o[1 + q] = b.x[q];
-    for (int q = 0; q < 4; ++q) o[4 + q] = b.q[q];
-    o[8] = b.fade;
+  for (const PiecePose& p : ps) {
+    o[0] = static_cast<double>(p.id);
+    o[1] = p.pos.x;
+    o[2] = p.pos.y;
+    o[3] = p.pos.z;
+    o[4] = p.rot.x;
+    o[5] = p.rot.y;
+    o[6] = p.rot.z;
+    o[7] = p.rot.w;
+    o[8] = p.opacity;
     o += 9;
   }
-  return static_cast<int>(bodies.size());
+  return static_cast<int>(ps.size());
 }
 
 const double* svx_debris_data(svx_engine* e) { return e->debris.data(); }
 
 void svx_set_debris(svx_engine* e, int enabled) {
-  EngineConfig c = e->eng.config();
-  c.debris = enabled != 0;
-  e->eng.configure(c);
+  (void)e;
+  (void)enabled;
 }
 
 void svx_stats(svx_engine* e, double* out) {
   const EngineStats s = e->eng.stats();
-  out[0] = s.tick_ms;
-  out[1] = s.structural_ms;
-  out[2] = s.event_ms;
-  out[3] = s.active_bubbles;
-  out[4] = s.active_nodes;
-  out[5] = static_cast<double>(s.voxels);
-  out[6] = static_cast<double>(s.chunks);
-  out[7] = s.memory_mb;
-  out[8] = static_cast<double>(s.events);
-  out[9] = static_cast<double>(s.bubbles_spawned);
-  out[10] = static_cast<double>(s.static_settles);
-  out[11] = static_cast<double>(s.ruptures);
-  out[12] = static_cast<double>(s.detached_voxels);
-  out[13] = static_cast<double>(s.ticks);
-  out[14] = e->eng.design_report().max_utilization;
-  out[15] = static_cast<double>(e->eng.design_report().strengthened_voxels);
-  out[16] = static_cast<double>(s.unbaked_chunks);
-  out[17] = s.bake_ms;
-  out[18] = static_cast<double>(s.resident_chunks);
-  out[19] = static_cast<double>(s.archived_chunks);
-  out[20] = s.stream_ms;
-  out[21] = static_cast<double>(s.evicted_total);
-  out[22] = s.debris_bodies;
-  out[23] = static_cast<double>(s.debris_landings);
-  out[24] = static_cast<double>(s.impact_loads);
-  out[25] = s.debris_ms;
-  out[26] = static_cast<double>(s.verifications);
-  out[27] = static_cast<double>(s.verify_failures);
-  out[28] = s.verify_ms;
-  out[29] = static_cast<double>(s.bubble_steps);
-  out[30] = s.step_ms;
-  out[31] = static_cast<double>(s.step_pcg);
-  out[32] = e->eng.mover_count();
-  out[33] = static_cast<double>(s.cracks);
-  out[34] = static_cast<double>(s.coarse_summaries);
-  out[35] = static_cast<double>(s.coarse_hydrated);
-  out[36] = e->eng.params().compliance;  // in effect (capped by the map's buckling margin)
-  out[37] = e->eng.compliance_cap();
-  out[38] = static_cast<double>(s.merged_events);
-  out[39] = static_cast<double>(s.structure_bubbles);
-  out[40] = static_cast<double>(s.long_steps);
+  const double v[] = {
+      s.tick_ms,                                       // 0
+      s.structural_ms,                                 // 1
+      s.event_ms,                                      // 2
+      s.rigid_ms,                                      // 3
+      s.mesh_ms,                                       // 4
+      static_cast<double>(s.voxels),                   // 5
+      static_cast<double>(s.chunks),                   // 6
+      s.memory_mb,                                     // 7
+      static_cast<double>(s.events),                   // 8
+      static_cast<double>(s.ticks),                    // 9
+      static_cast<double>(s.structures),               // 10
+      static_cast<double>(s.solving),                  // 11
+      static_cast<double>(s.solve_nodes),              // 12
+      static_cast<double>(s.extractions),              // 13
+      static_cast<double>(s.solves),                   // 14
+      static_cast<double>(s.pcg_iters),                // 15
+      static_cast<double>(s.bonds_broken),             // 16
+      static_cast<double>(s.detached_voxels),          // 17
+      static_cast<double>(s.detached_pieces),          // 18
+      s.max_utilization,                               // 19
+      static_cast<double>(s.bodies),                   // 20
+      static_cast<double>(s.awake),                    // 21
+      static_cast<double>(s.contacts),                 // 22
+      static_cast<double>(s.body_checks),              // 23
+      static_cast<double>(s.body_splits),              // 24
+      static_cast<double>(s.impacts),                  // 25
+      static_cast<double>(s.resident_chunks),          // 26
+      static_cast<double>(s.archived_chunks),          // 27
+      s.stream_ms,                                     // 28
+      static_cast<double>(s.evicted_total),            // 29
+      static_cast<double>(s.movers),                   // 30
+      s.design_max_utilization,                        // 31
+      static_cast<double>(s.strengthened_voxels),      // 32
+      static_cast<double>(s.floating_voxels),          // 33
+      s.bake_ms,                                       // 34
+  };
+  for (size_t k = 0; k < sizeof(v) / sizeof(v[0]); ++k) out[k] = v[k];
 }
 
 void svx_state_hash(svx_engine* e, double* out2) {

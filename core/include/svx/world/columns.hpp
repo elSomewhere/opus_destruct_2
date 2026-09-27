@@ -10,7 +10,6 @@
 
 #include "svx/base/types.hpp"
 #include "svx/mech/material.hpp"
-#include "svx/solve/lattice.hpp"
 
 namespace svx {
 
@@ -47,9 +46,5 @@ struct RunComponents {
 };
 
 RunComponents run_components(const ColumnGrid& g);
-
-// Cells of one component plus the anchored voxels face-adjacent to it, ready for
-// build_lattice(). Coordinates are grid coordinates (x, y, z).
-std::vector<CellIn> extract_component_cells(const ColumnGrid& g, const RunComponents& rc, i32 comp);
 
 }  // namespace svx

@@ -26,7 +26,7 @@ struct Command {
   i64 tick = 0;
   Type type = Type::Carve;
   // Carve: pos xyz, radius. Blast: pos xyz, radius, energy. Viewer: pos xyz.
-  // Params: compliance, amplification, fragility, damping, debug_view, paused.
+  // Params: fragility, impact, dif, (unused), debug_view, paused.
   // Use: eye xyz, direction xyz.
   std::array<f64, 6> a{};
 };

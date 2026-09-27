@@ -81,10 +81,9 @@ void apply_command(Engine& e, const Command& c) {
       break;
     case Command::Type::Params: {
       EngineParams p;
-      p.compliance = c.a[0];
-      p.amplification = c.a[1];
-      p.fragility = c.a[2];
-      p.damping = c.a[3];
+      p.fragility = c.a[0];
+      p.impact = c.a[1];
+      p.dif = c.a[2];
       p.debug_view = static_cast<int>(c.a[4]);
       p.paused = c.a[5] != 0.0;
       e.set_params(p);
