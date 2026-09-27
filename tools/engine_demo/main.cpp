@@ -186,6 +186,13 @@ int main(int argc, char** argv) {
     eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
   }
   eng.set_params(par);
+  if (const char* wv = std::getenv("SVX_WATCH")) {
+    int wx, wy, wz;
+    if (std::sscanf(wv, "%d,%d,%d", &wx, &wy, &wz) == 3) {
+      std::printf("[before bake] ");
+      eng.debug_voxel({wx, wy, wz});
+    }
+  }
   f64 bake_ms = 0.0;
   eng.bake(&bake_ms);
   const auto& dr = eng.design_report();
@@ -255,6 +262,11 @@ int main(int argc, char** argv) {
     if (!cam_set) cam = V3{sp[0], sp[1], sp[2] + 1.6};
     if (!look_set) look = cam + normalized(V3{sd[0], sd[1], 0.0}) * 10.0;
   }
+  if (const char* e = std::getenv("SVX_POKE")) {
+    // (debug) a tiny carve at x,y,z at time t
+    double px, py, pz, pt;
+    if (std::sscanf(e, "%lf,%lf,%lf,%lf", &px, &py, &pz, &pt) == 4) shots.push_back({pt, false, V3{px, py, pz}, 0.06, 0.0});
+  }
   std::sort(shots.begin(), shots.end(), [](const Shot& a, const Shot& b) { return a.t < b.t; });
   const f64 dt = eng.config().dt;
   const i64 ticks = static_cast<i64>(std::llround(seconds / dt));
@@ -273,6 +285,13 @@ int main(int argc, char** argv) {
     }
     eng.tick();
     (void)eng.take_events();
+    if (const char* wv = std::getenv("SVX_WATCH")) {
+      int wx, wy, wz;
+      if (std::sscanf(wv, "%d,%d,%d", &wx, &wy, &wz) == 3) {
+        std::printf("[t%lld] ", static_cast<long long>(t));
+        eng.debug_voxel({wx, wy, wz});
+      }
+    }
     if (std::getenv("SVX_TRACK_FAST"))
       for (const auto& bp : eng.rigid().bodies)
         if (norm(bp->v) > 14.0)
@@ -349,6 +368,31 @@ int main(int argc, char** argv) {
                 hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7], small, big, below);
   }
   const f64 wall = std::chrono::duration<f64>(Clock::now() - wall0).count();
+  if (std::getenv("SVX_HIGH")) {
+    // world voxels high up (left behind?)
+    const double zmin = std::atof(std::getenv("SVX_HIGH"));
+    const auto& G = eng.grid();
+    for (const auto& [k, c] : G.chunks()) {
+      const IVec3 cc = unkey3(k);
+      for (int i = 0; i < kChunk * kChunk * kChunk; ++i) {
+        const Vox v = c.uniform ? c.value : c.v[size_t(i)];
+        if (!vox_solid(v)) continue;
+        const int x = i / (kChunk * kChunk), y = (i / kChunk) % kChunk, z = i % kChunk;
+        const double wz = G.h * (cc[2] * kChunk + z);
+        if (wz > zmin && std::getenv("SVX_HIGH_DETAIL")) {
+          static int shown = 0;
+          if (shown++ < 4) eng.debug_voxel({cc[0] * kChunk + x, cc[1] * kChunk + y, cc[2] * kChunk + z});
+        }
+        if (wz > zmin)
+          std::printf("high voxel at (%.2f %.2f %.2f) mat %d free %d\n", G.h * (cc[0] * kChunk + x), G.h * (cc[1] * kChunk + y), wz, int(vox_mat(v)), vox_free(v) ? 1 : 0);
+      }
+    }
+    // pieces resting high up (floating?)
+    for (const auto& bp : eng.rigid().bodies)
+      if (bp->x.z > std::atof(std::getenv("SVX_HIGH")))
+        std::printf("high piece %lld: %d voxels at (%.2f %.2f %.2f) asleep %d v %.2f age %.1f\n", static_cast<long long>(bp->id), bp->shape.count,
+                    bp->x.x, bp->x.y, bp->x.z, bp->asleep ? 1 : 0, norm(bp->v), bp->age);
+  }
   {
     // piece sizes (voxels)
     int hist[8] = {0, 0, 0, 0, 0, 0, 0, 0};

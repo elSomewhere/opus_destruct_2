@@ -463,8 +463,7 @@ void Engine::refresh_structures() {
         continue;
       }
       if (prof) std::printf("  [prof] patch s%lld failed: re-extract\n", static_cast<long long>(id));
-      for (size_t i = 0; i < s->vox0.size(); ++i)
-        if (!s->P.nodes[i].gone) seeds_.push_back(s->vox0[i]);
+      reseed(*s);
       drop_structure(id);
     }
     if (seeds_.empty()) break;
@@ -745,10 +744,31 @@ void Engine::retire_structure_nodes(Structure& s, const std::vector<i32>& list) 
   }
   // much retired: extract it again (compact); a stale preconditioner: rebuild it
   if (s.gone > std::max<i32>(64, active / 2)) {
-    for (size_t i = 0; i < s.vox0.size(); ++i)
-      if (!s.P.nodes[i].gone) seeds_.push_back(s.vox0[i]);
+    reseed(s);
     const i64 id = s.id;
     drop_structure(id);
+  }
+}
+
+void Engine::reseed(const Structure& s) {
+  // A structure dropped to be extracted again seeds a voxel of each live node and of each of its
+  // fragments (where the fragment cache is current): a fragment that cracks cut off inside a
+  // cluster is then extracted on its own (and falls) instead of floating, unowned.
+  for (size_t i = 0; i < s.vox0.size(); ++i)
+    if (!s.P.nodes[i].gone) seeds_.push_back(s.vox0[i]);
+  for (const FragKey& f : s.frags) {
+    if (f.idx < 0) continue;
+    FragChunk* fc = frag_chunk_if(f.chunk);
+    const IVec3 cc = unkey3(f.chunk);
+    const Chunk* ch = grid_.chunk(cc);
+    if (!fc || !ch || fc->vox_version != ch->vox_version || f.idx >= static_cast<i32>(fc->frags.size())) continue;
+    for (i32 k = fc->vox_start[size_t(f.idx)]; k < fc->vox_start[size_t(f.idx) + 1]; ++k) {
+      const i32 li = fc->vox[size_t(k)];
+      if (fc->id[size_t(li)] != static_cast<u16>(f.idx + 1)) continue;
+      const IVec3 l = local_of(li);
+      seeds_.push_back({cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]});
+      break;
+    }
   }
 }
 

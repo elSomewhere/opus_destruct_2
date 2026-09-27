@@ -40,6 +40,16 @@ TEST_CASE("collapse: designed structures stand at rest") {
   }
 }
 
+TEST_CASE("collapse: the design pass leaves nothing floating (a second pass removes nothing)") {
+  for (const char* kind : {"tower", "rooms", "bridge", "chimney"}) {
+    Engine eng = world(kind);
+    const i64 v0 = eng.grid().solid_count();
+    eng.bake();
+    CAPTURE(kind);
+    CHECK(eng.grid().solid_count() == v0);
+  }
+}
+
 TEST_CASE("collapse: a slab whose columns are cut falls and breaks where it lands") {
   Engine eng = world("slab");
   const f64 h = 0.125;

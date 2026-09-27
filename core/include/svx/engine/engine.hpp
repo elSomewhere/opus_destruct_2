@@ -273,6 +273,7 @@ class Engine {
   std::vector<EngineEvent> take_events();
   std::vector<PiecePose> pieces() const;
   const RigidWorld& rigid() const { return rigid_; }
+  void debug_voxel(const std::array<i32, 3>& p);  // (debug) fragment, owner and neighbours of a voxel
   EngineStats stats() const;
   u64 state_hash() const;
   u64 session_hash() const;
@@ -328,6 +329,7 @@ class Engine {
                     std::vector<i64>* superseded);
   i32 cluster_cell(i64 fragments) const;
   void retire_structure_nodes(Structure& s, const std::vector<i32>& list);
+  void reseed(const Structure& s);  // seeds for extracting a dropped structure's fragments again
   void structure_loads(f64 dt_sub);          // contact forces of bodies on world fragments
   void finish_loads(int substeps);           // smoothing, dead loads, load triggers
   void apply_blast_loads();

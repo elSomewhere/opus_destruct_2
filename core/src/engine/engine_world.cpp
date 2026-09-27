@@ -54,8 +54,17 @@ bool Engine::bake(f64* ms) {
       if (fc.frags[size_t(fi)].count <= 0) continue;
       const FragKey f{key, fi};
       if (is_seen(f)) continue;
+      const Chunk* ch0 = grid_.chunk(cc);
+      const u32 ver = ch0 ? ch0->vox_version : 0;
       Structure* s = extract(f, 4000000, 1e9, false);
-      if (!s) continue;
+      if (!s) {
+        // (a floating piece was removed: the chunk's fragments are renumbered, scan it again; the
+        // ones seen are skipped by identity)
+        const Chunk* ch1 = grid_.chunk(cc);
+        if (!ch1 || ch1->vox_version != ver) fi = -1;
+        if (!ch1) break;
+        continue;
+      }
       for (const FragKey& m : s->frags)
         if (m.idx >= 0) mark(m);
       StressOptions so;
@@ -821,6 +830,29 @@ CollideResult Engine::collide(const std::array<f64, 3>& mn, const std::array<f64
     res.move[size_t(a)] = dm;
   }
   return res;
+}
+
+void Engine::debug_voxel(const std::array<i32, 3>& pa) {
+  const IVec3 p{pa[0], pa[1], pa[2]};
+  const IVec3 cc = chunk_of(p);
+  FragChunk& fc = frag_chunk(cc);
+  const i32 g = fc.at(chunk_index(p));
+  const Vox v = grid_.get(p);
+  std::printf("voxel (%d %d %d): solid %d mat %d free %d, fragment %d", p[0], p[1], p[2], vox_solid(v) ? 1 : 0, int(vox_mat(v)),
+              vox_free(v) ? 1 : 0, g);
+  if (g >= 0) {
+    const FragKey f{key3(cc[0], cc[1], cc[2]), g};
+    std::printf(" (%d voxels, owner %lld)", fc.frags[size_t(g)].count, static_cast<long long>(owner_of(f)));
+  }
+  std::printf("\n  neighbours:");
+  for (int a = 0; a < 3; ++a)
+    for (int sg = -1; sg <= 1; sg += 2) {
+      IVec3 q = p;
+      q[a] += sg;
+      const bool br = sg > 0 ? grid_.broken(p, a) : grid_.broken(q, a);
+      std::printf(" %c%c:%s%s", sg > 0 ? '+' : '-', "xyz"[a], vox_solid(grid_.get(q)) ? "solid" : "air", br ? "(broken)" : "");
+    }
+  std::printf("\n");
 }
 
 }  // namespace svx

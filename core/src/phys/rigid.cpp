@@ -728,7 +728,11 @@ void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<bool(f6
     for (size_t i = 0; i < bodies.size(); ++i) fresh[i] = std::binary_search(before_ids.begin(), before_ids.end(), bodies[i]->id) ? 0 : 1;
     contacts_.swap(kept);
     collide(g, &fresh);
+    // (warm-started from the first solve of this substep: fewer iterations do)
+    const int iters = par.iterations;
+    par.iterations = std::max(4, iters / 2);
     solve(dt);
+    par.iterations = iters;
   }
   const auto t4 = Clock::now();
   integrate_positions(dt);
