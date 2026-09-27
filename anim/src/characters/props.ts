@@ -18,8 +18,12 @@ export interface Prop {
   muzzle: V3;
   /** Where the magazine sits (reloads). */
   magazine: V3;
-  kind: 'rifle' | 'smg' | 'pistol';
+  kind: PropKind;
+  /** Held with one hand (pistols, knives): the support point is on the other hand's side. */
+  oneHanded?: boolean;
 }
+
+export type PropKind = 'rifle' | 'smg' | 'lmg' | 'pistol' | 'knife';
 
 /** An assault rifle (~0.86 m, pistol grip 0.32 m from the butt). */
 export function makeRifle(voxelSize = DEFAULT_VOXEL_SIZE, variant = 0): Prop {
@@ -69,4 +73,47 @@ export function makeSmg(voxelSize = DEFAULT_VOXEL_SIZE): Prop {
   sc.add(box([0, 0.26, 0.05], [0.02, 0.06, 0.02], 0.006), 0, F, o);
   const model = sc.finish({ name: 'smg' });
   return { model, grip: [0, 0, 0], support: [0, 0.25, 0.025], stock: [0, -0.3, 0.05], muzzle: [0, 0.41, 0.066], magazine: [0, 0.1, -0.08], kind: 'smg' };
+}
+
+/** A light machine gun (~1.05 m): box magazine, heavy barrel, bipod folded. */
+export function makeLmg(voxelSize = DEFAULT_VOXEL_SIZE): Prop {
+  const sc = new Sculptor(propSkeleton(), voxelSize, [-0.08, -0.45, -0.2], [0.08, 0.66, 0.2], 31);
+  const M = Slot.Metal, F = Slot.Furniture, D = Slot.GearDark;
+  const o = { organic: false } as const;
+  sc.add(box([0, 0.07, 0.066], [0.026, 0.16, 0.038], 0.006), 0, M, o);
+  sc.add(box([0, -0.25, 0.05], [0.022, 0.15, 0.042], 0.012), 0, F, o);
+  sc.add(box([0, -0.39, 0.045], [0.024, 0.012, 0.055], 0.004), 0, D, o);
+  sc.add(box([0, -0.012, -0.03], [0.018, 0.02, 0.046], 0.008), 0, F, o);
+  sc.add(box([0.03, 0.1, -0.02], [0.03, 0.06, 0.05], 0.008), 0, D, o); // box magazine
+  sc.add(box([0, 0.33, 0.066], [0.03, 0.1, 0.034], 0.01), 0, M, o);
+  sc.add(cylinder([0, 0.4, 0.07], [0, 0.64, 0.07], 0.016), 0, M, o);
+  sc.add(box([0, 0.5, 0.045], [0.008, 0.12, 0.01]), 0, D, o); // folded bipod
+  sc.add(box([0, 0.08, 0.115], [0.02, 0.06, 0.012]), 0, D, o);
+  sc.add(box([0, 0.2, 0.11], [0.006, 0.012, 0.04]), 0, D, o); // carry handle post
+  const model = sc.finish({ name: 'lmg' });
+  return { model, grip: [0, 0, 0], support: [0, 0.3, 0.03], stock: [0, -0.39, 0.05], muzzle: [0, 0.65, 0.07], magazine: [0.03, 0.1, -0.05], kind: 'lmg' };
+}
+
+/** A pistol (~0.2 m): the support hand wraps the gripping hand. */
+export function makePistol(voxelSize = DEFAULT_VOXEL_SIZE): Prop {
+  const sc = new Sculptor(propSkeleton(), voxelSize, [-0.05, -0.08, -0.14], [0.05, 0.24, 0.1], 41);
+  const M = Slot.Metal, D = Slot.GearDark;
+  const o = { organic: false } as const;
+  sc.add(box([0, 0.07, 0.042], [0.014, 0.1, 0.022], 0.004), 0, M, o); // slide
+  sc.add(box([0, -0.01, -0.035], [0.015, 0.024, 0.055], 0.006), 0, D, o); // grip
+  sc.add(box([0, 0.03, 0.0], [0.009, 0.026, 0.01], 0.003), 0, M, o); // trigger guard
+  sc.add(box([0, 0.17, 0.045], [0.006, 0.01, 0.006]), 0, M, o); // muzzle
+  const model = sc.finish({ name: 'pistol' });
+  return { model, grip: [0, 0, 0], support: [-0.018, -0.01, -0.035], stock: [0, -0.03, 0.02], muzzle: [0, 0.18, 0.045], magazine: [0, -0.01, -0.08], kind: 'pistol', oneHanded: true };
+}
+
+/** A fighting knife, held blade forward along the fingers (prop +y). */
+export function makeKnife(voxelSize = DEFAULT_VOXEL_SIZE): Prop {
+  const sc = new Sculptor(propSkeleton(), voxelSize, [-0.04, -0.08, -0.05], [0.04, 0.26, 0.05], 51);
+  const o = { organic: false } as const;
+  sc.add(box([0, -0.02, 0], [0.012, 0.05, 0.016], 0.004), 0, Slot.GearDark, o); // handle
+  sc.add(box([0, 0.04, 0], [0.02, 0.008, 0.024]), 0, Slot.Metal, o); // guard
+  sc.add(box([0, 0.13, 0.004], [0.005, 0.085, 0.017], 0.002), 0, Slot.Bone, { ...o, shade: 1.15 }); // blade
+  const model = sc.finish({ name: 'knife' });
+  return { model, grip: [0, 0, 0], support: [0, 0, 0], stock: [0, -0.07, 0], muzzle: [0, 0.22, 0.004], magazine: [0, 0, 0], kind: 'knife', oneHanded: true };
 }

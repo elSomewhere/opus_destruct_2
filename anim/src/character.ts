@@ -224,8 +224,46 @@ export class Character {
       if (this.health <= 0 || res.gibs.some((g) => g.part.bone === H.head)) {
         this.die(hit.point, vscale(vnorm(dir), impulse));
         res.killed = true;
-      } else this.animator.hit(dir, damage / 30, heightOf(hit.bone));
+      } else this.animator.hitAt({ point: [...hit.point] as V3, dir: [dir[0], dir[1], dir[2]], force: damage / 30, kind: 'bullet', bone: hit.bone });
     } else if (this.ragdoll) this.ragdoll.hit(hit.point, vscale(vnorm(dir), impulse * 1.4));
+    return res;
+  }
+
+  /**
+   * A melee blow landing at `point` (world) travelling along `dir`: a fist or a foot ('blunt',
+   * force ~1 a punch, ~1.8 a kick) or a blade (a slice of voxels is cut out, it bleeds). Damage
+   * by zone; the body reacts where it was hit (a jab snaps the head, a kick to the gut folds
+   * it, a hard blow knocks it down).
+   */
+  melee(point: Readonly<V3>, dir: Readonly<V3>, kind: 'blunt' | 'blade', force = 1): WoundResult & { zone: string } {
+    const res: WoundResult & { zone: string } = { killed: false, headshot: false, damage: 0, removed: [], gibs: [], zone: 'chest' };
+    if (!this.alive) {
+      if (this.ragdoll) this.ragdoll.hit(point, vscale(vnorm(dir), 2 * force));
+      return res;
+    }
+    const bone = this.animator.nearestBone(point);
+    const mult = kind === 'blade' ? (ZONE[bone] ?? 0.6) * 1.2 : bone === H.head || bone === H.neck ? 1.6 : bone === H.spine ? 1.2 : 0.8;
+    res.damage = (kind === 'blade' ? 30 : 11) * force * mult;
+    res.headshot = bone === H.head || bone === H.neck;
+    if (kind === 'blade') {
+      // a cut: a thin slice of the body opens
+      this.ownModel();
+      const q = this.pose.q[bone]!;
+      const rest = vadd(this.model.skeleton.restHead[bone]!, qrotate([-q[0], -q[1], -q[2], q[3]], vsub(point, this.pose.p[bone]!)));
+      carveModel(this.model, rest, 0.028, undefined, res.removed);
+      const exit = vadd(rest, vscale(this.restDir(bone, dir), 0.035));
+      carveModel(this.model, exit, 0.022, undefined, res.removed);
+      this.geometryVersion++;
+      res.gibs.push(...this.severAfterDamage(bone, dir));
+    }
+    this.flash = kind === 'blade' ? 1 : 0.6;
+    this.health -= res.damage;
+    res.zone = this.animator.hitAt({ point: [point[0], point[1], point[2]], dir: [dir[0], dir[1], dir[2]], force: kind === 'blade' ? force * 0.8 : force, kind, bone });
+    this.pain = 0.3;
+    if (this.health <= 0) {
+      this.die(point, vscale(vnorm(dir), 1.5 * force));
+      res.killed = true;
+    }
     return res;
   }
 
@@ -358,7 +396,8 @@ export class Character {
       if (wasAlive) this.die();
       this.ragdoll!.blast(center, reach, 9 * f * strength + 2);
     } else {
-      this.animator.hit(away, 2 * f * strength, 0.6);
+      const c = this.pose.p[H.chest]!;
+      this.animator.hitAt({ point: [c[0], c[1], c[2]], dir: away, force: 2.5 * f * strength, kind: 'blast', bone: H.chest });
       this.pain = 0.3;
     }
     if (!wasAlive && !gibbed && this.ragdoll) this.ragdoll.blast(center, reach, 9 * f * strength);
@@ -393,14 +432,6 @@ export class Character {
     out[o + 14] = this.retroPos[2];
     out[o + 15] = 1;
   }
-}
-
-function heightOf(bone: number): number {
-  if (bone === H.head || bone === H.neck) return 1;
-  if (bone === H.chest || bone >= H.clavicleL && bone <= H.handR) return 0.75;
-  if (bone === H.spine) return 0.55;
-  if (bone === H.pelvis) return 0.4;
-  return 0.15;
 }
 
 function nearTail(p: VoxelPart, tail: Readonly<V3>, s: number): boolean {
