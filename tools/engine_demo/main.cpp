@@ -147,8 +147,20 @@ int main(int argc, char** argv) {
   }
   par.debug_view = debug_view;
   Engine eng;
-  if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC") || std::getenv("SVX_MIN_BODY")) {
+  if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC") || std::getenv("SVX_MIN_BODY") || std::getenv("SVX_RIGID")) {
     EngineConfig c = eng.config();
+    if (const char* e = std::getenv("SVX_RIGID")) {
+      // (experiments) iterations,position_iterations,manifold,manifold_per_m,substeps
+      int it, pit, man, sub;
+      double mpm;
+      if (std::sscanf(e, "%d,%d,%d,%lf,%d", &it, &pit, &man, &mpm, &sub) == 5) {
+        c.rigid.iterations = it;
+        c.rigid.position_iterations = pit;
+        c.rigid.manifold = man;
+        c.rigid.manifold_per_m = mpm;
+        c.rigid.substeps = sub;
+      }
+    }
     if (const char* e = std::getenv("SVX_MIN_BODY")) c.min_body_voxels = std::atoi(e);
     if (work > 0) c.stress_work = work;
     if (std::getenv("SVX_NO_BODY_FRACTURE")) c.min_fracture_frags = 1 << 30;

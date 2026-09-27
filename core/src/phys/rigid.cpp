@@ -227,7 +227,7 @@ void RigidWorld::reduce_manifold(std::vector<Contact>& cs, f64 h) const {
   if (cs.empty()) return;
   // (large bodies rest on many points: their loads spread as on a real bearing surface)
   const f64 rad = bodies[size_t(cs.front().a)]->radius;
-  const size_t cap = static_cast<size_t>(std::max(4, par.manifold + static_cast<int>(8.0 * rad)));
+  const size_t cap = static_cast<size_t>(std::max(4, par.manifold + static_cast<int>(par.manifold_per_m * rad)));
   if (cs.size() <= cap) return;
   std::sort(cs.begin(), cs.end(), [](const Contact& x, const Contact& y) {
     return x.depth > y.depth || (x.depth == y.depth && x.key < y.key);
@@ -566,7 +566,12 @@ void RigidWorld::solve(f64 dt) {
     }
     for (i32 gi : colour[kColors]) group(gi);
   };
-  for (int it = 0; it < par.iterations; ++it)
+  // (many contacts: a collapse at its peak; fewer iterations each, a function of the contact count
+  // alone so every thread count and platform does the same)
+  const size_t nc = contacts_.size();
+  const int vel_iters = nc > par.busy_contacts ? par.busy_iterations : par.iterations;
+  const int pos_iters = nc > par.busy_contacts ? std::min(2, par.position_iterations) : par.position_iterations;
+  for (int it = 0; it < vel_iters; ++it)
     sweep([&](Contact& c) {
       V3 dv = vel(c.a, c.ra) - vel(c.b, c.rb);
       const f64 ln = std::max(0.0, c.ln + c.kn * (c.bounce - dot(dv, c.n)));
@@ -611,7 +616,7 @@ void RigidWorld::solve(f64 dt) {
     if (i < 0) return V3{};
     return pv[size_t(i)] + cross(pw[size_t(i)], r);
   };
-  for (int it = 0; it < par.position_iterations; ++it)
+  for (int it = 0; it < pos_iters; ++it)
     sweep([&](Contact& c) {
       if (c.bias <= 0.0) return;
       const f64 vn = dot(pvel(c.a, c.ra) - pvel(c.b, c.rb), c.n);

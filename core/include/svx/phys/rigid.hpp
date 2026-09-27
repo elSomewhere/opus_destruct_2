@@ -120,6 +120,8 @@ struct RigidParams {
   int substeps = 2;
   int iterations = 10;
   int position_iterations = 4;
+  size_t busy_contacts = 6000;       // beyond (a collapse at its peak): busy_iterations, 2 position iterations
+  int busy_iterations = 6;
   f64 restitution = 0.1;             // for impacts faster than bounce_speed
   f64 bounce_speed = 2.0;
   f64 friction = 0.65;
@@ -132,7 +134,8 @@ struct RigidParams {
   f64 sleep_speed = 0.15;            // m/s (linear + radius x angular)
   int sleep_substeps = 30;
   int max_points = 1024;             // collision samples per body
-  int manifold = 16;                 // contacts kept per body pair
+  int manifold = 12;                 // contacts kept per body pair ...
+  f64 manifold_per_m = 8.0;          // ... plus this per m of the body's radius (a bearing surface)
   f64 kill_depth = 30.0;             // m below the world: removed
 };
 

@@ -78,6 +78,7 @@ struct EngineConfig {
   f64 small_impact_speed = 4.0;    // pieces lighter than small_piece_mass need up to this
   f64 small_piece_mass = 1500.0;   // kg
   i32 min_fracture_frags = 8;      // smaller pieces never break further (the smallest rubble)
+  i32 big_piece_voxels = 20000;     // checked with all threads (smaller pieces: concurrently)
   i32 impact_rounds = 12;          // break rounds of an impact (it stops once the piece comes apart)
   f64 impact_chip_fraction = 0.04; // parts lighter than this x the piece are crushed chips (they pass the load on)
   f64 impact_round_fraction = 0.15;// an impact round breaks at least this fraction of the overloaded bonds (worst first)

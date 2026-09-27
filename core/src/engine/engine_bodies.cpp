@@ -1,6 +1,7 @@
 // structvox v2 — rigid pieces: creation from the world, stress under contact and inertia,
 // fracture and splitting, carving, blasts, announcement to the front end (docs/V2_DESIGN.md §4).
 #include <algorithm>
+#include <chrono>
 #include <climits>
 #include <cstdio>
 #include <cstdlib>
@@ -822,14 +823,18 @@ bool Engine::fracture_hook(f64 dt) {
   // (slowed by the crushing zone) needs to cross the piece. Contact impulses load a piece's
   // stress spread over that time: large pieces crush progressively from where they hit instead
   // of feeling a uniform deceleration of tens of g.
+  // (a resting contact, closing no faster than gravity makes it within a substep or two, carries
+  // a steady force, J / dt: a piece's weight, and what rests on it, in full)
   std::vector<f64> kf(nb);
   for (size_t i = 0; i < nb; ++i) {
     const Body& b = *rigid_.bodies[i];
     const f64 tau = std::max(dt, 2.0 * b.radius / std::max(1.0, cfg_.impact_wave_speed));
     kf[i] = par_.impact / tau;
   }
+  const f64 v_rest = 2.0 * cfg_.rigid.gravity * dt + 0.05;
   for (const Contact& c : cs) {
     const V3 J = c.impulse();
+    const bool resting = c.approach <= v_rest;
     approach[size_t(c.a)] = std::max(approach[size_t(c.a)], c.approach);
     if (c.b >= 0) approach[size_t(c.b)] = std::max(approach[size_t(c.b)], c.approach);
     // the kinetic energy the contact takes out of the collision (inelastic: 1/2 J v)
@@ -842,16 +847,18 @@ bool Engine::fracture_hook(f64 dt) {
     }
     if (norm2(J) <= 0.0) continue;
     Body& A = *rigid_.bodies[size_t(c.a)];
-    const V3 Fa = J * kf[size_t(c.a)];
+    const V3 Fa = J * (resting ? 1.0 / dt : kf[size_t(c.a)]);
     per[size_t(c.a)].push_back({A.shape.frag[size_t(c.vox_a)] - 1, Fa, c.p});
     fsum[size_t(c.a)] += norm(Fa);
     if (c.b >= 0) {
       Body& B = *rigid_.bodies[size_t(c.b)];
-      const V3 Fb = J * -kf[size_t(c.b)];
+      const V3 Fb = J * -(resting ? 1.0 / dt : kf[size_t(c.b)]);
       per[size_t(c.b)].push_back({B.shape.frag[size_t(c.vox_b)] - 1, Fb, c.p});
       fsum[size_t(c.b)] += norm(Fb);
     }
   }
+  using FClock = std::chrono::steady_clock;
+  const auto f0 = FClock::now();
   // which pieces are checked (in body order)
   struct Check {
     size_t i;
@@ -911,14 +918,20 @@ bool Engine::fracture_hook(f64 dt) {
     }
     body_stress_run(b, per[c.i], true, c.budget, c.out);
   };
-  if (checks.size() == 1) {
-    run(checks[0]);
-  } else {
-    parallel_for(static_cast<i64>(checks.size()), 1, [&](i64 k0, i64 k1) {
-      SerialScope serial;
-      for (i64 k = k0; k < k1; ++k) run(checks[size_t(k)]);
-    });
+  const auto f1 = FClock::now();
+  // (large pieces one after the other, each with all the threads for its own solve; the small ones
+  // concurrently, each on one thread)
+  std::vector<size_t> small;
+  for (size_t k = 0; k < checks.size(); ++k) {
+    const Body& b = *rigid_.bodies[checks[k].i];
+    if (checks.size() == 1 || b.shape.count > cfg_.big_piece_voxels) run(checks[k]);
+    else small.push_back(k);
   }
+  parallel_for(static_cast<i64>(small.size()), 1, [&](i64 k0, i64 k1) {
+    SerialScope serial;
+    for (i64 k = k0; k < k1; ++k) run(checks[small[size_t(k)]]);
+  });
+  const auto f2 = FClock::now();
   // their outcomes, in body order
   bool changed = false;
   for (Check& c : checks) {
@@ -939,7 +952,26 @@ bool Engine::fracture_hook(f64 dt) {
     }
     if (split_body(b, true, reshaped)) changed = true;
   }
+  const auto f3 = FClock::now();
   flush_body_changes();
+  static const bool fprof = std::getenv("SVX_PROFILE_FRACTURE") != nullptr;
+  if (fprof) {
+    auto ms = [](FClock::time_point a, FClock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
+    static f64 acc[4] = {0, 0, 0, 0};
+    static i64 calls = 0, nchecks = 0, big = 0;
+    acc[0] += ms(f0, f1);
+    acc[1] += ms(f1, f2);
+    acc[2] += ms(f2, f3);
+    acc[3] += ms(f3, FClock::now());
+    nchecks += static_cast<i64>(checks.size());
+    for (const Check& c : checks) big += rigid_.bodies.size() > c.i && rigid_.bodies[c.i]->shape.count > cfg_.big_piece_voxels ? 1 : 0;
+    if (++calls % 120 == 0) {
+      std::printf("  [fracture] per substep: triggers %.2f checks %.2f splits %.2f flush %.2f ms (%.1f checks, %.2f big)\n", acc[0] / 120,
+                  acc[1] / 120, acc[2] / 120, acc[3] / 120, nchecks / 120.0, big / 120.0);
+      acc[0] = acc[1] = acc[2] = acc[3] = 0;
+      nchecks = big = 0;
+    }
+  }
   return changed;
 }
 
