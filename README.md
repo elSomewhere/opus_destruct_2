@@ -1,25 +1,24 @@
-# structvox
+# structvox v2
 
 A C++20 structural-destruction engine for large streaming voxel worlds. It runs in the browser
-as WebAssembly (a pthreads worker with a TypeScript/WebGPU front end) and natively for tools
-and tests.
+as WebAssembly (a pthreads worker with a TypeScript/WebGPU front end) and natively for tools and
+tests.
 
-The goal is a Doom-like FPS in which a voxelized Doom level is fully destructible and has real
-structural integrity:
+Structures stand under their own weight, crack and collapse when they lose support, and what
+comes loose keeps breaking: a tower that loses its ground columns fails at its base, comes down
+storey by storey, breaks up in the air and where it lands, and ends as a pile of slab plates,
+wall panels and blocks that settles and sleeps.
 
-- Overloaded parts crack, sag and collapse.
-- Cracked parts rest on their cracks, or separate and fall as rigid debris.
-- Heavy debris loads what it lands on.
-
-Scaling comes from event-driven, telescoping multi-resolution **bubbles**, not from simulating
-every voxel. A background full-fine verification makes sure no far failure is missed.
-
-- **Plan:** [`docs/PLAN.md`](docs/PLAN.md), approved 2026-09-25. Its revision log (§G)
-  records the implementation decisions.
-- **Status by phase, with gates and evidence:** [`docs/STATUS.md`](docs/STATUS.md).
+- **Method:** [`docs/V2_DESIGN.md`](docs/V2_DESIGN.md). In short:
+  - Voxels form pre-scored rubble **fragments**, joined by **bonds**.
+  - Every standing structure and every falling piece gets its stress from the same elastic
+    equilibrium solve on its fragment graph (multigrid PCG).
+  - Bonds fail by fibre-stress checks: tension, flexure, crushing, Mohr–Coulomb shear.
+  - Falling pieces are rigid bodies that keep their bonds and break on impact, progressively,
+    part by part.
 - **Engine ↔ front-end contract:** [`docs/API.md`](docs/API.md).
-- **Physics oracle:** the JavaScript prototype `../voxel_threed_discrete`. Golden fixtures are
-  exported from it by [`tools/fixture-export`](tools/fixture-export).
+- **v1** (the bubble/lattice engine this version replaces): [`docs/v1/`](docs/v1) (plan, status,
+  phase reports).
 
 ## Build and test
 
@@ -28,18 +27,10 @@ The WASM builds need Emscripten: run `source ~/emsdk/emsdk_env.sh` so that `EMSD
 ```bash
 # native: library, tools, tests
 cmake --preset native-release && cmake --build --preset native-release -j
-./build/native-release/tests/svx_tests            # doctest suites
-SVX_T_BIG=1 ./build/native-release/tests/svx_tests -tc='collapse: a tower*'   # 10-storey collapse physics check (~5 min)
-(cd build/native-release && ctest)                # + golden parity / outcome against the oracle
+./build/native-release/tests/svx_tests            # doctest suites (stress, fragments, rigid, collapse, engine, doom, ...)
 
 # browser module (pthreads; written to web/src/wasm/)
 cmake --preset wasm-release-threads && cmake --build --preset wasm-release-threads -j --target svx_web
-# WASM tests under Node (single-threaded and threaded builds)
-cmake --preset wasm-release && cmake --build --preset wasm-release -j --target svx_tests
-node build/wasm-release/tests/svx_tests.js
-
-# x86-64 build (macOS: runs under Rosetta) for cross-architecture determinism checks
-cmake --preset native-x86_64 && cmake --build --preset native-x86_64 -j
 ```
 
 `scripts/fetch_freedoom.sh` downloads Freedoom (BSD-3-Clause) into `data/freedoom/`.
@@ -49,65 +40,50 @@ cmake --preset native-x86_64 && cmake --build --preset native-x86_64 -j
 ```bash
 cd web && npm install
 npm run dev -- --port 5190           # COOP/COEP headers are set (SharedArrayBuffer, pthreads)
-open "http://localhost:5190/"          # the WASM engine by default (?engine=mock without it)
+open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engine=mock without it)
 ```
 
-- **Worlds:**
-  - `?world=rooms|city|tower&seed=N`. `city` is a streamed 1 km² city with a far render tier.
-  - A Freedoom WAD via the panel. The map's doors, lifts, floors, platforms, crushers and stairs work.
-- **Controls:**
-  - WASD move, mouse look, Space jump, Shift run.
-  - 1/2/3 or the wheel select pistol, shotgun, rocket launcher. Click fires.
-  - E uses (doors, lift switches), V toggles noclip, R respawns.
-  - G cycles debug views (utilization, bubble levels). H toggles the HUD with its job and
-    budget timeline (the worker's last 4 s of ticks by part, against the 8 ms budget). Esc
-    opens the menu.
-- **Query options:**
-  - `?persist=1` saves world edits to OPFS.
-  - `?gpudisp=0` re-meshes bubble chunks on the CPU instead of using GPU displacement fields.
-  - `?engine=mock` runs the TypeScript mock engine instead of the WASM one.
-- **Checks:**
+- **Worlds:** `?world=rooms|city|tower&seed=N` (`city` is a streamed 1 km² city), or a Freedoom
+  WAD via the panel (doors, lifts, floors, platforms, crushers and stairs work).
+- **Controls:** WASD move, mouse look, Space jump, Shift run; 1/2/3 or the wheel select pistol,
+  shotgun, rocket launcher, click fires; E uses, V toggles noclip, R respawns; G cycles debug
+  views (bond utilization, fragments); H toggles the HUD and its tick timeline; Esc opens the
+  menu (fragility, impact and dynamic-factor sliders).
+- **Checks** (dev server running):
   - `npm run typecheck && npm test` for the front end.
-  - `node scripts/smoke-wasm.mjs http://localhost:5190/` for the browser smoke test.
-  - The production build (`npm run build`, `vite preview`) passes the same smoke test.
-  - `node scripts/record.mjs --url URL --ready EXPR --action FILE.js --seconds S --out OUT.mp4`
-    records a page to video (headless Chrome, DevTools screencast, ffmpeg); see
-    `docs/phase5/recording/` for the feel comparison's action scripts.
+  - `node scripts/smoke-wasm.mjs http://localhost:5190/`: the browser smoke test.
+  - `node scripts/tower-wasm.mjs http://localhost:5190/ OUT 25`: blasts the tower's ground
+    columns in the browser and records screenshots and engine stats.
 
 ## Tools (`build/native-release/tools/`)
 
 | Tool | Purpose |
 |---|---|
-| `svx_engine_demo --world rooms\|city\|tower \| --wad F --map M [--rockets N] [--bullets N] [--threads T] [--gpu-displacement] [--no-verify] [--realtime]` | Headless engine run. Reports event and tick costs (percentiles; `--realtime` paces ticks at 60 Hz so background work gets real time), bubble step profile, render update costs and the session hash. |
-| `svx_step_bench [--rockets N] [--R0 C]` | Bubble step cost on the rooms world in thread CPU time (robust on a loaded machine): event tick, steady steps, PCG per step. `SVX_BENCH_TICKS=1` prints every tick, `SVX_MG_INFO=1` the multigrid levels and kernel throughput. |
-| `svx_replay record\|play --world W --seconds S [--out F \| --log F] [--threads T]` | Records and replays sessions from command logs. Checkpoint hashes every 10 s are the determinism gate (Phase 3) and the basis for deterministic lockstep. |
-| `tools/replay/gate.sh OUTDIR` | The determinism gate: records a 10-minute rooms session on ARM (1 thread) and replays it on ARM 2/4/8 threads, x86-64 (Rosetta) 1/4 and WASM, diffing all 60 checkpoint hashes. |
-| `svx_stream_bench [--speed M] [--seconds S] [--threads T]` | Flies through the streamed 1 km² city and reports the per-tick stream work on the simulation thread and the meshing cost (Phase 6 hitch gate). `SVX_STREAM_TRACE=1` splits slow ticks. |
-| `svx_map_check [--threads T] [--movers] WAD...` | Imports, bakes and design-checks every map, then runs it idle (`--movers`: runs every move of every sector mover). Phase 5 gate. |
-| `svx_fixture_compare [--outcome] [--feel \| --feel-grid] FIXTURES...` | Golden parity and outcomes against the oracle, and the feel spec against the XPBD captures. |
-| `svx_sim_library [--pre]` | Static + DIF vs dynamics classification, and S invariance. Phase 1 gates. `--pre` compares the pre-event statics (secant, Anderson, load ramp). |
-| `svx_composite_study`, `svx_bubble_study` | Composite and bubble accuracy and cost against full-fine truth (column removal; `SVX_NOMINATE_TRACE=1` shows nominations and marginal re-solves). Phase 2. |
-| `svx_content_study`, `svx_wall_slenderness`, `svx_wad_textures`, `svx_bench_kernel` | Phase 0: Freedoom content and regime study, buckling margins, WAD graphics, kernel throughput. |
+| `svx_engine_demo --world tower\|rooms\|slab\|chimney\|bridge\|city [--scenario S] [--seconds T] [--threads N] [--frames DIR --fps F --res WxH --cam x,y,z --look x,y,z]` | Headless scenario run with a CPU renderer for frames. Tower scenarios: `pillars` (both west rows of ground columns), `side`, `core`, `all`, `rockets`. Reports pieces, breaks, per-phase rigid costs, awake speeds, piece sizes and the session hash. |
+| `svx_replay record\|play --world W --seconds S [--out F \| --log F] [--threads T]` | Records and replays sessions from command logs; checkpoint hashes are the determinism check. |
+| `svx_map_check [--threads T] [--movers] WAD...` | Imports, bakes and design-checks every map, then runs it idle. |
+| `svx_stream_bench`, `svx_wad_textures` | Streaming cost of the city; WAD graphics. |
+
+Debug environment variables of the engine: `SVX_DEBUG_BODY` (piece checks), `SVX_PROFILE`,
+`SVX_PROFILE_TICK`, `SVX_PROFILE_COLLIDE`.
 
 ## Layout
 
 ```
 core/include/svx, core/src
-  base/    types, deterministic parallel pool, bundled deterministic math (dmath), work counting
-  mech/    materials, bonds, reference and game laws
-  solve/   lattice, multigrid (SIMD BSR)
-  sim/     corotational kinematics, statics (closure), dynamics, blasts
-  topo/    connectivity
-  bubble/  composite partitions, event bubbles
-  world/   voxel grid (chunks, overlays, deltas), regions, procgen, streaming sources,
-           coarse connectivity of non-resident chunks
+  base/    types, vectors, deterministic parallel pool, deterministic math
+  mech/    material table (strengths, fracture energies, fragment sizes)
+  frag/    fragments (pre-scored rubble pieces per chunk)
+  solve/   smoothed-aggregation multigrid, PCG
+  stress/  fragment-graph stress problems, bond failure checks
+  phys/    rigid voxel bodies: contacts, solver, sleep
+  world/   voxel grid (chunks, broken faces), procedural worlds, streaming sources
   mesh/    chunk mesher
-  engine/  engine core, debris, sector movers, command logs (replay)
+  engine/  structures, pieces and their fracture, events, persistence, movers, replay
   doom/    WAD reader, voxelizer, textures, Doom world, specials and movers
   api/     flat C ABI for the WASM worker
-tools/     command-line tools (native and WASM/Node)
-tests/     doctest suites; fixtures/ from the prototype oracle
+tools/     command-line tools
+tests/     doctest suites
 web/       TypeScript + Vite front end: worker host, WebGPU renderer, FPS sandbox
-docs/      plan, API, status, phase reports and evidence
-research/  Python methodology spike, WASM kernel benchmark
+docs/      design, API, v1 history
 ```

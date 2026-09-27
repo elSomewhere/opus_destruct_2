@@ -1,4 +1,4 @@
-# structvox engine ↔ front-end contract (v1.1)
+# structvox engine ↔ front-end contract (v2)
 
 The C++ core runs in a **Web Worker**, compiled to WASM (SIMD128). The main thread owns
 input, UI and WebGPU rendering. The two sides talk through `postMessage` with transferable
@@ -19,7 +19,7 @@ Conventions:
 
 | `type` | fields | notes |
 |---|---|---|
-| `init` | `config: {voxelSize, threads, memoryMB, params, persist?, gpuDisplacement?}` | First message. `persist` (**ext**): keep gameplay changes per world in OPFS (below). `gpuDisplacement` (**ext**, default on): move chunks inside physics bubbles with displacement fields (below). |
+| `init` | `config: {voxelSize, threads, memoryMB, params, persist?, gpuDisplacement?}` | First message. `persist` (**ext**): keep gameplay changes per world in OPFS (below). `gpuDisplacement` (**ext**): displacement fields (below; v2 engines send none). |
 | `loadProcedural` | `seed, kind: 'city'\|'rooms'\|'tower'` | Test worlds. `city` is the streamed 1 km² city. |
 | `loadWad` | `buffer: ArrayBuffer (transfer), map: string, options: {mode:'rock'\|'air', shellVoxels, bake:boolean}` | Doom level. |
 | `viewer` | `pos:[x,y,z], dir:[x,y,z]` | Streaming, bake and LOD focus. Sent every frame or two, including while the player is not in control. |
@@ -27,18 +27,17 @@ Conventions:
 | `carve` | `pos:[x,y,z], radius` | Bullet impact. Removes the voxels inside the sphere. |
 | `raycast` | `id, origin, dir (unit), maxDist` | Hitscan and picking. Never changes state. |
 | `collide` | `id, min:[3], max:[3], move:[3]` | Player AABB sweep. The worker returns the move clipped against solid voxels (axis by axis in x, y, z order). `onGround` is set when a downward move was stopped. Never changes state. |
-| `setParams` | `params: {compliance, amplification, fragility, damping, debugView, paused}` | Tunables (plan §B11). Always the complete set. |
+| `setParams` | `params: {fragility, impact, dif, debugView, paused}` | Tunables. Always the complete set. |
 | `use` (**ext**) | `pos:[3], dir:[3]` | The player's use key (E). Operates a door in reach (2 m), or the lifts tagged by a switch line. Recorded in replays. |
 
 `params` fields:
 
-- `compliance`: physical compliance S_p (plan §B3).
-- `amplification`: render amplification A of event-induced displacement.
-- `fragility`: capacity multiplier F.
-- `damping`: fraction of critical damping, 0..1. The WASM engine maps it to Rayleigh
-  α = 2ζ·2π·5 Hz.
-- `debugView`: 0 = none, 1 = utilization / damage, 2 = bubble level.
-- `paused`: stops the structural simulation. Queries still work.
+- `fragility`: divides every bond strength (above 1: weaker bonds, more collapse).
+- `impact`: scales the contact loads of pieces on structures and on each other (how hard
+  landings hit).
+- `dif`: dynamic increase factor of sudden load changes on structures (1 = quasi-static).
+- `debugView`: 0 = none, 1 = bond utilization, 2 = fragments.
+- `paused`: stops the simulation. Queries still work.
 
 ## Worker → main
 
@@ -53,7 +52,7 @@ Conventions:
 | `occupancy` (**ext**) | `voxelSize, chunks: [{chunk:[3], state: 0\|1\|2, bits?: ArrayBuffer}]` | Solid occupancy of every chunk whose voxels changed, sent after the tick's meshes. See [Client-side collision](#client-side-collision). |
 | `raycastResult` | `id, hit: null \| {pos:[3], normal:[3], distance, material}` | |
 | `collideResult` | `id, move:[3], onGround:boolean` | |
-| `stats` | `stats: {tickMs, structuralMs, activeBubbles, activeNodes, voxels, chunks, memoryMB, events, ...}` | About 4 Hz. `events` counts events since the previous stats message. Extra numeric or string keys are engine-specific and shown generically by the HUD. |
+| `stats` | `stats: {tickMs, structuralMs, rigidMs, voxels, chunks, memoryMB, events, pieces, awakePieces, contacts, bondsBroken, ...}` | About 4 Hz. `events` counts events since the previous stats message. The full set is `EngineStats` in `protocol.ts`; extra keys are shown generically by the HUD. |
 | `error` (**ext**) | `message, fatal:boolean, command?` | `fatal`: the engine cannot continue. `command`: the command type that failed. |
 | `progress` (**ext**) | `stage, done, total` | Load progress for the loading screen. |
 
@@ -77,18 +76,18 @@ Texture ids:
 
 Debug byte:
 
-- View 1: utilization 0..1 as 0..255.
-- View 2: bubble level, where 0 = not in a bubble and 1 + L is level L (fine = 0).
+- View 1: bond utilization 0..1 as 0..255 (the last judged state of each structure).
+- View 2: fragments: 1..255, a hash of the fragment (neighbouring fragments differ).
 
 Indices are `uint32`, and triangles are counter-clockwise seen from outside.
 
-Displacements: chunks inside an active physics bubble are re-sent as `chunkMeshes` with
-displaced positions, already amplified by `amplification`, at most once per tick. When the
-bubble settles, the persistent rest offsets are baked into the static meshes.
+Standing structures do not deform visibly in v2 (their stiffness only distributes load): chunk
+meshes change only when voxels do.
 
 ### Displacement fields
 
-With `gpuDisplacement` (**ext**), the engine skips the per-tick re-sending of displaced meshes:
+A v1 extension, kept in the protocol and the renderer; v2 engines send no fields. With
+`gpuDisplacement` (**ext**), a v1 engine skipped the per-tick re-sending of displaced meshes:
 
 - When a bubble starts, each chunk it covers is sent once as a per-face mesh with static
   offsets only.
@@ -106,10 +105,6 @@ With `gpuDisplacement` (**ext**), the engine skips the per-tick re-sending of di
 - When the bubble settles, its chunks' final static meshes and the reduced field set arrive in
   the same message, so there is no pop.
 
-Measured on the rooms world with 3 rockets (native, M-series): mean per-tick render work while
-bubbles run drops from 15.9 ms (re-meshing 8.5 chunks per tick) to 3.5 ms, with 28 KB of field
-data per tick.
-
 ### Events
 
 - `{kind:'detached', id, voxels, centroid:[3], velocity:[3], angular:[3], mesh:{vertices, vertexCount, indices, indexCount}, rigid?}`:
@@ -120,15 +115,17 @@ data per tick.
     end draws it at the poses of `debris` messages.
   - Otherwise, the front end animates it ballistically with no collision, fades it out and
     spawns dust.
-- `{kind:'crack', pos:[3], normal:[3], strength}`: bond ruptures (decals, particles).
-- `{kind:'impact', pos:[3], energy}`: a blast, or a piece of debris landing. `energy` is in J
-  (the landing kinetic energy for debris). Used for camera shake, dust and particles.
-- `{kind:'bubble', id, center:[3], radius, level}`: debug. An active structural bubble.
+- `{kind:'crack', pos:[3], normal:[3], strength, voxels?, velocity?:[3], radius?}`: bond ruptures
+  (decals, particles). With `voxels` (**ext**): *dust*, material crushed, or broken off too small
+  to be a piece (under 16 voxels), moving at `velocity`, of size `radius`; it has left the world.
+- `{kind:'impact', pos:[3], energy}`: a blast, or a heavy landing of a piece (the energy its
+  contacts dissipated, J, at the contacts' centre). Used for camera shake, dust and particles.
+- (v1 engines also sent `{kind:'bubble', ...}` debug events; v2 engines do not.)
 
 ### Rigid debris
 
-With rigid debris, detached pieces fall, bounce, slide and come to rest on the voxel world
-instead of vanishing (plan Phase 7).
+Detached pieces are rigid bodies that fall, collide with the world and each other, break, and
+come to rest as rubble (docs/V2_DESIGN.md §4–5).
 
 - The engine sends `{type:'debris', poses}` after every tick while pieces exist.
 - Each pose carries:
@@ -137,18 +134,14 @@ instead of vanishing (plan Phase 7).
   - `rot`: its rotation since detachment, as a unit quaternion `[x, y, z, w]`.
   - `opacity`: 1, falling to 0 while the piece fades out.
 - A mesh vertex `p` is drawn at `pos + R(rot)·(p − centroid)`.
-- A rigid piece missing from a `debris` list has been removed.
+- A rigid piece missing from a `debris` list has been removed. A piece that breaks is removed,
+  and its parts arrive as new `detached` events (meshes in world coordinates at that moment).
 - The web front end interpolates between the last two poses, one tick behind, so motion is
   smooth at any display rate.
 
-Pieces that land on free structure faster than 2.5 m/s load it:
-
-- The landing impulse is triaged statically as J / 0.05 s.
-- If the landing ruptures bonds, it becomes a dynamic bubble. A landing inside a running
-  bubble goes straight into that bubble.
-- This is plan §B7's virtual impact, now at the real landing point, so pancake-style
-  progressive collapse emerges.
-- Bedrock and ground absorb landings.
+Pieces load what they touch: contact impulses on a standing structure become impact load cases
+(landings) or dead loads (resting rubble) of the fragments they touch, so rubble piling on a
+floor can bring it down. Bedrock and ground absorb landings.
 
 ### Sector movers (**ext**)
 
@@ -180,7 +173,7 @@ ceilings, crushers and stairs.
 
 ### Client-side collision
 
-A structural bubble can hold the worker for tens of milliseconds per tick. Player movement
+A large collapse can hold the worker for tens of milliseconds per tick. Player movement
 must not wait for it, so the WASM worker streams **occupancy**:
 
 - For every chunk it re-meshes or empties, it sends one bit per voxel.

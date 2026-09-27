@@ -115,7 +115,7 @@ export const DOOM_TEXELS_PER_METRE = 32;
 export interface EngineParams {
   /** Divides every bond strength: above 1 weaker bonds, more collapse. */
   fragility: number;
-  /** Scale on contact forces of pieces (force = impact x impulse / dt): how hard landings hit. */
+  /** Scale on the contact loads of pieces (impulse over the impact duration): how hard landings hit. */
   impact: number;
   /** Dynamic increase factor: overshoot of sudden load changes (1 = quasi-static). */
   dif: number;
@@ -391,6 +391,13 @@ export interface CrackEvent {
   pos: Vec3;
   normal: Vec3;
   strength: number;
+  /**
+   * (ext) Dust: material crushed or broken off too small to be a piece. Its voxel count, velocity
+   * (m/s) and size (radius, m). Absent for a plain crack.
+   */
+  voxels?: number;
+  velocity?: Vec3;
+  radius?: number;
 }
 
 /** Blast or virtual debris impact (camera shake and particles). Energy in joules. */

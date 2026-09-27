@@ -366,7 +366,12 @@ function flushEvents(): void {
         },
       });
     } else if (kind === 1) {
-      list.push({ kind: 'crack', pos, normal: [f64(11), f64(12), f64(13)], strength: f64(15) });
+      const voxels = f64(16);
+      list.push(
+        voxels > 0
+          ? { kind: 'crack', pos, normal: [f64(11), f64(12), f64(13)], strength: f64(15), voxels, velocity: [f64(5), f64(6), f64(7)], radius: f64(14) }
+          : { kind: 'crack', pos, normal: [f64(11), f64(12), f64(13)], strength: f64(15) },
+      );
     } else if (kind === 2) {
       list.push({ kind: 'impact', pos, energy: f64(15) });
     }

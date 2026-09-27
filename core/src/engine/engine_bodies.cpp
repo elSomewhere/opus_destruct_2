@@ -856,6 +856,25 @@ bool Engine::fracture_hook(f64 dt) {
     const f64 wr = norm(b.w);
     const bool spin = wr * wr * b.radius > 2.0 * cfg_.rigid.gravity && b.stress_cooldown <= 0;
     if (!impact && !steady && !spin) continue;
+    if (impact && dissipated[i] > cfg_.impact_event_energy && impact_budget_ > 0) {
+      // (a heavy landing: dust and camera shake at its contacts)
+      V3 at;
+      f64 wsum = 0.0;
+      for (const PointForce& pf : per[i]) {
+        const f64 w = norm(pf.F);
+        at += pf.p * w;
+        wsum += w;
+      }
+      if (wsum > 0.0) {
+        --impact_budget_;
+        EngineEvent ev;
+        ev.kind = EngineEvent::Kind::Impact;
+        ev.pos = to_arr(at * (1.0 / wsum));
+        ev.radius = b.radius;
+        ev.strength = dissipated[i];
+        events_.push_back(std::move(ev));
+      }
+    }
     static const bool no_spread = std::getenv("SVX_NO_SPREAD") != nullptr;
     if (!no_spread) spread_contact_forces(per[i]);
     checks.push_back({i, impact, impact ? dissipated[i] : -1.0});

@@ -144,8 +144,12 @@ export class Effects {
     }
   }
 
-  /** A few chips and a puff per crack (strength = utilization, about 1..2). */
+  /** A few chips and a puff per crack (strength = utilization, about 1..2); a burst for dust. */
   crack(ev: CrackEvent): void {
+    if (ev.voxels !== undefined && ev.voxels > 0) {
+      this.dust(ev);
+      return;
+    }
     const n = ev.normal;
     const s = Math.min(1, Math.max(0, ev.strength - 0.5));
     const chips = Math.min(2 + Math.round(s * 3), this.crackBudget - 1);
@@ -157,6 +161,41 @@ export class Effects {
       this.particles.spawn({ pos: ev.pos, vel: [d[0] * v, d[1] * v, d[2] * v], life: rand(0.5, 1.2), size: rand(0.015, 0.035), color: [0.3, 0.29, 0.27, 1], gravity: 1 });
     }
     this.particles.spawn({ pos: ev.pos, vel: [n[0] * 0.3, n[1] * 0.3, n[2] * 0.3], life: 1.4, size: 0.1, grow: 0.3, color: [0.4, 0.39, 0.36, 0.35], drag: 2, gravity: -0.02 });
+  }
+
+  /** Crushed material or a shard too small to be a piece: chips flying on with it and a cloud. */
+  private dust(ev: CrackEvent): void {
+    const vox = ev.voxels ?? 1;
+    const r = Math.max(0.1, ev.radius ?? 0.2);
+    const v0 = ev.velocity ?? [0, 0, 0];
+    const chips = Math.min(3 + Math.round(vox / 3), 12, this.crackBudget - 3);
+    if (chips < 0) return;
+    this.crackBudget -= chips + 3;
+    for (let k = 0; k < chips; k++) {
+      const d = randomUnit();
+      const v = rand(0.5, 2.5);
+      this.particles.spawn({
+        pos: [ev.pos[0] + d[0] * r * 0.5, ev.pos[1] + d[1] * r * 0.5, ev.pos[2] + d[2] * r * 0.5],
+        vel: [v0[0] * 0.8 + d[0] * v, v0[1] * 0.8 + d[1] * v, v0[2] * 0.8 + d[2] * v + 0.5],
+        life: rand(0.8, 1.8),
+        size: rand(0.03, 0.07),
+        color: [0.32, 0.31, 0.29, 1],
+        gravity: 1,
+      });
+    }
+    for (let k = 0; k < 3; k++) {
+      const d = randomUnit();
+      this.particles.spawn({
+        pos: ev.pos,
+        vel: [v0[0] * 0.3 + d[0] * 0.4, v0[1] * 0.3 + d[1] * 0.4, v0[2] * 0.3 + d[2] * 0.2 + 0.2],
+        life: rand(1.5, 2.6),
+        size: r * rand(0.9, 1.4),
+        grow: 0.6,
+        color: [0.42, 0.41, 0.38, 0.4],
+        drag: 2,
+        gravity: -0.03,
+      });
+    }
   }
 
   /** Blast or landing debris: dust ring and camera shake by energy and distance. */

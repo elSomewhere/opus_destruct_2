@@ -1260,6 +1260,7 @@ void Engine::tick() {
     return;
   }
   crack_budget_ = cfg_.crack_events_per_tick;
+  impact_budget_ = cfg_.impact_events_per_tick;
   std::vector<PendingEvent> q;
   q.swap(queue_);
   const auto te = Clock::now();

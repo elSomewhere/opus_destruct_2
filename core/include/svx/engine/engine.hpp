@@ -43,7 +43,7 @@ using engine_detail_SecAcc = engine_detail::SecAcc;
 // Runtime knobs (docs/V2_DESIGN.md §6).
 struct EngineParams {
   f64 fragility = 1.0;    // divides every bond strength (> 1: more collapse)
-  f64 impact = 1.0;       // contact force = impact x impulse / dt (impact severity)
+  f64 impact = 1.0;       // scales contact loads (impulse / impact duration): impact severity
   f64 dif = 1.5;          // dynamic increase factor of sudden load changes (1 = static)
   int debug_view = 0;     // 0 none, 1 utilization (last judged state), 2 fragments
   bool paused = false;
@@ -96,6 +96,8 @@ struct EngineConfig {
   // design pass (bake): members above this self-weight utilization are strengthened
   f64 design_utilization = 0.45;
   i32 crack_events_per_tick = 24;
+  i32 impact_events_per_tick = 6;   // landings of pieces (camera shake, dust)
+  f64 impact_event_energy = 2e4;   // J dissipated by a landing to announce it
 };
 
 struct EngineEvent {
@@ -435,6 +437,7 @@ class Engine {
   std::vector<std::unique_ptr<Body>> pending_add_;
   std::vector<i64> pending_retire_;
   i32 crack_budget_ = 0;
+  i32 impact_budget_ = 0;
   i64 impact_count_tick_ = 0;
 
   RigidWorld rigid_;
