@@ -28,6 +28,8 @@ struct svx_engine {
   std::vector<ChunkMesh> far;
   std::vector<std::array<i32, 2>> far_removed;
   std::vector<float> flames, smoke;
+  std::vector<ChunkMesh> water;
+  std::vector<u64> water_removed;
   MeshOptions mesh_base() const {
     MeshOptions mo;
     if (doom) {
@@ -186,6 +188,44 @@ void svx_blast(svx_engine* e, double x, double y, double z, double radius, doubl
 
 void svx_ignite(svx_engine* e, double x, double y, double z, double radius) { e->eng.ignite(V3{x, y, z}, radius); }
 
+void svx_pour(svx_engine* e, double x, double y, double z, double radius) { e->eng.pour(V3{x, y, z}, radius); }
+
+int svx_poll_water(svx_engine* e) {
+  e->water = e->eng.take_water_meshes();
+  return static_cast<int>(e->water.size());
+}
+
+void svx_water_info(svx_engine* e, int i, double* out) {
+  if (!in_range(e->water, i)) {
+    std::fill(out, out + 8, 0.0);
+    return;
+  }
+  const ChunkMesh& m = e->water[i];
+  for (int q = 0; q < 3; ++q) {
+    out[q] = m.chunk[q];
+    out[3 + q] = e->h * (m.chunk[q] * kChunk - 0.5);
+  }
+  out[6] = static_cast<double>(m.vertices.size());
+  out[7] = static_cast<double>(m.indices.size());
+}
+
+const void* svx_water_vertices(svx_engine* e, int i) { return in_range(e->water, i) ? e->water[i].vertices.data() : nullptr; }
+const void* svx_water_indices(svx_engine* e, int i) { return in_range(e->water, i) ? e->water[i].indices.data() : nullptr; }
+
+int svx_poll_water_removed(svx_engine* e) {
+  e->water_removed = e->eng.take_water_removed();
+  return static_cast<int>(e->water_removed.size());
+}
+
+void svx_water_removed(svx_engine* e, int i, int* out3) {
+  if (!in_range(e->water_removed, i)) {
+    out3[0] = out3[1] = out3[2] = 0;
+    return;
+  }
+  const IVec3 c = unkey3(e->water_removed[i]);
+  for (int q = 0; q < 3; ++q) out3[q] = c[q];
+}
+
 void svx_extinguish(svx_engine* e, double x, double y, double z, double radius) {
   e->eng.extinguish(V3{x, y, z}, radius);
 }
@@ -335,7 +375,8 @@ int svx_poll_events(svx_engine* e) {
 }
 
 // Worker protocol (web/src/worker/wasm-worker.ts): kind 0 detached (a rigid piece and its mesh),
-// 1 crack (voxels > 0: dust or a shard; strength: utilization, dust 2, a shard 1.5), 2 impact.
+// 1 crack (voxels > 0: dust or a shard; strength: utilization, dust 2, a shard 1.5), 2 impact,
+// 4 splash (strength: kg m/s).
 void svx_event_info(svx_engine* e, int i, double* out) {
   std::fill(out, out + 21, 0.0);
   if (!in_range(e->events, i)) return;
@@ -347,6 +388,7 @@ void svx_event_info(svx_engine* e, int i, double* out) {
     case GameEvent::Kind::Crack: kind = 1; strength = std::min(2.0, v.strength); break;
     case GameEvent::Kind::Impact: kind = 2; break;
     case GameEvent::Kind::Dust: kind = 1; strength = v.strength > 0.5 ? 2.0 : 1.5; break;
+    case GameEvent::Kind::Splash: kind = 4; break;
   }
   out[0] = kind;
   out[1] = static_cast<double>(v.id);
@@ -471,6 +513,9 @@ void svx_stats(svx_engine* e, double* out) {
       gs.env_ms,                                       // 45
       static_cast<double>(gs.smoke_cells),             // 46
       static_cast<double>(gs.smoke_blocks),            // 47
+      static_cast<double>(gs.water_active),            // 48
+      static_cast<double>(gs.water_loads),             // 49
+      static_cast<double>(gs.floating),                // 50
   };
   for (size_t k = 0; k < sizeof(v) / sizeof(v[0]); ++k) out[k] = v[k];
 }

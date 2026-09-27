@@ -1,5 +1,5 @@
 /**
- * WebGPU renderer: sky, chunk meshes, detached islands and particles in one 4x MSAA pass
+ * WebGPU renderer: sky, chunk meshes, detached islands, water and particles in one 4x MSAA pass
  * with a reversed-Z depth buffer (depth32float, clear 0, compare 'greater').
  *
  * Bind groups: group 0 = frame uniforms + texture atlas + displacement fields (shared by all
@@ -19,6 +19,7 @@ import { ParticleSystem } from './particles.ts';
 import frameWgsl from './shaders/frame.wgsl?raw';
 import particlesWgsl from './shaders/particles.wgsl?raw';
 import skyWgsl from './shaders/sky.wgsl?raw';
+import waterWgsl from './shaders/water.wgsl?raw';
 import worldWgsl from './shaders/world.wgsl?raw';
 
 const SAMPLES = 4;
@@ -89,6 +90,8 @@ const FOG_DENSITY = 0.0065;
 export class Renderer {
   readonly gpu: GpuContext;
   readonly chunks: ChunkStore;
+  /** Water surface meshes (the engine's water), drawn translucent after the opaque world. */
+  readonly water: ChunkStore;
   readonly islands: IslandRenderer;
   readonly particles: ParticleSystem;
   readonly fields: FieldStore;
@@ -110,6 +113,7 @@ export class Renderer {
   private readonly skyPipeline: GPURenderPipeline;
   private readonly worldPipeline: GPURenderPipeline;
   private readonly particlePipeline: GPURenderPipeline;
+  private readonly waterPipeline: GPURenderPipeline;
   private colorTarget: GPUTexture | null = null;
   private depthTarget: GPUTexture | null = null;
   private readonly view = mat4();
@@ -254,8 +258,34 @@ export class Renderer {
       multisample,
     });
 
-    const particles = module('particles', particlesWgsl);
     const premultiplied: GPUBlendComponent = { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' };
+    const waterModule = module('water', waterWgsl);
+    this.waterPipeline = device.createRenderPipeline({
+      label: 'water',
+      layout: frameOnly,
+      vertex: {
+        module: waterModule,
+        entryPoint: 'vs',
+        buffers: [
+          {
+            arrayStride: VERTEX_STRIDE,
+            attributes: [
+              { shaderLocation: 0, offset: 0, format: 'float32x3' },
+              { shaderLocation: 1, offset: 12, format: 'snorm8x4' },
+              { shaderLocation: 2, offset: 16, format: 'float32x2' },
+              { shaderLocation: 3, offset: 24, format: 'uint32' },
+            ],
+          },
+        ],
+      },
+      fragment: { module: waterModule, entryPoint: 'fs', targets: [{ format, blend: { color: premultiplied, alpha: premultiplied } }] },
+      // (both sides: seen from under water too)
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'greater' },
+      multisample,
+    });
+
+    const particles = module('particles', particlesWgsl);
     this.particlePipeline = device.createRenderPipeline({
       label: 'particles',
       layout: frameOnly,
@@ -280,6 +310,7 @@ export class Renderer {
     });
 
     this.chunks = new ChunkStore(device);
+    this.water = new ChunkStore(device);
     this.islands = new IslandRenderer(device, MAX_ISLANDS);
     this.particles = new ParticleSystem(device);
   }
@@ -303,6 +334,7 @@ export class Renderer {
   /** Drops all world geometry (before loading another world). */
   clearWorld(): void {
     this.chunks.clear();
+    this.water.clear();
     this.islands.clear();
     this.particles.clear();
     this.fields.clear();
@@ -433,7 +465,11 @@ export class Renderer {
     const fields = this.fields;
     const drawn = this.chunks.draw(pass, this.planes, cam.eye, MAX_VIEW_DISTANCE, fields.count > 0 ? (mn, mx) => fields.inflation(mn, mx) : undefined);
     const pieces = this.islands.draw(pass, this.objectBindGroup, this.objectStride, this.planes, cam.eye, MAX_VIEW_DISTANCE);
-    const triangles = drawn.triangles + pieces.triangles;
+    let triangles = drawn.triangles + pieces.triangles;
+    if (this.water.count > 0) {
+      pass.setPipeline(this.waterPipeline);
+      triangles += this.water.draw(pass, this.planes, cam.eye, MAX_VIEW_DISTANCE).triangles;
+    }
 
     if (particleCount > 0) {
       pass.setPipeline(this.particlePipeline);
@@ -450,7 +486,7 @@ export class Renderer {
       islands: this.islands.count,
       islandsDrawn: pieces.drawn,
       particles: particleCount,
-      gpuMB: (this.chunks.bytes + this.atlas.bytes) / (1024 * 1024),
+      gpuMB: (this.chunks.bytes + this.water.bytes + this.atlas.bytes) / (1024 * 1024),
       width,
       height,
     };

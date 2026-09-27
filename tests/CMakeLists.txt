@@ -17,7 +17,8 @@ if(SVX_BUILD_ENV)
   add_executable(svx_env_tests
     test_main.cpp
     env/test_fire.cpp
-    env/test_smoke.cpp)
+    env/test_smoke.cpp
+    env/test_water.cpp)
   target_include_directories(svx_env_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
   target_link_libraries(svx_env_tests PRIVATE svx_env)
   svx_wasm_exe_options(svx_env_tests)

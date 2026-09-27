@@ -217,6 +217,13 @@ export interface IgniteCommand {
   radius: number;
 }
 
+/** (front-end extension) Fills the air in the sphere with water (engines without water ignore it). */
+export interface PourCommand {
+  type: 'pour';
+  pos: Vec3;
+  radius: number;
+}
+
 /** (front-end extension) Puts out and cools the sphere (a fire extinguisher). */
 export interface ExtinguishCommand {
   type: 'extinguish';
@@ -267,7 +274,8 @@ export type EngineCommand =
   | SetParamsCommand
   | UseCommand
   | IgniteCommand
-  | ExtinguishCommand;
+  | ExtinguishCommand
+  | PourCommand;
 
 export type EngineCommandType = EngineCommand['type'];
 
@@ -431,7 +439,14 @@ export interface ImpactEvent {
   energy: number;
 }
 
-export type EngineEvent = DetachedEvent | CrackEvent | ImpactEvent;
+/** (front-end extension) A piece hit the water hard; `strength` is its momentum into it (kg m/s). */
+export interface SplashEvent {
+  kind: 'splash';
+  pos: Vec3;
+  strength: number;
+}
+
+export type EngineEvent = DetachedEvent | CrackEvent | ImpactEvent | SplashEvent;
 
 export interface EventsMessage {
   type: 'events';
@@ -526,6 +541,10 @@ export interface EngineStats {
   /** Smoke: cells with smoke, blocks (chunks) holding them. */
   smokeCells: number;
   smokeBlocks: number;
+  /** Water: voxels moving, loads on structures, pieces in water. */
+  waterActive: number;
+  waterLoads: number;
+  floating: number;
   /** Engine-specific extras are shown generically by the HUD. */
   [extra: string]: number | string | boolean;
 }
@@ -581,6 +600,9 @@ export function emptyEngineStats(): EngineStats {
     envMs: 0,
     smokeCells: 0,
     smokeBlocks: 0,
+    waterActive: 0,
+    waterLoads: 0,
+    floating: 0,
   };
 }
 
@@ -601,6 +623,17 @@ export interface DebrisMessage {
   type: 'debris';
   /** DEBRIS_STRIDE doubles per piece; transferred. */
   poses: Float64Array<ArrayBuffer>;
+}
+
+/**
+ * (front-end extension) Water surface meshes (the engine's water: translucent, drawn after the
+ * opaque world) of chunks whose water changed, replacing earlier ones with the same key, and
+ * the keys of chunks whose water is gone.
+ */
+export interface WaterMessage {
+  type: 'water';
+  meshes: ChunkMesh[];
+  removed: string[];
 }
 
 /** Floats per flame in `EnvMessage.flames`: world position xyz, temperature (degC). */
@@ -672,7 +705,8 @@ export type WorkerMessage =
   | ProgressMessage
   | DebrisMessage
   | OccupancyMessage
-  | EnvMessage;
+  | EnvMessage
+  | WaterMessage;
 
 export type WorkerMessageType = WorkerMessage['type'];
 export type WorkerMessageOf<T extends WorkerMessageType> = Extract<WorkerMessage, { type: T }>;
@@ -696,6 +730,7 @@ const WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set<WorkerMessageType>([
   'debris',
   'occupancy',
   'env',
+  'water',
 ]);
 
 const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set<EngineCommandType>([
@@ -711,6 +746,7 @@ const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set<EngineCommandType>([
   'use',
   'ignite',
   'extinguish',
+  'pour',
 ]);
 
 function typeField(data: unknown): string | undefined {
@@ -764,6 +800,12 @@ export function workerMessageTransferables(msg: WorkerMessage): ArrayBuffer[] {
     case 'env':
       pushUnique(out, seen, msg.flames.buffer);
       pushUnique(out, seen, msg.smoke.buffer);
+      break;
+    case 'water':
+      for (const m of msg.meshes) {
+        pushUnique(out, seen, m.vertices);
+        pushUnique(out, seen, m.indices);
+      }
       break;
     case 'events':
       for (const e of msg.list) {

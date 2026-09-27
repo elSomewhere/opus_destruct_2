@@ -30,6 +30,15 @@ void ground(VoxelGrid& g, int x0, int x1, int y0, int y1, int depth) {
   box(g, x0, x1, y0, y1, -depth, 0, make_vox(MaterialId::Rock, true));
 }
 
+// Water at rest in the box (the "water" layer: svx_env's WaterSystem).
+void water(VoxelGrid& g, int x0, int x1, int y0, int y1, int z0, int z1) {
+  int L = g.layer_index("water");
+  if (L < 0) L = g.add_layer({"water", true});
+  for (int x = x0; x < x1; ++x)
+    for (int y = y0; y < y1; ++y)
+      for (int z = z0; z < z1; ++z) g.set_layer(L, {x, y, z}, 255);
+}
+
 // A column / slab frame building with perimeter walls and window openings.
 void building(VoxelGrid& g, Rng& rng, int ox, int oy, int bays_x, int bays_y, int storeys, int bay, int storey_h) {
   const Vox rc = make_vox(MaterialId::Rc, false);
@@ -58,7 +67,7 @@ void building(VoxelGrid& g, Rng& rng, int ox, int oy, int bays_x, int bays_y, in
   }
 }
 
-// The yard: one of each kind of construction, to be shot at, blown up and set on fire.
+// The yard: one of each kind of construction, to be shot at, blown up, set on fire and flooded.
 void yard(VoxelGrid& g) {
   const Vox wood = make_vox(MaterialId::Wood, false), stone = make_vox(MaterialId::Stone, false);
   const Vox glass = make_vox(MaterialId::Glass, false), steel = make_vox(MaterialId::Steel, false);
@@ -132,6 +141,24 @@ void yard(VoxelGrid& g) {
   // A reinforced concrete wall (7.5 m x 3 m, 0.375 m thick) with its bars.
   box(g, 240, 300, 40, 43, 0, 24, rc);
   reinforce(g, {240, 40, 0}, {300, 43, 24});
+  // A reservoir: masonry walls (0.25 m) holding 2 m of water, 8 m square.
+  {
+    const Vox masonry = make_vox(MaterialId::Masonry, false);
+    const int x0 = 236, x1 = 300, y0 = 150, y1 = 214;
+    box(g, x0, x1, y0, y1, 0, 20, masonry);
+    box(g, x0 + 2, x1 - 2, y0 + 2, y1 - 2, 0, 20, kAir);
+    water(g, x0 + 2, x1 - 2, y0 + 2, y1 - 2, 0, 16);
+  }
+  // A water tower: a timber tank (2 m square, 1.5 m of water) on four posts, 4 m up.
+  {
+    const int x0 = 250, x1 = 266, y0 = 92, y1 = 108, z0 = 32;
+    for (int x : {x0, x1 - 3})
+      for (int y : {y0, y1 - 3}) box(g, x, x + 3, y, y + 3, 0, z0, wood);
+    box(g, x0 - 1, x1 + 1, y0 - 1, y1 + 1, z0, z0 + 2, wood);  // platform
+    box(g, x0, x1, y0, y1, z0 + 2, z0 + 16, wood);             // tank
+    box(g, x0 + 1, x1 - 1, y0 + 1, y1 - 1, z0 + 2, z0 + 16, kAir);
+    water(g, x0 + 1, x1 - 1, y0 + 1, y1 - 1, z0 + 2, z0 + 14);
+  }
 }
 
 }  // namespace

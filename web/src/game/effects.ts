@@ -6,7 +6,7 @@
  * a piece is a new detached event, up to 24 cracks per tick), so their particles draw on
  * per-frame budgets, refilled in `update`.
  */
-import type { CrackEvent, DetachedEvent, ImpactEvent, MaterialId, RaycastHit, Vec3 } from '../engine/protocol.ts';
+import type { CrackEvent, DetachedEvent, ImpactEvent, MaterialId, RaycastHit, SplashEvent, Vec3 } from '../engine/protocol.ts';
 import { FLAME_STRIDE, Material, SMOKE_CELL_VOXELS, SMOKE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { distance, normalize } from '../render/math.ts';
 import { FIELD_CAPACITY, FLOATS_PER_INSTANCE, type ParticleSystem } from '../render/particles.ts';
@@ -381,7 +381,29 @@ export class Effects {
     }
   }
 
-  /** The flamethrower's flames or the extinguisher's mist, from the muzzle along dir. */
+  /** A piece hitting the water: a crown of droplets and a little mist. */
+  splash(ev: SplashEvent): void {
+    const s = Math.min(1, Math.cbrt(ev.strength / 2000));
+    const n = 12 + Math.round(40 * s);
+    for (let k = 0; k < n; k++) {
+      const a = rand(0, Math.PI * 2);
+      const v = rand(1, 3) * (0.5 + s);
+      this.particles.spawn({
+        pos: [ev.pos[0] + Math.cos(a) * 0.3, ev.pos[1] + Math.sin(a) * 0.3, ev.pos[2]],
+        vel: [Math.cos(a) * v * 0.5, Math.sin(a) * v * 0.5, rand(2, 5) * (0.5 + s)],
+        life: rand(0.6, 1.2),
+        size: rand(0.02, 0.05),
+        color: [0.7, 0.8, 0.85, 0.8],
+        gravity: 1,
+        drag: 0.5,
+      });
+    }
+    for (let k = 0; k < 4; k++) {
+      this.particles.spawn({ pos: ev.pos, vel: [rand(-0.5, 0.5), rand(-0.5, 0.5), rand(0.3, 1)], life: rand(1, 1.8), size: 0.25 + 0.3 * s, grow: 0.5, color: [0.8, 0.85, 0.9, 0.25], drag: 2, gravity: 0.05 });
+    }
+  }
+
+  /** The flamethrower's flames or the hose's water, from the muzzle along dir. */
   spray(muzzle: Vec3, dir: Vec3, flame: boolean): void {
     for (let k = 0; k < 5; k++) {
       const v = rand(7, 11);
@@ -389,7 +411,7 @@ export class Effects {
       this.particles.spawn(
         flame
           ? { pos: muzzle, vel: [d[0] * v, d[1] * v, d[2] * v], life: rand(0.35, 0.6), size: 0.05, grow: 0.6, color: [3, 1.2, 0.25, 0.8], additive: true, drag: 1.4, gravity: -0.3 }
-          : { pos: muzzle, vel: [d[0] * v, d[1] * v, d[2] * v], life: rand(0.5, 0.9), size: 0.05, grow: 0.9, color: [0.85, 0.88, 0.92, 0.3], drag: 1.6, gravity: 0.15 },
+          : { pos: muzzle, vel: [d[0] * v, d[1] * v, d[2] * v], life: rand(0.5, 0.9), size: 0.03, grow: 0.15, color: [0.6, 0.72, 0.8, 0.6], drag: 0.3, gravity: 1 },
       );
     }
     if (flame) this.light(muzzle, 0.8);

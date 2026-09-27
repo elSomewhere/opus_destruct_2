@@ -204,6 +204,10 @@ void World::apply_force(i64 id, const V3& point, const V3& force) {
   b->torque += cross(point - b->x, force);
 }
 
+void World::wake_piece(i64 id) {
+  if (Body* b = rigid_.find(id)) rigid_.wake(*b);
+}
+
 // ---------------------------------------------------------------------------------------------
 // Systems
 

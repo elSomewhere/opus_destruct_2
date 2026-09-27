@@ -53,6 +53,13 @@ ChunkMesh mesh_chunk(const VoxelGrid& g, const IVec3& chunk, const MeshOptions& 
 // x + R (s - com)). The providers see shape-frame voxel coordinates.
 ChunkMesh mesh_shape(const BodyShape& s, f64 h, const MeshOptions& opt);
 
+// The water of a chunk (a voxel layer of fill levels, 255 full: svx_env's "water"): its
+// surfaces towards air, at the water's height in each voxel (tops greedy-merged; sides where it
+// stands higher than its neighbour's; bottoms of falling sheets). Vertices have texture 0xFFFE
+// (water), light 255, AO 1; uv are world x, y (metres).
+constexpr u16 kWaterTexture = 0xFFFE;
+ChunkMesh mesh_water(const VoxelGrid& g, int layer, const IVec3& chunk);
+
 // A coarse block (a far render tier): n cells of factor^3 voxels each from voxel lo, cell
 // (x, y, z) at cells[(x * n1 + y) * n2 + z]; outside the block is solid at the sides and below,
 // air above. Greedy quads coloured by material (no AO, no textures).

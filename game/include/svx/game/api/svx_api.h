@@ -56,6 +56,16 @@ void svx_blast(svx_engine* e, double x, double y, double z, double radius, doubl
  * cools the sphere. */
 void svx_ignite(svx_engine* e, double x, double y, double z, double radius);
 void svx_extinguish(svx_engine* e, double x, double y, double z, double radius);
+/* Water (docs/ENV.md): fills the air in the sphere. */
+void svx_pour(svx_engine* e, double x, double y, double z, double radius);
+/* Water surface meshes of chunks whose water changed: count, then per mesh info[8] as
+ * svx_mesh_info and the buffers (texture 0xFFFE); chunks whose water is gone (3 ints each). */
+int svx_poll_water(svx_engine* e);
+void svx_water_info(svx_engine* e, int i, double* out);
+const void* svx_water_vertices(svx_engine* e, int i);
+const void* svx_water_indices(svx_engine* e, int i);
+int svx_poll_water_removed(svx_engine* e);
+void svx_water_removed(svx_engine* e, int i, int* out3);
 /* Environment output for the renderer, taken after a tick: returns the number of flames (at
  * most max_flames, an even sample of the burning voxels); svx_env_flames then holds float32
  * x, y, z, heat (degC) per flame. The smoke: svx_env_smoke_count cells (at most max_smoke, the
@@ -97,7 +107,7 @@ void svx_far_removed(svx_engine* e, int i, int* out2);
  * voxel index v = (x * 32 + y) * 32 + z, local coordinates). */
 int svx_chunk_occupancy(svx_engine* e, int cx, int cy, int cz, uint8_t* out4096);
 
-/* Events: count, then per event info[21] = kind (0 detached, 1 crack, 2 impact, 3 bubble), id,
+/* Events: count, then per event info[21] = kind (0 detached, 1 crack, 2 impact, 3 bubble (v1), 4 splash), id,
  * pos xyz, velocity xyz, angular xyz, normal xyz, radius, strength, voxels, level, vertex count,
  * index count, rigid; detached events carry a world-space mesh (pos = its centre of mass). A
  * rigid detached piece is simulated as debris: its pose comes from svx_debris until it is gone. */
@@ -136,7 +146,8 @@ void svx_set_debris(svx_engine* e, int enabled);
  * utilization, 32 strengthened voxels, 33 floating voxels removed, 34 bake ms, 35 world memory
  * MB (all kinds), 36 fragment caches MB, 37 structures MB, 38 pieces MB, 39 archive used MB,
  * 40 archive capacity MB, 41 forgotten regions, 42 culled pieces, 43 hot voxels (fire),
- * 44 burning voxels, 45 environment ms, 46 smoke cells, 47 smoke blocks (48 doubles). */
+ * 44 burning voxels, 45 environment ms, 46 smoke cells, 47 smoke blocks, 48 moving water voxels,
+ * 49 water loads, 50 pieces in water (51 doubles). */
 void svx_stats(svx_engine* e, double* out);
 /* Deterministic digest of the session (voxels, bonds, damage, debris poses), split in two
  * 32-bit halves (JS numbers). */

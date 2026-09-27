@@ -86,7 +86,7 @@ try {
     sv.look(-90, -5);
   });
   // put it out
-  await page.evaluate(() => window.__structvox.select('extinguisher'));
+  await page.evaluate(() => window.__structvox.select('hose'));
   for (let k = 0; k < 40; k++) {
     await page.evaluate((k) => {
       const sv = window.__structvox;

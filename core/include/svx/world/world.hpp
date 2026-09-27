@@ -381,8 +381,9 @@ class World {
   // are new or change are solved again; the design pass designs for them.
   void set_loads(u64 group, std::vector<VoxelLoad> loads);
   // A force on a piece during the next tick (N at a world point: buoyancy, drag, wind). It
-  // does not wake a sleeping piece.
+  // does not wake a sleeping piece: wake_piece does (a floating piece, a gust).
   void apply_force(i64 piece, const V3& point, const V3& force);
+  void wake_piece(i64 piece);
   // Systems, stepped in the order they were added.
   void add_system(std::shared_ptr<WorldSystem> s);
   const std::vector<std::shared_ptr<WorldSystem>>& systems() const { return systems_; }

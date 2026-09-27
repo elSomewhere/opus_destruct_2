@@ -85,6 +85,9 @@ void Game::load(VoxelGrid&& g, const V3& spawn_pos, const V3& spawn_dir) {
   events_.clear();
   remesh_.clear();
   charred_.clear();
+  for (u64 k : wet_sent_) wet_removed_.push_back(k);
+  wet_sent_.clear();
+  wet_dirty_.clear();
   spawn_pos_ = spawn_pos;
   spawn_dir_ = spawn_dir;
   viewer_ = spawn_pos;
@@ -139,6 +142,44 @@ void Game::ignite(const V3& pos, f64 radius) {
   if (env_.fire()) env_.fire()->ignite(world_, pos, radius);
 }
 
+void Game::pour(const V3& pos, f64 radius) {
+  if (log_) log_->push({world_.ticks(), Command::Type::Pour, {pos.x, pos.y, pos.z, radius, 0.0, 0.0}});
+  if (env_.water()) env_.water()->pour(world_, pos, radius);
+}
+
+std::vector<ChunkMesh> Game::take_water_meshes() {
+  std::vector<ChunkMesh> out;
+  const WaterSystem* ws = env_.water();
+  if (!ws || wet_clock_ < water_remesh_s || wet_dirty_.empty()) return out;
+  wet_clock_ = 0.0;
+  std::vector<u64> keys(wet_dirty_.begin(), wet_dirty_.end());
+  wet_dirty_.clear();
+  std::sort(keys.begin(), keys.end());
+  std::vector<ChunkMesh> meshes(keys.size());
+  const VoxelGrid& g = world_.grid();
+  const int L = ws->water_layer();
+  parallel_for(static_cast<i64>(keys.size()), 1, [&](i64 b0, i64 e0) {
+    for (i64 j = b0; j < e0; ++j) meshes[size_t(j)] = mesh_water(g, L, unkey3(keys[size_t(j)]));
+  });
+  for (size_t j = 0; j < keys.size(); ++j) {
+    if (meshes[j].vertices.empty()) {
+      if (wet_sent_.erase(keys[j])) wet_removed_.push_back(keys[j]);
+      continue;
+    }
+    wet_sent_.insert(keys[j]);
+    out.push_back(std::move(meshes[j]));
+  }
+  return out;
+}
+
+std::vector<u64> Game::take_water_removed() {
+  std::vector<u64> out;
+  out.swap(wet_removed_);
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
+}
+
 void Game::extinguish(const V3& pos, f64 radius) {
   if (log_) log_->push({world_.ticks(), Command::Type::Extinguish, {pos.x, pos.y, pos.z, radius, 0.0, 0.0}});
   if (env_.fire()) env_.fire()->extinguish(world_, pos, radius);
@@ -173,6 +214,27 @@ void Game::tick() {
   fading_.erase(std::remove_if(fading_.begin(), fading_.end(), [&](const Fading& f) { return f.t >= fade_time; }), fading_.end());
   drain_world_events();
   if (source_) far_update();
+  if (const WaterSystem* ws = env_.water()) {
+    // (a chunk's water surface also shows at its neighbours' faces)
+    for (u64 k : world_.take_layer_changes(ws->water_layer())) {
+      const IVec3 c = unkey3(k);
+      wet_dirty_.insert(k);
+      for (int d = 0; d < 6; ++d) {
+        IVec3 q = c;
+        q[d / 2] += (d & 1) ? -1 : 1;
+        const Chunk* ch = world_.grid().chunk(q);
+        if (ch && !ch->layer[size_t(ws->water_layer())].empty()) wet_dirty_.insert(key3(q[0], q[1], q[2]));
+      }
+    }
+    wet_clock_ += world_.config().dt;
+    for (const auto& s : ws->splashes()) {
+      GameEvent g;
+      g.kind = GameEvent::Kind::Splash;
+      g.pos = s.pos;
+      g.strength = s.strength;
+      events_.push_back(std::move(g));
+    }
+  }
   if (const FireSystem* f = env_.fire()) {
     for (u64 k : world_.take_layer_changes(f->burn_layer())) charred_.insert(k);
     char_clock_ += world_.config().dt;
@@ -287,6 +349,11 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
   const auto t0 = Clock::now();
   mesh_base_ = base;
   std::vector<u64> keys = world_.take_changed_chunks();
+  if (const WaterSystem* ws = env_.water())
+    for (u64 k : keys) {  // (new chunks with water, water uncovered or covered by voxels)
+      const Chunk* ch = world_.grid().chunk(unkey3(k));
+      if ((ch && !ch->layer[size_t(ws->water_layer())].empty()) || wet_sent_.count(k)) wet_dirty_.insert(k);
+    }
   keys.insert(keys.end(), remesh_.begin(), remesh_.end());
   remesh_.clear();
   std::sort(keys.begin(), keys.end());
@@ -336,6 +403,10 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
 
 std::vector<u64> Game::take_removed_chunks() {
   std::vector<u64> out = world_.take_evicted_chunks();
+  for (u64 k : out) {
+    wet_dirty_.erase(k);
+    if (wet_sent_.erase(k)) wet_removed_.push_back(k);
+  }
   out.insert(out.end(), removed_chunks_.begin(), removed_chunks_.end());
   removed_chunks_.clear();
   std::sort(out.begin(), out.end());
@@ -446,6 +517,12 @@ GameStats Game::stats() const {
     s.fire_hot = f->stats().hot;
     s.fire_burning = f->stats().burning;
     s.env_ms += f->stats().step_ms;
+  }
+  if (const WaterSystem* w = env_.water()) {
+    s.water_active = w->stats().active;
+    s.water_loads = w->stats().loads;
+    s.floating = w->stats().floating;
+    s.env_ms += w->stats().step_ms;
   }
   if (const SmokeSystem* m = env_.smoke()) {
     s.smoke_cells = m->stats().cells;

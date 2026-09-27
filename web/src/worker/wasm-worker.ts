@@ -59,6 +59,13 @@ interface SvxModule {
   _svx_blast(e: number, x: number, y: number, z: number, r: number, energy: number): void;
   _svx_ignite(e: number, x: number, y: number, z: number, r: number): void;
   _svx_extinguish(e: number, x: number, y: number, z: number, r: number): void;
+  _svx_pour(e: number, x: number, y: number, z: number, r: number): void;
+  _svx_poll_water(e: number): number;
+  _svx_water_info(e: number, i: number, out: number): void;
+  _svx_water_vertices(e: number, i: number): number;
+  _svx_water_indices(e: number, i: number): number;
+  _svx_poll_water_removed(e: number): number;
+  _svx_water_removed(e: number, i: number, out3: number): void;
   _svx_poll_env(e: number, maxFlames: number, maxSmoke: number): number;
   _svx_env_flames(e: number): number;
   _svx_env_smoke_count(e: number): number;
@@ -98,8 +105,8 @@ const STATS_MS = 250;
 // job and budget timeline: per-tick samples since the last stats message (TIMELINE_FIELDS)
 let timeline: number[] = [];
 const AUTOSAVE_MS = 5000;
-/** svx_stats fills out[0..47]. */
-const STATS_COUNT = 48;
+/** svx_stats fills out[0..50]. */
+const STATS_COUNT = 51;
 /** Flames and smoke cells sent to the renderer at most, and how often (ticks: their step). */
 const MAX_FLAMES = 4096;
 const MAX_SMOKE = 4096;
@@ -387,6 +394,8 @@ function flushEvents(): void {
       );
     } else if (kind === 2) {
       list.push({ kind: 'impact', pos, energy: f64(15) });
+    } else if (kind === 4) {
+      list.push({ kind: 'splash', pos, strength: f64(15) });
     }
     // (kind 3, the v1 bubble debug event, is not emitted by v2 engines)
   }
@@ -408,6 +417,34 @@ function flushDebris(): void {
   if (poses.length > 0 && poses.length === debrisSent.length && poses.every((v, i) => v === debrisSent[i])) return;
   debrisSent = poses.slice();
   postToMain({ type: 'debris', poses });
+}
+
+/** Water surface meshes of chunks whose water changed, and chunks whose water is gone. */
+function flushWater(): void {
+  const m = mod as SvxModule;
+  const n = m._svx_poll_water(eng);
+  const meshes: ChunkMesh[] = [];
+  for (let i = 0; i < n; i++) {
+    m._svx_water_info(eng, i, scratch);
+    const vc = f64(6);
+    const ic = f64(7);
+    meshes.push({
+      key: chunkKey(f64(0), f64(1), f64(2)),
+      origin: [f64(3), f64(4), f64(5)],
+      vertices: copyOut(m._svx_water_vertices(eng, i), vc * VERTEX_STRIDE),
+      vertexCount: vc,
+      indices: copyOut(m._svx_water_indices(eng, i), ic * 4),
+      indexCount: ic,
+    });
+  }
+  const r = m._svx_poll_water_removed(eng);
+  const removed: string[] = [];
+  for (let i = 0; i < r; i++) {
+    m._svx_water_removed(eng, i, scratch);
+    const b = scratch >> 2;
+    removed.push(chunkKey(m.HEAP32[b] ?? 0, m.HEAP32[b + 1] ?? 0, m.HEAP32[b + 2] ?? 0));
+  }
+  if (meshes.length > 0 || removed.length > 0) postToMain({ type: 'water', meshes, removed });
 }
 
 /** The environment for the renderer: flames and smoke (one final empty set when all is clear). */
@@ -491,6 +528,9 @@ function sendStats(now: number): void {
     envMs: r2(45),
     smokeCells: f64(46),
     smokeBlocks: f64(47),
+    waterActive: f64(48),
+    waterLoads: f64(49),
+    floating: f64(50),
   };
   eventsSinceStats = 0;
   lastStats = now;
@@ -605,6 +645,9 @@ async function handle(cmd: EngineCommand): Promise<void> {
     case 'ignite':
       if (mod && loaded) mod._svx_ignite(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
       break;
+    case 'pour':
+      if (mod && loaded) mod._svx_pour(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
+      break;
     case 'extinguish':
       if (mod && loaded) mod._svx_extinguish(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
       break;
@@ -658,6 +701,7 @@ function loop(): void {
       flushDebris();
       flushEnv();
       flushMeshes();
+      flushWater();
       sampleTimeline(t1 - t0, performance.now() - t1);
       if (now - lastStats >= STATS_MS) sendStats(now);
       if (config.persist && now - lastSave >= AUTOSAVE_MS) {

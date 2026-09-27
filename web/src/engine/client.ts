@@ -120,6 +120,11 @@ export class EngineClient {
     this.send({ type: 'ignite', pos, radius });
   }
 
+  /** Fills the air in the sphere with water (engines without water ignore it). */
+  pour(pos: Vec3, radius: number): void {
+    this.send({ type: 'pour', pos, radius });
+  }
+
   /** Puts out and cools the sphere. */
   extinguish(pos: Vec3, radius: number): void {
     this.send({ type: 'extinguish', pos, radius });

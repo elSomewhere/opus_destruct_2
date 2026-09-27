@@ -159,6 +159,10 @@ export class Game {
     e.on('events', (msg) => this.handleEvents(msg.list));
     e.on('occupancy', (msg) => this.occupancy.apply(msg));
     e.on('debris', (msg) => this.renderer.islands.applyDebris(msg.poses, performance.now() / 1000));
+    e.on('water', (msg) => {
+      for (const m of msg.meshes) this.renderer.water.upsert(m);
+      for (const k of msg.removed) this.renderer.water.remove(k);
+    });
     e.on('env', (msg) => {
       this.effects.setFlames(msg.flames);
       this.effects.setSmoke(msg.smoke);
@@ -201,6 +205,9 @@ export class Game {
           break;
         case 'impact':
           this.effects.impact(ev, eye);
+          break;
+        case 'splash':
+          this.effects.splash(ev);
           break;
       }
     }

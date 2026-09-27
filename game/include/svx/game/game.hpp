@@ -39,11 +39,11 @@ struct GameParams {
 
 // An event for the front end (the web worker protocol, docs/API.md).
 struct GameEvent {
-  enum class Kind : u8 { Detached, Crack, Impact, Dust };
+  enum class Kind : u8 { Detached, Crack, Impact, Dust, Splash };
   Kind kind = Kind::Crack;
   i64 id = 0;
   V3 pos, vel, ang, normal{0, 0, 1};
-  f64 radius = 0.0, strength = 0.0;  // Crack: utilization; Impact: energy (J); Dust: 1 crushed, 0 a shard
+  f64 radius = 0.0, strength = 0.0;  // Crack: utilization; Impact: energy (J); Dust: 1 crushed, 0 a shard; Splash: kg m/s
   i32 voxels = 0;
   ChunkMesh mesh;  // Detached: the piece's mesh in world coordinates at pos (drawn at its PiecePose)
 };
@@ -63,6 +63,7 @@ struct GameStats : WorldStats {
   // environment
   i32 fire_hot = 0, fire_burning = 0;
   i32 smoke_cells = 0, smoke_blocks = 0;
+  i32 water_active = 0, water_loads = 0, floating = 0;
   f64 env_ms = 0.0;
 };
 
@@ -115,6 +116,7 @@ class Game {
   bool use(const V3& eye, const V3& dir, f64 reach = 2.0);
   void ignite(const V3& pos, f64 radius);      // sets fire to what burns in the sphere
   void extinguish(const V3& pos, f64 radius);  // puts out and cools the sphere
+  void pour(const V3& pos, f64 radius);        // fills the air in the sphere with water
   void tick();
   i64 ticks() const { return world_.ticks(); }
   void record_to(CommandLog* log) { log_ = log; }
@@ -146,6 +148,11 @@ class Game {
   std::vector<FlamePoint> flames(i32 max) const;
   // The smoke (at most max cells: the densest).
   std::vector<SmokePoint> smoke(i32 max) const;
+  // Water surfaces of chunks whose water changed (meshed again at most every water_remesh_s;
+  // mesh_water, texture kWaterTexture), and chunks whose water is gone or evicted.
+  std::vector<ChunkMesh> take_water_meshes();
+  std::vector<u64> take_water_removed();
+  f64 water_remesh_s = 0.1;
   Environment& env() { return env_; }
   const Environment& env() const { return env_; }
   f64 char_remesh_s = 1.0;  // s: charring chunks are meshed again at most this often
@@ -186,6 +193,10 @@ class Game {
   std::vector<u64> remesh_;                  // chunks to mesh again (debug view changes)
   std::unordered_set<u64> charred_;          // chunks whose charring changed (meshed again every char_remesh_s)
   f64 char_clock_ = 0.0;
+  std::unordered_set<u64> wet_dirty_;        // chunks whose water changed (meshed again every water_remesh_s)
+  std::unordered_set<u64> wet_sent_;         // chunks with a water mesh at the front end
+  std::vector<u64> wet_removed_;
+  f64 wet_clock_ = 0.0;
   std::vector<u64> removed_chunks_;
   f64 mesh_ms_ = 0.0;
 

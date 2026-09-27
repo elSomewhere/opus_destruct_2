@@ -38,6 +38,7 @@ if(SVX_WASM)
     _svx_debris _svx_debris_data _svx_set_debris _svx_set_gpu_displacement _svx_poll_fields
     _svx_field_info _svx_field_data _svx_poll_far _svx_far_info _svx_far_vertices _svx_far_indices
     _svx_poll_far_removed _svx_far_removed _svx_state_hash _svx_ignite _svx_extinguish _svx_poll_env _svx_env_flames _svx_env_smoke_count _svx_env_smoke
+    _svx_pour _svx_poll_water _svx_water_info _svx_water_vertices _svx_water_indices _svx_poll_water_removed _svx_water_removed
     _malloc _free)
   string(REPLACE ";" "," _svx_exports_csv "${_svx_exports}")
   target_link_options(svx_web PRIVATE
