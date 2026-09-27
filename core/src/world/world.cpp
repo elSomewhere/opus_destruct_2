@@ -476,6 +476,13 @@ void World::append_nodes(Structure& s, const std::vector<FragKey>& frags, const 
   const std::vector<SecAcc> merged = merge_accs(fine, [&](i32 e) { return e >= kExisting ? e - kExisting : n0 + fnode[size_t(e)]; });
   for (const SecAcc& A0 : merged) {
     SecAcc A = A0;
+    // (the bond's ends in the order of their identities: the same bond gets the same identity
+    // and local frame whatever order an extraction found its nodes in - its reference load for
+    // sudden changes is found again, and in the same frame)
+    if (A.b >= 0 && s.ident[size_t(A.a)] > s.ident[size_t(A.b)]) {
+      std::swap(A.a, A.b);
+      for (i8& g : A.fsg) g = static_cast<i8>(-g);
+    }
     const i32 ia = A.a, ib = A.b;
     if (ib >= 0) {
       A.mb = s.nmat[size_t(ib)];
