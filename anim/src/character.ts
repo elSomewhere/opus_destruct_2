@@ -87,6 +87,8 @@ export class Character {
   readonly skin: Float32Array;
   /** Hit flash 0..1 (the host tints the character). */
   flash = 0;
+  /** The last frame's time step (the ragdoll takes over the animation's velocities with it). */
+  private lastDt = 1 / 60;
   /** Beaten unconscious (a melee knockout): down until the animator gets it back up. */
   knockedOut = false;
   /** Seconds since death. */
@@ -140,6 +142,7 @@ export class Character {
   }
 
   update(dt: number): void {
+    if (dt > 0) this.lastDt = Math.min(dt, 0.05);
     this.flash = Math.max(0, this.flash - dt * 6);
     this.pain = Math.max(0, this.pain - dt);
     this.firing = Math.max(0, this.firing - dt);
@@ -240,7 +243,7 @@ export class Character {
     if (wasAlive) {
       this.pain = 0.25;
       if (this.health <= 0 || res.gibs.some((g) => g.part.bone === H.head)) {
-        this.die(hit.point, vscale(vnorm(dir), impulse));
+        this.die(hit.point, vscale(vnorm(dir), impulse), res.headshot ? 0.15 : 0.55 + Math.random() * 0.25);
         res.killed = true;
       } else this.animator.hitAt({ point: [...hit.point] as V3, dir: [dir[0], dir[1], dir[2]], force: damage / 30, kind: 'bullet', bone: hit.bone });
     } else if (this.ragdoll) this.ragdoll.hit(hit.point, vscale(vnorm(dir), impulse * 1.4));
@@ -287,7 +290,7 @@ export class Character {
       this.animator.knockDown(d[0] * Math.cos(yaw) + d[1] * Math.sin(yaw) < 0.3, 6 + Math.random() * 5);
     }
     if (this.health <= 0) {
-      this.die(point, vscale(vnorm(dir), 1.5 * force));
+      this.die(point, vscale(vnorm(dir), 1.5 * force), 0.5);
       res.killed = true;
     }
     return res;
@@ -346,12 +349,17 @@ export class Character {
   }
 
   /** Dies: switches to the ragdoll (keeping the momentum of the pose) with a push `dv` at `point`. */
-  die(point?: Readonly<V3>, dv?: Readonly<V3>): void {
+  /**
+   * Death: the ragdoll takes over from the animated pose. A killing blow at `point` (velocity
+   * change `dv`) sends the body its way; `collapse` is how long the legs take to give way
+   * (0: dropped at once, as by a head shot or a blast).
+   */
+  die(point?: Readonly<V3>, dv?: Readonly<V3>, collapse = 0.6): void {
     if (!this.alive) return;
     this.health = Math.min(this.health, 0);
     const a = this.animator;
-    this.ragdoll = new HumanoidRagdoll(a.skeleton, this.collision, a.world, a.prevWorld, 1 / 60, 0.7);
-    if (point && dv) this.ragdoll.hit(point, dv);
+    this.ragdoll = new HumanoidRagdoll(a.skeleton, this.collision, a.world, a.prevWorld, this.lastDt, collapse > 0.3 ? 0.5 : 0.2, collapse);
+    if (point && dv) this.ragdoll.hit(point, dv, 0.35);
     this.retroFrame = null;
   }
 
@@ -398,7 +406,7 @@ export class Character {
       // torn apart: every part flies, the torso in chunks
       gibbed = true;
       this.ownModel();
-      if (wasAlive) this.die();
+      if (wasAlive) this.die(undefined, undefined, 0);
       const m = this.model;
       for (const p of m.parts) {
         if (p.count === 0) continue;
@@ -421,7 +429,7 @@ export class Character {
       }
       this.geometryVersion++;
     } else if (this.health <= 0) {
-      if (wasAlive) this.die();
+      if (wasAlive) this.die(undefined, undefined, 0);
       this.ragdoll!.blast(center, reach, 9 * f * strength + 2);
     } else {
       const c = this.pose.p[H.chest]!;

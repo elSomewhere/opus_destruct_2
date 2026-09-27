@@ -75,6 +75,8 @@ export class SoldierBrain implements Brain {
   private meleeCool = 0;
   /** Holding a position in this stance until the next reposition. */
   private hold: 'stand' | 'crouch' | 'kneel' | 'prone' = 'stand';
+  private peekSide = 0;
+  private peekUntil = 0;
   private popUp = false;
   private readonly crouchy = Math.random() < 0.6;
   private readonly aggressive = Math.random() < 0.4;
@@ -102,8 +104,13 @@ export class SoldierBrain implements Brain {
     // line of sight from where the eyes are, and from standing / leaning (cover)
     const eyeNow = w.eyes(a);
     this.seen = alive && dist < 60 && inView && w.canSeeFrom(eyeNow, chest);
+    // peeking is done from a position (not on the move), and a side once chosen is kept a moment
     let peek = 0;
-    if (alive && !this.seen && inView && dist < 60 && this.state === 'combat') {
+    const still = w.arrived(a) && Math.hypot(a.vel[0], a.vel[1]) < 0.3;
+    if (still && this.peekSide !== 0 && w.time < this.peekUntil) {
+      peek = this.peekSide;
+      this.seen = this.seen || alive;
+    } else if (still && alive && !this.seen && inView && dist < 60 && this.state === 'combat') {
       const standEye: V3 = [a.pos[0], a.pos[1], a.pos[2] + 1.6];
       if (w.canSeeFrom(standEye, chest)) this.popUp = true;
       else {
@@ -112,12 +119,15 @@ export class SoldierBrain implements Brain {
           const e: V3 = [standEye[0] + side[0] * s * 0.45, standEye[1] + side[1] * s * 0.45, standEye[2]];
           if (w.canSeeFrom(e, chest)) {
             peek = s;
+            this.peekSide = s;
+            this.peekUntil = w.time + 1.2;
             break;
           }
         }
       }
       if (this.popUp || peek !== 0) this.seen = true;
     }
+    if (peek === 0) this.peekSide = 0;
     a.lean = this.state === 'combat' ? peek : 0;
     if (this.seen) {
       this.seenAt = w.time;

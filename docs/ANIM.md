@@ -111,12 +111,19 @@ done).
   fidgeting, drawn per character from archetypes (`randomStyle(seed, 'soldier' | 'civilian' |
   'civilianFemale')`), so a crowd doesn't walk in step.
 - **Weight.** Footfalls load the body (the pelvis dips and the head and neck lag on springs);
-  the trunk leans into acceleration with overshoot and banks into turns; soldiers aiming move
-  in a rolling tactical walk; a wounded leg limps.
+  the trunk leans into acceleration with overshoot and banks into the turns of the path (its
+  lateral acceleration: a body turning to a target while walking straight does not bank);
+  soldiers aiming move in a rolling tactical walk; a wounded leg limps. Peeking round a corner
+  is done standing still: walking, the trunk stays upright.
 - **Planting.** A foot in stance stays where it landed in world space, so feet never slide at
   any speed, direction or turn rate. A swinging foot lands where the hip will be at mid-stance
   of the next step, on the ground found by `groundHeight`. That handles stairs, rubble and
   craters.
+- **Alternation.** The feet stay half a cycle apart at every speed, from a standstill and
+  through turns: a foot left out of reach behind a long running stride pushes off early, but
+  every foot lands on the gait's beat, and a foot still down late in its swing phase goes at
+  once. A runner's swing foot leaves the ground moving with the body and rises behind when it
+  would be out of reach (the heel kick).
 - **Foot roll.** Heel strike and toe-off roll the foot about the heel and the ball.
 - **Standing.** Standing characters take corrective steps when they turn or drift. A foot left
   behind by a sudden start or a shove takes a quick catch-up step.
@@ -210,11 +217,26 @@ Damage (`voxel/damage.ts`, `character.ts`):
   - sphere contacts against the CollisionWorld, with friction and a contact skin;
   - sleep, triggered when nothing moved more than 1.5 cm for half a second.
 - **`HumanoidRagdoll`** maps the rig onto 21 particles:
-  - it starts from the animated pose and its velocity, so a character shot mid-stride keeps its
-    momentum;
-  - it keeps muscle tone for a moment (soft targets that fade out), so the body slumps instead
-    of dropping;
-  - every frame it rebuilds all bone frames from the particles.
+  - it starts from the animated pose and its velocity (over the real frame time), so a
+    character shot mid-stride keeps its momentum;
+  - a killing shot pushes the whole upper body its way: shot from the front a body goes down
+    backwards, from behind forwards;
+  - the legs give way: the knees buckle and a support under the hips sinks over about 0.6 s
+    (a crumple slower than a fall), quickly after a head shot, not at all in a blast;
+  - fading muscle tone keeps the trunk's shape for a moment (legs none, arms a little): shape
+    matching (the body's shape at death fitted to where it is, momentum taken out), so tone
+    never pushes the body anywhere;
+  - the body does not pass through itself (arms stay out of the torso, legs out of each
+    other); knees and elbows bend one way, judged against the body's side axis whatever the
+    limb's angle; a fully bent knee brings the heel to the buttock;
+  - every frame it rebuilds all bone frames from the particles. A straight limb has no bend
+    plane: its roll carries over and turns towards the joint's plane at a limited rate (limbs
+    never flip about their length); feet bend in their leg's plane within the ankle's range;
+    nearly at rest the shown rotations are smoothed.
+- **Stability.** Contacts and the collapse support are inelastic (no bounce), and constraint
+  corrections beyond 1.5 m/s per substep move particles without launching them, so a folded
+  body whose constraints fight never blows up; what lies on the ground settles quickly and the
+  body sleeps once still. A falling ragdoll costs about 55 µs per frame.
 - **`GibSystem`** (`physics/debris.ts`) handles gibs, blood drops and stains:
   - **Gibs** (severed limbs, heads, torso chunks, dropped rifles) are rigid voxel bodies with box
     inertia. About 64 surface sample points collide as spheres, using sequential impulses with
@@ -370,8 +392,8 @@ the blows that landed.
 ## 9. Tests and checks
 
 ```bash
-cd anim && npm install && npm test          # 54 unit tests: models, animator, IK, stances, actions,
-                                            # reactions, weapons, strikes, brawls, ragdoll, damage, gibs, retro
+cd anim && npm install && npm test          # 60 unit tests: models, animator, IK, gait, stances, actions,
+                                            # reactions, weapons, strikes, brawls, ragdolls, damage, gibs, retro
 cd web && npm run typecheck && npm test     # includes typechecking anim/
 node scripts/smoke-actors.mjs http://localhost:5190/   # browser: population, fighting, kills, gibs, retro,
                                             # city life (talking, benches), a brawl ending in a knockout, MAP01, lab
@@ -383,7 +405,11 @@ hit folds it; a leg hit drops the pelvis and limps on that side only; knockback 
 shot; an aimed pistol points within 8° with both hands on the grip; the machine gun's support
 hand is on the handguard; a jab steps in to reach a head 0.95 m away and a push kick a belly
 1.1 m away, without the support foot sliding; reloads end with their event; two walkers differ;
-a fist fight lands blows on both.
+a fist fight lands blows on both; the feet stay half a cycle apart walking and running; walking
+keeps the trunk upright. `anim/test/ragdoll-quality.test.ts` checks deaths (front, back,
+running, head shot, blast): no bone rolls more than 60° in a frame, bodies never bounce back up,
+they sleep on the ground, a body shot crumples over a good half second (never faster than a
+fall), and bodies fall the way they were shot.
 
 Measured on an M5 Pro:
 

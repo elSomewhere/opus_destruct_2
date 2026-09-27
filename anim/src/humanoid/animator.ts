@@ -123,6 +123,8 @@ interface Foot {
   pos: V3;
   yaw: number;
   lift: V3;
+  /** Where the root was when the foot lifted (the swing travels with the body). */
+  liftRoot: V3;
   liftYaw: number;
   swing: number;
   swingRate: number;
@@ -284,6 +286,7 @@ export class HumanoidAnimator {
       pos: [0, 0, 0],
       yaw: 0,
       lift: [0, 0, 0],
+      liftRoot: [0, 0, 0],
       liftYaw: 0,
       swing: 0,
       swingRate: 1,
@@ -728,8 +731,10 @@ export class HumanoidAnimator {
     const limpDip = moving ? (fract(ph) < D ? limpL : 0) * 0.05 * k + (fract(ph + 0.5) < D ? limpR : 0) * 0.05 * k : 0;
     let pz = this.restPelvisZ - g.sink - crouchDrop + walkBob - 0.012 * k * idle - limpDip;
     const pelvisYaw = this.lowerYaw.x + hipYawOsc;
-    // banking into turns and a spring-loaded lean into (de)acceleration
-    this.bank.update(clamp(-this.yawRate * speed * 0.04, -0.2, 0.2), dt);
+    // banking into the turns of the path (its lateral acceleration, not the body's yaw: a
+    // soldier walking straight while turning to a target does not bank) and a spring-loaded
+    // lean into (de)acceleration
+    this.bank.update(clamp(aLocal[0] * 0.025, -0.12, 0.12) * moveAmt, dt);
     this.trunkLean.omega = lerp(7.5, 5, st.heavy);
     this.trunkLean.update(clamp(aLocal[1] * (0.03 + 0.02 * st.heavy), -0.2, 0.24), dt);
     const pelvisRot = qmul(qz(pelvisYaw), qeuler(-(0.1 * crouch + 0.05 * g.lean), hipRoll + this.bank.x * 0.6, 0));
@@ -846,7 +851,8 @@ export class HumanoidAnimator {
     this.aimYaw.update(wantYaw, dt);
     this.aimPitch.update(wantPitch, dt);
     this.aimW.update(aiming ? 1 : 0, dt);
-    this.leanS.update(clamp(inp.lean, -1, 1), dt);
+    // peeking round a corner is done standing (or crouched) still: walking, the body is upright
+    this.leanS.update(clamp(inp.lean, -1, 1) * (1 - smoothstep(0.25, 0.7, speed)), dt);
     const aw = this.aimW.x;
     const rifle = this.weapon !== null && this.weapon.kind !== 'pistol' && this.weapon.kind !== 'knife';
     // a long gun bladed: the trunk turns off the target (from the hip more, so the support hand
@@ -1024,13 +1030,20 @@ export class HumanoidAnimator {
       else if (f.planted) {
         const wrapped = p1 < p0;
         const crossedLift = advanced && ((!wrapped && p0 < D && p1 >= D) || (wrapped && p0 < D));
+        // a foot still down late in its swing phase (it landed late) goes now, so the feet keep
+        // alternating
+        const missedLift = moving && advanced && p1 > D + 0.08 && p1 < 0.9;
+        // a foot left behind out of reach pushes off early (a long running stride shortens the
+        // ground contact; a shove, a sudden start); it still lands on the gait's beat below
         const far = Math.hypot(f.pos[0] - this.rootPos[0], f.pos[1] - this.rootPos[1]) > 0.62 * this.legLen;
-        if (crossedLift || far) {
+        if (crossedLift || missedLift || far) {
           f.planted = false;
           vcopy(f.pos, f.lift);
+          vcopy(this.rootPos, f.liftRoot);
           f.liftYaw = f.yaw;
           f.swing = 0;
-          f.swingRate = crossedLift ? freq / (1 - D) : 1 / 0.2;
+          // land when the gait says this foot lands (phase 1), however it left the ground
+          f.swingRate = crossedLift ? freq / (1 - D) : moving ? 1 / clamp((1 - p1) / freq, 0.12, 1 / freq) : 1 / 0.2;
         }
       }
       if (!inp.airborne && !f.planted) {
@@ -1074,6 +1087,7 @@ export class HumanoidAnimator {
         vcopy(nom, f.pos);
         f.pos[2] -= this.ankleH;
         f.lift = vcopy(f.pos);
+        vcopy(this.rootPos, f.liftRoot);
         continue;
       }
       if (f.planted) {
@@ -1092,7 +1106,11 @@ export class HumanoidAnimator {
         const s = f.swing;
         const sh = lerp(s, Math.pow(s, 1.6), g.run);
         const eh = sh * sh * (3 - 2 * sh);
-        const hz = vlerp(f.lift, f.target, eh);
+        // the foot leaves the ground moving with the body (a runner's heel kicks up and comes
+        // through under the hip; a walker's foot peels off more slowly)
+        const carry = moving ? lerp(0.35, 1, g.run) * (1 - eh) : 0;
+        const from: V3 = [f.lift[0] + (this.rootPos[0] - f.liftRoot[0]) * carry, f.lift[1] + (this.rootPos[1] - f.liftRoot[1]) * carry, f.lift[2]];
+        const hz = vlerp(from, f.target, eh);
         const peak = Math.sin(Math.PI * Math.pow(s, lerp(1, 0.62, g.run)));
         const lift = (moving ? g.lift : 0.06 * k) * peak + Math.max(0, f.target[2] - f.lift[2]) * 0.3 * peak;
         hz[2] += lift;
@@ -1104,6 +1122,17 @@ export class HumanoidAnimator {
         f.ankle[0] = hz[0];
         f.ankle[1] = hz[1];
         f.ankle[2] = hz[2] + this.ankleH;
+        // within the leg's reach of the hip: a foot left behind rises (the heel kicks up)
+        const hip = this.world.p[f.thigh]!;
+        const reach = 0.97 * this.legLen;
+        const dx = f.ankle[0] - hip[0], dy = f.ankle[1] - hip[1];
+        const hd = Math.hypot(dx, dy);
+        if (hd < reach) f.ankle[2] = Math.max(f.ankle[2], hip[2] - Math.sqrt(reach * reach - hd * hd));
+        else {
+          f.ankle[0] = hip[0] + (dx / hd) * reach * 0.95;
+          f.ankle[1] = hip[1] + (dy / hd) * reach * 0.95;
+          f.ankle[2] = Math.max(f.ankle[2], hip[2] - reach * 0.31);
+        }
         f.yaw = yaw;
       }
     }

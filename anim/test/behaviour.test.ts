@@ -490,6 +490,64 @@ test('actions: a speaker gestures; an idle character takes postures and fidgets'
   assertFinite(idle, 'idle');
 });
 
+test('gait: the feet alternate (half a cycle apart) walking and running, from a standstill and turning', () => {
+  for (const [speed, turn, styleSeed] of [[1.4, 0, 0], [2.2, 0, 0], [3.5, 0, 3], [5, 0, 0], [6, 0, 4], [4.5, 1.2, 0]] as const) {
+    const a = standing(Math.PI / 2);
+    if (styleSeed) a.style = randomStyle(styleSeed, 'soldier');
+    run(a, 0.5);
+    let x = 0, y = 0, yaw = Math.PI / 2, t = 0;
+    const prev = [true, true];
+    const lands: [number[], number[]] = [[], []];
+    for (let i = 0; i < 60 * 7; i++) {
+      t += DT;
+      const v = Math.min(speed, t * 4);
+      yaw += turn * DT;
+      x += Math.cos(yaw) * v * DT;
+      y += Math.sin(yaw) * v * DT;
+      a.setRoot([x, y, 0], yaw);
+      a.update(DT);
+      a.footState().forEach((f, k) => {
+        if (f.planted && !prev[k] && t > 3) lands[k]!.push(t);
+        prev[k] = f.planted;
+      });
+    }
+    const [L, R] = lands;
+    const cycle = (L[L.length - 1]! - L[0]!) / (L.length - 1);
+    // one landing per foot per gait cycle, the other foot half a cycle later
+    assert.ok(Math.abs(cycle * a.gait.freq - 1) < 0.1, `${speed} m/s: cycle ${cycle.toFixed(2)} s vs gait ${(1 / a.gait.freq).toFixed(2)} s`);
+    for (const l of L) {
+      const r = R.find((v) => v > l);
+      if (r === undefined) continue;
+      const off = ((r - l) / cycle) % 1;
+      assert.ok(off > 0.4 && off < 0.6, `${speed} m/s turning ${turn}: right lands ${off.toFixed(2)} of a cycle after left`);
+    }
+  }
+});
+
+test('gait: walking keeps the trunk upright (a peek lean, a body turning to its target)', () => {
+  for (const lean of [0, 1]) {
+    const a = standing(0);
+    a.style = randomStyle(2, 'soldier');
+    a.weapon = makeRifle();
+    a.input.carry = 'aim';
+    a.input.lean = lean;
+    run(a, 0.5);
+    let x = 0, yaw = 0, worst = 0;
+    for (let i = 0; i < 60 * 5; i++) {
+      x += 1.5 * DT;
+      // the body swings round to a target off to the side while walking straight on
+      yaw = Math.min(1.2, yaw + 0.6 * DT);
+      a.input.aimAt = [x + Math.cos(yaw) * 20, Math.sin(yaw) * 20, 1.4];
+      a.setRoot([x, 0, 0], yaw);
+      a.update(DT);
+      if (i < 90) continue;
+      const u = qrotate(a.world.q[H.chest]!, [0, 0, 1]);
+      worst = Math.max(worst, Math.abs(Math.asin(u[0] * Math.sin(yaw) - u[1] * Math.cos(yaw))));
+    }
+    assert.ok(worst < 0.07, `lean ${lean}: the chest rolls ${((worst * 180) / Math.PI).toFixed(1)} deg while walking`);
+  }
+});
+
 // ---- 8. styles ---------------------------------------------------------------------------------
 
 test('styles: characters walk differently; soldiers are heavy', () => {

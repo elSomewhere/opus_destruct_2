@@ -26,8 +26,10 @@ export type RagdollConstraint =
   /** min <= |a - b| <= max. */
   | { kind: 'limit'; a: number; b: number; min: number; max: number }
   /**
-   * Hinge: the middle particle m must stay on the side `sign` of the line a-c, measured along
-   * the direction given by particles (f0 -> f1) (e.g. the pelvis forward for knees).
+   * Hinge: the joint a-m-c bends one way only. Its bend normal ((m - a) x (c - m)) must point
+   * along `sign` times the body's side axis f0 -> f1 (the hips for knees, the shoulders for
+   * elbows): the middle particle stays on that side of the line a-c, whatever the limb's angle
+   * to the body.
    */
   | { kind: 'hinge'; a: number; m: number; c: number; f0: number; f1: number; sign: number };
 
@@ -56,10 +58,26 @@ export class Ragdoll {
   time = 0;
   private acc = 0;
   private ref: V3[] = [];
+  private readonly toneDelta: V3[] = [];
+  private readonly pred: V3[] = [];
+  /** The fastest particle's speed in the last substep (m/s). */
+  private lastMax = Infinity;
   private readonly contact: SphereContact = { push: [0, 0, 0], normal: [0, 0, 1] };
   /** Optional per-particle soft targets (muscle tone) and their weight. */
   targets: V3[] | null = null;
   targetWeight = 0;
+  /** Per-particle share of the tone (default 1). */
+  targetShare: number[] | null = null;
+  /**
+   * Called before each substep's constraints (hosts move the tone targets with the body, so the
+   * tone holds its shape without holding it in place).
+   */
+  beforeSubstep: (() => void) | null = null;
+  /**
+   * Optional per-particle support heights (world z; NaN: none): a particle below its support is
+   * pushed back up to it, softly (legs giving way under a collapsing body).
+   */
+  support: number[] | null = null;
 
   constructor(collision: CollisionWorld, opts: RagdollOptions = {}) {
     this.collision = collision;
@@ -130,6 +148,7 @@ export class Ragdoll {
     this.asleep = false;
     this.still = 0;
     this.ref = [];
+    this.lastMax = Infinity;
   }
 
   /** Index of the particle nearest to a world point. */
@@ -156,10 +175,15 @@ export class Ragdoll {
 
   private step(h: number): void {
     this.time += h;
-    const damp = Math.pow(this.airDamping, h);
+    // a body nearly at rest: what lies on the ground loses its last motion quickly (settles
+    // instead of trembling); what hangs free still falls
+    const settling = this.lastMax < 0.4 && this.time > 0.4;
+    const air = Math.pow(this.airDamping, h);
+    const rest = air * Math.pow(0.05, h);
     let maxMove = 0;
     for (const q of this.particles) {
       if (q.w === 0) continue;
+      const damp = settling && q.contact ? rest : air;
       const vx = (q.p[0] - q.prev[0]) * damp;
       const vy = (q.p[1] - q.prev[1]) * damp;
       const vz = (q.p[2] - q.prev[2]) * damp;
@@ -173,21 +197,80 @@ export class Ragdoll {
       q.p[2] += vz * s - this.gravity * h * h;
       maxMove = Math.max(maxMove, m / h);
     }
+    this.beforeSubstep?.();
+    // where the particles would go on their own (constraint corrections are measured from it)
+    const pred = this.pred;
+    for (let i = 0; i < this.particles.length; i++) vcopy(this.particles[i]!.p, (pred[i] ??= [0, 0, 0]));
     const muscle = this.targets && this.targetWeight > 0 ? clamp(this.targetWeight, 0, 1) : 0;
     for (let it = 0; it < this.iterations; it++) {
       for (const c of this.constraints) this.solve(c);
       if (muscle > 0) {
+        // (muscles are internal: the pulls move the body's parts, never the body as a whole, so
+        // their net momentum is taken back out)
         const t = this.targets!;
+        const share = this.targetShare;
+        const d = this.toneDelta;
+        let mx = 0, my = 0, mz = 0, msum = 0;
         this.particles.forEach((q, i) => {
           const g = t[i];
-          if (!g || q.w === 0) return;
-          const k = muscle * 0.08;
-          q.p[0] += (g[0] - q.p[0]) * k;
-          q.p[1] += (g[1] - q.p[1]) * k;
-          q.p[2] += (g[2] - q.p[2]) * k;
+          const k = g && q.w > 0 ? muscle * 0.08 * (share ? share[i]! : 1) : 0;
+          const e = (d[i] ??= [0, 0, 0]);
+          if (k <= 0 || !g) {
+            e[0] = e[1] = e[2] = NaN;
+            return;
+          }
+          e[0] = (g[0] - q.p[0]) * k;
+          e[1] = (g[1] - q.p[1]) * k;
+          e[2] = (g[2] - q.p[2]) * k;
+          const m = 1 / q.w;
+          mx += e[0] * m;
+          my += e[1] * m;
+          mz += e[2] * m;
+          msum += m;
+        });
+        if (msum > 0) {
+          mx /= msum;
+          my /= msum;
+          mz /= msum;
+        }
+        this.particles.forEach((q, i) => {
+          const e = d[i]!;
+          if (e[0] !== e[0]) return;
+          q.p[0] += e[0] - mx;
+          q.p[1] += e[1] - my;
+          q.p[2] += e[2] - mz;
         });
       }
+      if (this.support) {
+        const sp = this.support;
+        for (let i = 0; i < this.particles.length; i++) {
+          const z = sp[i]!;
+          const q = this.particles[i]!;
+          // (inelastic: the particle stops sinking, it is not thrown back up)
+          if (z === z && q.p[2] < z) {
+            q.p[2] += (z - q.p[2]) * 0.35;
+            q.prev[2] = Math.max(q.prev[2], q.p[2]);
+          }
+        }
+      }
       if (it === this.iterations - 1 || it % 2 === 1) this.collide(it === this.iterations - 1);
+    }
+    // stabilisation: constraints and contacts may move a particle far in one substep (fighting
+    // each other in a folded body), but that must not turn into speed; beyond a limit the
+    // correction moves the particle without launching it (hits and blasts, applied as
+    // velocities outside the solve, are untouched)
+    const maxCorr = 1.5 * h;
+    for (let i = 0; i < this.particles.length; i++) {
+      const q = this.particles[i]!;
+      if (q.w === 0) continue;
+      const a = pred[i]!;
+      const dx = q.p[0] - a[0], dy = q.p[1] - a[1], dz = q.p[2] - a[2];
+      const l = Math.hypot(dx, dy, dz);
+      if (l <= maxCorr) continue;
+      const f = 1 - maxCorr / l;
+      q.prev[0] += dx * f;
+      q.prev[1] += dy * f;
+      q.prev[2] += dz * f;
     }
     // sleep: no particle strayed more than 1.5 cm from where it was for half a second
     // (contacts leave a little jitter, so speeds alone never settle)
@@ -198,11 +281,12 @@ export class Ragdoll {
         const a = this.particles[i]!.p, b = this.ref[i]!;
         drift = Math.max(drift, Math.abs(a[0] - b[0]), Math.abs(a[1] - b[1]), Math.abs(a[2] - b[2]));
       }
-    if (drift >= 0.015) {
+    if (drift >= 0.015 && maxMove > 0.06) {
       this.ref = this.particles.map((q) => vcopy(q.p));
       this.still = 0;
     } else this.still += h;
-    if (this.still > 0.5 && this.time > 0.8) this.asleep = true;
+    this.lastMax = maxMove;
+    if (this.still > 0.4 && this.time > 0.8) this.asleep = true;
   }
 
   private collide(final: boolean): void {
@@ -226,10 +310,12 @@ export class Ragdoll {
           const vn = vdot(v, c.normal);
           const nx = c.normal[0] * vn, ny = c.normal[1] * vn, nz = c.normal[2] * vn;
           const tx = (v[0] - nx) * this.friction, ty = (v[1] - ny) * this.friction, tz = (v[2] - nz) * this.friction;
-          const keepN = vn < 0 ? 0 : 1;
-          q.prev[0] = q.p[0] - (tx + nx * keepN);
-          q.prev[1] = q.p[1] - (ty + ny * keepN);
-          q.prev[2] = q.p[2] - (tz + nz * keepN);
+          // no bounce: moving into the surface stops; moving off it is capped (being pushed out
+          // of a surface is not a throw)
+          const sep = vn < 0 ? 0 : Math.min(1, (0.6 * this.substep) / Math.max(vn, 1e-9));
+          q.prev[0] = q.p[0] - (tx + nx * sep);
+          q.prev[1] = q.p[1] - (ty + ny * sep);
+          q.prev[2] = q.p[2] - (tz + nz * sep);
         }
         if (k === 0) break;
       }
@@ -239,33 +325,46 @@ export class Ragdoll {
   private solve(c: RagdollConstraint): void {
     const P = this.particles;
     if (c.kind === 'hinge') {
-      const a = P[c.a]!.p, m = P[c.m]!, cc = P[c.c]!.p;
+      const A = P[c.a]!, M = P[c.m]!, C = P[c.c]!;
+      const a = A.p, cc = C.p;
       const f0 = P[c.f0]!.p, f1 = P[c.f1]!.p;
-      // direction the joint must bend towards
-      let fx = f1[0] - f0[0], fy = f1[1] - f0[1], fz = f1[2] - f0[2];
       const lx = cc[0] - a[0], ly = cc[1] - a[1], lz = cc[2] - a[2];
       const ll = lx * lx + ly * ly + lz * lz;
       if (ll < 1e-8) return;
-      // keep only the part of the direction orthogonal to the limb line
-      const fd = (fx * lx + fy * ly + fz * lz) / ll;
-      fx -= lx * fd;
-      fy -= ly * fd;
-      fz -= lz * fd;
+      // the side the joint may lie on: sign * (line x side axis), across the line
+      const rx = f1[0] - f0[0], ry = f1[1] - f0[1], rz = f1[2] - f0[2];
+      let fx = (ly * rz - lz * ry) * c.sign, fy = (lz * rx - lx * rz) * c.sign, fz = (lx * ry - ly * rx) * c.sign;
       const fl = Math.hypot(fx, fy, fz);
-      if (fl < 1e-6) return;
+      // (a limb along the side axis, as in the splits, has no defined side)
+      if (fl < 1e-4 * Math.sqrt(ll) * (Math.hypot(rx, ry, rz) + 1e-9)) return;
       fx /= fl;
       fy /= fl;
       fz /= fl;
-      // offset of the middle particle from the line
-      const t = ((m.p[0] - a[0]) * lx + (m.p[1] - a[1]) * ly + (m.p[2] - a[2]) * lz) / ll;
-      const ox = m.p[0] - (a[0] + lx * t), oy = m.p[1] - (a[1] + ly * t), oz = m.p[2] - (a[2] + lz * t);
-      const side = (ox * fx + oy * fy + oz * fz) * c.sign;
-      if (side >= 0 || m.w === 0) return;
-      // move the joint back onto the allowed side (a little past the line)
-      const k = (-side + 0.004) * c.sign;
-      m.p[0] += fx * k;
-      m.p[1] += fy * k;
-      m.p[2] += fz * k;
+      const t = ((M.p[0] - a[0]) * lx + (M.p[1] - a[1]) * ly + (M.p[2] - a[2]) * lz) / ll;
+      const ox = M.p[0] - (a[0] + lx * t), oy = M.p[1] - (a[1] + ly * t), oz = M.p[2] - (a[2] + lz * t);
+      const side = ox * fx + oy * fy + oz * fz;
+      if (side >= 0) return;
+      // only a nearly straight limb can bend the wrong way; a folded one's line is short and its
+      // side ill-defined (enforcing it there only shakes the joint)
+      const span = Math.hypot(M.p[0] - a[0], M.p[1] - a[1], M.p[2] - a[2]) + Math.hypot(cc[0] - M.p[0], cc[1] - M.p[1], cc[2] - M.p[2]);
+      const straight = Math.sqrt(ll) / (span || 1);
+      const weight = straight <= 0.55 ? 0 : straight >= 0.8 ? 1 : ((straight - 0.55) / 0.25) ** 2 * (3 - (2 * (straight - 0.55)) / 0.25);
+      if (weight <= 0) return;
+      // back onto the allowed side (a little past the line), shared by the three joints by
+      // their masses so the limb as a whole is not pushed anywhere
+      const d = (-side + 0.004) * weight;
+      const W = M.w + 0.25 * (A.w + C.w);
+      if (W <= 0) return;
+      const km = (d * M.w) / W, ka = (-0.5 * d * A.w) / W, kc = (-0.5 * d * C.w) / W;
+      M.p[0] += fx * km;
+      M.p[1] += fy * km;
+      M.p[2] += fz * km;
+      A.p[0] += fx * ka;
+      A.p[1] += fy * ka;
+      A.p[2] += fz * ka;
+      C.p[0] += fx * kc;
+      C.p[1] += fy * kc;
+      C.p[2] += fz * kc;
       return;
     }
     const a = P[c.a]!, b = P[c.b]!;
