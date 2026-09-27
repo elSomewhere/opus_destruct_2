@@ -172,10 +172,11 @@ class RigidWorld {
   // Contacts of the last substep's final solve (read by the fracture layer / structure loads).
   const std::vector<Contact>& contacts() const { return contacts_; }
 
-  // One substep of dt. `fracture` (optional) runs after the contact solve; if it returns true it
-  // changed the bodies (split / removed / added): all velocities are rolled back to their
-  // pre-solve values and contacts are generated and solved again before positions move.
-  void substep(f64 dt, const VoxelGrid& g, const std::function<bool(f64 dt)>& fracture);
+  // One substep of dt. `fracture` (optional) runs after the contact solve and returns 0 (nothing
+  // changed), 1 (bodies were split / removed / added: the contacts are carried over to the new
+  // body list) or 2 (as 1, and velocities are rolled back to their pre-solve values and the step
+  // solved again with the new bodies, before positions move).
+  void substep(f64 dt, const VoxelGrid& g, const std::function<int(f64 dt)>& fracture);
   void add(std::unique_ptr<Body> b);               // keeps id order
   void remove_if(const std::function<bool(const Body&)>& pred);
   void wake_box(const V3& lo, const V3& hi);       // wakes bodies overlapping a world box

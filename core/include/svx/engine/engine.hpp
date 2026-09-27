@@ -88,6 +88,7 @@ struct EngineConfig {
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
   f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)
   i32 body_check_ticks = 12;       // steady contact: re-check every so many substeps
+  i32 rollback_part_voxels = 500;   // a part at least this large coming apart re-solves the contact step
   i32 min_body_voxels = 16;        // smaller pieces (breaking off, or coming loose) turn to dust, not rigid pieces
   f64 fade_time = 1.0;
   // blasts
@@ -348,7 +349,7 @@ class Engine {
   // ---- bodies (engine_bodies.cpp)
   // A body from world fragments (their voxels leave the grid), with a velocity field.
   Body* make_body_from_world(const std::vector<FragKey>& frags, const V3& v, const V3& w);
-  bool fracture_hook(f64 dt);                // rigid substep hook: body stress, splits
+  int fracture_hook(f64 dt);                 // rigid substep hook: body stress, splits (0 none, 1 bodies changed, 2 solve again)
   struct PointForce {
     i32 frag;                                // body fragment
     V3 F, p;                                 // world force and point
@@ -449,6 +450,7 @@ class Engine {
   std::vector<i64> pending_retire_;
   i32 crack_budget_ = 0;
   i32 impact_budget_ = 0;
+  bool rollback_ = false;  // (fracture hook) a part of some size came apart: the contact step is solved again
   std::unordered_set<u64> undesigned_;  // streamed chunks generated and not designed yet
   i32 ensuring_ = 0;  // (nesting of first-touch chunk generation)
   i64 impact_count_tick_ = 0;

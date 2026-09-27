@@ -720,6 +720,18 @@ bool Engine::split_body(Body& b, bool use_pre, bool force_replace) {
     const i32 c = f >= 0 ? frag_comp[size_t(f)] : -1;
     if (c >= 0) parts[size_t(c)].push_back(i);
   }
+  // A part of some size came apart in this contact step: the step is solved again without the
+  // piece (its parts keep the velocity they had before it). Chips only: they take the velocity the
+  // step left the piece with, and the step stands.
+  bool separated = false;
+  if (use_pre && nc > 1) {
+    std::vector<size_t> sizes;
+    for (const auto& part : parts) sizes.push_back(part.size());
+    std::sort(sizes.rbegin(), sizes.rend());
+    separated = sizes.size() > 1 && static_cast<i32>(sizes[1]) >= cfg_.rollback_part_voxels;
+    if (separated) rollback_ = true;
+    else use_pre = false;
+  }
   for (auto& part : parts) {
     if (part.empty()) continue;
     if (nc > 1 && static_cast<i32>(part.size()) < cfg_.min_body_voxels) {
@@ -747,7 +759,7 @@ bool Engine::split_body(Body& b, bool use_pre, bool force_replace) {
       continue;
     }
     pending_add_.push_back(sub_body(b, part, frag_comp, use_pre));
-    if (use_pre && nc > 1) {
+    if (separated) {
       // (broken in this substep's collision: the parts part for the rest of it)
       pending_add_.back()->family = b.id;
       pending_add_.back()->family_ticks = 1;
@@ -814,7 +826,8 @@ void spread_contact_forces(std::vector<PF>& fs) {
 
 }  // namespace
 
-bool Engine::fracture_hook(f64 dt) {
+int Engine::fracture_hook(f64 dt) {
+  rollback_ = false;
   const auto& cs = rigid_.contacts();
   const size_t nb = rigid_.bodies.size();
   std::vector<std::vector<PointForce>> per(nb);
@@ -959,6 +972,7 @@ bool Engine::fracture_hook(f64 dt) {
   }
   const auto f3 = FClock::now();
   flush_body_changes();
+  const int result = rollback_ ? 2 : (changed ? 1 : 0);
   static const bool fprof = std::getenv("SVX_PROFILE_FRACTURE") != nullptr;
   if (fprof) {
     auto ms = [](FClock::time_point a, FClock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
@@ -984,7 +998,7 @@ bool Engine::fracture_hook(f64 dt) {
       nchecks = big = 0;
     }
   }
-  return changed;
+  return result;
 }
 
 void Engine::carve_bodies(const V3& c, f64 r) {

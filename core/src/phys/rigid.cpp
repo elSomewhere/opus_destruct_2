@@ -700,7 +700,7 @@ bool RigidWorld::busy() const {
   return false;
 }
 
-void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<bool(f64)>& fracture) {
+void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<int(f64)>& fracture) {
   busy_ = busy();
   set_step(dt);
   using Clock = std::chrono::steady_clock;
@@ -725,9 +725,42 @@ void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<bool(f6
     cid[k] = {bodies[size_t(contacts_[k].a)]->id, contacts_[k].b >= 0 ? bodies[size_t(contacts_[k].b)]->id : -1};
   std::vector<i64> before_ids(bodies.size());
   for (size_t i = 0; i < bodies.size(); ++i) before_ids[i] = bodies[i]->id;
-  const bool changed = fracture && fracture(dt);
+  const int changed = fracture ? fracture(dt) : 0;
   const auto t3 = Clock::now();
-  if (changed) {
+  if (changed == 1) {
+    // (bodies changed without a re-solve: the step's contacts and position corrections carry over
+    // to the new body list; the new pieces collide from the next substep)
+    auto index_of = [&](i64 id) -> i32 {
+      auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
+      return (it != bodies.end() && (*it)->id == id) ? static_cast<i32>(it - bodies.begin()) : -1;
+    };
+    std::vector<Contact> kept;
+    kept.reserve(contacts_.size());
+    for (size_t k = 0; k < contacts_.size(); ++k) {
+      const i32 a = index_of(cid[k].first);
+      const i32 b = cid[k].second >= 0 ? index_of(cid[k].second) : -1;
+      if (a < 0 || (cid[k].second >= 0 && b < 0)) continue;
+      Contact c = contacts_[k];
+      c.a = a;
+      c.b = b;
+      kept.push_back(c);
+    }
+    contacts_.swap(kept);
+    std::vector<V3> pv(bodies.size()), pw(bodies.size());
+    for (size_t i = 0; i < bodies.size(); ++i) {
+      const auto it = std::lower_bound(before_ids.begin(), before_ids.end(), bodies[i]->id);
+      if (it != before_ids.end() && *it == bodies[i]->id) {
+        const size_t old = static_cast<size_t>(it - before_ids.begin());
+        if (old < pseudo_v_.size()) {
+          pv[i] = pseudo_v_[old];
+          pw[i] = pseudo_w_[old];
+        }
+      }
+    }
+    pseudo_v_.swap(pv);
+    pseudo_w_.swap(pw);
+  }
+  if (changed == 2) {
     for (auto& bp : bodies) {
       Body& b = *bp;
       if (b.asleep) continue;
