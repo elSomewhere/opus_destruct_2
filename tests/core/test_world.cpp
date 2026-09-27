@@ -403,3 +403,27 @@ TEST_CASE("world: free voxels written into the air become a piece (dropping and 
   CHECK(b->x.x > p.pos.x + 2.0);
   CHECK(b->x.z < p.pos.z);
 }
+
+TEST_CASE("world: extractions of a structure too large for one never chase each other") {
+  // A 40 m wall, extractions limited to 6 m around their seed: touched at two places 5 m apart,
+  // the two structures meet between them (each is the other's frontier) and stay registered.
+  WorldConfig cfg;
+  cfg.structure_max_radius = 6.0;
+  World w;
+  w.configure(cfg);
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-8, -8, -4}, {336, 16, 0}, kRock);
+  box(g, {0, 0, 0}, {320, 2, 24}, kConcrete);
+  g.compact();
+  w.load(std::move(g));
+  REQUIRE(w.bake());
+  const i64 e0 = w.stats().extractions;
+  w.carve({15.0, 0.1, 2.5}, 0.3);
+  w.carve({20.0, 0.1, 2.5}, 0.3);
+  for (int t = 0; t < 120; ++t) w.tick();
+  const i64 extractions = w.stats().extractions - e0;
+  MESSAGE("extractions after two carves and 2 s: " << extractions);
+  CHECK(extractions <= 8);
+  CHECK(w.stats().structures >= 2);
+}

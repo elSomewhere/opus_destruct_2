@@ -291,7 +291,13 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
           if (slot == -1) {
             FragChunk* gfc = frag_chunk_if(G.chunk);
             const V3 gc = gfc->frags[size_t(G.idx)].com;
-            if (static_cast<i32>(members.size()) < max_nodes && norm(gc - seed_pos) <= max_radius) {
+            // (a fragment of another registered structure is part of its frontier: structures
+            // never overlap. Taking it over would leave the rest of that structure to be
+            // extracted again, which in a world too large for one extraction takes over this
+            // one in turn: extractions chasing each other every tick.)
+            const i64 other = owner_of(G);
+            const bool owned = other != 0 && other != s->id && structure(other) != nullptr;
+            if (!owned && static_cast<i32>(members.size()) < max_nodes && norm(gc - seed_pos) <= max_radius) {
               slot = static_cast<i32>(members.size());
               members.push_back(G);
             } else {
