@@ -63,6 +63,15 @@ Body* World::make_body_from_world(const std::vector<FragKey>& frags, const V3& v
     S.frag[size_t(i)] = static_cast<u32>(vfrag[k] + 1);
     ++S.count;
   }
+  // (the voxels' layer values go with them)
+  for (int L = 0; L < static_cast<int>(layer_specs_.size()); ++L)
+    for (const IVec3& p : vox) {
+      const u8 v = grid_.layer(L, p);
+      if (!v) continue;
+      if (S.layer[size_t(L)].empty()) S.layer[size_t(L)].assign(cells, 0);
+      S.layer[size_t(L)][size_t(S.index(p))] = v;
+      grid_.set_layer(L, p, 0);
+    }
   for (const IVec3& p : vox) {
     const i32 i = S.index(p);
     for (int a = 0; a < 3; ++a) {
@@ -621,6 +630,8 @@ bool World::pulverize(Body& b, const std::vector<i32>& crushed) {
     S.vox[size_t(i)] = kAir;
     S.frag[size_t(i)] = 0;
     S.brk[size_t(i)] = 0;
+    for (auto& l : S.layer)
+      if (!l.empty()) l[size_t(i)] = 0;
     ++removed;
   }
   if (!removed) return false;
@@ -674,6 +685,12 @@ std::unique_ptr<Body> World::sub_body(const Body& parent, const std::vector<i32>
     const i32 fp = static_cast<i32>(P.frag[size_t(i)]) - 1;
     S.frag[size_t(j)] = fp >= 0 ? static_cast<u32>(remap[size_t(fp)] + 1) : 0;
     S.brk[size_t(j)] = P.brk[size_t(i)];
+    for (int L = 0; L < kMaxLayers; ++L) {
+      const u8 v = P.layer_at(L, i);
+      if (!v) continue;
+      if (S.layer[size_t(L)].empty()) S.layer[size_t(L)].assign(cells, 0);
+      S.layer[size_t(L)][size_t(j)] = v;
+    }
     ++S.count;
   }
   body_refresh(*c, grid_.h, cfg_.rigid.max_points);
@@ -878,10 +895,13 @@ int World::fracture_hook(f64 dt) {
     const bool impact = approach[i] > v_min && fsum[i] > cfg_.body_trigger * weight && b.stress_cooldown <= cfg_.body_check_ticks - 2;
     // resting on new supports (a first landing, rubble shifting under it, a load put on it):
     // checked once, again when the supporting forces changed by much of its weight
-    const bool steady = fsum[i] > 0.5 * weight && b.stress_cooldown <= 0 && std::abs(fsum[i] - b.last_load) > 0.5 * weight;
+    // (or its strengths changed: damage, a fire eating into it)
+    const bool steady = fsum[i] > 0.5 * weight && b.stress_cooldown <= 0 &&
+                        (std::abs(fsum[i] - b.last_load) > 0.5 * weight || b.recheck);
     const f64 wr = norm(b.w);
     const bool spin = wr * wr * b.radius > 2.0 * cfg_.rigid.gravity && b.stress_cooldown <= 0;
     if (!impact && !steady && !spin) continue;
+    b.recheck = false;
     if (impact && dissipated[i] > cfg_.impact_event_energy && impact_budget_ > 0) {
       // (a heavy landing: dust and camera shake at its contacts)
       V3 at;
@@ -1022,6 +1042,8 @@ void World::carve_bodies(const V3& c, f64 r) {
           if (material(vox_mat(b.shape.vox[size_t(i)])).ductile) continue;  // (as in the world)
           b.shape.vox[size_t(i)] = kAir;
           b.shape.frag[size_t(i)] = 0;
+          for (auto& l : b.shape.layer)
+            if (!l.empty()) l[size_t(i)] = 0;
           ++removed;
         }
     if (!removed) continue;
@@ -1076,6 +1098,7 @@ i64 World::body_bytes(const Body& b) {
   const BodyShape& S = b.shape;
   i64 n = sizeof(Body) + vec_bytes(S.vox) + vec_bytes(S.frag) + vec_bytes(S.brk) + vec_bytes(b.frags) + vec_bytes(b.pts) +
           vec_bytes(b.pt_vox) + vec_bytes(b.wpts);
+  for (const auto& l : S.layer) n += vec_bytes(l);
   if (b.graph) {
     const BodyGraph& G = *b.graph;
     n += sizeof(BodyGraph) + G.P.memory_bytes() + vec_bytes(G.frag_node) + vec_bytes(G.node_com) + vec_bytes(G.node_mass) +

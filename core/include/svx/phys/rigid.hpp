@@ -31,6 +31,8 @@ struct BodyShape {
   std::vector<Vox> vox;               // air or a (non-anchored) voxel value
   std::vector<u32> frag;              // body fragment + 1 (0 none) (a large piece has more than 2^16)
   std::vector<u8> brk;                // broken face bits (+x, +y, +z), like the grid
+  // the voxels' layer values (grid.hpp: damage, heat, ...), per cell; empty: all zero
+  std::array<std::vector<u8>, kMaxLayers> layer;
   i32 count = 0;                      // solid voxels
   i32 index(const IVec3& p) const {   // -1 outside
     const i32 x = p[0] - lo[0], y = p[1] - lo[1], z = p[2] - lo[2];
@@ -42,6 +44,7 @@ struct BodyShape {
     const i32 i = index(p);
     return i < 0 ? kAir : vox[size_t(i)];
   }
+  u8 layer_at(int L, i32 i) const { return i < 0 || layer[size_t(L)].empty() ? 0 : layer[size_t(L)][size_t(i)]; }
   bool broken(const IVec3& p, int axis) const {  // the face between p and p + e_axis
     const i32 i = index(p);
     return i >= 0 && ((brk[size_t(i)] >> axis) & 1) != 0;
@@ -83,6 +86,9 @@ struct Body {
   f64 age = 0.0;
   // (world) reported to the host (PieceAdded); the piece it broke from (0: the static world)
   bool announced = false;
+  // external forces during this tick (World::apply_force; cleared after the tick)
+  V3 force, torque;
+  bool recheck = false;  // (its strengths changed: its stress is checked again at its next contact)
   i64 parent = 0;
   // world data (fracture layer)
   std::shared_ptr<BodyGraph> graph;

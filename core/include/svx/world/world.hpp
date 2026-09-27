@@ -32,7 +32,9 @@
 
 #include <array>
 #include <functional>
+#include <map>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -242,8 +244,44 @@ struct MemoryReport {
   i64 archive = 0;     // changes of chunks that are not resident (streaming)
   i64 caches = 0;      // warm starts, reference loads, resting loads of sleeping pieces
   i64 queues = 0;      // output the host has not taken yet (events, changed / evicted chunks)
+  i64 systems = 0;     // the systems' own state (WorldSystem::memory_bytes)
   i32 chunks = 0, fragment_chunks = 0, structure_count = 0, piece_count = 0, archived_chunks = 0;
-  i64 total() const { return grid + fragments + structures + pieces + archive + caches + queues; }
+  i64 total() const { return grid + fragments + structures + pieces + archive + caches + queues + systems; }
+};
+
+class World;
+
+// A system stepped with the world: fire, fluids, weather, ... (svx_env, or a host's own). It
+// reads and changes the world through World's public API; the world tells it what it could not
+// see coming (loads, streaming, voxel changes). The core knows no system; systems may know each
+// other (through their host).
+class WorldSystem {
+ public:
+  virtual ~WorldSystem() = default;
+  virtual const char* name() const = 0;
+  virtual void attach(World& w) { (void)w; }  // added to w (register layers here)
+  virtual void on_load(World& w) { (void)w; }  // w loaded a new grid (its state went with the old one)
+  // Streaming: chunks generated (their layers as the source made them) / evicted (the system's
+  // state there goes: a chunk's persistent layers come back with it).
+  virtual void on_generated(World& w, const std::vector<u64>& chunks) { (void)w, (void)chunks; }
+  virtual void on_evicted(World& w, const std::vector<u64>& chunks) { (void)w, (void)chunks; }
+  // Voxels changed in these chunks this tick (carves, detachments, edits, generation).
+  virtual void on_voxels_changed(World& w, const std::vector<u64>& chunks) { (void)w, (void)chunks; }
+  virtual void step(World& w, f64 dt) = 0;  // once per tick, after the mechanics
+  virtual i64 memory_bytes() const { return 0; }
+  virtual u64 state_hash() const { return 0; }  // (determinism checks: mixed into session_hash)
+};
+
+// A force on a voxel of the static world (World::set_loads): N, at the voxel's centre.
+struct VoxelLoad {
+  IVec3 voxel{0, 0, 0};
+  V3 force;
+};
+
+// One layer value write (World::set_layer, set_piece_layer).
+struct LayerEdit {
+  IVec3 p{0, 0, 0};
+  u8 v = 0;
 };
 
 class World {
@@ -322,6 +360,32 @@ class World {
   std::vector<PieceState> pieces() const;  // id order
   const Body* piece(i64 id) const;         // shape, fragments and state (nullptr: gone)
   const RigidWorld& rigid() const { return rigid_; }
+
+  // ---- extensions: layers, loads, forces, systems (world_ext.cpp)
+  // Layers (grid.hpp): per-voxel byte channels. Layer kDamageLayer is the core's: a voxel's
+  // damage (0 intact .. 255 no strength left) takes the strength of every bond section it is in
+  // (fire, corrosion, rot, ... write it). Pieces carry their voxels' layer values.
+  static constexpr int kDamageLayer = 0;
+  int add_layer(const LayerSpec& spec);  // its index (the existing one for a name added before); -1: full
+  int layer_index(const std::string& name) const { return grid_.layer_index(name); }
+  u8 layer(int L, const IVec3& p) const { return grid_.layer(L, p); }
+  i32 set_layer(int L, const std::vector<LayerEdit>& edits);  // returns the values changed
+  std::vector<u64> take_layer_changes(int L) { return grid_.take_layer_dirty(L); }
+  u8 piece_layer(i64 piece, int L, const IVec3& shape_voxel) const;
+  i32 set_piece_layer(i64 piece, int L, const std::vector<LayerEdit>& shape_voxels);
+  // Removes voxels of a piece (burnt out, melted, ...): what is left is one or more new pieces
+  // (PieceRemoved Split, PieceAdded with this one as parent). dust: a Dust event per piece.
+  bool remove_piece_voxels(i64 piece, const std::vector<IVec3>& shape_voxels, bool dust);
+  // Loads on the static world, by group (a system's, a chunk's, ...): replaces the group's
+  // loads; they stay until replaced (an empty list removes them). Structures under loads that
+  // are new or change are solved again; the design pass designs for them.
+  void set_loads(u64 group, std::vector<VoxelLoad> loads);
+  // A force on a piece during the next tick (N at a world point: buoyancy, drag, wind). It
+  // does not wake a sleeping piece.
+  void apply_force(i64 piece, const V3& point, const V3& force);
+  // Systems, stepped in the order they were added.
+  void add_system(std::shared_ptr<WorldSystem> s);
+  const std::vector<std::shared_ptr<WorldSystem>>& systems() const { return systems_; }
 
   // ---- queries (no state change)
   RayHit raycast(const V3& origin, const V3& dir, f64 max_dist) const;  // the world's voxels and the pieces
@@ -527,6 +591,19 @@ class World {
   bool forget_regions(size_t need, u64 keep);  // (need bytes free; `keep`: never this region)
   void forget_region(u64 region);
   void forget_stale_regions();
+
+  // extensions
+  std::vector<LayerSpec> layer_specs_;
+  std::vector<std::shared_ptr<WorldSystem>> systems_;
+  std::map<u64, std::vector<VoxelLoad>> loads_;  // group -> loads (ordered: sums in the same order everywhere)
+  std::unordered_set<u64> host_dirty_;            // chunks changed since the host last took them
+  bool host_dirty_all_ = false;
+  std::vector<u64> sys_changed_, sys_generated_, sys_evicted_;  // (for the systems' next step)
+  void refresh_strengths(const std::vector<u64>& chunks);  // (the damage layer changed there)
+  void finish_tick_changes();                              // voxel changes: to the systems and the host
+  void step_systems();
+  void add_external_loads();                               // (finish_loads)
+  void add_loads_to(const Structure& s, std::vector<f64>& F) const;  // (design solves)
 
   // memory budgets (MemoryBudget)
   void enforce_budgets();

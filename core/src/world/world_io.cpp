@@ -81,7 +81,8 @@ bool World::bake(f64* ms) {
         continue;
       }
       std::fill(s->ext_solved.begin(), s->ext_solved.end(), 0.0);
-      const std::vector<f64> F = load_vector(*s);
+      std::vector<f64> F = load_vector(*s);
+      add_loads_to(*s, F);  // (a dam is designed for its water)
       static const bool dbg = diag("SVX_DEBUG");
       const auto ts = Clock::now();
       const PcgResult pr = s->P.solve(F, s->u, 1e-6, 4000, true);
@@ -275,6 +276,7 @@ bool World::generate_chunk(u64 key) {
 void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
   const IVec3 cc = unkey3(key);
   generated_.insert(key);
+  sys_generated_.push_back(key);
   ++column_count_[key3(cc[0], cc[1], 0)];
   ++region_resident_[region_of(key)];
   ++st_.generated_total;
@@ -284,6 +286,21 @@ void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
     changed = true;
   } else {
     grid_.release_buffer(std::move(v));
+  }
+  // (the source's layers: water of a lake, ...)
+  for (int L = 0; L < static_cast<int>(layer_specs_.size()); ++L) {
+    std::vector<u8> lv;
+    if (!source_->generate_layer(cc, layer_specs_[size_t(L)].name, lv) || lv.size() != size_t(kChunkVox)) continue;
+    const IVec3 b{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
+    const bool tracked = grid_.tracking();
+    grid_.track_changes(false);  // (generated: not a change)
+    for (int i = 0; i < kChunkVox; ++i)
+      if (lv[size_t(i)]) {
+        const IVec3 l = local_of(i);
+        grid_.set_layer(L, {b[0] + l[0], b[1] + l[1], b[2] + l[2]}, lv[size_t(i)]);
+      }
+    grid_.track_changes(tracked);
+    changed = true;
   }
   if (archive_->has(key)) {
     grid_.track_changes(true);
@@ -328,6 +345,7 @@ void World::evict_chunk(u64 k) {
   undesigned_.erase(k);
   const u64 region = region_of(k);
   if (grid_.is_modified(k)) archive_record(k, grid_.chunk_record(k));
+  sys_evicted_.push_back(k);
   archive_->seen(region, st_.ticks);
   if (const auto rt = region_resident_.find(region); rt != region_resident_.end() && --rt->second <= 0) region_resident_.erase(rt);
   const bool resident = grid_.chunk(cc) != nullptr;
@@ -542,15 +560,45 @@ int World::stream_update() {
   return generated;
 }
 
+void World::add_loads_to(const Structure& s, std::vector<f64>& F) const {
+  for (const auto& [group, list] : loads_)
+    for (const VoxelLoad& l : list) {
+      const IVec3 cc = chunk_of(l.voxel);
+      const u64 k = key3(cc[0], cc[1], cc[2]);
+      const auto ft = frags_.find(k);
+      if (ft == frags_.end()) continue;
+      const i32 f = ft->second.at(chunk_index(l.voxel));
+      if (f < 0) continue;
+      const i32 i = s.node({k, f});
+      if (i < 0) continue;
+      const V3 p{grid_.h * l.voxel[0], grid_.h * l.voxel[1], grid_.h * l.voxel[2]};
+      const V3 M = cross(p - s.P.nodes[size_t(i)].c, l.force);
+      f64* a = &F[6 * size_t(i)];
+      a[0] += l.force.x;
+      a[1] += l.force.y;
+      a[2] += l.force.z;
+      a[3] += M.x;
+      a[4] += M.y;
+      a[5] += M.z;
+    }
+}
+
 bool World::modified() const { return !grid_.modified_chunks().empty() || archive_->size() > 0; }
 
 // ---------------------------------------------------------------------------------------------
 // Output
 
 std::vector<u64> World::take_changed_chunks() {
-  std::vector<u64> keys = grid_.take_dirty();
+  finish_tick_changes();  // (changes since the last tick: the systems hear of them at the next)
+  std::vector<u64> keys;
+  if (host_dirty_all_) {
+    for (const auto& [k, c] : grid_.chunks()) keys.push_back(k);
+    host_dirty_all_ = false;
+  } else {
+    keys.assign(host_dirty_.begin(), host_dirty_.end());
+  }
+  std::unordered_set<u64>().swap(host_dirty_);
   std::sort(keys.begin(), keys.end());
-  keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
   return keys;
 }
 
@@ -645,7 +693,10 @@ MemoryReport World::memory() const {
   m.caches = hash_bytes(warm_u_) + hash_bytes(judged_) + hash_bytes(dead_loads_);
   for (const auto& [id, l] : dead_loads_) m.caches += vec_bytes(l);
   m.caches += hash_bytes(generated_) + hash_bytes(column_count_) + hash_bytes(undesigned_);
-  m.queues = vec_bytes(events_) + vec_bytes(evicted_chunks_) + vec_bytes(queue_) + vec_bytes(seeds_) + grid_.dirty_bytes();
+  m.queues = vec_bytes(events_) + vec_bytes(evicted_chunks_) + vec_bytes(queue_) + vec_bytes(seeds_) + grid_.dirty_bytes() +
+             hash_bytes(host_dirty_) + vec_bytes(sys_changed_) + vec_bytes(sys_generated_) + vec_bytes(sys_evicted_);
+  for (const auto& [g, l] : loads_) m.caches += vec_bytes(l) + 48;
+  for (const auto& sys : systems_) m.systems += sys->memory_bytes();
   return m;
 }
 
@@ -663,7 +714,7 @@ u64 World::state_hash() const {
     Vox v0 = c.uniform ? c.value : (c.v.empty() ? kAir : c.v[0]);
     if (!uni) uni = std::all_of(c.v.begin(), c.v.end(), [&](Vox v) { return v == v0; });
     const bool any_broken = std::any_of(c.broken.begin(), c.broken.end(), [](u8 b) { return b != 0; });
-    if (uni && v0 == kAir && !any_broken) continue;
+    if (uni && v0 == kAir && !any_broken && !c.has_layers()) continue;
     mix(k);
     if (uni) {
       mix(v0);
@@ -672,6 +723,11 @@ u64 World::state_hash() const {
     }
     if (any_broken)
       for (u8 b : c.broken) mix(b);
+    for (int L = 0; L < kMaxLayers; ++L)
+      if (!c.layer[size_t(L)].empty()) {
+        mix(0x1A7E0000ull + static_cast<u64>(L));
+        for (u8 v : c.layer[size_t(L)]) mix(v);
+      }
   }
   return hsh;
 }
@@ -695,6 +751,7 @@ u64 World::session_hash() const {
     mix(bits(b.q.z));
     mix(bits(b.q.w));
   }
+  for (const auto& sys : systems_) mix(sys->state_hash());
   return hsh;
 }
 
@@ -891,6 +948,7 @@ void World::design_structure(Structure& s, bool dry) {
   const size_t n = s.P.nodes.size();
   std::vector<f64> F(6 * n, 0.0);
   for (size_t i = 0; i < n; ++i) F[6 * i + 2] = -s.weight[i];
+  add_loads_to(s, F);  // (a dam is designed for its water)
   std::vector<f64> u(6 * n, 0.0);
   const PcgResult r = s.P.solve(F, u, 1e-5, 2000, false);
   if (r.breakdown || !std::isfinite(r.rel_res)) {

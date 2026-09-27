@@ -381,6 +381,7 @@ struct World::Structure {
   bool pending_impact = false, reload = false;
   std::vector<f64> peak_mag;
   bool solving = true, stale = false, shock = true, dead = false;
+  bool rejudge = false;            // strengths changed (damage): judged again at the current solution
   std::vector<u64> changed;        // chunks re-fragmented since the structure was made (stale)
   i32 gone = 0;                    // retired nodes (detached / carved away)
   i32 run_iters = 0;               // PCG iterations of the solve in progress

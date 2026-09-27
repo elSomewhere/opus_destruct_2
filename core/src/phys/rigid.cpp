@@ -224,6 +224,8 @@ void RigidWorld::integrate_velocities(f64 dt) {
     Body& b = *bp;
     if (b.asleep) continue;
     b.v.z -= par.gravity * dt;
+    if (norm2(b.force) > 0.0) b.v += b.force * (b.inv_mass * dt);  // (external: World::apply_force)
+    if (norm2(b.torque) > 0.0) b.w += b.inv_inertia_world() * b.torque * dt;
     b.v *= ld;
     b.w *= ad;
     const f64 s = norm(b.v);

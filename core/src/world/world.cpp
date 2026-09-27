@@ -25,7 +25,9 @@ using Clock = std::chrono::steady_clock;
 inline f64 ms_since(Clock::time_point t0) { return std::chrono::duration<f64, std::milli>(Clock::now() - t0).count(); }
 }  // namespace
 
-World::World() : archive_(std::make_unique<ChangeArchive>()) {}
+World::World() : archive_(std::make_unique<ChangeArchive>()) {
+  add_layer({"damage", true});  // (kDamageLayer)
+}
 World::~World() = default;
 World::World(World&&) noexcept = default;
 World& World::operator=(World&&) noexcept = default;
@@ -80,9 +82,21 @@ void World::load(VoxelGrid&& g) {
   dead_loads_.clear();
   blast_loads_.clear();
   undesigned_.clear();
+  // the grid's layers are the world's (by name: a grid made with layers of its own keeps them)
+  for (const LayerSpec& spec : g.layers())
+    if (std::none_of(layer_specs_.begin(), layer_specs_.end(), [&](const LayerSpec& l) { return l.name == spec.name; }) &&
+        static_cast<int>(layer_specs_.size()) < kMaxLayers)
+      layer_specs_.push_back(spec);
+  g.adopt_layers(layer_specs_);
   grid_ = std::move(g);
   for (u64 k : old_keys) grid_.mark_dirty(unkey3(k));
   grid_.mark_all_dirty();
+  loads_.clear();
+  host_dirty_.clear();
+  host_dirty_all_ = false;
+  sys_changed_.clear();
+  sys_generated_.clear();
+  sys_evicted_.clear();
   source_.reset();
   generated_.clear();
   column_count_.clear();
@@ -95,6 +109,7 @@ void World::load(VoxelGrid&& g) {
   design_ = DesignReport{};
   events_ = keep;
   grid_.track_changes(true);
+  for (auto& sys : systems_) sys->on_load(*this);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -174,10 +189,6 @@ bool World::frag_at(const IVec3& p, FragKey* out) {
   out->idx = f;
   return true;
 }
-
-VoxelAt World::voxel_at(const IVec3& p) const { return {grid_.get(p), 0}; }
-
-VoxelAt World::piece_voxel_at(const Body& b, const IVec3& p) const { return {b.shape.get(p), 0}; }
 
 i64 World::owner_of(const FragKey& f) const {
   const auto it = owner_.find(f.chunk);
@@ -631,6 +642,15 @@ void World::step_structures() {
     Structure* sp = structure(id);
     if (!sp) continue;
     Structure& s = *sp;
+    if (s.rejudge) {
+      // (its strengths changed - damage - and its loads did not: judged again as it stands)
+      s.rejudge = false;
+      if (!s.solving && !s.stale && s.P.assembled() && s.u.size() == 6 * s.P.nodes.size()) {
+        s.shock = false;
+        judge(s);
+        continue;
+      }
+    }
     if (!s.solving || s.stale) {
       ++s.idle;
       continue;
@@ -1197,6 +1217,7 @@ void World::finish_loads(int substeps) {
   sleepers.reserve(dead_loads_.size());
   for (const auto& [id, list] : dead_loads_) sleepers.push_back(id);
   std::sort(sleepers.begin(), sleepers.end());
+  add_external_loads();
   for (i64 id : sleepers)
     for (const DeadLoad& d : dead_loads_.at(id)) {
       FragKey f;
@@ -1693,6 +1714,12 @@ void World::tick() {
   }
   if (!out.empty()) remove_bodies(out, PieceEnd::OutOfWorld);
   limit_bodies();
+  for (auto& bp : rigid_.bodies) {  // (forces apply for one tick)
+    bp->force = V3{};
+    bp->torque = V3{};
+  }
+  step_systems();
+  flush_body_changes();
   grid_.compact_changed();
   enforce_budgets();
   announce_bodies();

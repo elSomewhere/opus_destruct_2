@@ -186,6 +186,94 @@ std::vector<u64> VoxelGrid::take_dirty() {
   return out;
 }
 
+int VoxelGrid::add_layer(const LayerSpec& spec) {
+  const int existing = layer_index(spec.name);
+  if (existing >= 0) return existing;
+  if (static_cast<int>(layers_.size()) >= kMaxLayers || spec.name.empty() || spec.name.size() > 255) return -1;
+  layers_.push_back(spec);
+  return static_cast<int>(layers_.size()) - 1;
+}
+
+int VoxelGrid::layer_index(const std::string& name) const {
+  for (size_t i = 0; i < layers_.size(); ++i)
+    if (layers_[i].name == name) return static_cast<int>(i);
+  return -1;
+}
+
+void VoxelGrid::adopt_layers(const std::vector<LayerSpec>& specs) {
+  std::array<int, kMaxLayers> to{};  // old index -> new (-1: dropped)
+  to.fill(-1);
+  for (size_t i = 0; i < layers_.size(); ++i)
+    for (size_t j = 0; j < specs.size(); ++j)
+      if (specs[j].name == layers_[i].name) to[i] = static_cast<int>(j);
+  bool identity = layers_.size() <= specs.size();
+  for (size_t i = 0; i < layers_.size() && identity; ++i) identity = to[i] == static_cast<int>(i);
+  if (!identity)
+    for (auto& [k, c] : chunks_) {
+      std::array<std::vector<u8>, kMaxLayers> nl;
+      std::array<u16, kMaxLayers> nc{};
+      for (size_t i = 0; i < kMaxLayers; ++i) {
+        if (c.layer[i].empty()) continue;
+        if (i < layers_.size() && to[i] >= 0) {
+          nl[size_t(to[i])] = std::move(c.layer[i]);
+          nc[size_t(to[i])] = c.layer_count[i];
+        } else {
+          release_buffer(std::move(c.layer[i]));
+        }
+      }
+      c.layer = std::move(nl);
+      c.layer_count = nc;
+    }
+  layers_ = specs;
+}
+
+u8 VoxelGrid::layer(int L, const IVec3& p) const {
+  if (L < 0 || L >= kMaxLayers) return 0;
+  const Chunk* c = chunk(chunk_of(p));
+  if (!c || c->layer[size_t(L)].empty()) return 0;
+  return c->layer[size_t(L)][size_t(chunk_index(p))];
+}
+
+bool VoxelGrid::set_layer(int L, const IVec3& p, u8 v) {
+  if (L < 0 || L >= static_cast<int>(layers_.size())) return false;
+  const IVec3 cc = chunk_of(p);
+  const u64 key = key3(cc[0], cc[1], cc[2]);
+  auto it = chunks_.find(key);
+  if (it == chunks_.end()) {
+    if (v == 0) return false;
+    it = chunks_.emplace(key, Chunk{}).first;
+  }
+  Chunk& c = it->second;
+  std::vector<u8>& a = c.layer[size_t(L)];
+  if (a.empty()) {
+    if (v == 0) return false;
+    a = acquire_buffer(0);
+  }
+  u8& slot = a[size_t(chunk_index(p))];
+  if (slot == v) return false;
+  if (slot == 0) ++c.layer_count[size_t(L)];
+  if (v == 0) --c.layer_count[size_t(L)];
+  slot = v;
+  if (c.layer_count[size_t(L)] == 0) {
+    release_buffer(std::move(a));
+    a = {};
+  }
+  std::unordered_set<u64>& d = layer_dirty_[size_t(L)];
+  d.insert(key);
+  if (d.size() > std::max<size_t>(65536, 4 * chunks_.size())) d.clear();  // (nobody takes them)
+  if (layers_[size_t(L)].persistent) note_modified(cc);
+  return true;
+}
+
+std::vector<u64> VoxelGrid::take_layer_dirty(int L) {
+  std::vector<u64> out;
+  if (L < 0 || L >= kMaxLayers) return out;
+  out.assign(layer_dirty_[size_t(L)].begin(), layer_dirty_[size_t(L)].end());
+  std::unordered_set<u64>().swap(layer_dirty_[size_t(L)]);
+  std::sort(out.begin(), out.end());
+  return out;
+}
+
 i64 VoxelGrid::solid_count() const {
   i64 s = 0;
   for (const auto& [k, c] : chunks_) s += c.uniform ? (vox_solid(c.value) ? kChunkVox : 0) : c.solid;
@@ -194,7 +282,10 @@ i64 VoxelGrid::solid_count() const {
 
 i64 VoxelGrid::memory_bytes() const {
   i64 b = 0;
-  for (const auto& [k, c] : chunks_) b += sizeof(Chunk) + i64(c.v.size()) + i64(c.broken.size()) + i64(c.strength.size());
+  for (const auto& [k, c] : chunks_) {
+    b += sizeof(Chunk) + i64(c.v.size()) + i64(c.broken.size()) + i64(c.strength.size());
+    for (const auto& l : c.layer) b += i64(l.size());
+  }
   return b;
 }
 
@@ -249,7 +340,7 @@ void VoxelGrid::compact() {
         c.free = vox_free(v0) ? kChunkVox : 0;
       }
     }
-    if (c.uniform && c.value == kAir && c.broken.empty() && c.strength.empty()) it = chunks_.erase(it);
+    if (c.uniform && c.value == kAir && c.broken.empty() && c.strength.empty() && !c.has_layers()) it = chunks_.erase(it);
     else ++it;
   }
 }
@@ -366,14 +457,19 @@ bool upgrade_v1(std::vector<u8>* rec) {
   o.rle(vox);
   o.rle(brk);
   o.u32_(0);  // (strength: no runs = keep the chunk's)
+  o.u8_(0);   // (no layers)
   *rec = std::move(o.b);
   return true;
 }
 
+// A v2 record (voxels, broken bonds, strength classes) as a v3 record (no layers).
+void upgrade_v2(std::vector<u8>* rec) { rec->push_back(0); }
+
 constexpr u32 kDeltaMagic = 0x44585653;  // "SVXD"
 // v1: per chunk voxels, broken bonds, (unused) damage and offset lists; v2: voxels, broken
-// bonds, strength classes. Records are written as v2; v1 deltas are read.
-constexpr u32 kDeltaVersion = 2;
+// bonds, strength classes; v3: and the persistent layers by name. Records are written as v3;
+// v1 and v2 deltas are read.
+constexpr u32 kDeltaVersion = 3;
 
 }  // namespace
 
@@ -392,6 +488,17 @@ std::vector<u8> VoxelGrid::chunk_record(u64 k) const {
   o.rle(vox);
   o.rle(brk);
   o.rle(str);
+  // persistent layers with values here, by name
+  std::vector<int> ls;
+  for (size_t L = 0; L < layers_.size(); ++L)
+    if (layers_[L].persistent && c && !c->layer[L].empty()) ls.push_back(static_cast<int>(L));
+  o.u8_(static_cast<u8>(ls.size()));
+  for (int L : ls) {
+    const std::string& name = layers_[size_t(L)].name;
+    o.u8_(static_cast<u8>(name.size()));
+    for (char ch : name) o.u8_(static_cast<u8>(ch));
+    o.rle(c->layer[size_t(L)]);
+  }
   return std::move(o.b);
 }
 
@@ -411,7 +518,7 @@ bool VoxelGrid::unpack_delta(const std::vector<u8>& bytes, std::vector<std::pair
   In in{bytes};
   if (in.u32_() != kDeltaMagic) return false;
   const u32 version = in.u32_();
-  if (version != 1 && version != kDeltaVersion) return false;
+  if (version < 1 || version > kDeltaVersion) return false;
   const u32 n = in.u32_();
   std::vector<std::pair<u64, std::vector<u8>>> out;
   for (u32 k = 0; k < n; ++k) {
@@ -422,6 +529,7 @@ bool VoxelGrid::unpack_delta(const std::vector<u8>& bytes, std::vector<std::pair
     u64 key = 0;
     for (int i = 0; i < 8; ++i) key |= u64(rec[i]) << (8 * i);
     if (version == 1 && !upgrade_v1(&rec)) return false;
+    if (version == 2) upgrade_v2(&rec);
     out.emplace_back(key, std::move(rec));
   }
   if (!in.ok) return false;
@@ -442,6 +550,7 @@ namespace {
 struct ChunkDelta {
   u64 key = 0;
   std::vector<u8> vox, brk, str;
+  std::vector<std::pair<std::string, std::vector<u8>>> layers;
 };
 
 bool parse_record(const std::vector<u8>& rec, ChunkDelta* cd) {
@@ -453,7 +562,17 @@ bool parse_record(const std::vector<u8>& rec, ChunkDelta* cd) {
   for (int a = 0; a < 3; ++a)
     if (cc[a] < -(1 << 19) || cc[a] >= (1 << 19)) return false;
   if (!in.rle(cd->vox, kChunkVox) || !in.rle(cd->brk, kChunkVox) || !in.rle(cd->str, kChunkVox, true)) return false;
-  if (in.p != rec.size()) return false;
+  const u32 nl = in.u8_();
+  for (u32 k = 0; k < nl && in.ok; ++k) {
+    const u32 len = in.u8_();
+    if (!in.need(len)) return false;
+    std::string name(rec.begin() + static_cast<long>(in.p), rec.begin() + static_cast<long>(in.p + len));
+    in.p += len;
+    std::vector<u8> data;
+    if (!in.rle(data, kChunkVox)) return false;
+    cd->layers.emplace_back(std::move(name), std::move(data));
+  }
+  if (!in.ok || in.p != rec.size()) return false;
   // valid voxel values only: a material id beyond the registry's range is refused
   for (u8 v : cd->vox)
     if ((v & 0x7F) > kMaxMaterials) return false;
@@ -497,6 +616,23 @@ bool VoxelGrid::apply_record(const std::vector<u8>& rec, u64* key_out) {
     if (anys) c.strength = std::move(cd.str);
     else c.strength = {};
   }
+  // persistent layers: the record's (those it does not hold are zero); transient ones stay
+  for (size_t L = 0; L < layers_.size(); ++L) {
+    if (!layers_[L].persistent) continue;
+    std::vector<u8>* data = nullptr;
+    for (auto& [name, d] : cd.layers)
+      if (name == layers_[L].name) data = &d;
+    release_buffer(std::move(c.layer[L]));
+    c.layer[L] = {};
+    c.layer_count[L] = 0;
+    if (!data) continue;
+    u32 n = 0;
+    for (u8 x : *data) n += x != 0;
+    if (n == 0) continue;
+    c.layer[L] = std::move(*data);
+    c.layer_count[L] = static_cast<u16>(n);
+    layer_dirty_[L].insert(cd.key);
+  }
   if (c.solid == 0) compact_.push_back(cd.key);  // (an emptied chunk restored: compacted after the tick)
   c.vox_version = ++vox_seq_;
   note_modified(cc);
@@ -533,6 +669,11 @@ void VoxelGrid::insert_chunk(const IVec3& cc, std::vector<Vox>&& voxels) {
   release_buffer(std::move(c.v));
   release_buffer(std::move(c.broken));
   release_buffer(std::move(c.strength));
+  for (size_t L = 0; L < kMaxLayers; ++L) {
+    release_buffer(std::move(c.layer[L]));
+    c.layer[L] = {};
+    c.layer_count[L] = 0;
+  }
   c.v = std::move(voxels);
   c.broken = {};
   c.strength = {};
@@ -566,9 +707,11 @@ void VoxelGrid::remove_chunk(const IVec3& cc) {
     release_buffer(std::move(it->second.v));
     release_buffer(std::move(it->second.broken));
     release_buffer(std::move(it->second.strength));
+    for (auto& l : it->second.layer) release_buffer(std::move(l));
     chunks_.erase(it);
   }
   dirty_.erase(k);  // (gone: the host hears of it as evicted)
+  for (auto& d : layer_dirty_) d.erase(k);
   forget_modified(k);
 }
 

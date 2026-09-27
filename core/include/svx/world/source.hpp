@@ -2,6 +2,7 @@
 // demand, so a large world is resident only around the focus points (World::enable_streaming).
 #pragma once
 
+#include <string>
 #include <vector>
 
 #include "svx/world/grid.hpp"
@@ -23,6 +24,13 @@ class ChunkSource {
   // a unit that should come back whole, like a city block, so that no building returns in half.
   // Default: 8 x 8 chunk columns (32 m at the default voxel size), all heights.
   virtual u64 region(const IVec3& chunk) const { return key3(chunk[0] >> 3, chunk[1] >> 3, 0); }
+  // The values of a layer (World::add_layer) the source makes, e.g. "water" for its lakes and
+  // seas: kChunkVox values in Chunk::v order; false: none (all zero). Called from the world's
+  // thread after generate().
+  virtual bool generate_layer(const IVec3& chunk, const std::string& layer, std::vector<u8>& out) const {
+    (void)chunk, (void)layer, (void)out;
+    return false;
+  }
 };
 
 struct StreamConfig {

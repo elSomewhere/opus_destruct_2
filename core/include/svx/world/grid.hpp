@@ -10,6 +10,7 @@
 
 #include <array>
 #include <memory>
+#include <string>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -48,6 +49,17 @@ inline IVec3 unkey3(u64 k) {
           static_cast<i32>(i64(k & 0x1FFFFF) - off)};
 }
 
+// Per-voxel byte channels besides the voxel itself (the world's damage, a fire's heat, water,
+// ...): registered by name; a chunk allocates a layer's array when it first holds a nonzero
+// value there, and drops it when the layer is all zero again.
+constexpr int kMaxLayers = 8;
+struct LayerSpec {
+  std::string name;
+  // Persistent: part of the chunk's changes (deltas, the change archive: it comes back with the
+  // chunk). Transient: dropped with the chunk (a fire's heat).
+  bool persistent = true;
+};
+
 struct Chunk {
   bool uniform = true;
   Vox value = kAir;             // uniform chunks
@@ -57,7 +69,14 @@ struct Chunk {
   u32 vox_version = 0;          // changes (unique value) when voxels change: fragment caches
   i32 solid = 0;                // solid voxel count (mixed chunks)
   i32 free = 0;                 // ... of them not anchored: structure, not rock (mixed chunks)
+  std::array<std::vector<u8>, kMaxLayers> layer;  // kChunkVox each when the layer has values here
+  std::array<u16, kMaxLayers> layer_count{};      // nonzero values per layer
   i32 free_count() const { return uniform ? (vox_free(value) ? kChunkVox : 0) : free; }
+  bool has_layers() const {
+    for (const auto& l : layer)
+      if (!l.empty()) return true;
+    return false;
+  }
 };
 
 class VoxelGrid {
@@ -77,6 +96,19 @@ class VoxelGrid {
 
   u8 strength(const IVec3& p) const;  // design strength class (0: as the material)
   void set_strength(const IVec3& p, u8 cls);
+
+  // Layers: add_layer returns a layer's index (the existing one for a name already added).
+  int add_layer(const LayerSpec& spec);
+  int layer_index(const std::string& name) const;  // -1: none
+  const std::vector<LayerSpec>& layers() const { return layers_; }
+  // Takes these layers (by name: the values of layers it has move to their index in specs; its
+  // layers not in specs are dropped).
+  void adopt_layers(const std::vector<LayerSpec>& specs);
+  u8 layer(int L, const IVec3& p) const;
+  // Returns whether the value changed. (A chunk is made, as air, for a value in a chunk that is
+  // not there.)
+  bool set_layer(int L, const IVec3& p, u8 v);
+  std::vector<u64> take_layer_dirty(int L);  // keys of chunks whose layer L changed since the last call (sorted)
 
   // bulk construction: fill [z0, z1) of column (x, y) (no dirty marking), then compact()
   void fill_column(i32 x, i32 y, i32 z0, i32 z1, Vox v);
@@ -129,6 +161,8 @@ class VoxelGrid {
   u64 last_dirty_ = ~0ull;  // (the key added last: the common repeat is skipped cheaply)
   bool dirty_all_ = false;  // (overflow: every chunk is reported)
   void touch_dirty(u64 k);
+  std::vector<LayerSpec> layers_;
+  std::array<std::unordered_set<u64>, kMaxLayers> layer_dirty_;
   std::vector<u64> compact_;              // chunks that may have been emptied
   std::vector<std::vector<u8>> spare_;    // recycled kChunkVox arrays
   static constexpr size_t kMaxSpare = 256;
