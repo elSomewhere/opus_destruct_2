@@ -61,7 +61,7 @@ struct EngineConfig {
   // fragments (1 m cells; 2 m beyond 6x): its cracks follow cluster seams, its pieces break
   // finer once they are smaller (docs/V2_DESIGN.md §2).
   i32 cluster_nodes = 2500;
-  i32 body_cluster_nodes = 800;    // pieces (checked many times as they break): clustered beyond this
+  i32 body_cluster_nodes = 400;    // pieces (checked many times as they break): 1 m clusters beyond this, 2 m beyond 3x
   f64 structure_max_radius = 60.0; // m from the seed (beyond: held fixed)
   i32 max_breaks_per_round = 256;
   f64 break_band = 0.85;           // a round breaks the bonds with phi >= max(1, band x max phi)
@@ -366,6 +366,7 @@ class Engine {
     std::vector<std::pair<V3, V3>> cracks;  // world position, normal
     i64 checks = 0, pcg_iters = 0, impact_breaks = 0, steady_breaks = 0;
     i64 modes[4] = {0, 0, 0, 0};
+    f64 assemble_ms = 0.0, solve_ms = 0.0;  // (profiling)
   };
   void body_stress_run(Body& b, const std::vector<PointForce>& forces, bool inertia, f64 energy, StressOut& o);
   void apply_stress_out(const StressOut& o);

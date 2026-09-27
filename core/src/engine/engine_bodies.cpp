@@ -171,7 +171,9 @@ void Engine::rebuild_body_graph(Body& b) {
   // resolution: clusters of fragments for large pieces (cells in the shape frame)
   i64 live = 0;
   for (const BodyFrag& f : b.frags) live += f.count > 0 ? 1 : 0;
-  const i32 cell = cluster_cell(live, cfg_.body_cluster_nodes);
+  // (pieces: per fragment up to body_cluster_nodes fragments, 1 m cells up to 3x that, 2 m
+  // beyond: a large piece cracks along coarse seams first, and finer once it is smaller)
+  const i32 cell = live <= cfg_.body_cluster_nodes ? 0 : (live <= 3 * static_cast<i64>(cfg_.body_cluster_nodes) ? 8 : 16);
   std::vector<u64> key(static_cast<size_t>(nf));
   for (i32 f = 0; f < nf; ++f) {
     if (cell <= 0) {
@@ -387,10 +389,13 @@ void Engine::body_stress_run(Body& b, const std::vector<PointForce>& forces, boo
     StressProblem::add_force(f, i, G.P.nodes[size_t(i)].c, Rt * pf.F, b.to_shape(pf.p));
   }
   if (!G.P.assembled()) {
+    const auto a0 = std::chrono::steady_clock::now();
     StressOptions so;
     so.rtol = cfg_.body_stress_rtol;
     so.amg_min_nodes = 0;  // (small pieces: the coarsest level is the whole graph, solved exactly)
-    if (!G.P.assemble(so)) return;
+    const bool ok = G.P.assemble(so);
+    o.assemble_ms += std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - a0).count();
+    if (!ok) return;
   }
   // Break rounds: a progressive failure within the substep (steps of a sequentially linear
   // analysis). The worst bonds go first, the load redistributes, and the first time the piece
@@ -408,7 +413,9 @@ void Engine::body_stress_run(Body& b, const std::vector<PointForce>& forces, boo
   std::vector<i32> comp;
   bool rebuilt = false;
   for (i32 round = 0; round < rounds; ++round) {
+    const auto s0 = std::chrono::steady_clock::now();
     PcgResult r = G.P.solve(f, G.u, cfg_.body_stress_rtol, cfg_.body_stress_maxit, true);
+    o.solve_ms += std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - s0).count();
     if (!r.converged && (r.breakdown || r.rel_res > 5.0 * cfg_.body_stress_rtol) && round > 0 && !rebuilt) {
       // (the multigrid of the intact piece is stale after the breaks and the chips' retirement:
       // rebuilt once for the damaged piece)
@@ -880,6 +887,7 @@ int Engine::fracture_hook(f64 dt) {
     bool split = false;  // (in several parts already: they go their own ways)
     StressOut out;
     f64 rebuild_ms = 0.0, stress_ms = 0.0;
+    i32 voxels = 0, nodes = 0;
   };
   std::vector<Check> checks;
   for (size_t i = 0; i < nb; ++i) {
@@ -929,6 +937,8 @@ int Engine::fracture_hook(f64 dt) {
     if (b.graph_dirty || !b.graph) rebuild_body_graph(b);
     const auto r1 = FClock::now();
     c.rebuild_ms = std::chrono::duration<f64, std::milli>(r1 - r0).count();
+    c.voxels = b.shape.count;
+    c.nodes = static_cast<i32>(b.graph->P.nodes.size());
     if (b.graph->components > 1) {
       c.split = true;
       return;
@@ -982,6 +992,10 @@ int Engine::fracture_hook(f64 dt) {
       const bool bg = rigid_.bodies.size() > c.i && rigid_.bodies[c.i]->shape.count > cfg_.big_piece_voxels;
       (bg ? reb_big : reb) += c.rebuild_ms;
       (bg ? str_big : str) += c.stress_ms;
+      if (c.rebuild_ms + c.stress_ms > 5.0)
+        std::printf("    [slow check t%lld] %d voxels, %d nodes: rebuild %.1f ms, stress %.1f ms (assemble %.1f, %lld solves %.1f ms, %lld its, %zu broken), split %d\n",
+                    static_cast<long long>(st_.ticks), c.voxels, c.nodes, c.rebuild_ms, c.stress_ms, c.out.assemble_ms,
+                    static_cast<long long>(c.out.checks), c.out.solve_ms, static_cast<long long>(c.out.pcg_iters), c.out.broken.size(), c.split ? 1 : 0);
     }
     acc[0] += ms(f0, f1);
     acc[1] += ms(f1, f2);
