@@ -119,6 +119,7 @@ export class Game {
     // keeps the view clean if one does not.
     this.renderer.clearWorld();
     this.occupancy.clear();
+    this.effects.setFlames(new Float32Array(0));
     this.overlay.setLoading(text, 0.05);
     this.overlay.setPrompt(false);
   }
@@ -157,6 +158,7 @@ export class Game {
     e.on('events', (msg) => this.handleEvents(msg.list));
     e.on('occupancy', (msg) => this.occupancy.apply(msg));
     e.on('debris', (msg) => this.renderer.islands.applyDebris(msg.poses, performance.now() / 1000));
+    e.on('env', (msg) => this.effects.setFlames(msg.flames));
     e.on('stats', (msg) => {
       if (this.info === null) return; // posted before the current world's ready (worker messages are ordered)
       this.engineStats = msg.stats;
@@ -238,6 +240,7 @@ export class Game {
     // streaming / bake focus follows the camera whether or not the player is in control
     if (this.frameCount % 2 === 0) this.engine.viewer(eye, forward);
     this.effects.update(dt);
+    this.effects.fire(dt, eye, t / 1000);
     this.renderer.particles.update(dt);
 
     // Camera shake perturbs only the rendered view, not aiming.

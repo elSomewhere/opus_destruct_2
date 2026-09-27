@@ -52,6 +52,15 @@ void svx_tick(svx_engine* e);
 void svx_viewer(svx_engine* e, double x, double y, double z);
 void svx_carve(svx_engine* e, double x, double y, double z, double radius);
 void svx_blast(svx_engine* e, double x, double y, double z, double radius, double energy);
+/* Fire (docs/ENV.md): sets fire to what burns in the sphere (the rest heats up); puts out and
+ * cools the sphere. */
+void svx_ignite(svx_engine* e, double x, double y, double z, double radius);
+void svx_extinguish(svx_engine* e, double x, double y, double z, double radius);
+/* Environment output for the renderer, taken after a tick: returns the number of flames (at
+ * most max_flames, an even sample of the burning voxels); svx_env_flames then holds float32
+ * x, y, z, heat (degC) per flame. */
+int svx_poll_env(svx_engine* e, int max_flames);
+const float* svx_env_flames(svx_engine* e);
 
 /* out[8]: pos xyz, normal xyz, distance, material; returns 1 on hit. */
 /* The player's "use" (doors, lift switches): returns 1 if a mover was activated. */
@@ -122,7 +131,8 @@ void svx_set_debris(svx_engine* e, int enabled);
  * chunks, 27 archived chunks, 28 stream ms, 29 evicted chunks, 30 movers, 31 design max
  * utilization, 32 strengthened voxels, 33 floating voxels removed, 34 bake ms, 35 world memory
  * MB (all kinds), 36 fragment caches MB, 37 structures MB, 38 pieces MB, 39 archive used MB,
- * 40 archive capacity MB, 41 forgotten regions, 42 culled pieces (43 doubles). */
+ * 40 archive capacity MB, 41 forgotten regions, 42 culled pieces, 43 hot voxels (fire),
+ * 44 burning voxels, 45 environment ms (46 doubles). */
 void svx_stats(svx_engine* e, double* out);
 /* Deterministic digest of the session (voxels, bonds, damage, debris poses), split in two
  * 32-bit halves (JS numbers). */

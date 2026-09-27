@@ -37,14 +37,15 @@ if(SVX_WASM)
     _svx_poll_events _svx_event_info _svx_event_vertices _svx_event_indices _svx_stats
     _svx_debris _svx_debris_data _svx_set_debris _svx_set_gpu_displacement _svx_poll_fields
     _svx_field_info _svx_field_data _svx_poll_far _svx_far_info _svx_far_vertices _svx_far_indices
-    _svx_poll_far_removed _svx_far_removed _svx_state_hash _malloc _free)
+    _svx_poll_far_removed _svx_far_removed _svx_state_hash _svx_ignite _svx_extinguish _svx_poll_env _svx_env_flames
+    _malloc _free)
   string(REPLACE ";" "," _svx_exports_csv "${_svx_exports}")
   target_link_options(svx_web PRIVATE
     -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createSvxModule -sENVIRONMENT=worker
     -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=256MB -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=8MB
     -sFILESYSTEM=0 --no-entry -sDYNAMIC_EXECUTION=0
     "-sEXPORTED_FUNCTIONS=[${_svx_exports_csv}]"
-    "-sEXPORTED_RUNTIME_METHODS=[HEAPU8,HEAPU32,HEAP32,HEAPF64,UTF8ToString,stringToUTF8,lengthBytesUTF8]")
+    "-sEXPORTED_RUNTIME_METHODS=[HEAPU8,HEAPU32,HEAP32,HEAPF32,HEAPF64,UTF8ToString,stringToUTF8,lengthBytesUTF8]")
   set_target_properties(svx_web PROPERTIES
     RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/web/src/wasm
     SUFFIX ".js")

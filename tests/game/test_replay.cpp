@@ -118,3 +118,39 @@ TEST_CASE("replay: a lockstep peer on another thread count matches the host at e
   CHECK(b.session_hash() == a.session_hash());
   CHECK(alog.commands().size() > 20);
 }
+
+TEST_CASE("replay: fire replays bit for bit (the yard's timber house, on 1 and 4 threads)") {
+  auto run = [](int threads, CommandLog* rec, const CommandLog* play) {
+    set_num_threads(threads);
+    Game g;
+    ProcWorld w = make_procedural("yard", 1);
+    g.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+    g.bake();
+    if (rec) g.record_to(rec);
+    const f64 h = g.world().voxel_size();
+    std::vector<u64> hashes;
+    for (int t = 0; t < 900; ++t) {
+      if (play) {
+        for (const Command& c : play->commands())
+          if (c.tick == g.ticks()) apply_command(g, c);
+      } else if (t == 10) {
+        g.ignite({h * 30, h * 30, h * 2.5}, 0.4);
+        g.ignite({h * 56, h * 72, h * 12}, 0.3);
+      } else if (t == 700) {
+        g.extinguish({h * 30, h * 30, h * 4}, 1.0);
+      }
+      g.tick();
+      if (t % 100 == 99) hashes.push_back(g.session_hash());
+    }
+    CHECK(g.env().fire()->stats().ignited > 0);
+    return hashes;
+  };
+  CommandLog log;
+  const std::vector<u64> a = run(1, &log, nullptr);
+  CommandLog back;
+  REQUIRE(CommandLog::parse(log.serialize(), &back));
+  REQUIRE(back.commands().size() == 3);
+  const std::vector<u64> b = run(4, nullptr, &back);
+  CHECK(a == b);
+  set_num_threads(1);
+}

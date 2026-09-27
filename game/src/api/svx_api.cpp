@@ -27,6 +27,7 @@ struct svx_engine {
   std::vector<f64> debris;
   std::vector<ChunkMesh> far;
   std::vector<std::array<i32, 2>> far_removed;
+  std::vector<float> flames;
   MeshOptions mesh_base() const {
     MeshOptions mo;
     if (doom) {
@@ -182,6 +183,26 @@ void svx_carve(svx_engine* e, double x, double y, double z, double radius) { e->
 void svx_blast(svx_engine* e, double x, double y, double z, double radius, double energy) {
   e->eng.blast(V3{x, y, z}, radius, energy);
 }
+
+void svx_ignite(svx_engine* e, double x, double y, double z, double radius) { e->eng.ignite(V3{x, y, z}, radius); }
+
+void svx_extinguish(svx_engine* e, double x, double y, double z, double radius) {
+  e->eng.extinguish(V3{x, y, z}, radius);
+}
+
+int svx_poll_env(svx_engine* e, int max_flames) {
+  const std::vector<FlamePoint> f = e->eng.flames(std::clamp(max_flames, 0, 65536));
+  e->flames.clear();
+  for (const FlamePoint& p : f) {
+    e->flames.push_back(static_cast<float>(p.pos.x));
+    e->flames.push_back(static_cast<float>(p.pos.y));
+    e->flames.push_back(static_cast<float>(p.pos.z));
+    e->flames.push_back(p.heat);
+  }
+  return static_cast<int>(f.size());
+}
+
+const float* svx_env_flames(svx_engine* e) { return e->flames.data(); }
 
 int svx_use(svx_engine* e, double ox, double oy, double oz, double dx, double dy, double dz) {
   return e->eng.use(V3{ox, oy, oz}, V3{dx, dy, dz}) ? 1 : 0;
@@ -434,6 +455,9 @@ void svx_stats(svx_engine* e, double* out) {
       s.archive_capacity_mb,                           // 40
       static_cast<double>(s.forgotten_regions),        // 41
       static_cast<double>(s.culled_pieces),            // 42
+      static_cast<double>(gs.fire_hot),                // 43
+      static_cast<double>(gs.fire_burning),            // 44
+      gs.env_ms,                                       // 45
   };
   for (size_t k = 0; k < sizeof(v) / sizeof(v[0]); ++k) out[k] = v[k];
 }

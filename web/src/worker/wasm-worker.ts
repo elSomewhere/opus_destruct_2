@@ -22,7 +22,7 @@ import type {
   WadOptions,
   WorldInfo,
 } from '../engine/protocol.ts';
-import { DEBRIS_STRIDE, DEFAULT_PARAMS, TIMELINE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
+import { DEBRIS_STRIDE, DEFAULT_PARAMS, FLAME_STRIDE, TIMELINE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { postToMain, reportError, serveCommands } from './host.ts';
 // Generated Emscripten ES module (see the header comment); typed by SvxModule below.
 import createSvxModule from '../wasm/svx_web.js';
@@ -30,6 +30,7 @@ import createSvxModule from '../wasm/svx_web.js';
 interface SvxModule {
   HEAPU8: Uint8Array;
   HEAP32: Int32Array;
+  HEAPF32: Float32Array;
   HEAPF64: Float64Array;
   UTF8ToString(ptr: number): string;
   stringToUTF8(str: string, ptr: number, max: number): void;
@@ -56,6 +57,10 @@ interface SvxModule {
   _svx_viewer(e: number, x: number, y: number, z: number): void;
   _svx_carve(e: number, x: number, y: number, z: number, r: number): void;
   _svx_blast(e: number, x: number, y: number, z: number, r: number, energy: number): void;
+  _svx_ignite(e: number, x: number, y: number, z: number, r: number): void;
+  _svx_extinguish(e: number, x: number, y: number, z: number, r: number): void;
+  _svx_poll_env(e: number, maxFlames: number): number;
+  _svx_env_flames(e: number): number;
   _svx_use(e: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): number;
   _svx_raycast(e: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number, out: number): number;
   _svx_collide(e: number, a: number, b: number, c: number, d: number, f: number, g: number, mx: number, my: number, mz: number, out: number): void;
@@ -91,8 +96,11 @@ const STATS_MS = 250;
 // job and budget timeline: per-tick samples since the last stats message (TIMELINE_FIELDS)
 let timeline: number[] = [];
 const AUTOSAVE_MS = 5000;
-/** svx_stats fills out[0..34]. */
-const STATS_COUNT = 43;
+/** svx_stats fills out[0..45]. */
+const STATS_COUNT = 46;
+/** Flames sent to the renderer at most (an even sample), and how often (ticks: the fire's step). */
+const MAX_FLAMES = 4096;
+const ENV_TICKS = 6;
 
 let mod: SvxModule | null = null;
 let eng = 0;
@@ -108,6 +116,8 @@ let lastSave = 0;
 let saving = false;
 let debrisLive = 0;
 let debrisSent = new Float64Array(0); // poses of the last debris message (resting rubble is not re-sent)
+let flamesLive = 0;
+let envTick = 0;
 let fieldsLive = 0;
 let fieldsKey = ''; // (id:version of each field last sent: an unchanged set is not sent again)
 let occBuf = 0; // 4096-byte scratch for chunk occupancy
@@ -397,6 +407,18 @@ function flushDebris(): void {
   postToMain({ type: 'debris', poses });
 }
 
+/** The environment for the renderer: the flames (one final empty set after the last is out). */
+function flushEnv(): void {
+  if (++envTick < ENV_TICKS) return;
+  envTick = 0;
+  const m = mod as SvxModule;
+  const n = m._svx_poll_env(eng, MAX_FLAMES);
+  if (n === 0 && flamesLive === 0) return;
+  flamesLive = n;
+  const b = m._svx_env_flames(eng) >> 2;
+  postToMain({ type: 'env', flames: m.HEAPF32.slice(b, b + n * FLAME_STRIDE) });
+}
+
 /** One timeline sample: the tick's parts (engine timings of that tick) and the flush after it. */
 function sampleTimeline(tickMs: number, flushMs: number): void {
   (mod as SvxModule)._svx_stats(eng, scratch);
@@ -459,6 +481,9 @@ function sendStats(now: number): void {
     archiveCapacityMB: r2(40),
     forgottenRegions: f64(41),
     culledPieces: f64(42),
+    fireHot: f64(43),
+    fireBurning: f64(44),
+    envMs: r2(45),
   };
   eventsSinceStats = 0;
   lastStats = now;
@@ -504,6 +529,7 @@ function clearChunks(): void {
   fieldsKey = '';
   debrisLive = 0; // (the front end drops the old world's pieces when it requests a load)
   debrisSent = new Float64Array(0);
+  flamesLive = 0;
 }
 
 async function loadProcedural(kind: ProceduralKind, seed: number): Promise<void> {
@@ -569,6 +595,12 @@ async function handle(cmd: EngineCommand): Promise<void> {
     case 'carve':
       if (mod && loaded) mod._svx_carve(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
       break;
+    case 'ignite':
+      if (mod && loaded) mod._svx_ignite(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
+      break;
+    case 'extinguish':
+      if (mod && loaded) mod._svx_extinguish(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
+      break;
     case 'use':
       if (mod && loaded) mod._svx_use(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.dir[0], cmd.dir[1], cmd.dir[2]);
       break;
@@ -617,6 +649,7 @@ function loop(): void {
       const t1 = performance.now();
       flushEvents();
       flushDebris();
+      flushEnv();
       flushMeshes();
       sampleTimeline(t1 - t0, performance.now() - t1);
       if (now - lastStats >= STATS_MS) sendStats(now);

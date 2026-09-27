@@ -12,6 +12,17 @@ target_link_libraries(svx_core_tests PRIVATE svx_core)
 svx_wasm_exe_options(svx_core_tests)
 add_test(NAME svx_core_tests COMMAND svx_core_tests)
 
+# Environment tests: fire, smoke, water on the core (no mesh, no game).
+if(SVX_BUILD_ENV)
+  add_executable(svx_env_tests
+    test_main.cpp
+    env/test_fire.cpp)
+  target_include_directories(svx_env_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
+  target_link_libraries(svx_env_tests PRIVATE svx_env)
+  svx_wasm_exe_options(svx_env_tests)
+  add_test(NAME svx_env_tests COMMAND svx_env_tests)
+endif()
+
 # Game harness tests: levels (procedural, city, Doom), movers, replays, meshing.
 if(NOT SVX_BUILD_GAME)
   return()

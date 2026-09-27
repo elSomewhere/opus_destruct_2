@@ -1,6 +1,6 @@
 // structvox game — command logs: record / replay / deterministic lockstep.
 //
-// Everything that changes a Game between ticks is a command: carve, blast, use, viewer (the
+// Everything that changes a Game between ticks is a command: carve, blast, use, fire, viewer (the
 // streaming focus and walk-over triggers) and tunables. A command is stamped with the tick it
 // takes effect in (the number of ticks completed when it was issued). Applying the same commands
 // at the same ticks to the same level reproduces the session bit for bit (Game::session_hash) on
@@ -20,12 +20,12 @@ namespace svx {
 class Game;
 
 struct Command {
-  enum class Type : u8 { Carve = 1, Blast = 2, Viewer = 3, Params = 4, Use = 5 };
+  enum class Type : u8 { Carve = 1, Blast = 2, Viewer = 3, Params = 4, Use = 5, Ignite = 6, Extinguish = 7 };
   i64 tick = 0;
   Type type = Type::Carve;
   // Carve: pos xyz, radius. Blast: pos xyz, radius, energy. Viewer: pos xyz.
   // Params: fragility, impact, dif, (unused), debug_view, paused.
-  // Use: eye xyz, direction xyz.
+  // Use: eye xyz, direction xyz. Ignite, Extinguish: pos xyz, radius.
   std::array<f64, 6> a{};
 };
 

@@ -115,6 +115,16 @@ export class EngineClient {
     this.send({ type: 'blast', pos, radius, energy });
   }
 
+  /** Sets fire to what burns in the sphere (engines without fire ignore it). */
+  ignite(pos: Vec3, radius: number): void {
+    this.send({ type: 'ignite', pos, radius });
+  }
+
+  /** Puts out and cools the sphere. */
+  extinguish(pos: Vec3, radius: number): void {
+    this.send({ type: 'extinguish', pos, radius });
+  }
+
   setParams(params: EngineParams): void {
     this.send({ type: 'setParams', params: { ...params } });
   }

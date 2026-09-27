@@ -53,7 +53,7 @@ bool CommandLog::parse(const std::vector<u8>& bytes, CommandLog* out) {
     Command c;
     u8 type = 0;
     if (!get(bytes, at, &c.tick) || !get(bytes, at, &type)) return false;
-    if (type < 1 || type > 5 || c.tick < last) return false;  // unknown type or out of order
+    if (type < 1 || type > 7 || c.tick < last) return false;  // unknown type or out of order
     c.type = static_cast<Command::Type>(type);
     for (f64& v : c.a)
       if (!get(bytes, at, &v)) return false;
@@ -78,6 +78,12 @@ void apply_command(Game& e, const Command& c) {
       break;
     case Command::Type::Use:
       e.use(V3{c.a[0], c.a[1], c.a[2]}, V3{c.a[3], c.a[4], c.a[5]});
+      break;
+    case Command::Type::Ignite:
+      e.ignite({c.a[0], c.a[1], c.a[2]}, c.a[3]);
+      break;
+    case Command::Type::Extinguish:
+      e.extinguish({c.a[0], c.a[1], c.a[2]}, c.a[3]);
       break;
     case Command::Type::Params: {
       GameParams p;

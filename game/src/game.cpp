@@ -25,9 +25,16 @@ inline u64 mix64(u64 x) {
   return x ^ (x >> 31);
 }
 
+// A face's light darkened by its voxel's charring (burn 0..255).
+inline u8 char_light(u8 light, u8 burn) {
+  if (!burn) return light;
+  const u32 k = 255u - (burn * 190u) / 255u;
+  return static_cast<u8>((light * k + 127u) / 255u);
+}
+
 }  // namespace
 
-Game::Game() = default;
+Game::Game() { env_.attach(world_); }
 Game::~Game() = default;
 Game::Game(Game&&) = default;
 Game& Game::operator=(Game&&) = default;
@@ -77,6 +84,7 @@ void Game::load(VoxelGrid&& g, const V3& spawn_pos, const V3& spawn_dir) {
   fading_.clear();
   events_.clear();
   remesh_.clear();
+  charred_.clear();
   spawn_pos_ = spawn_pos;
   spawn_dir_ = spawn_dir;
   viewer_ = spawn_pos;
@@ -124,6 +132,29 @@ void Game::blast(const V3& pos, f64 radius, f64 energy) {
   world_.blast(pos, radius, energy);
 }
 
+void Game::ignite(const V3& pos, f64 radius) {
+  if (log_) log_->push({world_.ticks(), Command::Type::Ignite, {pos.x, pos.y, pos.z, radius, 0.0, 0.0}});
+  if (env_.fire()) env_.fire()->ignite(world_, pos, radius);
+}
+
+void Game::extinguish(const V3& pos, f64 radius) {
+  if (log_) log_->push({world_.ticks(), Command::Type::Extinguish, {pos.x, pos.y, pos.z, radius, 0.0, 0.0}});
+  if (env_.fire()) env_.fire()->extinguish(world_, pos, radius);
+}
+
+std::vector<FlamePoint> Game::flames(i32 max) const {
+  std::vector<FlamePoint> out;
+  if (!env_.fire() || max <= 0) return out;
+  const auto& f = env_.fire()->flames();
+  const size_t n = f.size(), m = std::min(n, static_cast<size_t>(max));
+  out.reserve(m);
+  for (size_t k = 0; k < m; ++k) {
+    const auto& fl = f[k * n / m];
+    out.push_back({fl.pos, fl.heat});
+  }
+  return out;
+}
+
 void Game::tick() {
   // movers first: their voxels are in place when the world's commands and pieces see them
   if (!par_.paused && !movers_.empty()) step_movers();
@@ -133,6 +164,15 @@ void Game::tick() {
   fading_.erase(std::remove_if(fading_.begin(), fading_.end(), [&](const Fading& f) { return f.t >= fade_time; }), fading_.end());
   drain_world_events();
   if (source_) far_update();
+  if (const FireSystem* f = env_.fire()) {
+    for (u64 k : world_.take_layer_changes(f->burn_layer())) charred_.insert(k);
+    char_clock_ += world_.config().dt;
+    if (char_clock_ >= char_remesh_s) {
+      char_clock_ = 0.0;
+      remesh_.insert(remesh_.end(), charred_.begin(), charred_.end());
+      charred_.clear();
+    }
+  }
 }
 
 void Game::drain_world_events() {
@@ -213,6 +253,10 @@ ChunkMesh Game::piece_mesh(const Body& b) const {
       return static_cast<u8>(1 + (mix64(static_cast<u64>(b.id) * 131 + S.frag[size_t(i)]) % 254));
     };
   }
+  if (const FireSystem* f = env_.fire(); f && !S.layer[size_t(f->burn_layer())].empty()) {
+    const int L = f->burn_layer();
+    mo.light = [&S, L](const IVec3& p, int) -> u8 { return char_light(255, S.layer_at(L, S.index(p))); };
+  }
   ChunkMesh out = mesh_shape(S, world_.voxel_size(), mo);
   // to world coordinates at the piece's pose now
   const M3 R = to_matrix(b.q);
@@ -253,10 +297,19 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
       return it == field.end() ? 0 : it->second[size_t(chunk_index(p))];
     };
   }
+  // charred voxels are darker (the burn layer)
+  const VoxelGrid& g = world_.grid();
+  if (const FireSystem* f = env_.fire()) {
+    const int L = f->burn_layer();
+    auto base_light = mo.light;
+    mo.light = [&g, L, base_light](const IVec3& p, int face) -> u8 {
+      const u8 l = base_light ? base_light(p, face) : 255;
+      return char_light(l, g.layer(L, p));
+    };
+  }
   std::vector<ChunkMesh> meshes(keys.size());
   std::optional<SerialScope> serial;
   if (!mo.concurrent) serial.emplace();
-  const VoxelGrid& g = world_.grid();
   parallel_for(static_cast<i64>(keys.size()), 1, [&](i64 b0, i64 e0) {
     for (i64 j = b0; j < e0; ++j) meshes[size_t(j)] = mesh_chunk(g, unkey3(keys[size_t(j)]), mo, false);
   });
@@ -380,6 +433,11 @@ GameStats Game::stats() const {
   static_cast<WorldStats&>(s) = world_.stats();
   s.mesh_ms = mesh_ms_;
   s.movers = static_cast<i32>(movers_.size());
+  if (const FireSystem* f = env_.fire()) {
+    s.fire_hot = f->stats().hot;
+    s.fire_burning = f->stats().burning;
+    s.env_ms += f->stats().step_ms;
+  }
   return s;
 }
 

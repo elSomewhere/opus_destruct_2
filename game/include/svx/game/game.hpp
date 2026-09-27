@@ -6,7 +6,8 @@
 //   - movers (doors, lifts, ...) and the level's triggers (use, walk-over and shot resolvers);
 //   - output for the renderer: chunk meshes (with debug views), piece meshes (sent once, in world
 //     coordinates) and poses, fading of culled pieces, the far render tier of streamed levels;
-//   - a command log (record / replay / lockstep).
+//   - a command log (record / replay / lockstep);
+//   - the environment (svx_env: fire, ...) and its output for the renderer (flames, charring).
 // The core never sees any of it: a different game (or tool) builds its own harness on World.
 #pragma once
 
@@ -17,6 +18,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "svx/env/env.hpp"
 #include "svx/game/movers.hpp"
 #include "svx/game/source.hpp"
 #include "svx/mesh/mesher.hpp"
@@ -57,6 +59,15 @@ struct PiecePose {
 struct GameStats : WorldStats {
   f64 mesh_ms = 0.0;
   i32 movers = 0;
+  // environment
+  i32 fire_hot = 0, fire_burning = 0;
+  f64 env_ms = 0.0;
+};
+
+// A flame for the renderer: a burning voxel (world position, degC).
+struct FlamePoint {
+  V3 pos;
+  f32 heat = 0.0f;
 };
 
 class Game {
@@ -94,6 +105,8 @@ class Game {
   void carve(const V3& pos, f64 radius);
   void blast(const V3& pos, f64 radius, f64 energy);
   bool use(const V3& eye, const V3& dir, f64 reach = 2.0);
+  void ignite(const V3& pos, f64 radius);      // sets fire to what burns in the sphere
+  void extinguish(const V3& pos, f64 radius);  // puts out and cools the sphere
   void tick();
   i64 ticks() const { return world_.ticks(); }
   void record_to(CommandLog* log) { log_ = log; }
@@ -121,6 +134,11 @@ class Game {
   std::vector<GameEvent> take_events();
   std::vector<PiecePose> pieces() const;
   const FarConfig& far_config() const { return far_; }
+  // The flames burning now (at most max: an even sample of them).
+  std::vector<FlamePoint> flames(i32 max) const;
+  Environment& env() { return env_; }
+  const Environment& env() const { return env_; }
+  f64 char_remesh_s = 1.0;  // s: charring chunks are meshed again at most this often
 
   GameStats stats() const;
   u64 session_hash() const;  // the world's + the movers'
@@ -147,6 +165,7 @@ class Game {
   ChunkMesh far_mesh(i32 tx, i32 ty) const;
 
   World world_;
+  Environment env_;
   GameParams par_;
   V3 spawn_pos_{0, 0, 0}, spawn_dir_{1, 0, 0};
   V3 viewer_{0, 0, 0};
@@ -155,6 +174,8 @@ class Game {
   MeshOptions mesh_base_;                    // (texture provider for piece meshes)
   std::vector<GameEvent> events_;
   std::vector<u64> remesh_;                  // chunks to mesh again (debug view changes)
+  std::unordered_set<u64> charred_;          // chunks whose charring changed (meshed again every char_remesh_s)
+  f64 char_clock_ = 0.0;
   std::vector<u64> removed_chunks_;
   f64 mesh_ms_ = 0.0;
 

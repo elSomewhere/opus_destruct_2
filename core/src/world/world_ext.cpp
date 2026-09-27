@@ -31,7 +31,11 @@ i32 World::set_layer(int L, const std::vector<LayerEdit>& edits) {
     if (L == kDamageLayer) {
       const IVec3 cc = chunk_of(e.p);
       const u64 k = key3(cc[0], cc[1], cc[2]);
-      if (chunks.empty() || chunks.back() != k) chunks.push_back(k);
+      if (chunks.empty() || chunks.back() != k) {
+        chunks.push_back(k);
+        // (a structure nobody registered is extracted and judged: its sections are weaker)
+        if (!owner_.count(k) && vox_free(grid_.get(e.p))) seeds_.push_back(e.p);
+      }
     }
   }
   if (!chunks.empty()) refresh_strengths(chunks);

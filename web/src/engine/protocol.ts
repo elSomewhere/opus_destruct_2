@@ -210,6 +210,20 @@ export interface CarveCommand {
   radius: number;
 }
 
+/** (front-end extension) Sets fire to what burns in the sphere (engines without fire ignore it). */
+export interface IgniteCommand {
+  type: 'ignite';
+  pos: Vec3;
+  radius: number;
+}
+
+/** (front-end extension) Puts out and cools the sphere (a fire extinguisher). */
+export interface ExtinguishCommand {
+  type: 'extinguish';
+  pos: Vec3;
+  radius: number;
+}
+
 export interface RaycastCommand {
   type: 'raycast';
   id: number;
@@ -251,7 +265,9 @@ export type EngineCommand =
   | RaycastCommand
   | CollideCommand
   | SetParamsCommand
-  | UseCommand;
+  | UseCommand
+  | IgniteCommand
+  | ExtinguishCommand;
 
 export type EngineCommandType = EngineCommand['type'];
 
@@ -503,6 +519,10 @@ export interface EngineStats {
   archiveCapacityMB: number;
   forgottenRegions: number;
   culledPieces: number;
+  /** Fire: voxels with heat, voxels burning; the environment systems' step (ms). */
+  fireHot: number;
+  fireBurning: number;
+  envMs: number;
   /** Engine-specific extras are shown generically by the HUD. */
   [extra: string]: number | string | boolean;
 }
@@ -553,6 +573,9 @@ export function emptyEngineStats(): EngineStats {
     archiveCapacityMB: 0,
     forgottenRegions: 0,
     culledPieces: 0,
+    fireHot: 0,
+    fireBurning: 0,
+    envMs: 0,
   };
 }
 
@@ -573,6 +596,20 @@ export interface DebrisMessage {
   type: 'debris';
   /** DEBRIS_STRIDE doubles per piece; transferred. */
   poses: Float64Array<ArrayBuffer>;
+}
+
+/** Floats per flame in `EnvMessage.flames`: world position xyz, temperature (degC). */
+export const FLAME_STRIDE = 4;
+
+/**
+ * (front-end extension) The environment's state for the renderer, sent when it changes (about
+ * ten times a second while anything burns, plus one empty set when the last flame is out):
+ * the flames (burning voxels, an even sample of at most a few thousand).
+ */
+export interface EnvMessage {
+  type: 'env';
+  /** FLAME_STRIDE floats per flame; transferred. */
+  flames: Float32Array<ArrayBuffer>;
 }
 
 export interface StatsMessage {
@@ -622,7 +659,8 @@ export type WorkerMessage =
   | ErrorMessage
   | ProgressMessage
   | DebrisMessage
-  | OccupancyMessage;
+  | OccupancyMessage
+  | EnvMessage;
 
 export type WorkerMessageType = WorkerMessage['type'];
 export type WorkerMessageOf<T extends WorkerMessageType> = Extract<WorkerMessage, { type: T }>;
@@ -645,6 +683,7 @@ const WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set<WorkerMessageType>([
   'progress',
   'debris',
   'occupancy',
+  'env',
 ]);
 
 const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set<EngineCommandType>([
@@ -658,6 +697,8 @@ const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set<EngineCommandType>([
   'collide',
   'setParams',
   'use',
+  'ignite',
+  'extinguish',
 ]);
 
 function typeField(data: unknown): string | undefined {
@@ -707,6 +748,9 @@ export function workerMessageTransferables(msg: WorkerMessage): ArrayBuffer[] {
       break;
     case 'debris':
       pushUnique(out, seen, msg.poses.buffer);
+      break;
+    case 'env':
+      pushUnique(out, seen, msg.flames.buffer);
       break;
     case 'events':
       for (const e of msg.list) {

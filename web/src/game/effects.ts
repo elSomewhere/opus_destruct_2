@@ -7,7 +7,7 @@
  * per-frame budgets, refilled in `update`.
  */
 import type { CrackEvent, DetachedEvent, ImpactEvent, MaterialId, RaycastHit, Vec3 } from '../engine/protocol.ts';
-import { Material, VERTEX_STRIDE } from '../engine/protocol.ts';
+import { FLAME_STRIDE, Material, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { distance, normalize } from '../render/math.ts';
 import type { ParticleSystem } from '../render/particles.ts';
 
@@ -26,6 +26,12 @@ const MATERIAL_DUST: Record<number, Rgb> = {
 /** Particles per frame from detached events (dust) and from cracks (chips and puffs). */
 const DETACHED_DUST_PER_FRAME = 300;
 const CRACK_PARTICLES_PER_FRAME = 150;
+/** Fire: flame tongues per burning voxel and second, and per-frame caps (flames, embers, smoke). */
+const FLAME_RATE = 2.5;
+const FLAME_PARTICLES_PER_FRAME = 140;
+const EMBER_RATE = 0.05;
+const FIRE_SMOKE_RATE = 0.25;
+const FIRE_SMOKE_PER_FRAME = 16;
 
 function dustColor(material: MaterialId): Rgb {
   return MATERIAL_DUST[material] ?? [0.4, 0.4, 0.4];
@@ -59,6 +65,11 @@ export class Effects {
   muzzle = 0;
   private detachedBudget = DETACHED_DUST_PER_FRAME;
   private crackBudget = CRACK_PARTICLES_PER_FRAME;
+  /** The engine's flames (FLAME_STRIDE floats each). */
+  private flames: Float32Array = new Float32Array(0);
+  private fireCarry = 0;
+  private emberCarry = 0;
+  private smokeCarry = 0;
 
   constructor(particles: ParticleSystem) {
     this.particles = particles;
@@ -243,6 +254,107 @@ export class Effects {
         gravity: 0.05,
       });
     }
+  }
+
+  /** The engine's burning voxels (an `env` message). */
+  setFlames(flames: Float32Array): void {
+    this.flames = flames;
+  }
+
+  get flameCount(): number {
+    return this.flames.length / FLAME_STRIDE;
+  }
+
+  /**
+   * Fire, every frame: flame tongues licking up from random burning voxels, embers, smoke, and a
+   * flickering light at the flames nearest the eye.
+   */
+  fire(dt: number, eye: Vec3, timeS: number): void {
+    const f = this.flames;
+    const n = f.length / FLAME_STRIDE;
+    if (n === 0) return;
+    const pick = (): number => Math.floor(Math.random() * n) * FLAME_STRIDE;
+    this.fireCarry += n * FLAME_RATE * dt;
+    const tongues = Math.min(FLAME_PARTICLES_PER_FRAME, Math.floor(this.fireCarry));
+    this.fireCarry = Math.min(this.fireCarry - tongues, 4);
+    for (let k = 0; k < tongues; k++) {
+      const i = pick();
+      const hot = Math.min(1.3, f[i + 3]! / 800);
+      this.particles.spawn({
+        pos: [f[i]! + rand(-0.07, 0.07), f[i + 1]! + rand(-0.07, 0.07), f[i + 2]! + rand(0, 0.08)],
+        vel: [rand(-0.15, 0.15), rand(-0.15, 0.15), rand(0.6, 1.4)],
+        life: rand(0.3, 0.65),
+        size: rand(0.08, 0.15),
+        grow: -0.08,
+        color: [2.6 * hot, rand(0.8, 1.3) * hot, 0.22 * hot, 0.75],
+        additive: true,
+        drag: 1.2,
+        gravity: -0.12,
+      });
+    }
+    this.emberCarry += n * EMBER_RATE * dt;
+    for (; this.emberCarry >= 1; this.emberCarry--) {
+      const i = pick();
+      this.particles.spawn({
+        pos: [f[i]!, f[i + 1]!, f[i + 2]! + 0.1],
+        vel: [rand(-0.6, 0.6), rand(-0.6, 0.6), rand(1.5, 3.5)],
+        life: rand(1.2, 2.8),
+        size: rand(0.008, 0.016),
+        color: [5, 1.8, 0.4, 1],
+        additive: true,
+        drag: 0.8,
+        gravity: -0.04,
+      });
+    }
+    this.emberCarry = Math.min(this.emberCarry, 4);
+    this.smokeCarry += n * FIRE_SMOKE_RATE * dt;
+    const puffs = Math.min(FIRE_SMOKE_PER_FRAME, Math.floor(this.smokeCarry));
+    this.smokeCarry = Math.min(this.smokeCarry - puffs, 4);
+    for (let k = 0; k < puffs; k++) {
+      const i = pick();
+      this.particles.spawn({
+        pos: [f[i]!, f[i + 1]!, f[i + 2]! + 0.35],
+        vel: [rand(-0.2, 0.2), rand(-0.2, 0.2), rand(0.8, 1.6)],
+        life: rand(2.5, 4.5),
+        size: rand(0.2, 0.35),
+        grow: 0.45,
+        color: [0.06, 0.055, 0.05, 0.4],
+        drag: 0.6,
+        gravity: -0.03,
+      });
+    }
+    // firelight: the flames near the eye (a sample), flickering
+    let best = Infinity;
+    let at = 0;
+    let near = 0;
+    const tries = Math.min(n, 48);
+    for (let k = 0; k < tries; k++) {
+      const i = tries === n ? k * FLAME_STRIDE : pick();
+      const d = distance(eye, [f[i]!, f[i + 1]!, f[i + 2]!]);
+      if (d < 20) near++;
+      if (d < best) {
+        best = d;
+        at = i;
+      }
+    }
+    if (best < 40) {
+      const flicker = 0.8 + 0.2 * Math.sin(timeS * 23) * Math.sin(timeS * 7.3 + 1.1);
+      this.light([f[at]!, f[at + 1]!, f[at + 2]! + 0.4], (1.2 + Math.log2(1 + (near * n) / tries) * 0.5) * flicker);
+    }
+  }
+
+  /** The flamethrower's flames or the extinguisher's mist, from the muzzle along dir. */
+  spray(muzzle: Vec3, dir: Vec3, flame: boolean): void {
+    for (let k = 0; k < 5; k++) {
+      const v = rand(7, 11);
+      const d = hemisphere(dir, 0.08);
+      this.particles.spawn(
+        flame
+          ? { pos: muzzle, vel: [d[0] * v, d[1] * v, d[2] * v], life: rand(0.35, 0.6), size: 0.05, grow: 0.6, color: [3, 1.2, 0.25, 0.8], additive: true, drag: 1.4, gravity: -0.3 }
+          : { pos: muzzle, vel: [d[0] * v, d[1] * v, d[2] * v], life: rand(0.5, 0.9), size: 0.05, grow: 0.9, color: [0.85, 0.88, 0.92, 0.3], drag: 1.6, gravity: 0.15 },
+      );
+    }
+    if (flame) this.light(muzzle, 0.8);
   }
 
   rocketTrail(pos: Vec3, dir: Vec3): void {

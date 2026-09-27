@@ -1,6 +1,8 @@
 /**
  * Weapons, mapped onto the engine's damage commands (docs/API.md):
  * - pistol and shotgun are hitscan: `raycast`, then `carve` a small sphere at the hit;
+ * - the flamethrower and the extinguisher are short-range hitscan streams: `ignite` or
+ *   `extinguish` a sphere at the hit (the engine's fire, docs/ENV.md);
  * - the rocket launcher fires a visible projectile. It flies straight, so its path is
  *   verified with look-ahead `raycast`s along its line; when it reaches the first hit it
  *   explodes locally at once (effects within a frame) and sends `blast`.
@@ -10,7 +12,7 @@ import type { RaycastHit, Vec3 } from '../engine/protocol.ts';
 import { cross, normalize } from '../render/math.ts';
 import type { Effects } from './effects.ts';
 
-export type WeaponId = 'pistol' | 'shotgun' | 'rocket';
+export type WeaponId = 'pistol' | 'shotgun' | 'rocket' | 'flamer' | 'extinguisher';
 
 export interface WeaponDef {
   id: WeaponId;
@@ -27,6 +29,8 @@ export const WEAPONS: readonly WeaponDef[] = [
   { id: 'pistol', name: 'Pistol', key: 'Digit1', cooldown: 0.16, auto: false },
   { id: 'shotgun', name: 'Shotgun', key: 'Digit2', cooldown: 0.75, auto: false },
   { id: 'rocket', name: 'Rocket launcher', key: 'Digit3', cooldown: 0.7, auto: true },
+  { id: 'flamer', name: 'Flamethrower', key: 'Digit4', cooldown: 0.1, auto: true },
+  { id: 'extinguisher', name: 'Extinguisher', key: 'Digit5', cooldown: 0.1, auto: true },
 ];
 
 export const HITSCAN_RANGE = 250;
@@ -39,6 +43,10 @@ export const ROCKET_BLAST_RADIUS = 1.0;
 /** Joules passed with `blast` (roughly a quarter kilogram of TNT). */
 export const ROCKET_ENERGY_J = 1.0e6;
 const ROCKET_LIFETIME = 6;
+export const FLAMER_RANGE = 7;
+export const FLAMER_RADIUS = 0.3;
+export const EXTINGUISHER_RANGE = 9;
+export const EXTINGUISHER_RADIUS = 1.0;
 /** Length of each look-ahead raycast and how far ahead the path is kept verified. */
 const ROCKET_SEGMENT = 8;
 const ROCKET_LOOKAHEAD = 3;
@@ -123,6 +131,10 @@ export class Weapons {
   fire(eye: Vec3, forward: Vec3): void {
     this.shots++;
     const muzzle: Vec3 = [eye[0] + forward[0] * 0.5, eye[1] + forward[1] * 0.5, eye[2] + forward[2] * 0.5 - 0.1];
+    if (this.current.id === 'flamer' || this.current.id === 'extinguisher') {
+      this.stream(eye, forward, muzzle, this.current.id === 'flamer');
+      return;
+    }
     this.effects.muzzleFlash(muzzle);
     switch (this.current.id) {
       case 'pistol':
@@ -147,6 +159,22 @@ export class Weapons {
         this.effects.addTrauma(0.12);
         break;
     }
+  }
+
+  /** Flamethrower (ignite) or extinguisher: a spray, and the command where it lands. */
+  private stream(eye: Vec3, forward: Vec3, muzzle: Vec3, flame: boolean): void {
+    const dir = jitter(forward, 0.03);
+    this.effects.spray(muzzle, dir, flame);
+    this.engine
+      .raycast(eye, dir, flame ? FLAMER_RANGE : EXTINGUISHER_RANGE)
+      .then((hit: RaycastHit | null) => {
+        if (!hit) return;
+        // (just in front of the surface: the sphere takes the voxels it touches)
+        const p: Vec3 = [hit.pos[0] + hit.normal[0] * 0.05, hit.pos[1] + hit.normal[1] * 0.05, hit.pos[2] + hit.normal[2] * 0.05];
+        if (flame) this.engine.ignite(p, FLAMER_RADIUS);
+        else this.engine.extinguish(p, EXTINGUISHER_RADIUS);
+      })
+      .catch(() => undefined);
   }
 
   private hitscan(eye: Vec3, dir: Vec3, radius: number): void {
