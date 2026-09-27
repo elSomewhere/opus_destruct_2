@@ -77,7 +77,8 @@ struct Body {
   V3 box_lo, box_hi;                  // world AABB (samples), refreshed each substep
   // sleep
   bool asleep = false;
-  i32 still = 0;                      // consecutive still substeps
+  i32 still = 0;                      // still substeps (a jitter takes some back, motion all)
+  f64 sleep_ema = 1.0;                // smoothed speed (m/s)
   f64 age = 0.0;
   // the front end's frame: the piece's mesh was sent in world coordinates at pose (x0, q0)
   V3 x0;
@@ -89,6 +90,14 @@ struct Body {
   f64 last_load = 0.0, last_phi = 0.0;
   bool graph_dirty = true;
   bool was_asleep = false;
+  // parts of a piece that broke in a collision do not touch each other for the rest of that
+  // substep: the failed interface carried the load up to its strength, and then no more
+  i64 family = 0;
+  i32 family_ticks = 0;
+  // (collision) the samples' world positions at pose (wpts_x, wpts_q)
+  std::vector<V3> wpts;
+  V3 wpts_x;
+  Quat wpts_q{0, 0, 0, 0};
 
   V3 to_world(const V3& s) const { return x + rotate(q, s - com); }
   V3 to_shape(const V3& X) const { return com + rotate_inv(q, X - x); }
@@ -121,7 +130,7 @@ struct RigidParams {
   f64 rest_damping = 0.12;           // per substep, for touching bodies slower than 3 x sleep_speed
   f64 linear_damping = 0.02, angular_damping = 0.08;  // 1/s
   f64 sleep_speed = 0.15;            // m/s (linear + radius x angular)
-  int sleep_substeps = 40;
+  int sleep_substeps = 30;
   int max_points = 1024;             // collision samples per body
   int manifold = 16;                 // contacts kept per body pair
   f64 kill_depth = 30.0;             // m below the world: removed
@@ -139,6 +148,7 @@ struct Contact {
   f64 ln = 0, l1 = 0, l2 = 0;        // accumulated impulses (N s)
   f64 lp = 0;                        // pseudo impulse (position correction)
   f64 bounce = 0, bias = 0;
+  f64 approach = 0;                  // normal approach speed before the solve (m/s, > 0 closing)
   f64 mu = 0.6;
   u64 key = 0;
   V3 impulse() const { return n * ln + t1 * l1 + t2 * l2; }  // on a (b receives the opposite)
@@ -162,10 +172,14 @@ class RigidWorld {
   void wake(Body& b);
   i32 awake_count() const;
   Body* find(i64 id);
+  // accumulated wall time (ms) per phase: collide, solve, fracture, rollback (collide + solve),
+  // integrate + sleep
+  f64 prof_ms[5] = {0, 0, 0, 0, 0};
 
  private:
   void integrate_velocities(f64 dt);
-  void collide(const VoxelGrid& g);
+  void collide(const VoxelGrid& g, const std::vector<u8>* only = nullptr);
+  void reduce_manifold(std::vector<Contact>& cs, f64 h) const;
   void solve(f64 dt);
   void integrate_positions(f64 dt);
   void sleep_update(f64 dt);
@@ -174,7 +188,6 @@ class RigidWorld {
   std::unordered_map<u64, std::array<f64, 3>> warm_;  // contact key -> (ln, l1, l2)
   std::vector<i32> island_;  // (scratch)
   std::vector<V3> pseudo_v_, pseudo_w_;  // split-impulse pseudo velocities of the last solve
-  std::vector<std::vector<V3>> wpts_;     // (collide) world positions of the samples
 };
 
 }  // namespace svx

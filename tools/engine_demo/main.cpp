@@ -108,7 +108,7 @@ int main(int argc, char** argv) {
   std::setvbuf(stdout, nullptr, _IOLBF, 0);
   std::string world = "tower", wad_path, map_name = "MAP01", scenario = "pillars", frames;
   u64 seed = 1;
-  f64 seconds = 12.0, fps = 15.0, report = 1.0;
+  f64 seconds = 12.0, fps = 15.0, report = 1.0, frame_start = 0.0;
   int W = 640, H = 360, debug_view = 0;
   EngineParams par;
   i64 work = 0;
@@ -129,6 +129,7 @@ int main(int argc, char** argv) {
     else if (a == "--dif") par.dif = std::atof(next());
     else if (a == "--frames") frames = next();
     else if (a == "--fps") fps = std::atof(next());
+    else if (a == "--frame-start") frame_start = std::atof(next());
     else if (a == "--report") report = std::atof(next());
     else if (a == "--debug-view") debug_view = std::atoi(next());
     else if (a == "--work") work = std::atoll(next());
@@ -202,6 +203,10 @@ int main(int argc, char** argv) {
       for (int iy = 0; iy <= 3; ++iy) shots.push_back({0.3 + 0.25 * iy, true, col(0, iy), 0.9, 1e6});
       if (scenario == "pillars")
         for (int iy = 0; iy <= 3; ++iy) shots.push_back({1.6 + 0.25 * iy, true, col(1, iy), 0.9, 1e6});
+    } else if (scenario == "test") {
+      // (the collapse test's schedule: both west rows, one blast every 15 ticks from the start)
+      for (int ix = 0; ix <= 1; ++ix)
+        for (int iy = 0; iy <= 3; ++iy) shots.push_back({0.25 * (ix * 4 + iy), true, col(ix, iy), 0.9, 1e6});
     } else if (scenario == "core") {
       for (int ix = 1; ix <= 2; ++ix)
         for (int iy = 1; iy <= 2; ++iy) shots.push_back({0.3 + 0.3 * (ix * 2 + iy), true, col(ix, iy), 0.9, 1e6});
@@ -254,7 +259,7 @@ int main(int argc, char** argv) {
   const i64 ticks = static_cast<i64>(std::llround(seconds / dt));
   size_t next_shot = 0;
   int frame = 0;
-  f64 next_frame = 0.0, next_report = report;
+  f64 next_frame = frame_start, next_report = report;
   f64 max_tick = 0.0, sum_tick = 0.0;
   EngineStats prev = eng.stats();
   const auto wall0 = Clock::now();
@@ -267,6 +272,12 @@ int main(int argc, char** argv) {
     }
     eng.tick();
     (void)eng.take_events();
+    if (std::getenv("SVX_TRACK_FAST"))
+      for (const auto& bp : eng.rigid().bodies)
+        if (norm(bp->v) > 14.0)
+          std::printf("  [fast t%lld] id %lld m %.0f r %.2f x (%.1f %.1f %.1f) v (%.1f %.1f %.1f) |w| %.2f asleep %d age %.2f\n",
+                      static_cast<long long>(t), static_cast<long long>(bp->id), bp->mass, bp->radius, bp->x.x, bp->x.y, bp->x.z,
+                      bp->v.x, bp->v.y, bp->v.z, norm(bp->w), bp->asleep ? 1 : 0, bp->age);
     const EngineStats s = eng.stats();
     max_tick = std::max(max_tick, s.tick_ms);
     sum_tick += s.tick_ms;
@@ -277,14 +288,43 @@ int main(int argc, char** argv) {
       next_frame += 1.0 / fps;
     }
     if (time + dt >= next_report - 1e-9) {
+      // fast pieces (ejections) and the highest piece
+      int fast = 0;
+      double vmax = 0.0, zmax = -1e9;
+      for (const auto& bp : eng.rigid().bodies) {
+        const double v = norm(bp->v);
+        vmax = std::max(vmax, v);
+        fast += v > 12.0 ? 1 : 0;
+        zmax = std::max(zmax, bp->x.z);
+      }
+      {
+        static double last[5] = {0, 0, 0, 0, 0};
+        const double* pm = eng.rigid().prof_ms;
+        const double n = std::max(1.0, report / dt);
+        std::printf("        rigid ms/tick: collide %.1f solve %.1f fracture %.1f rollback %.1f integrate %.1f\n", (pm[0] - last[0]) / n,
+                    (pm[1] - last[1]) / n, (pm[2] - last[2]) / n, (pm[3] - last[3]) / n, (pm[4] - last[4]) / n);
+        for (int q = 0; q < 5; ++q) last[q] = pm[q];
+      }
+      {
+        int hist[6] = {0, 0, 0, 0, 0, 0};
+        for (const auto& bp : eng.rigid().bodies) {
+          if (bp->asleep) continue;
+          const double sp = norm(bp->v) + bp->radius * norm(bp->w);
+          hist[sp < 0.15 ? 0 : sp < 0.45 ? 1 : sp < 1.0 ? 2 : sp < 3.0 ? 3 : sp < 10.0 ? 4 : 5]++;
+        }
+        std::printf("        awake speeds: <.15 %d <.45 %d <1 %d <3 %d <10 %d >10 %d\n", hist[0], hist[1], hist[2], hist[3], hist[4], hist[5]);
+      }
+      std::printf("        fast %d vmax %.1f m/s zmax %.1f m | dust %lld vox | modes T %lld C %lld S %lld\n", fast, vmax, zmax,
+                  static_cast<long long>(s.pulverized_voxels), static_cast<long long>(s.mode_breaks[1]),
+                  static_cast<long long>(s.mode_breaks[2]), static_cast<long long>(s.mode_breaks[3]));
       std::printf("t=%5.1fs pieces %4d (awake %4d, contacts %5d) | broken %6lld (+%lld) detached %7lld vox in %5lld pieces | "
-                  "structures %3d solving %2d (%lld nodes) | splits %4lld checks %5lld impacts %4lld | tick mean %.1f max %.1f ms "
-                  "(rigid %.1f struct %.1f) | maxphi %.2f\n",
+                  "structures %3d solving %2d (%lld nodes) | splits %4lld checks %5lld breaks imp %lld steady %lld | tick mean %.1f max %.1f ms "
+                  "(rigid %.1f struct %.1f) | maxphi %.2f | chunks %lld\n",
                   time + dt, s.bodies, s.awake, s.contacts, static_cast<long long>(s.bonds_broken),
                   static_cast<long long>(s.bonds_broken - prev.bonds_broken), static_cast<long long>(s.detached_voxels),
                   static_cast<long long>(s.detached_pieces), s.structures, s.solving, static_cast<long long>(s.solve_nodes),
-                  static_cast<long long>(s.body_splits), static_cast<long long>(s.body_checks), static_cast<long long>(s.impacts),
-                  sum_tick / std::max<f64>(1.0, report / dt), max_tick, s.rigid_ms, s.structural_ms, s.max_utilization);
+                  static_cast<long long>(s.body_splits), static_cast<long long>(s.body_checks), static_cast<long long>(s.impact_breaks),
+                  static_cast<long long>(s.steady_breaks), sum_tick / std::max<f64>(1.0, report / dt), max_tick, s.rigid_ms, s.structural_ms, s.max_utilization, static_cast<long long>(s.chunks));
       prev = s;
       sum_tick = 0.0;
       max_tick = 0.0;
@@ -308,6 +348,19 @@ int main(int argc, char** argv) {
                 hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7], small, big, below);
   }
   const f64 wall = std::chrono::duration<f64>(Clock::now() - wall0).count();
+  {
+    // piece sizes (voxels)
+    int hist[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    long long vox[8] = {0, 0, 0, 0, 0, 0, 0, 0};
+    for (const auto& bp : eng.rigid().bodies) {
+      const int n = bp->shape.count;
+      const int k = n < 8 ? 0 : n < 32 ? 1 : n < 64 ? 2 : n < 128 ? 3 : n < 512 ? 4 : n < 2048 ? 5 : n < 8192 ? 6 : 7;
+      hist[k]++;
+      vox[k] += n;
+    }
+    std::printf("piece sizes (voxels): <8 %d (%lld) <32 %d (%lld) <64 %d (%lld) <128 %d (%lld) <512 %d (%lld) <2k %d (%lld) <8k %d (%lld) >8k %d (%lld)\n",
+                hist[0], vox[0], hist[1], vox[1], hist[2], vox[2], hist[3], vox[3], hist[4], vox[4], hist[5], vox[5], hist[6], vox[6], hist[7], vox[7]);
+  }
   const EngineStats s = eng.stats();
   std::printf("done: %lld ticks in %.1f s wall; voxels %lld, pieces %d, broken %lld, detached %lld voxels, hash %016llx\n",
               static_cast<long long>(ticks), wall, static_cast<long long>(s.voxels), s.bodies,

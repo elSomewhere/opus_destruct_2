@@ -2,6 +2,8 @@
 // fracture and splitting, carving, blasts, announcement to the front end (docs/V2_DESIGN.md §4).
 #include <algorithm>
 #include <climits>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 
 #include "svx/engine/engine.hpp"
@@ -245,6 +247,12 @@ void Engine::rebuild_body_graph(Body& b) {
     G.face_start.push_back(static_cast<i32>(G.face_p.size()));
   }
   G.u.assign(6 * size_t(n), 0.0);
+  {
+    std::vector<i32> comp;
+    std::vector<u8> seed(static_cast<size_t>(n), 0);
+    if (n > 0) seed[0] = 1;
+    G.components = n > 0 ? graph_components(n, G.P.bonds, seed, &comp) : 0;
+  }
   b.graph_dirty = false;
 }
 
@@ -301,7 +309,8 @@ void Engine::refragment_body(Body& b) {
   b.graph_dirty = true;
 }
 
-std::vector<i32> Engine::body_stress(Body& b, const std::vector<PointForce>& forces, bool inertia) {
+std::vector<i32> Engine::body_stress(Body& b, const std::vector<PointForce>& forces, bool inertia, f64 energy,
+                                     std::vector<i32>* crushed) {
   std::vector<i32> out;
   if (b.graph_dirty || !b.graph) rebuild_body_graph(b);
   BodyGraph& G = *b.graph;
@@ -344,40 +353,239 @@ std::vector<i32> Engine::body_stress(Body& b, const std::vector<PointForce>& for
   if (!G.P.assembled()) {
     StressOptions so;
     so.rtol = cfg_.body_stress_rtol;
+    so.amg_min_nodes = 0;  // (small pieces: the coarsest level is the whole graph, solved exactly)
     if (!G.P.assemble(so)) return out;
   }
-  const PcgResult r = G.P.solve(f, G.u, cfg_.body_stress_rtol, cfg_.body_stress_maxit, true);
-  ++st_.body_checks;
-  st_.pcg_iters += r.iters;
+  // Break rounds: a progressive failure within the substep (steps of a sequentially linear
+  // analysis). The worst bonds go first, the load redistributes, and the first time the piece
+  // comes apart the rounds stop. The parts then separate (the contact step is solved again
+  // without them), so the part above a failed storey keeps falling and meets what is below in its
+  // own collision: collapse and breakup proceed through the collisions, crack by crack, rather
+  // than as one overloaded solve that pulverizes everything at once. An impact pays for its
+  // cracks from the energy the collision dissipates; a resting load (gravity) is not limited.
+  const bool impact = energy >= 0.0;
+  const i32 rounds = std::max(1, cfg_.impact_rounds);
+  static const bool dbg = std::getenv("SVX_DEBUG_BODY") != nullptr;
+  f64 spent = 0.0;
   std::vector<std::pair<f64, i32>> over;
-  f64 maxphi = 0.0;
-  for (i32 k = 0; k < static_cast<i32>(G.P.bonds.size()); ++k) {
-    const SBond& B = G.P.bonds[size_t(k)];
-    if (B.broken) continue;
-    const f64 phi = bond_utilization(B, G.P.bond_load(k, G.u), par_.fragility);
-    maxphi = std::max(maxphi, phi);
-    if (phi >= 1.0) over.push_back({phi, k});
-  }
-  b.last_phi = maxphi;
-  if (over.empty()) return out;
-  std::sort(over.begin(), over.end(), [](const auto& x, const auto& y) { return x.first > y.first || (x.first == y.first && x.second < y.second); });
-  const f64 thr = std::max(1.0, cfg_.break_band * over.front().first);
-  for (const auto& [phi, k] : over) {
-    if (phi < thr || static_cast<i32>(out.size()) >= cfg_.max_breaks_per_round) break;
-    out.push_back(k);
-  }
-  // mark them
-  for (i32 k : out) {
-    G.P.remove_bond(k);
-    const SBond& B = G.P.bonds[size_t(k)];
-    for (i32 e = G.face_start[size_t(k)]; e < G.face_start[size_t(k) + 1]; ++e) {
-      const i32 i = b.shape.index(G.face_p[size_t(e)]);
-      if (i >= 0) b.shape.brk[size_t(i)] |= static_cast<u8>(1u << G.face_axis[size_t(e)]);
+  std::vector<FailMode> modes(G.P.bonds.size(), FailMode::None);
+  std::vector<i32> comp;
+  for (i32 round = 0; round < rounds; ++round) {
+    const PcgResult r = G.P.solve(f, G.u, cfg_.body_stress_rtol, cfg_.body_stress_maxit, true);
+    if (!r.converged && (r.breakdown || r.rel_res > 5.0 * cfg_.body_stress_rtol)) {
+      G.P.invalidate();  // (no reliable answer: nothing more breaks; the next check starts afresh)
+      std::fill(G.u.begin(), G.u.end(), 0.0);
+      break;
     }
-    ++st_.bonds_broken;
-    crack_event(b.to_world(B.p), rotate(b.q, B.n), 1.0);
+    ++st_.body_checks;
+    st_.pcg_iters += r.iters;
+    over.clear();
+    f64 maxphi = 0.0;
+    for (i32 k = 0; k < static_cast<i32>(G.P.bonds.size()); ++k) {
+      const SBond& B = G.P.bonds[size_t(k)];
+      if (B.broken || G.P.nodes[size_t(B.a)].gone) continue;
+      const f64 phi = bond_utilization(B, G.P.bond_load(k, G.u), par_.fragility, &modes[size_t(k)]);
+      maxphi = std::max(maxphi, phi);
+      if (phi >= 1.0) over.push_back({phi, k});
+    }
+    if (round == 0) b.last_phi = maxphi;
+    if (dbg && b.shape.count > 5000) {
+      f64 fs = 0.0;
+      for (const PointForce& pf : forces) fs += norm(pf.F);
+      std::printf("  [body t%lld r%d] id %lld: %d voxels, %zu nodes (%zu bonds), %zu forces sum %.3g N (weight %.3g), pcg %d (%.1e), max phi %.2f, %zu over, energy %.3g (spent %.3g)\n",
+                  static_cast<long long>(st_.ticks), round, static_cast<long long>(b.id), b.shape.count, G.P.nodes.size(), G.P.bonds.size(),
+                  forces.size(), fs, b.mass * cfg_.rigid.gravity, r.iters, r.rel_res, maxphi, over.size(), energy, spent);
+    }
+    if (over.empty()) break;
+    std::sort(over.begin(), over.end(), [](const auto& x, const auto& y) { return x.first > y.first || (x.first == y.first && x.second < y.second); });
+    // (an impact's rounds are steps of a sequentially linear analysis: the worst bonds, and at
+    // least the worst fraction of the overloaded ones, so that the failure reaches through the
+    // piece in a few rounds)
+    const f64 thr = std::max(1.0, cfg_.break_band * over.front().first);
+    const size_t quota = static_cast<size_t>(std::ceil(cfg_.impact_round_fraction * static_cast<f64>(over.size())));
+    const size_t before = out.size();
+    bool poor = false;
+    for (size_t q = 0; q < over.size(); ++q) {
+      const f64 phi = over[q].first;
+      const i32 k = over[q].second;
+      if ((phi < thr && q >= quota) || static_cast<i32>(out.size() - before) >= cfg_.max_breaks_per_round) break;
+      if (impact) {
+        // A crack costs its fracture energy, crushing costs much more; an impact has only what it
+        // takes out of the motion.
+        const SBond& B = G.P.bonds[size_t(k)];
+        const f64 crush = modes[size_t(k)] == FailMode::Crush ? cfg_.crush_energy : 1.0;
+        const f64 cost = cfg_.fracture_energy * crush * B.area * std::min(material(B.ma).Gf, material(B.mb).Gf) * B.strength;
+        if (spent + cost > energy) {
+          poor = true;
+          break;
+        }
+        spent += cost;
+      }
+      out.push_back(k);
+    }
+    for (size_t q = before; q < out.size(); ++q) {
+      const i32 k = out[q];
+      G.P.remove_bond(k);
+      const SBond& B = G.P.bonds[size_t(k)];
+      for (i32 e = G.face_start[size_t(k)]; e < G.face_start[size_t(k) + 1]; ++e) {
+        const i32 i = b.shape.index(G.face_p[size_t(e)]);
+        if (i >= 0) b.shape.brk[size_t(i)] |= static_cast<u8>(1u << G.face_axis[size_t(e)]);
+      }
+      ++st_.bonds_broken;
+      ++(impact ? st_.impact_breaks : st_.steady_breaks);
+      if (crushed && modes[size_t(k)] == FailMode::Crush) crushed->push_back(k);
+      ++st_.mode_breaks[static_cast<int>(modes[size_t(k)])];
+      crack_event(b.to_world(B.p), rotate(b.q, B.n), 1.0);
+    }
+    if (poor || out.size() == before || round + 1 == rounds) break;
+    // Come apart? A part of some size (freed, or on supports of its own) goes its own way: the
+    // rounds end and the parts separate. Chips crushed off where the piece struck still pass the
+    // load on (crushed material in between transmits it): their loads move to the piece through
+    // the crack, they leave the solve, and the rounds go on.
+    i32 pin = -1;
+    for (i32 i = 0; i < n; ++i)
+      if (G.P.nodes[size_t(i)].fixed) pin = i;
+    if (pin < 0) break;
+    std::vector<u8> seed(size_t(n), 0);
+    seed[size_t(pin)] = 1;
+    const i32 nc = graph_components(n, G.P.bonds, seed, &comp);
+    if (nc <= 1) continue;
+    std::vector<f64> cmass(size_t(nc), 0.0);
+    for (i32 i = 0; i < n; ++i)
+      if (!G.P.nodes[size_t(i)].gone) cmass[size_t(comp[size_t(i)])] += G.node_mass[size_t(i)];
+    bool apart = false;
+    for (i32 c = 1; c < nc; ++c)
+      if (cmass[size_t(c)] > cfg_.impact_chip_fraction * b.mass) apart = true;
+    if (apart) break;
+    // chips: each passes its net load on to the piece it broke from, shared by the nodes it was
+    // bonded to (force equally, the moment about their centre as nodal moments), else to the
+    // nearest node
+    std::vector<std::vector<i32>> attach(static_cast<size_t>(nc));
+    for (const SBond& B : G.P.bonds) {
+      if (!B.broken || B.b < 0) continue;
+      const i32 ca = comp[size_t(B.a)], cb = comp[size_t(B.b)];
+      if (ca > 0 && cb == 0 && !G.P.nodes[size_t(B.b)].gone) attach[size_t(ca)].push_back(B.b);
+      if (cb > 0 && ca == 0 && !G.P.nodes[size_t(B.a)].gone) attach[size_t(cb)].push_back(B.a);
+    }
+    std::vector<V3> cF(static_cast<size_t>(nc)), cM(static_cast<size_t>(nc));
+    std::vector<i32> chip_nodes;
+    for (i32 i = 0; i < n; ++i) {
+      const i32 c = comp[size_t(i)];
+      if (c == 0 || G.P.nodes[size_t(i)].gone) continue;
+      chip_nodes.push_back(i);
+      auto& A = attach[size_t(c)];
+      if (A.empty()) {
+        f64 best = 1e300;
+        i32 bj = -1;
+        for (i32 j = 0; j < n; ++j) {
+          if (comp[size_t(j)] != 0 || G.P.nodes[size_t(j)].gone) continue;
+          const f64 d = norm2(G.P.nodes[size_t(j)].c - G.P.nodes[size_t(i)].c);
+          if (d < best) {
+            best = d;
+            bj = j;
+          }
+        }
+        if (bj < 0) continue;
+        A.push_back(bj);
+      }
+      f64* fi = &f[6 * size_t(i)];
+      const V3 Fi{fi[0], fi[1], fi[2]};
+      cF[size_t(c)] += Fi;
+      cM[size_t(c)] += V3{fi[3], fi[4], fi[5]} + cross(G.P.nodes[size_t(i)].c, Fi);  // (about the origin)
+      for (int q = 0; q < 6; ++q) fi[q] = 0.0;
+    }
+    for (i32 c = 1; c < nc; ++c) {
+      auto& A = attach[size_t(c)];
+      if (A.empty()) continue;
+      std::sort(A.begin(), A.end());
+      A.erase(std::unique(A.begin(), A.end()), A.end());
+      const f64 w = 1.0 / static_cast<f64>(A.size());
+      const V3 Fj = cF[size_t(c)] * w;
+      V3 Mrest = cM[size_t(c)];
+      for (i32 j : A) Mrest = Mrest - cross(G.P.nodes[size_t(j)].c, Fj);
+      const V3 Mj = Mrest * w;
+      for (i32 j : A) {
+        f64* fj = &f[6 * size_t(j)];
+        fj[0] += Fj.x;
+        fj[1] += Fj.y;
+        fj[2] += Fj.z;
+        fj[3] += Mj.x;
+        fj[4] += Mj.y;
+        fj[5] += Mj.z;
+      }
+    }
+    // (a chip holds together: its own bonds leave the matrix but not the topology the split reads)
+    std::vector<i32> inner;
+    for (i32 k = 0; k < static_cast<i32>(G.P.bonds.size()); ++k) {
+      const SBond& B = G.P.bonds[size_t(k)];
+      if (!B.broken && B.b >= 0 && comp[size_t(B.a)] > 0 && comp[size_t(B.a)] == comp[size_t(B.b)]) inner.push_back(k);
+    }
+    G.P.retire_nodes(chip_nodes);
+    for (i32 k : inner) G.P.bonds[size_t(k)].broken = false;
+    for (i32 i : chip_nodes)
+      for (int q = 0; q < 6; ++q) G.u[6 * size_t(i) + size_t(q)] = 0.0;
   }
   return out;
+}
+
+bool Engine::pulverize(Body& b, const std::vector<i32>& crushed) {
+  if (crushed.empty() || !b.graph) return false;
+  const BodyGraph& G = *b.graph;
+  BodyShape& S = b.shape;
+  std::vector<u8> kill(b.frags.size(), 0);
+  for (i32 k : crushed) {
+    const SBond& B = G.P.bonds[size_t(k)];
+    if (B.b < 0) continue;
+    const i32 side = G.node_mass[size_t(B.a)] <= G.node_mass[size_t(B.b)] ? B.a : B.b;
+    for (i32 e = G.face_start[size_t(k)]; e < G.face_start[size_t(k) + 1]; ++e) {
+      IVec3 p = G.face_p[size_t(e)];
+      for (int s2 = 0; s2 < 2; ++s2) {
+        if (s2) p[G.face_axis[size_t(e)]] += 1;
+        const i32 i = S.index(p);
+        if (i < 0) continue;
+        const i32 f = S.frag[size_t(i)] - 1;
+        if (f >= 0 && f < static_cast<i32>(kill.size()) && G.frag_node[size_t(f)] == side) kill[size_t(f)] = 1;
+      }
+    }
+  }
+  i64 removed = 0;
+  std::vector<V3> at(b.frags.size());
+  std::vector<i32> cnt(b.frags.size(), 0);
+  const f64 h = grid_.h;
+  for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
+    if (!vox_solid(S.vox[size_t(i)])) continue;
+    const i32 f = S.frag[size_t(i)] - 1;
+    if (f < 0 || !kill[size_t(f)]) continue;
+    const IVec3 p = S.voxel(i);
+    at[size_t(f)] += V3{h * p[0], h * p[1], h * p[2]};
+    ++cnt[size_t(f)];
+    S.vox[size_t(i)] = kAir;
+    S.frag[size_t(i)] = 0;
+    S.brk[size_t(i)] = 0;
+    ++removed;
+  }
+  if (!removed) return false;
+  for (size_t f = 0; f < kill.size(); ++f) {
+    if (!cnt[f]) continue;
+    const V3 c = at[f] * (1.0 / cnt[f]);
+    // (dust: a crack event of full strength, the size of what was crushed)
+    if (crack_budget_ > 0) {
+      --crack_budget_;
+      EngineEvent ev;
+      ev.kind = EngineEvent::Kind::Crack;
+      ev.pos = to_arr(b.to_world(c));
+      const V3 vel = b.v + cross(b.w, b.to_world(c) - b.x);
+      ev.vel = to_arr(vel);
+      ev.strength = 2.0;
+      ev.voxels = cnt[f];
+      ev.radius = 0.5 * h * std::cbrt(static_cast<f64>(cnt[f]));
+      events_.push_back(std::move(ev));
+    }
+  }
+  st_.pulverized_voxels += removed;
+  refragment_body(b);
+  b.graph_dirty = true;
+  return true;
 }
 
 std::unique_ptr<Body> Engine::sub_body(const Body& parent, const std::vector<i32>& voxels, const std::vector<i32>& frag_map,
@@ -459,7 +667,36 @@ bool Engine::split_body(Body& b, bool use_pre, bool force_replace) {
   }
   for (auto& part : parts) {
     if (part.empty()) continue;
+    if (nc > 1 && static_cast<i32>(part.size()) < cfg_.min_body_voxels) {
+      // (a shard: dust and a few chips for the front end, not a rigid piece)
+      V3 c;
+      for (i32 i : part) {
+        const IVec3 p = S.voxel(i);
+        c += V3{grid_.h * p[0], grid_.h * p[1], grid_.h * p[2]};
+      }
+      c *= 1.0 / static_cast<f64>(part.size());
+      const V3 X = b.to_world(c);
+      const V3 vp = use_pre ? b.v_pre : b.v, wp = use_pre ? b.w_pre : b.w;
+      if (crack_budget_ > 0) {
+        --crack_budget_;
+        EngineEvent ev;
+        ev.kind = EngineEvent::Kind::Crack;
+        ev.pos = to_arr(X);
+        ev.vel = to_arr(vp + cross(wp, X - b.x));
+        ev.strength = 1.5;
+        ev.voxels = static_cast<i32>(part.size());
+        ev.radius = 0.5 * grid_.h * std::cbrt(static_cast<f64>(part.size()));
+        events_.push_back(std::move(ev));
+      }
+      st_.pulverized_voxels += static_cast<i64>(part.size());
+      continue;
+    }
     pending_add_.push_back(sub_body(b, part, frag_comp, use_pre));
+    if (use_pre && nc > 1) {
+      // (broken in this substep's collision: the parts part for the rest of it)
+      pending_add_.back()->family = b.id;
+      pending_add_.back()->family_ticks = 1;
+    }
   }
   pending_retire_.push_back(b.id);
   if (nc > 1) ++st_.body_splits;
@@ -480,29 +717,85 @@ void Engine::flush_body_changes() {
   pending_add_.clear();
 }
 
+namespace {
+
+// A rigid solver's contact forces are one of many statically admissible answers: a piece resting
+// on many points may carry its whole weight on a few of them, which a stress check reads as
+// crushing point loads. The stress check takes the elastic answer instead: the same net force and
+// moment shared over the contact points as by a rigid body on equal springs (the least-squares
+// distribution), f_c = u + theta x r_c.
+template <class PF>
+void spread_contact_forces(std::vector<PF>& fs) {
+  const size_t n = fs.size();
+  if (n < 2) return;
+  V3 F, c0;
+  for (const auto& pf : fs) {
+    F += pf.F;
+    c0 += pf.p;
+  }
+  c0 *= 1.0 / static_cast<f64>(n);
+  V3 M;
+  M3 A;
+  f64 r2sum = 0.0;
+  for (const auto& pf : fs) {
+    const V3 r = pf.p - c0;
+    M += cross(r, pf.F);
+    const f64 r2 = dot(r, r);
+    r2sum += r2;
+    const f64 rv[3] = {r.x, r.y, r.z};
+    for (int i = 0; i < 3; ++i)
+      for (int j = 0; j < 3; ++j) A.m[size_t(3 * i + j)] += (i == j ? r2 : 0.0) - rv[i] * rv[j];
+  }
+  // (collinear or coincident points cannot carry a moment about their line: a small
+  // regularization leaves that part to the inertia)
+  const f64 eps = 1e-6 * r2sum + 1e-12;
+  for (int i = 0; i < 3; ++i) A.m[size_t(4 * i)] += eps;
+  M3 Ai;
+  V3 theta;
+  if (inverse(A, Ai)) theta = Ai * M;
+  const V3 u = F * (1.0 / static_cast<f64>(n));
+  for (auto& pf : fs) pf.F = u + cross(theta, pf.p - c0);
+}
+
+}  // namespace
+
 bool Engine::fracture_hook(f64 dt) {
   const auto& cs = rigid_.contacts();
   const size_t nb = rigid_.bodies.size();
   std::vector<std::vector<PointForce>> per(nb);
-  std::vector<f64> fsum(nb, 0.0);
-  std::vector<V3> jsum(nb), lsum(nb);
-  const f64 k = par_.impact / dt;
+  std::vector<f64> fsum(nb, 0.0), approach(nb, 0.0), dissipated(nb, 0.0);
+  // A rigid contact stops a body within one substep; a real impact takes the time a stress wave
+  // (slowed by the crushing zone) needs to cross the piece. Contact impulses load a piece's
+  // stress spread over that time: large pieces crush progressively from where they hit instead
+  // of feeling a uniform deceleration of tens of g.
+  std::vector<f64> kf(nb);
+  for (size_t i = 0; i < nb; ++i) {
+    const Body& b = *rigid_.bodies[i];
+    const f64 tau = std::max(dt, 2.0 * b.radius / std::max(1.0, cfg_.impact_wave_speed));
+    kf[i] = par_.impact / tau;
+  }
   for (const Contact& c : cs) {
     const V3 J = c.impulse();
-    const V3 F = J * k;
-    const f64 mag = norm(F);
-    if (mag <= 0.0) continue;
+    approach[size_t(c.a)] = std::max(approach[size_t(c.a)], c.approach);
+    if (c.b >= 0) approach[size_t(c.b)] = std::max(approach[size_t(c.b)], c.approach);
+    // the kinetic energy the contact takes out of the collision (inelastic: 1/2 J v)
+    const f64 e = 0.5 * c.ln * c.approach;
+    if (c.b >= 0) {
+      dissipated[size_t(c.a)] += 0.5 * e;
+      dissipated[size_t(c.b)] += 0.5 * e;
+    } else {
+      dissipated[size_t(c.a)] += e;
+    }
+    if (norm2(J) <= 0.0) continue;
     Body& A = *rigid_.bodies[size_t(c.a)];
-    per[size_t(c.a)].push_back({A.shape.frag[size_t(c.vox_a)] - 1, F, c.p});
-    fsum[size_t(c.a)] += mag;
-    jsum[size_t(c.a)] += J;
-    lsum[size_t(c.a)] += cross(c.p - A.x, J);
+    const V3 Fa = J * kf[size_t(c.a)];
+    per[size_t(c.a)].push_back({A.shape.frag[size_t(c.vox_a)] - 1, Fa, c.p});
+    fsum[size_t(c.a)] += norm(Fa);
     if (c.b >= 0) {
       Body& B = *rigid_.bodies[size_t(c.b)];
-      per[size_t(c.b)].push_back({B.shape.frag[size_t(c.vox_b)] - 1, F * -1.0, c.p});
-      fsum[size_t(c.b)] += mag;
-      jsum[size_t(c.b)] -= J;
-      lsum[size_t(c.b)] -= cross(c.p - B.x, J);
+      const V3 Fb = J * -kf[size_t(c.b)];
+      per[size_t(c.b)].push_back({B.shape.frag[size_t(c.vox_b)] - 1, Fb, c.p});
+      fsum[size_t(c.b)] += norm(Fb);
     }
   }
   bool changed = false;
@@ -511,22 +804,38 @@ bool Engine::fracture_hook(f64 dt) {
     if (b.asleep || static_cast<i32>(b.frags.size()) < cfg_.min_fracture_frags) continue;
     if (b.stress_cooldown > 0) --b.stress_cooldown;
     const f64 weight = b.mass * cfg_.rigid.gravity;
-    // a real collision changes the velocity by much more than resting contact does (g dt); small
-    // pieces need a harder knock (rubble does not grind itself to dust)
-    const f64 dv = norm(jsum[i]) * b.inv_mass + norm(b.inv_inertia_world() * lsum[i]) * b.radius;
-    const f64 dv_min = std::max(cfg_.body_impact_dv, cfg_.small_impact_dv * (1.0 - b.mass / cfg_.small_piece_mass));
-    const bool impact = dv > dv_min && fsum[i] > cfg_.body_trigger * weight;
+    // A collision: a contact closing faster than jostling in a pile does (small pieces need a
+    // harder knock). Its cracks are paid from the approach's kinetic energy, so rubble cannot
+    // grind itself down and a hard landing shatters what it overloads.
+    const f64 v_min = std::max(cfg_.body_impact_speed, cfg_.small_impact_speed * (1.0 - b.mass / cfg_.small_piece_mass));
+    const bool impact = approach[i] > v_min && fsum[i] > cfg_.body_trigger * weight && b.stress_cooldown <= cfg_.body_check_ticks - 2;
     // resting on new supports (a first landing, rubble shifting under it, a load put on it):
-    // checked once, again when the supporting forces changed by a good part of its weight
-    const bool steady = fsum[i] > 0.5 * weight && b.stress_cooldown <= 0 && std::abs(fsum[i] - b.last_load) > 0.3 * weight;
+    // checked once, again when the supporting forces changed by much of its weight
+    const bool steady = fsum[i] > 0.5 * weight && b.stress_cooldown <= 0 && std::abs(fsum[i] - b.last_load) > 0.5 * weight;
     const f64 wr = norm(b.w);
     const bool spin = wr * wr * b.radius > 2.0 * cfg_.rigid.gravity && b.stress_cooldown <= 0;
     if (!impact && !steady && !spin) continue;
-    b.stress_cooldown = cfg_.body_check_ticks;
+    if (b.graph_dirty || !b.graph) rebuild_body_graph(b);
+    if (b.graph->components > 1) {
+      // (a piece in several parts: they go their own ways)
+      if (split_body(b, true, false)) changed = true;
+      continue;
+    }
+    b.stress_cooldown = impact ? cfg_.body_check_ticks : 3 * cfg_.body_check_ticks;
     b.last_load = fsum[i];
-    const std::vector<i32> broken = body_stress(b, per[i], true);
+    const f64 budget = impact ? dissipated[i] : -1.0;
+    static const bool no_spread = std::getenv("SVX_NO_SPREAD") != nullptr;
+    if (!no_spread) spread_contact_forces(per[i]);
+    std::vector<i32> crushed;
+    const std::vector<i32> broken = body_stress(b, per[i], true, budget, &crushed);
     if (broken.empty()) continue;
-    if (split_body(b, true, false)) changed = true;
+    const bool reshaped = cfg_.pulverize && pulverize(b, crushed);
+    if (reshaped && b.shape.count == 0) {
+      pending_retire_.push_back(b.id);
+      changed = true;
+      continue;
+    }
+    if (split_body(b, true, reshaped)) changed = true;
   }
   flush_body_changes();
   return changed;

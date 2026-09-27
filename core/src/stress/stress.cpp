@@ -373,7 +373,8 @@ PcgResult StressProblem::iterate(int maxit, f64 rtol) {
     ++res.iters;
     ++run_.iters;
     if (!(pq > 0)) {
-      res.converged = true;  // (breakdown: take what we have)
+      res.converged = false;  // (breakdown: not positive definite along p: no answer)
+      res.breakdown = true;
       break;
     }
     const f64 alpha = run_.rz / pq;

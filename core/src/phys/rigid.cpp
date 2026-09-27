@@ -1,6 +1,11 @@
 #include "svx/phys/rigid.hpp"
 
+#include "svx/base/parallel.hpp"
+
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
 #include <climits>
 #include <cmath>
 
@@ -126,7 +131,9 @@ void body_refresh(Body& b, f64 h, int max_points) {
   std::vector<const Cand*> keep;
   size_t sharp = 0;
   for (const Cand& cd : uniq) sharp += cd.sharp ? 1 : 0;
-  const size_t cap = static_cast<size_t>(std::max(8, max_points));
+  // small pieces need few samples (their corners), large ones more (flat faces as well)
+  const f64 surf = std::cbrt(static_cast<f64>(std::max(1, S.count)));
+  const size_t cap = static_cast<size_t>(std::max(8, std::min(max_points, static_cast<int>(16.0 + 3.0 * surf * surf))));
   if (uniq.size() <= cap) {
     for (const Cand& cd : uniq) keep.push_back(&cd);
   } else {
@@ -216,92 +223,112 @@ void RigidWorld::integrate_velocities(f64 dt) {
   }
 }
 
-void RigidWorld::collide(const VoxelGrid& g) {
-  contacts_.clear();
+void RigidWorld::reduce_manifold(std::vector<Contact>& cs, f64 h) const {
+  if (cs.empty()) return;
+  // (large bodies rest on many points: their loads spread as on a real bearing surface)
+  const f64 rad = bodies[size_t(cs.front().a)]->radius;
+  const size_t cap = static_cast<size_t>(std::max(4, par.manifold + static_cast<int>(8.0 * rad)));
+  if (cs.size() <= cap) return;
+  std::sort(cs.begin(), cs.end(), [](const Contact& x, const Contact& y) {
+    return x.depth > y.depth || (x.depth == y.depth && x.key < y.key);
+  });
+  std::vector<Contact> kept;
+  std::vector<u8> used(cs.size(), 0);
+  const f64 dmin2 = (1.5 * h) * (1.5 * h);
+  for (size_t k = 0; k < cs.size() && kept.size() < cap; ++k) {
+    bool far = true;
+    for (const Contact& c : kept)
+      if (norm2(c.p - cs[k].p) < dmin2) {
+        far = false;
+        break;
+      }
+    if (far) {
+      kept.push_back(cs[k]);
+      used[k] = 1;
+    }
+  }
+  for (size_t k = 0; k < cs.size() && kept.size() < cap; ++k)
+    if (!used[k]) kept.push_back(cs[k]);
+  cs.swap(kept);
+}
+
+namespace {
+
+// The samples' world positions, kept on the body while its pose is unchanged (sleepers).
+const std::vector<V3>& world_points(Body& B) {
+  if (B.wpts.size() != B.pts.size() || B.wpts_x.x != B.x.x || B.wpts_x.y != B.x.y || B.wpts_x.z != B.x.z || B.wpts_q.x != B.q.x || B.wpts_q.y != B.q.y || B.wpts_q.z != B.q.z ||
+      B.wpts_q.w != B.q.w) {
+    const M3 R = to_matrix(B.q);
+    B.wpts.resize(B.pts.size());
+    for (size_t k = 0; k < B.pts.size(); ++k) B.wpts[k] = B.x + R * B.pts[k];
+    B.wpts_x = B.x;
+    B.wpts_q = B.q;
+  }
+  return B.wpts;
+}
+
+}  // namespace
+
+void RigidWorld::collide(const VoxelGrid& g, const std::vector<u8>* only) {
+  // only (optional): contacts of these bodies alone (the others' contacts are kept by the caller)
+  if (!only) contacts_.clear();
   const f64 h = g.h, ih = 1.0 / h;
   refresh_boxes();
   const i32 nb = static_cast<i32>(bodies.size());
-  std::vector<Contact> pair;
-  auto reduce_push = [&](std::vector<Contact>& cs) {
-    if (cs.empty()) return;
-    const size_t cap = static_cast<size_t>(std::max(4, par.manifold));
-    if (cs.size() > cap) {
-      std::sort(cs.begin(), cs.end(), [](const Contact& x, const Contact& y) {
-        return x.depth > y.depth || (x.depth == y.depth && x.key < y.key);
-      });
-      std::vector<Contact> kept;
-      std::vector<u8> used(cs.size(), 0);
-      const f64 dmin2 = (1.5 * h) * (1.5 * h);
-      for (size_t k = 0; k < cs.size() && kept.size() < cap; ++k) {
-        bool far = true;
-        for (const Contact& c : kept)
-          if (norm2(c.p - cs[k].p) < dmin2) {
-            far = false;
-            break;
-          }
-        if (far) {
-          kept.push_back(cs[k]);
-          used[k] = 1;
+  auto selected = [&](i32 i) { return !only || (*only)[size_t(i)]; };
+  // sample positions (in parallel; every body a pair may test)
+  parallel_for(nb, 64, [&](i64 b0, i64 b1) {
+    for (i64 i = b0; i < b1; ++i) world_points(*bodies[size_t(i)]);
+  });
+  // world contacts, per body in parallel (each with its own chunk cache), joined in body order
+  std::vector<std::vector<Contact>> wc(static_cast<size_t>(nb));
+  parallel_for(nb, 16, [&](i64 b0, i64 b1) {
+    IVec3 cache_cc{INT32_MIN, 0, 0};
+    const Chunk* cache_ch = nullptr;
+    auto world_vox = [&](const IVec3& p) -> Vox {
+      const IVec3 cc = chunk_of(p);
+      if (cc != cache_cc) {
+        cache_cc = cc;
+        cache_ch = g.chunk(cc);
+      }
+      if (!cache_ch) return kAir;
+      return cache_ch->uniform ? cache_ch->value : cache_ch->v[size_t(chunk_index(p))];
+    };
+    for (i64 i = b0; i < b1; ++i) {
+      const i32 ia = static_cast<i32>(i);
+      Body& A = *bodies[size_t(ia)];
+      if (A.asleep || !selected(ia)) continue;
+      std::vector<Contact>& out = wc[size_t(ia)];
+      const auto& W = A.wpts;
+      for (size_t k = 0; k < A.pts.size(); ++k) {
+        const V3& X = W[k];
+        const IVec3 p = voxel_of(X, ih);
+        if (!vox_solid(world_vox(p))) continue;
+        int axis = 2, sign = 1;
+        f64 depth = 0.5 * h;
+        if (!exit_face(X, p, h, [&](const IVec3& q) { return vox_solid(world_vox(q)); }, &axis, &sign, &depth)) {
+          axis = 2;
+          sign = 1;
+          depth = 0.5 * h;
         }
+        Contact c;
+        c.a = ia;
+        c.b = -1;
+        c.p = X;
+        c.n = V3{};
+        c.n[axis] = sign;
+        c.depth = depth;
+        c.vox_a = A.pt_vox[k];
+        c.wvox = p;
+        c.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(~0ull) ^ (static_cast<u64>(k) << 1));
+        out.push_back(c);
       }
-      for (size_t k = 0; k < cs.size() && kept.size() < cap; ++k)
-        if (!used[k]) kept.push_back(cs[k]);
-      cs.swap(kept);
+      reduce_manifold(out, h);
     }
-    for (Contact& c : cs) contacts_.push_back(c);
-    cs.clear();
-  };
-  // world positions of every body's samples, once per call (pairs reuse them)
-  wpts_.resize(size_t(nb));
-  for (i32 ib = 0; ib < nb; ++ib) {
-    const Body& B = *bodies[size_t(ib)];
-    const M3 R = to_matrix(B.q);
-    auto& w = wpts_[size_t(ib)];
-    w.resize(B.pts.size());
-    for (size_t k = 0; k < B.pts.size(); ++k) w[k] = B.x + R * B.pts[k];
-  }
-  // world: a chunk pointer cache (samples are spatially coherent)
-  IVec3 cache_cc{INT32_MIN, 0, 0};
-  const Chunk* cache_ch = nullptr;
-  auto world_vox = [&](const IVec3& p) -> Vox {
-    const IVec3 cc = chunk_of(p);
-    if (cc != cache_cc) {
-      cache_cc = cc;
-      cache_ch = g.chunk(cc);
-    }
-    if (!cache_ch) return kAir;
-    return cache_ch->uniform ? cache_ch->value : cache_ch->v[size_t(chunk_index(p))];
-  };
-  for (i32 ia = 0; ia < nb; ++ia) {
-    Body& A = *bodies[size_t(ia)];
-    if (A.asleep) continue;
-    const auto& W = wpts_[size_t(ia)];
-    for (size_t k = 0; k < A.pts.size(); ++k) {
-      const V3& X = W[k];
-      const IVec3 p = voxel_of(X, ih);
-      if (!vox_solid(world_vox(p))) continue;
-      int axis = 2, sign = 1;
-      f64 depth = 0.5 * h;
-      if (!exit_face(X, p, h, [&](const IVec3& q) { return vox_solid(world_vox(q)); }, &axis, &sign, &depth)) {
-        axis = 2;
-        sign = 1;
-        depth = 0.5 * h;
-      }
-      Contact c;
-      c.a = ia;
-      c.b = -1;
-      c.p = X;
-      c.n = V3{};
-      c.n[axis] = sign;
-      c.depth = depth;
-      c.vox_a = A.pt_vox[k];
-      c.wvox = p;
-      c.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(~0ull) ^ (static_cast<u64>(k) << 1));
-      pair.push_back(c);
-    }
-    reduce_push(pair);
-  }
-  // body pairs: sweep over x
+  });
+  for (auto& v : wc)
+    for (const Contact& c : v) contacts_.push_back(c);
+  // body pairs: sweep over x (the order of the sweep is the pairs' order)
   std::vector<i32> order(static_cast<size_t>(nb));
   for (i32 i = 0; i < nb; ++i) order[size_t(i)] = i;
   std::sort(order.begin(), order.end(), [&](i32 x, i32 y) {
@@ -315,61 +342,72 @@ void RigidWorld::collide(const VoxelGrid& g) {
       const Body& B = *bodies[size_t(order[j])];
       if (B.box_lo.x > A.box_hi.x) break;
       if (A.asleep && B.asleep) continue;
+      if (!selected(order[i]) && !selected(order[j])) continue;
+      if (A.family_ticks > 0 && B.family_ticks > 0 && A.family == B.family) continue;
       if (A.box_hi.y < B.box_lo.y || B.box_hi.y < A.box_lo.y || A.box_hi.z < B.box_lo.z || B.box_hi.z < A.box_lo.z) continue;
       pairs.push_back({std::min(order[i], order[j]), std::max(order[i], order[j])});
     }
   }
-  std::sort(pairs.begin(), pairs.end());
-  for (const auto& pr : pairs) {
-    const size_t before = contacts_.size();
-    for (int dir = 0; dir < 2; ++dir) {
-      const i32 ia = dir == 0 ? pr.first : pr.second;
-      const i32 ib = dir == 0 ? pr.second : pr.first;
-      Body& A = *bodies[size_t(ia)];
-      Body& B = *bodies[size_t(ib)];
-      const M3 RB = to_matrix(B.q);
-      const M3 RBt = transpose(RB);
-      const f64 reach2 = (B.radius + h) * (B.radius + h);
-      const auto& W = wpts_[size_t(ia)];
-      auto solidB = [&](const IVec3& q) { return vox_solid(B.shape.get(q)); };
-      for (size_t k = 0; k < A.pts.size(); ++k) {
-        const V3& X = W[k];
-        if (norm2(X - B.x) > reach2) continue;
-        const V3 s = B.com + RBt * (X - B.x);
-        const IVec3 p = voxel_of(s, ih);
-        const i32 vi = B.shape.index(p);
-        if (vi < 0 || !vox_solid(B.shape.vox[size_t(vi)])) continue;
-        int axis = 2, sign = 1;
-        f64 depth = 0.5 * h;
-        V3 ns{0, 0, 0};
-        if (exit_face(s, p, h, solidB, &axis, &sign, &depth)) {
-          ns[axis] = sign;
-        } else {
-          ns = normalized(s - B.com);
-          if (norm2(ns) == 0) ns = V3{0, 0, 1};
-          depth = 0.5 * h;
+  std::vector<std::vector<Contact>> pc(pairs.size());
+  parallel_for(static_cast<i64>(pairs.size()), 8, [&](i64 q0, i64 q1) {
+    std::vector<Contact> one;
+    for (i64 q = q0; q < q1; ++q) {
+      const auto& pr = pairs[size_t(q)];
+      for (int dir = 0; dir < 2; ++dir) {
+        const i32 ia = dir == 0 ? pr.first : pr.second;
+        const i32 ib = dir == 0 ? pr.second : pr.first;
+        const Body& A = *bodies[size_t(ia)];
+        const Body& B = *bodies[size_t(ib)];
+        const M3 RB = to_matrix(B.q);
+        const M3 RBt = transpose(RB);
+        const f64 reach2 = (B.radius + h) * (B.radius + h);
+        const auto& W = A.wpts;
+        auto solidB = [&](const IVec3& qv) { return vox_solid(B.shape.get(qv)); };
+        for (size_t k = 0; k < A.pts.size(); ++k) {
+          const V3& X = W[k];
+          if (norm2(X - B.x) > reach2) continue;
+          const V3 sp = B.com + RBt * (X - B.x);
+          const IVec3 p = voxel_of(sp, ih);
+          const i32 vi = B.shape.index(p);
+          if (vi < 0 || !vox_solid(B.shape.vox[size_t(vi)])) continue;
+          int axis = 2, sign = 1;
+          f64 depth = 0.5 * h;
+          V3 ns{0, 0, 0};
+          if (exit_face(sp, p, h, solidB, &axis, &sign, &depth)) {
+            ns[axis] = sign;
+          } else {
+            ns = normalized(sp - B.com);
+            if (norm2(ns) == 0) ns = V3{0, 0, 1};
+            depth = 0.5 * h;
+          }
+          Contact c;
+          c.a = ia;
+          c.b = ib;
+          c.p = X;
+          c.n = RB * ns;
+          c.depth = depth;
+          c.vox_a = A.pt_vox[k];
+          c.vox_b = vi;
+          c.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(static_cast<u64>(B.id)) ^ (static_cast<u64>(k) << 1));
+          one.push_back(c);
         }
-        Contact c;
-        c.a = ia;
-        c.b = ib;
-        c.p = X;
-        c.n = RB * ns;
-        c.depth = depth;
-        c.vox_a = A.pt_vox[k];
-        c.vox_b = vi;
-        c.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(static_cast<u64>(B.id)) ^ (static_cast<u64>(k) << 1));
-        pair.push_back(c);
+        reduce_manifold(one, h);
+        for (const Contact& c : one) pc[size_t(q)].push_back(c);
+        one.clear();
       }
-      reduce_push(pair);
     }
-    // an awake body moving into a sleeping one wakes it
-    Body& A = *bodies[size_t(pr.first)];
-    Body& B = *bodies[size_t(pr.second)];
-    if (A.asleep != B.asleep && contacts_.size() > before) {
+  });
+  for (size_t q = 0; q < pairs.size(); ++q) {
+    for (const Contact& c : pc[q]) contacts_.push_back(c);
+    // an awake body moving near a sleeping one wakes it (whether it pushes it, or moves away
+    // from under it)
+    Body& A = *bodies[size_t(pairs[q].first)];
+    Body& B = *bodies[size_t(pairs[q].second)];
+    if (A.asleep != B.asleep) {
       Body& moving = A.asleep ? B : A;
       Body& sleeper = A.asleep ? A : B;
       const f64 sp = norm(moving.v) + moving.radius * norm(moving.w);
-      if (sp > 2.0 * par.sleep_speed) wake(sleeper);
+      if (sp > (!pc[q].empty() ? 2.0 : 3.0) * par.sleep_speed) wake(sleeper);
     }
   }
 }
@@ -416,9 +454,13 @@ void RigidWorld::solve(f64 dt) {
     c.k1 = eff(c, c.t1);
     c.k2 = eff(c, c.t2);
     const f64 vn = dot(vel(c.a, c.ra) - vel(c.b, c.rb), c.n);
+    c.approach = std::max(0.0, -vn);
     c.bounce = vn < -par.bounce_speed ? -par.restitution * vn : 0.0;
     c.mu = par.friction;
     c.bias = std::min(par.max_correction, par.baumgarte * std::max(0.0, c.depth - par.slop) / dt);
+  }
+  // (warm starts after every contact read its approach from the velocities before the solve)
+  for (Contact& c : contacts_) {
     const auto it = warm_.find(c.key);
     if (it != warm_.end()) {
       c.ln = 0.85 * it->second[0];
@@ -427,8 +469,67 @@ void RigidWorld::solve(f64 dt) {
       apply(c, c.n * c.ln + c.t1 * c.l1 + c.t2 * c.l2);
     }
   }
+  // Parallel Gauss-Seidel by graph colouring. A pair's manifold (consecutive contacts of the same
+  // two bodies, or a body and the world) is solved in order as one group; the groups of one colour
+  // share no awake body, so they are solved concurrently (bitwise the same in any order). Groups
+  // beyond the colours (a large piece touching many) are solved after them, in order.
+  constexpr int kColors = 24;
+  std::vector<i32> gstart;  // group g: contacts [gstart[g], gstart[g + 1])
+  for (i32 k = 0; k < static_cast<i32>(contacts_.size()); ++k) {
+    const Contact& c = contacts_[size_t(k)];
+    if (k > 0) {
+      const Contact& p = contacts_[size_t(k - 1)];
+      const bool same = (p.a == c.a && p.b == c.b) || (p.a == c.b && p.b == c.a);
+      if (same) continue;
+    }
+    gstart.push_back(k);
+  }
+  const i32 ng = static_cast<i32>(gstart.size());
+  gstart.push_back(static_cast<i32>(contacts_.size()));
+  std::vector<std::vector<i32>> colour(kColors + 1);
+  {
+    std::vector<u32> used(bodies.size(), 0);
+    for (i32 gi = 0; gi < ng; ++gi) {
+      const Contact& c = contacts_[size_t(gstart[size_t(gi)])];
+      const bool da = c.a >= 0 && !bodies[size_t(c.a)]->asleep;
+      const bool db = c.b >= 0 && !bodies[size_t(c.b)]->asleep;
+      const u32 m = (da ? used[size_t(c.a)] : 0u) | (db ? used[size_t(c.b)] : 0u);
+      int col = 0;
+      while (col < kColors && (m >> col) & 1u) ++col;
+      if (col < kColors) {
+        if (da) used[size_t(c.a)] |= 1u << col;
+        if (db) used[size_t(c.b)] |= 1u << col;
+      }
+      colour[size_t(col)].push_back(gi);
+    }
+  }
+  static const bool dbg_col = std::getenv("SVX_DEBUG_COLOUR") != nullptr;
+  if (dbg_col && contacts_.size() > 10000) {
+    static int shown = 0;
+    if (shown++ % 50 == 0) {
+      std::printf("  [colour] %zu contacts, %d groups:", contacts_.size(), ng);
+      for (int col = 0; col <= kColors; ++col) std::printf(" %zu", colour[size_t(col)].size());
+      std::printf("\n");
+    }
+  }
+  auto sweep = [&](const auto& fn) {
+    auto group = [&](i32 gi) {
+      for (i32 k = gstart[size_t(gi)]; k < gstart[size_t(gi) + 1]; ++k) fn(contacts_[size_t(k)]);
+    };
+    for (int col = 0; col < kColors; ++col) {
+      const std::vector<i32>& L = colour[size_t(col)];
+      if (L.size() < 32) {
+        for (i32 gi : L) group(gi);
+      } else {
+        parallel_for(static_cast<i64>(L.size()), 16, [&](i64 q0, i64 q1) {
+          for (i64 q = q0; q < q1; ++q) group(L[size_t(q)]);
+        });
+      }
+    }
+    for (i32 gi : colour[kColors]) group(gi);
+  };
   for (int it = 0; it < par.iterations; ++it)
-    for (Contact& c : contacts_) {
+    sweep([&](Contact& c) {
       V3 dv = vel(c.a, c.ra) - vel(c.b, c.rb);
       const f64 ln = std::max(0.0, c.ln + c.kn * (c.bounce - dot(dv, c.n)));
       apply(c, c.n * (ln - c.ln));
@@ -440,7 +541,7 @@ void RigidWorld::solve(f64 dt) {
       apply(c, c.t1 * (l1 - c.l1) + c.t2 * (l2 - c.l2));
       c.l1 = l1;
       c.l2 = l2;
-    }
+    });
   // Squeeze guard: a light body pinned between heavy ones can come out of the iteration with a
   // speed no contact partner has (and fly off). Contacts may slow a body down freely but speed it
   // up only to about its fastest partner's speed.
@@ -473,8 +574,8 @@ void RigidWorld::solve(f64 dt) {
     return pv[size_t(i)] + cross(pw[size_t(i)], r);
   };
   for (int it = 0; it < par.position_iterations; ++it)
-    for (Contact& c : contacts_) {
-      if (c.bias <= 0.0) continue;
+    sweep([&](Contact& c) {
+      if (c.bias <= 0.0) return;
       const f64 vn = dot(pvel(c.a, c.ra) - pvel(c.b, c.rb), c.n);
       const f64 lp = std::max(0.0, c.lp + c.kn * (c.bias - vn));
       const V3 J = c.n * (lp - c.lp);
@@ -487,7 +588,7 @@ void RigidWorld::solve(f64 dt) {
         pv[size_t(c.b)] -= J * bodies[size_t(c.b)]->inv_mass;
         pw[size_t(c.b)] -= Iw[size_t(c.b)] * cross(c.rb, J);
       }
-    }
+    });
   pseudo_v_.swap(pv);
   pseudo_w_.swap(pw);
 }
@@ -522,7 +623,11 @@ void RigidWorld::sleep_update(f64 dt) {
       b.v *= 1.0 - par.rest_damping;
       b.w *= 1.0 - par.rest_damping;
     }
-    b.still = sp < par.sleep_speed ? b.still + 1 : 0;
+    // (a smoothed speed: a settling piece's last jitter does not restart its count; real motion does)
+    b.sleep_ema = 0.8 * b.sleep_ema + 0.2 * sp;
+    if (sp > 3.0 * par.sleep_speed || !touching[i]) b.still = 0;
+    else if (b.sleep_ema < par.sleep_speed) ++b.still;
+    else b.still = std::max(0, b.still - 2);
     if (b.still >= par.sleep_substeps) {
       b.asleep = true;
       b.v = V3{};
@@ -532,22 +637,73 @@ void RigidWorld::sleep_update(f64 dt) {
 }
 
 void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<bool(f64)>& fracture) {
+  using Clock = std::chrono::steady_clock;
+  auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
+  const auto t0 = Clock::now();
   integrate_velocities(dt);
-  collide(g);
-  solve(dt);
-  if (fracture && fracture(dt)) {
+  {
+    static const bool sc = std::getenv("SVX_SERIAL_COLLIDE") != nullptr;
+    std::unique_ptr<SerialScope> ss(sc ? new SerialScope() : nullptr);
+    collide(g);
+  }
+  const auto t1 = Clock::now();
+  {
+    static const bool sv = std::getenv("SVX_SERIAL_SOLVE") != nullptr;
+    std::unique_ptr<SerialScope> ss(sv ? new SerialScope() : nullptr);
+    solve(dt);
+  }
+  const auto t2 = Clock::now();
+  // (the contacts by body identity: a fracture may add and remove bodies)
+  std::vector<std::pair<i64, i64>> cid(contacts_.size());
+  for (size_t k = 0; k < contacts_.size(); ++k)
+    cid[k] = {bodies[size_t(contacts_[k].a)]->id, contacts_[k].b >= 0 ? bodies[size_t(contacts_[k].b)]->id : -1};
+  std::vector<i64> before_ids(bodies.size());
+  for (size_t i = 0; i < bodies.size(); ++i) before_ids[i] = bodies[i]->id;
+  const bool changed = fracture && fracture(dt);
+  const auto t3 = Clock::now();
+  if (changed) {
     for (auto& bp : bodies) {
       Body& b = *bp;
       if (b.asleep) continue;
       b.v = b.v_pre;
       b.w = b.w_pre;
     }
-    collide(g);
+    // Solve again with the new pieces: the contacts among the bodies that stayed are kept, the new
+    // ones collide afresh (with everything).
+    auto index_of = [&](i64 id) -> i32 {
+      auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
+      return (it != bodies.end() && (*it)->id == id) ? static_cast<i32>(it - bodies.begin()) : -1;
+    };
+    std::vector<Contact> kept;
+    kept.reserve(contacts_.size());
+    for (size_t k = 0; k < contacts_.size(); ++k) {
+      const i32 a = index_of(cid[k].first);
+      const i32 b = cid[k].second >= 0 ? index_of(cid[k].second) : -1;
+      if (a < 0 || (cid[k].second >= 0 && b < 0)) continue;
+      Contact c = contacts_[k];
+      c.a = a;
+      c.b = b;
+      c.ln = c.l1 = c.l2 = c.lp = 0.0;
+      kept.push_back(c);
+    }
+    std::vector<u8> fresh(bodies.size(), 0);
+    for (size_t i = 0; i < bodies.size(); ++i) fresh[i] = std::binary_search(before_ids.begin(), before_ids.end(), bodies[i]->id) ? 0 : 1;
+    contacts_.swap(kept);
+    collide(g, &fresh);
     solve(dt);
   }
+  const auto t4 = Clock::now();
   integrate_positions(dt);
   refresh_boxes();
   sleep_update(dt);
+  const auto t5 = Clock::now();
+  prof_ms[0] += ms(t0, t1);
+  prof_ms[1] += ms(t1, t2);
+  prof_ms[2] += ms(t2, t3);
+  prof_ms[3] += ms(t3, t4);
+  prof_ms[4] += ms(t4, t5);
+  for (auto& bp : bodies)
+    if (bp->family_ticks > 0) --bp->family_ticks;
 }
 
 }  // namespace svx

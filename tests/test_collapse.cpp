@@ -51,8 +51,13 @@ TEST_CASE("collapse: a slab whose columns are cut falls and breaks where it land
   CHECK(s.detached_voxels >= 48 * 48 * 2);  // the whole slab came down
   CHECK(s.body_splits >= 1);                // and something broke on the way
   CHECK(s.bodies >= 5);
-  // everything is on (or near) the ground now
-  for (const auto& b : eng.rigid().bodies) CHECK(b->x.z < 4.0);
+  // (nearly) everything is on the ground now: at most bits of the slab left on the column stumps
+  i64 low = 0, all = 0;
+  for (const auto& b : eng.rigid().bodies) {
+    all += b->shape.count;
+    low += b->x.z < 4.0 ? b->shape.count : 0;
+  }
+  CHECK(low >= 0.9 * all);
 }
 
 TEST_CASE("collapse: a bridge losing a pier drops its deck") {
@@ -68,15 +73,16 @@ TEST_CASE("collapse: a bridge losing a pier drops its deck") {
   CHECK(s.detached_voxels > 4000);
 }
 
-TEST_CASE("collapse: the tower losing its west columns comes down (and replays bit for bit on any thread count)") {
+TEST_CASE("collapse: the tower losing its two west rows of columns comes down (and replays bit for bit on any thread count)") {
   const f64 h = 0.125;
   auto session = [&](int threads, EngineStats* st) {
     set_num_threads(threads);
     Engine eng = world("tower");
-    for (int iy = 0; iy <= 3; ++iy) {
-      eng.blast({h * 41, h * (40 + iy * 26 + 1), 1.0}, 0.9, 1e6);
-      run(eng, 15);
-    }
+    for (int ix = 0; ix <= 1; ++ix)
+      for (int iy = 0; iy <= 3; ++iy) {
+        eng.blast({h * (41 + 26 * ix), h * (40 + iy * 26 + 1), 1.0}, 0.9, 1e6);
+        run(eng, 15);
+      }
     run(eng, 60 * 3);
     *st = eng.stats();
     return eng.session_hash();

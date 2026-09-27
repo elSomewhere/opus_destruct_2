@@ -555,6 +555,14 @@ void Engine::step_structures() {
                   s.P.appended(), ms_since(tq), ms_since(tq) / std::max(1, r.iters), static_cast<long long>(per));
     budget -= per * std::max(1, r.iters);
     st_.pcg_iters += r.iters;
+    if (r.breakdown) {
+      // (not positive definite: a mechanism the connectivity pass has not split off yet, or a
+      // stale operator) re-assemble from scratch and restart
+      s.P.invalidate();
+      s.run_iters = 0;
+      detach_unsupported(s);
+      continue;
+    }
     if (!r.converged && s.run_iters + r.iters > 120) {
       // a stale preconditioner (after many breaks): rebuild it, and restart from here
       s.P.current(s.u);

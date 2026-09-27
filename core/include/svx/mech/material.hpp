@@ -31,6 +31,7 @@ struct Material {
   f64 fc;        // compressive (crushing) strength
   f64 cohesion;  // shear strength at zero normal stress
   f64 friction;  // Mohr-Coulomb friction coefficient of the interface (and of rubble contact)
+  f64 Gf;        // fracture energy (J/m^2): what a crack through an interface costs (impacts pay it)
   // Fragment (rubble piece) size: jittered-Voronoi seed spacing in voxels per axis (x, y, z) and
   // the relative jitter of the seam paths.
   f64 frag_x, frag_y, frag_z;

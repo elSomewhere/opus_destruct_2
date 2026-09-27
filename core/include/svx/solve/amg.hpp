@@ -107,6 +107,7 @@ struct PcgResult {
   int iters = 0;
   f64 rel_res = 0.0;
   bool converged = false;
+  bool breakdown = false;  // the operator was not positive definite along a search direction
 };
 
 // Solves A x = b (x warm-started if use_x0) to ||r|| <= rtol ||b|| (or ||r|| <= atol).

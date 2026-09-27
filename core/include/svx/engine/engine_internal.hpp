@@ -278,6 +278,7 @@ struct BodyGraph {
   std::vector<V3> node_com;    // shape frame
   std::vector<f64> node_mass;
   std::vector<M3> node_inertia;  // about node_com
+  i32 components = 1;            // of the intact bonds (a piece must be one: else it is split)
   std::vector<i32> face_start;
   std::vector<IVec3> face_p;
   std::vector<u8> face_axis;
@@ -298,7 +299,7 @@ struct Engine::Structure {
   std::vector<IVec3> vox0;         // node -> a voxel of it (re-seeding)
   std::vector<f64> weight;         // node -> N
   std::unordered_map<u64, std::vector<i32>> nodemap;  // chunk -> node per fragment (-1)
-  std::vector<i32> face_start;     // bond -> faces
+  std::vector<i32> face_start{0};  // bond -> faces: bond b has [face_start[b], face_start[b + 1])
   std::vector<IVec3> face_p;
   std::vector<u8> face_axis;
   std::vector<u64> bid;            // bond identity

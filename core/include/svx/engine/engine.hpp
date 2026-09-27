@@ -74,12 +74,19 @@ struct EngineConfig {
   i32 body_stress_maxit = 60;      // PCG iterations of a body's stress solve
   f64 body_stress_rtol = 1e-2;
   f64 body_trigger = 1.8;          // contact force sum over weight that triggers a body's stress check
-  f64 body_impact_dv = 0.35;       // ... together with a velocity change of this much per substep (m/s)
-  f64 small_impact_dv = 2.5;       // pieces lighter than small_piece_mass need up to this velocity change
+  f64 body_impact_speed = 1.5;     // ... when a contact closes faster than this (m/s): a collision
+  f64 small_impact_speed = 4.0;    // pieces lighter than small_piece_mass need up to this
   f64 small_piece_mass = 1500.0;   // kg
   i32 min_fracture_frags = 8;      // smaller pieces never break further (the smallest rubble)
+  i32 impact_rounds = 12;          // break rounds of an impact (it stops once the piece comes apart)
+  f64 impact_chip_fraction = 0.04; // parts lighter than this x the piece are crushed chips (they pass the load on)
+  f64 impact_round_fraction = 0.15;// an impact round breaks at least this fraction of the overloaded bonds (worst first)
+  f64 crush_energy = 20.0;         // crushing a bond costs this x its fracture energy
+  bool pulverize = true;           // crushed fragments turn to dust (the space they held opens)
+  f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
+  f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)
   i32 body_check_ticks = 12;       // steady contact: re-check every so many substeps
-  i32 min_body_voxels = 1;
+  i32 min_body_voxels = 8;         // smaller parts of a breaking piece turn to dust (not rigid pieces)
   f64 fade_time = 1.0;
   // blasts
   f64 blast_shatter = 1.7;         // shatter radius / crater radius: fragments come loose
@@ -180,6 +187,9 @@ struct EngineStats {
   // bodies
   i32 bodies = 0, awake = 0, contacts = 0;
   i64 body_checks = 0, body_splits = 0, impacts = 0;
+  i64 impact_breaks = 0, steady_breaks = 0;  // bonds broken in pieces by collisions / by resting loads
+  i64 pulverized_voxels = 0;                 // crushed to dust
+  i64 mode_breaks[4] = {0, 0, 0, 0};         // pieces' bonds broken by mode (none, tension, crush, shear)
   // world
   i64 resident_chunks = 0, archived_chunks = 0, generated_total = 0, evicted_total = 0, budget_evicted = 0;
   f64 stream_ms = 0.0;
@@ -331,7 +341,13 @@ class Engine {
     V3 F, p;                                 // world force and point
   };
   // Stress of body b under forces (and its inertia); returns the bonds to break (worst first).
-  std::vector<i32> body_stress(Body& b, const std::vector<PointForce>& forces, bool inertia);
+  // energy >= 0: the cracks may cost at most this much (J): an impact pays for its fractures.
+  // crushed: (optional) the broken bonds that failed by crushing.
+  std::vector<i32> body_stress(Body& b, const std::vector<PointForce>& forces, bool inertia, f64 energy = -1.0,
+                               std::vector<i32>* crushed = nullptr);
+  // Crushed material turns to gravel and dust: the fragments on the lighter side of crushed
+  // bonds leave the piece (dust events). Returns whether the shape changed.
+  bool pulverize(Body& b, const std::vector<i32>& crushed);
   void rebuild_body_graph(Body& b);
   void refragment_body(Body& b);
   // Splits b into its components (pieces take the velocity field of the pre-solve velocities if
