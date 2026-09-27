@@ -667,7 +667,7 @@ void RigidWorld::sleep_update(f64 dt) {
     Body& b = *bodies[i];
     if (b.asleep) continue;
     const f64 sp = norm(b.v) + b.radius * norm(b.w);
-    if (touching[i] && sp < par.rest_speed) {
+    if (touching[i] && sp < par.rest_speed && b.radius < par.rest_radius) {
       // rest damping: settling rubble loses its last jitter
       b.v *= rest;
       b.w *= rest;
