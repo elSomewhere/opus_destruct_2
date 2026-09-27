@@ -1,8 +1,9 @@
 /**
  * GPU residency of chunk meshes, keyed by the engine's opaque chunk key.
  *
- * Meshes are replaced often (edits, displaced chunks inside physics bubbles re-sent every
- * tick), so buffers are reused whenever the new data fits, and grown with slack otherwise.
+ * Meshes are replaced often (edits, cracks, debug views; with v1 engines also displaced chunks
+ * re-sent every tick), so buffers are reused whenever the new data fits, and grown with slack
+ * otherwise.
  * Bounds come from the actual vertex positions, so displaced geometry is culled correctly.
  */
 import type { ChunkMesh, Vec3 } from '../engine/protocol.ts';

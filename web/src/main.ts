@@ -5,7 +5,7 @@
  *   ?engine=mock|wasm         engine worker (default mock; wasm needs src/worker/wasm-worker.ts)
  *   ?world=rooms|city|tower   procedural world loaded at start (default rooms)
  *   ?seed=N                   world seed (default 1)
- *   ?debug=none|utilization|bubbles   initial debug view
+ *   ?debug=none|utilization|fragments   initial debug view ('bubbles', from v1 links, = fragments)
  */
 import './styles.css';
 import { EngineClient } from './engine/client.ts';
@@ -32,7 +32,7 @@ function parseWorld(v: string | null): ProceduralKind {
 
 function parseDebug(v: string | null): DebugView {
   if (v === 'utilization') return DebugView.Utilization;
-  if (v === 'bubbles' || v === 'bubble') return DebugView.BubbleLevel;
+  if (v === 'fragments' || v === 'fragment' || v === 'bubbles' || v === 'bubble') return DebugView.Fragments;
   return DebugView.None;
 }
 

@@ -133,7 +133,7 @@ try {
   check(s.engine.voxels < v0, `hitscan carved ${v0 - s.engine.voxels} voxels`);
   await page.screenshot({ path: `${outDir}/02-hitscan.png` });
 
-  // --- 3. Rockets drop the bridge (room 2,0): blast + detached island + fade -------------
+  // --- 3. Rockets drop the bridge (room 2,0): blast + rigid piece that rests as rubble ----
   const v1 = s.engine.voxels;
   await page.evaluate(() => {
     const sv = window.__structvox;
@@ -159,10 +159,10 @@ try {
     await page.screenshot({ path: `${outDir}/03-bridge-falling.png` });
   }
   s = await state(page);
-  check(s.engine.islands >= 1 && s.engine.detachedVoxels > 1000, `detached islands: ${s.engine.islands}, ${s.engine.detachedVoxels} voxels`);
+  check(s.engine.detachedPieces >= 1 && s.engine.detachedVoxels > 1000, `detached pieces: ${s.engine.detachedPieces}, ${s.engine.detachedVoxels} voxels`);
   await sleep(2500);
   s = await state(page);
-  check(s.render.islands === 0, 'islands faded out and were released');
+  check(s.render.islands >= 1 && s.engine.pieces >= 1 && s.engine.awakePieces === 0, `pieces came to rest and stay as rubble (${s.render.islands} drawn)`);
   await page.screenshot({ path: `${outDir}/04-after-collapse.png` });
 
   // --- 4. Debug views re-mesh with debug bytes ---------------------------------------------
@@ -170,16 +170,14 @@ try {
   await page.evaluate(() => window.__structvox.setDebugView(1));
   await waitFor(page, worldSettled, seq, 20000, 'utilization view re-meshed');
   await page.screenshot({ path: `${outDir}/05-utilization.png` });
+  seq = await statsSeq(page);
   await page.evaluate(() => {
     const sv = window.__structvox;
     sv.setDebugView(2);
     sv.look(160, -5);
-    sv.fire();
   });
-  await sleep(900);
-  await page.screenshot({ path: `${outDir}/06-bubbles.png` });
-  s = await state(page);
-  check(s.engine.activeBubbles >= 1, `bubble debug: ${s.engine.activeBubbles} active bubble(s)`);
+  await waitFor(page, worldSettled, seq, 20000, 'fragments view re-meshed');
+  await page.screenshot({ path: `${outDir}/06-fragments.png` });
   await page.evaluate(() => window.__structvox.setDebugView(0));
 
   // --- 5. Other procedural worlds load ------------------------------------------------------

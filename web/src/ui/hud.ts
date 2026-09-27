@@ -3,7 +3,7 @@
  * engine-specific extras), weapon bar, crosshair and muzzle flash.
  */
 import type { DebugView, EngineStats, Vec3 } from '../engine/protocol.ts';
-import { DEBUG_VIEW_NAMES } from '../engine/protocol.ts';
+import { DEBUG_VIEW_NAMES, emptyEngineStats } from '../engine/protocol.ts';
 import type { WeaponDef } from '../game/weapons.ts';
 import type { RenderStats } from '../render/renderer.ts';
 import { formatCount, h } from './dom.ts';
@@ -24,7 +24,8 @@ export interface HudState {
   rockets: number;
 }
 
-const KNOWN = new Set(['tickMs', 'structuralMs', 'activeBubbles', 'activeNodes', 'voxels', 'chunks', 'memoryMB', 'events']);
+/** Stats shown on the fixed lines below; anything else an engine sends is listed as extras. */
+const KNOWN = new Set<string>(Object.keys(emptyEngineStats()));
 
 function fmt(v: number | string | boolean): string {
   if (typeof v !== 'number') return String(v);
@@ -82,14 +83,19 @@ export class Hud {
       `${s.fps.toFixed(0).padStart(3)} fps  ${s.frameMs.toFixed(1)} ms   ${r.width}x${r.height}`,
       `gpu    ${s.gpu}`,
       `draw   ${r.chunksDrawn}/${r.chunksTotal} chunks  ${formatCount(r.triangles)} tris  ${r.gpuMB.toFixed(0)} MB`,
-      `fx     ${r.particles} particles  ${r.islands} islands  ${s.rockets} rockets`,
+      `fx     ${r.particles} particles  ${r.islandsDrawn}/${r.islands} pieces drawn  ${s.rockets} rockets`,
       `engine ${s.engineKind}  ${s.pendingRequests} pending`,
     ];
     if (e) {
+      const ms = (v: number): string => v.toFixed(2);
       lines.push(
-        `tick   ${e.tickMs.toFixed(2)} ms  structural ${e.structuralMs.toFixed(2)} ms`,
-        `world  ${formatCount(e.voxels)} voxels  ${formatCount(e.chunks)} chunks  ${e.memoryMB.toFixed(1)} MB`,
-        `bubble ${e.activeBubbles} active  ${formatCount(e.activeNodes)} nodes  ${e.events} events`,
+        `tick   ${ms(e.tickMs)} ms  structural ${ms(e.structuralMs)}  rigid ${ms(e.rigidMs)}  events ${ms(e.eventMs)}  stream ${ms(e.streamMs)}  mesh ${ms(e.meshMs)}`,
+        `world  ${formatCount(e.voxels)} voxels  ${formatCount(e.chunks)} chunks  ${e.memoryMB.toFixed(1)} MB  resident ${formatCount(e.residentChunks)}  archived ${formatCount(e.archivedChunks)}  evicted ${formatCount(e.evictedChunks)}`,
+        `struct ${e.structures} structures  ${e.structuresSolving} solving  ${formatCount(e.solvingNodes)} nodes  max util ${ms(e.maxUtilization)}  ${e.events} events`,
+        `solver ${formatCount(e.extractions)} extractions  ${formatCount(e.convergedSolves)} solves  ${formatCount(e.pcgIterations)} pcg  ${formatCount(e.bondsBroken)} bonds broken`,
+        `pieces ${formatCount(e.pieces)} (${formatCount(e.awakePieces)} awake)  ${formatCount(e.contacts)} contacts  ${formatCount(e.pieceSplits)} splits  ${formatCount(e.pieceChecks)} checks  ${formatCount(e.impactLoads)} impacts`,
+        `detach ${formatCount(e.detachedPieces)} pieces  ${formatCount(e.detachedVoxels)} voxels  (${formatCount(e.ticks)} ticks  ${e.movers} movers)`,
+        `bake   ${formatCount(e.bakeMs)} ms  design util ${ms(e.designMaxUtilization)}  ${formatCount(e.strengthenedVoxels)} strengthened  ${formatCount(e.floatingVoxelsRemoved)} floating removed`,
       );
       const extras = Object.entries(e).filter(([k]) => !KNOWN.has(k));
       for (let i = 0; i < extras.length; i += 3) {

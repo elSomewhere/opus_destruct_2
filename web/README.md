@@ -25,11 +25,21 @@ npm run smoke -- http://localhost:5190/ smoke-out     # screenshots in smoke-out
 ```
 
 URL parameters: `?engine=mock|wasm` (default `mock`), `?world=rooms|city|tower`, `?seed=N`,
-`?debug=none|utilization|bubbles`.
+`?debug=none|utilization|fragments` (`bubbles`, from v1 links, means `fragments`).
 
 Controls: click the view to lock the pointer, WASD move, mouse look, Space jump, Shift run,
 1/2/3 or wheel for pistol/shotgun/rocket launcher, left click fire, G cycles the debug view,
 V noclip, R respawn, H toggles the HUD, Esc shows the settings panel.
+
+Engine knobs (settings panel, sent as `setParams`; `svx_set_params` of the v2 core):
+
+| knob | default | range | effect |
+|---|---|---|---|
+| Fragility | 1 | 0.25–4 (log slider) | divides every bond strength: weaker bonds, more collapse |
+| Impact | 1 | 0.25–4 (log slider) | contact force = impact × impulse / dt: how hard landings hit |
+| Dynamic factor (`dif`) | 1.5 | 1–2.5 | dynamic increase factor: overshoot of sudden load changes |
+
+Settings are not persisted between page loads.
 
 ### Cross-origin isolation
 
@@ -54,7 +64,8 @@ src/
     host.ts             typed postToMain (with transfer lists) + serveCommands (errors -> 'error')
     mock-worker.ts      mock engine entry: command loop + fixed 60 Hz tick
     mock/               the mock engine (reference implementation of the protocol)
-      engine.ts         commands, edits, support checks, bubbles/wobble, meshing queue, stats
+      engine.ts         commands, edits, support checks, rigid pieces (fall, rest as rubble),
+                        meshing queue, stats
       world.ts          32^3 chunked block storage, column tops
       procgen.ts        'rooms', 'city', 'tower' worlds
       mesher.ts         greedy / culled-face mesher with AO -> protocol vertices
@@ -68,7 +79,8 @@ src/
     chunks.ts           chunk buffers by key (reused when data fits), bounds, frustum culling
     atlas-pack.ts       texture atlas packing (wrapped gutters, 8-aligned, linear-space mips)
     atlas.ts            atlas upload (rgba8unorm-srgb 2D array + per-texture storage records)
-    islands.ts          detached islands: ballistic motion + dithered 1.5 s fade
+    islands.ts          detached pieces: engine poses (rigid, kept as rubble) or ballistic motion
+                        + dithered 1.5 s fade; Map by id, fixed uniform slot per piece
     particles.ts        CPU particles, instanced camera-facing sprites
     math.ts             column-major mat4, reversed-Z infinite projection, frustum planes
     shaders/*.wgsl      frame uniforms, world, sky, particles
@@ -90,8 +102,10 @@ folded into the next move) → weapons (`raycast`/`carve`/`blast`) → effects �
 
 Rendering: one 4x MSAA pass into the sRGB view of the canvas (linear shading), reversed-Z
 `depth32float` (clear 0, compare `greater`, infinite far plane). Sky first, then chunks
-front-to-back after frustum and distance culling, then islands (per-object dynamic uniform
-offsets), then particles (premultiplied alpha, additive when flagged).
+front-to-back after frustum and distance culling, then islands (up to 4096 pieces, culled by
+bounding sphere; per-object dynamic uniform offsets, 256 B slots, only changed slots are
+uploaded, so resting rubble costs no uniform traffic), then particles (premultiplied alpha,
+additive when flagged; event dust and crack chips draw on per-frame budgets).
 
 ## Protocol notes (how the front end reads docs/API.md)
 
@@ -109,12 +123,22 @@ offsets), then particles (premultiplied alpha, additive when flagged).
   colour. Meshes may arrive before `textures`; they render untextured until it does.
 * **Light** (Doom sector light) scales brightness roughly as `level^2` with Doom-like
   diminishing in dark sectors, plus hemisphere/sun terms, AO (`normal.w`) and exponential fog.
-* **Debug byte:** `debugView` 0 = none, 1 = utilization (0..255 heat map),
-  2 = bubble level (0 = no bubble, 1 + L for level L). Changing `debugView` relies on the engine
-  re-sending meshes.
-* **Detached events:** the mesh is in world space at the moment of detachment; the island
-  rotates about `centroid` with `angular` (rad/s, world frame) and falls with `velocity` and
-  g = 9.81 m/s² (no collision), fading out over 1.5 s with dust.
+* **Debug byte:** `debugView` 0 = none, 1 = utilization (0..255 = bond utilization 0..1, heat
+  map), 2 = fragments (0 = none, 1..254 a pseudo-random id per rubble fragment, one colour
+  each). Changing `debugView` relies on the engine re-sending meshes.
+* **Detached events:** the mesh is in world space at the moment of detachment. With `rigid`
+  (the v2 engine, and the mock) the piece follows the `debris` poses (packed `Float64Array`,
+  9 doubles per piece: id, centre xyz, quaternion xyzw since detachment, opacity), interpolated
+  one tick behind; pieces at rest stay as rubble until the engine drops them from the poses
+  (split: the children arrive as new detached events; over the ~3000-piece budget: faded by
+  opacity first). Without poses the island rotates about `centroid` with `angular` and falls
+  with `velocity` and g = 9.81 m/s² (no collision), fading out over 1.5 s with dust.
+* **Stats:** `EngineStats` mirrors `svx_stats` (35 values: tick / structural / event / rigid /
+  mesh / stream ms, structures and solver counters, bonds broken, detached voxels and pieces,
+  max utilization, pieces / awake / contacts / splits, streaming, bake). The HUD shows them
+  grouped; the job and budget timeline plots structural, rigid, event and stream ms (plus the
+  rest of the tick and the worker's flush) per tick against the 8 ms budget, with the awake
+  pieces as a line. v2 sends no displacement fields; their plumbing stays (unused).
 * **Spawn:** `ready.info.spawn.pos` is the player's feet position; the eye is 1.6 m above.
 * **Collide:** the player box is 0.6 × 0.6 × 1.75 m. Step-up (0.55 m) is done client-side
   with extra plain `collide` sweeps (up, across, down), so it needs nothing beyond the API.
@@ -129,19 +153,20 @@ Optional front-end extensions (an engine that never uses them works unchanged):
 | `{type:'error', message, fatal, command?}` | worker → main | toasts; `fatal` stops the game and shows a fatal screen |
 | `{type:'progress', stage, done, total}` | worker → main | loading bar |
 | texture ids `0xFF00 + material` | vertices | untextured with that material's palette colour (the mock uses this; `0xFFFF` stays the default) |
+| `{type:'debris', poses}` + `DetachedEvent.rigid` | worker → main | poses of rigid pieces (see above) |
 
 ## What the mock does vs. the real engine
 
 | | mock (`src/worker/mock`) | real engine (C++ core → WASM) |
 |---|---|---|
 | worlds | procedural rooms / city / tower, 0.5–1.7 M voxels | procedural + voxelized Doom maps (`loadWad`) |
-| structure | anchored bedrock; flood fill after each edit detaches unsupported pieces | RBSM lattice, damage law, composite telescoping bubbles, hierarchical connectivity |
-| meshes | greedy per 32³ chunk with AO; culled-face while displaced | greedy chunk meshes, crack remesh, displaced chunks |
-| displacement | fake damped sag/sway in a sphere around each blast, re-sent at 20 Hz | amplified Δu from bubble solves, at most once per tick |
-| utilization / bubbles | heuristics (load above × slenderness, crater damage; spherical shells) | bond utilization; real bubble levels |
-| cracks / impacts | crater-rim cracks; blast impact; virtual landing impact of islands | bond ruptures; blast + virtual debris impacts |
+| structure | anchored bedrock; flood fill after each edit detaches unsupported pieces | fragment-graph stress solver per structure; bonds break above their strength |
+| pieces | fall without collision to the surface below, rest as rubble; never split | rigid voxel bodies with contacts; they keep fracturing (splits) and rest as rubble |
+| meshes | greedy per 32³ chunk with AO | greedy chunk meshes, crack remesh |
+| utilization / fragments | heuristics (load above × slenderness, crater damage); 0.5 m hashed cells | bond utilization; the pre-scored fragments |
+| cracks / impacts | crater-rim cracks; blast impact; landing impact of pieces | bond ruptures; blast impacts |
 | `loadWad` | validates the WAD and map, sends an `error`, loads 'rooms' instead | full WAD pipeline (plan §B10) |
-| stats | protocol fields + extras (`meshQueue`, `islands`, ...) | protocol fields + engine extras |
+| stats | the pieces, detach and timing fields (others 0) + extras (`meshQueue`, ...) | all `svx_stats` fields |
 
 ## WASM worker integration
 
@@ -165,10 +190,9 @@ Optional front-end extensions (an engine that never uses them works unchanged):
 
 ## Known gaps
 
-* Displacement is applied by re-sent meshes only; the planned shader-side interpolation of node
-  displacements (plan §B9) is not implemented.
 * No crack decals yet (cracks spawn particles), no weapon view model, no audio.
-* Draw calls are one per visible chunk; render bundles or multi-draw would help at 10⁷ voxels.
+* Draw calls are one per visible chunk and per visible piece; render bundles or multi-draw would
+  help at 10⁷ voxels or thousands of pieces in view.
 * The mock never streams (`viewer` only orders meshing) and does not voxelize WADs.
 * Pointer lock needs a real user click; the automated checks drive the game through
   `window.__structvox` (`fire`, `select`, `look`, `teleport`, `setDebugView`, `load`, `state`).

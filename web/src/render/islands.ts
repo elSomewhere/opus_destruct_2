@@ -1,12 +1,18 @@
 /**
- * Detached islands: meshes of pieces that lost support. Engines that simulate rigid debris
+ * Detached islands: meshes of pieces that lost support. Engines that simulate rigid pieces
  * (DetachedEvent.rigid) send poses in `debris` messages: the piece follows them, interpolated
- * one engine tick behind, and fades with the engine-given opacity. Otherwise the piece flies
- * ballistically (gravity, the engine-given linear and angular velocity, no collision) and fades
- * out with a dithered dissolve (plan §B7, v1 "vanish" semantics).
+ * one engine tick behind, and fades with the engine-given opacity; it stays (as rubble) until
+ * the engine drops it from the poses. Otherwise the piece flies ballistically (gravity, the
+ * engine-given linear and angular velocity, no collision) and fades out with a dithered
+ * dissolve (plan §B7, v1 "vanish" semantics).
+ *
+ * There can be thousands of pieces: islands live in a Map by id (insertion order = age), each
+ * keeps a fixed object-uniform slot, and only islands whose transform or opacity changed are
+ * marked for upload.
  */
-import type { DebrisPose, DetachedEvent, Vec3 } from '../engine/protocol.ts';
-import { mat4, mat4FromQuatAbout, mat4RotateAbout, type Mat4 } from './math.ts';
+import type { DetachedEvent, Vec3 } from '../engine/protocol.ts';
+import { DEBRIS_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
+import { mat4, mat4FromQuatAbout, mat4RotateAbout, sphereVisible, type Mat4 } from './math.ts';
 
 export const ISLAND_LIFETIME_S = 1.5;
 const FADE_START_S = 0.25;
@@ -38,34 +44,62 @@ export interface GpuIsland {
   rigid: boolean;
   prev: PoseSample | null;
   cur: PoseSample | null;
+  /** Stamp of the last `debris` message that carried this piece. */
+  seen: number;
   /** Updated by `update`. */
   model: Mat4;
   opacity: number;
-  /** Current centre, for effects. */
+  /** Current centre, for effects and culling. */
   position: Vec3;
+  /** Bounding sphere radius about the centroid (metres). */
+  radius: number;
+  /** Object uniform slot (1..maxIslands; slot 0 is the chunks' identity). */
+  slot: number;
+  /** `model` / `opacity` changed since the renderer last uploaded the slot. */
+  dirty: boolean;
+}
+
+export interface IslandDrawStats {
+  drawn: number;
+  triangles: number;
 }
 
 export class IslandRenderer {
   private readonly device: GPUDevice;
-  private islands: GpuIsland[] = [];
+  private readonly islands = new Map<number, GpuIsland>();
+  private readonly freeSlots: number[] = [];
+  private readonly scratch = mat4();
+  private stamp = 0;
   readonly maxIslands: number;
 
   constructor(device: GPUDevice, maxIslands: number) {
     this.device = device;
     this.maxIslands = maxIslands;
+    for (let s = maxIslands; s >= 1; s--) this.freeSlots.push(s);
   }
 
-  get list(): readonly GpuIsland[] {
-    return this.islands;
+  /** Live islands, oldest first. */
+  get list(): MapIterator<GpuIsland> {
+    return this.islands.values();
+  }
+
+  get count(): number {
+    return this.islands.size;
   }
 
   add(ev: DetachedEvent, nowS: number): GpuIsland | null {
     const m = ev.mesh;
     if (m.indexCount === 0) return null;
-    if (this.islands.length >= this.maxIslands) this.release(this.islands.shift()!);
+    const old = this.islands.get(ev.id);
+    if (old) this.release(old);
+    // over capacity: the oldest island goes (Map order is insertion order)
+    if (this.freeSlots.length === 0) {
+      const oldest = this.islands.values().next();
+      if (!oldest.done) this.release(oldest.value);
+    }
     const vbuf = this.device.createBuffer({
       label: `island ${ev.id} vertices`,
-      size: Math.max(4, m.vertexCount * 28),
+      size: Math.max(4, m.vertexCount * VERTEX_STRIDE),
       usage: GPUBufferUsage.VERTEX | GPUBufferUsage.COPY_DST,
     });
     const ibuf = this.device.createBuffer({
@@ -73,7 +107,7 @@ export class IslandRenderer {
       size: Math.max(4, m.indexCount * 4),
       usage: GPUBufferUsage.INDEX | GPUBufferUsage.COPY_DST,
     });
-    this.device.queue.writeBuffer(vbuf, 0, m.vertices, 0, m.vertexCount * 28);
+    this.device.queue.writeBuffer(vbuf, 0, m.vertices, 0, m.vertexCount * VERTEX_STRIDE);
     this.device.queue.writeBuffer(ibuf, 0, m.indices, 0, m.indexCount * 4);
     const w = ev.angular;
     const spin = Math.hypot(w[0], w[1], w[2]);
@@ -90,50 +124,58 @@ export class IslandRenderer {
       rigid: ev.rigid === true,
       prev: null,
       cur: null,
-      model: mat4(),
+      seen: 0,
+      model: mat4(), // the detachment pose: identity
       opacity: 1,
       position: [...ev.centroid],
+      radius: meshRadius(m.vertices, m.vertexCount, ev.centroid),
+      slot: this.freeSlots.pop()!,
+      dirty: true,
     };
-    this.islands.push(island);
+    this.islands.set(ev.id, island);
     return island;
   }
 
-  /** Engine poses of the rigid pieces; rigid pieces missing from the list are released. */
-  applyDebris(poses: readonly DebrisPose[], nowS: number): void {
-    const byId = new Map<number, DebrisPose>();
-    for (const p of poses) byId.set(p.id, p);
-    const keep: GpuIsland[] = [];
-    for (const isl of this.islands) {
-      if (!isl.rigid) {
-        keep.push(isl);
-        continue;
+  /**
+   * Engine poses of the rigid pieces (DEBRIS_STRIDE doubles each). Rigid pieces that had a pose
+   * before and are missing now were removed by the engine (split, faded or gone) and are
+   * released; a piece whose first pose is still on the way is kept.
+   */
+  applyDebris(poses: Float64Array, nowS: number): void {
+    const stamp = ++this.stamp;
+    for (let o = 0; o + DEBRIS_STRIDE <= poses.length; o += DEBRIS_STRIDE) {
+      const isl = this.islands.get(poses[o]!);
+      if (!isl || !isl.rigid) continue;
+      const pos: Vec3 = [poses[o + 1]!, poses[o + 2]!, poses[o + 3]!];
+      const rot: Quat = [poses[o + 4]!, poses[o + 5]!, poses[o + 6]!, poses[o + 7]!];
+      const last = isl.cur;
+      // (resting pieces are not re-sent every tick: after a gap, interpolate from the old pose)
+      isl.prev =
+        last === null
+          ? { t: nowS - TICK_S, pos: [...isl.centroid], rot: [0, 0, 0, 1] }
+          : nowS - last.t > 2 * TICK_S
+            ? { t: nowS - TICK_S, pos: last.pos, rot: last.rot }
+            : last;
+      isl.cur = { t: nowS, pos, rot };
+      const opacity = Math.max(0, Math.min(1, poses[o + 8]!));
+      if (opacity !== isl.opacity) {
+        isl.opacity = opacity;
+        isl.dirty = true;
       }
-      const p = byId.get(isl.id);
-      if (!p) {
-        if (isl.cur !== null) {
-          this.release(isl); // the engine removed it
-          continue;
-        }
-        keep.push(isl); // its first pose is still on the way
-        continue;
-      }
-      isl.prev = isl.cur ?? { t: nowS - TICK_S, pos: [...isl.centroid], rot: [0, 0, 0, 1] };
-      isl.cur = { t: nowS, pos: [...p.pos], rot: [...p.rot] };
-      isl.opacity = Math.max(0, Math.min(1, p.opacity));
-      keep.push(isl);
+      isl.seen = stamp;
     }
-    this.islands = keep;
+    for (const isl of this.islands.values()) {
+      if (isl.rigid && isl.cur !== null && isl.seen !== stamp) this.release(isl); // the engine removed it
+    }
   }
 
-  /** Advances motion and fades; releases islands past their lifetime. */
+  /** Advances motion and fades; releases ballistic islands past their lifetime. */
   update(nowS: number): void {
-    const keep: GpuIsland[] = [];
-    for (const isl of this.islands) {
+    for (const isl of this.islands.values()) {
       const t = nowS - isl.born;
       if (isl.rigid && isl.cur === null && t > POSE_TIMEOUT_S) isl.rigid = false; // no poses: fall back
       if (isl.rigid) {
         this.poseRigid(isl, nowS);
-        keep.push(isl);
         continue;
       }
       if (t >= ISLAND_LIFETIME_S) {
@@ -146,25 +188,52 @@ export class IslandRenderer {
       mat4RotateAbout(isl.model, isl.axis, isl.spin * t, c, isl.position);
       const f = Math.min(1, Math.max(0, (t - FADE_START_S) / (ISLAND_LIFETIME_S - FADE_START_S)));
       isl.opacity = 1 - f * f * (3 - 2 * f);
-      keep.push(isl);
+      isl.dirty = true;
     }
-    this.islands = keep;
+  }
+
+  /**
+   * Draws the islands whose bounding sphere is in the frustum and within `maxDistance`, each
+   * with its object slot (`slotBytes` apart). The world pipeline and group 0 must be set.
+   */
+  draw(
+    pass: GPURenderPassEncoder,
+    objectGroup: GPUBindGroup,
+    slotBytes: number,
+    planes: Float32Array,
+    eye: Vec3,
+    maxDistance: number,
+  ): IslandDrawStats {
+    let drawn = 0;
+    let triangles = 0;
+    for (const isl of this.islands.values()) {
+      if (isl.opacity <= 0) continue;
+      const p = isl.position;
+      const reach = maxDistance + isl.radius;
+      const dx = p[0] - eye[0];
+      const dy = p[1] - eye[1];
+      const dz = p[2] - eye[2];
+      if (dx * dx + dy * dy + dz * dz > reach * reach) continue;
+      if (!sphereVisible(planes, p, isl.radius)) continue;
+      pass.setBindGroup(1, objectGroup, [isl.slot * slotBytes]);
+      pass.setVertexBuffer(0, isl.vbuf);
+      pass.setIndexBuffer(isl.ibuf, 'uint32');
+      pass.drawIndexed(isl.indexCount);
+      drawn++;
+      triangles += isl.indexCount / 3;
+    }
+    return { drawn, triangles };
   }
 
   clear(): void {
-    for (const isl of this.islands) this.release(isl);
-    this.islands = [];
+    for (const isl of this.islands.values()) this.release(isl);
   }
 
   /** Pose at `nowS - TICK_S`, interpolated between the last two engine poses (nlerp). */
   private poseRigid(isl: GpuIsland, nowS: number): void {
     const a = isl.prev;
     const b = isl.cur;
-    if (!a || !b) {
-      isl.position = [...isl.centroid];
-      mat4FromQuatAbout(isl.model, [0, 0, 0, 1], isl.centroid, isl.position);
-      return;
-    }
+    if (!a || !b) return; // still at the detachment pose
     const span = Math.max(1e-6, b.t - a.t);
     const s = Math.min(1, Math.max(0, (nowS - TICK_S - a.t) / span));
     const pos: Vec3 = [
@@ -181,12 +250,34 @@ export class IslandRenderer {
     }
     n = Math.sqrt(n) || 1;
     for (let k = 0; k < 4; k++) q[k] = q[k]! / n;
+    // resting rubble keeps its matrix: only a changed transform is uploaded again
+    const m = mat4FromQuatAbout(this.scratch, q, isl.centroid, pos);
+    let same = true;
+    for (let k = 0; k < 16 && same; k++) same = m[k] === isl.model[k];
+    if (same) return;
+    isl.model.set(m);
     isl.position = pos;
-    mat4FromQuatAbout(isl.model, q, isl.centroid, pos);
+    isl.dirty = true;
   }
 
   private release(isl: GpuIsland): void {
     isl.vbuf.destroy();
     isl.ibuf.destroy();
+    this.islands.delete(isl.id);
+    this.freeSlots.push(isl.slot);
   }
+}
+
+/** Largest distance of a mesh vertex from `c`: the bounding sphere about the pivot. */
+function meshRadius(vertices: ArrayBuffer, vertexCount: number, c: Vec3): number {
+  const floats = VERTEX_STRIDE / 4;
+  const f = new Float32Array(vertices, 0, vertexCount * floats);
+  let r2 = 0;
+  for (let i = 0; i < f.length; i += floats) {
+    const dx = f[i]! - c[0];
+    const dy = f[i + 1]! - c[1];
+    const dz = f[i + 2]! - c[2];
+    r2 = Math.max(r2, dx * dx + dy * dy + dz * dz);
+  }
+  return Math.sqrt(r2);
 }

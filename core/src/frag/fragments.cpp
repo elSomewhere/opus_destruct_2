@@ -1,5 +1,7 @@
 #include "svx/frag/fragments.hpp"
 
+#include <cstdlib>
+
 #include <algorithm>
 #include <cmath>
 
@@ -99,7 +101,8 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
         const MaterialId mid = vox_mat(v);
         const Material& M = material(mid);
         const i64 gx = base[0] + x, gy = base[1] + y, gz = base[2] + z;
-        const f64 sp[3] = {M.frag_x, M.frag_y, M.frag_z};
+        static const f64 fscale = std::getenv("SVX_FRAG_SCALE") ? std::atof(std::getenv("SVX_FRAG_SCALE")) : 1.0;
+        const f64 sp[3] = {M.frag_x * fscale, M.frag_y * fscale, M.frag_z * fscale};
         const f64 q[3] = {gx / sp[0], gy / sp[1], gz / sp[2]};
         const i64 c0[3] = {floor_div(q[0]), floor_div(q[1]), floor_div(q[2])};
         const u64 msalt = par.salt ^ (static_cast<u64>(mid) * 0x9E3779B97F4A7C15ull);

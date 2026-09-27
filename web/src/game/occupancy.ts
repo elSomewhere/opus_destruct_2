@@ -1,8 +1,8 @@
 /**
  * Client-side solid occupancy (protocol `occupancy` messages): one bit per voxel for every
  * resident chunk, so the player's collision sweeps run on the main thread with exactly the
- * engine's `collide` rules and never wait for a busy worker (a structural bubble can hold the
- * worker for tens of milliseconds per tick).
+ * engine's `collide` rules and never wait for a busy worker (structure solves and a collapse's
+ * pieces can hold the worker for tens of milliseconds per tick).
  */
 import type { OccupancyMessage, Vec3 } from '../engine/protocol.ts';
 import type { SweepResult } from './stepmove.ts';

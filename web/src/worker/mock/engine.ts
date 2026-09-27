@@ -4,18 +4,19 @@
  * It is the reference implementation of the message contract for the front end, not a
  * physics engine. What it fakes, and how:
  * - structure: a voxel grid with anchored bedrock; after edits, unsupported pieces are
- *   found by flood fill and emitted as `detached` events (plan §B7 "vanish" semantics);
- * - bubbles: every blast opens a short-lived debug bubble that drives the bubble-level
- *   debug view and a decaying "wobble" displacement of nearby chunks (re-sent meshes, as
- *   the real engine does for displaced chunks, at most once per tick);
+ *   found by flood fill and emitted as rigid `detached` events;
+ * - pieces: each falls without collision (gravity, a spin) until its centre reaches the
+ *   surface below its detachment point, then rests there as rubble; poses go out as packed
+ *   `debris` messages, a landing emits an `impact`, and beyond MAX_PIECES the oldest resting
+ *   pieces fade out (as the real engine does over its budget). Pieces never split;
  * - utilization: a heuristic (load above x slenderness, plus damage around craters);
+ * - fragments: 0.5 m cells with hashed ids stand in for the engine's pre-scored fragments;
  * - Doom WADs: not voxelized; `loadWad` reports an error and loads a procedural world.
  *
  * The engine is environment-neutral: it talks to the outside only through `post`, and
  * time comes in through `tick(nowMs)`, so tests can drive it synchronously.
  */
 import type {
-  BubbleEvent,
   ChunkMesh,
   DetachedEvent,
   EngineCommand,
@@ -29,7 +30,7 @@ import type {
   WadOptions,
   WorkerMessage,
 } from '../../engine/protocol.ts';
-import { DEFAULT_PARAMS, DOOM_TEXELS_PER_METRE, DebugView, VERTEX_STRIDE } from '../../engine/protocol.ts';
+import { DEBRIS_STRIDE, DEFAULT_PARAMS, DOOM_TEXELS_PER_METRE, DebugView, emptyEngineStats } from '../../engine/protocol.ts';
 import { MeshBuilder } from '../../engine/vertex.ts';
 import { isIndestructible, resolveFaceTextures } from './blocks.ts';
 import { collideAabb } from './collide.ts';
@@ -49,27 +50,18 @@ const DENSITY = 2400;
 /** A component larger than this is assumed supported (bounds the flood fill). */
 const MAX_ISLAND_SEARCH = 1_500_000;
 const STATS_INTERVAL_MS = 250;
-const BUBBLE_DURATION_MS = 2200;
-/** Wobble (displacement) updates: 20 Hz, i.e. at most once per tick. */
-const WOBBLE_INTERVAL_MS = 50;
+/** Rigid pieces kept (the engine's max_bodies); beyond, the oldest resting ones fade out. */
+const MAX_PIECES = 3000;
+const PIECE_FADE_MS = 1000;
+/** Pieces falling this far below the world are removed. */
+const KILL_DEPTH = 30;
+/** Landings slower than this (m/s, a 0.2 m drop) emit no impact. */
+const MIN_IMPACT_SPEED = Math.sqrt(2 * GRAVITY * 0.2);
 /** Meshing budget per tick; larger while the initial world streams in. */
 const MESH_BUDGET_MS = 8;
 const MESH_BUDGET_LOADING_MS = 40;
 /** Chunk meshes per message (keeps single messages small). */
 const MESHES_PER_MESSAGE = 48;
-
-interface Bubble {
-  id: number;
-  center: Vec3;
-  radius: number;
-  start: number;
-  /** Peak displacement in metres (already amplified). */
-  amplitude: number;
-  omega: number;
-  zeta: number;
-  /** Chunks inside the bubble radius. */
-  chunks: number[];
-}
 
 interface Cause {
   kind: 'carve' | 'blast';
@@ -77,9 +69,21 @@ interface Cause {
   energy: number;
 }
 
-interface Scheduled {
-  at: number;
-  event: EngineEvent;
+/** A detached piece: falling (awake) until it reaches `restZ`, then resting rubble. */
+interface Piece {
+  id: number;
+  /** Centre of mass (the pivot of the pose rotation is the centre at detachment). */
+  pos: Vec3;
+  vel: Vec3;
+  axis: Vec3;
+  spin: number;
+  angle: number;
+  mass: number;
+  /** Centre height at which it lands (-Infinity: nothing below, it falls out of the world). */
+  restZ: number;
+  awake: boolean;
+  /** Time it started fading out (over the budget), or -1. */
+  fadeStart: number;
 }
 
 function mulberry32(seed: number): () => number {
@@ -99,16 +103,22 @@ function hashVoxel(i: number): number {
   return ((h ^ (h >>> 13)) >>> 0) / 4294967296;
 }
 
+/** Fragment id (1..254) of a voxel: 4^3-voxel cells with hashed ids. */
+function fragmentId(gx: number, gy: number, gz: number): number {
+  const cell = Math.imul(gx >> 2, 73856093) ^ Math.imul(gy >> 2, 19349663) ^ Math.imul(gz >> 2, 83492791);
+  return 1 + Math.floor(hashVoxel(cell) * 254);
+}
+
+/** (dif, the dynamic increase factor, has no counterpart in the mock.) */
 function sanitizeParams(p: EngineParams): EngineParams {
   const num = (v: number, lo: number, hi: number, dflt: number): number =>
     Number.isFinite(v) ? Math.min(hi, Math.max(lo, v)) : dflt;
   const dv = p.debugView;
   return {
-    compliance: num(p.compliance, 0.1, 100, DEFAULT_PARAMS.compliance),
-    amplification: num(p.amplification, 0, 100, DEFAULT_PARAMS.amplification),
     fragility: num(p.fragility, 0.05, 20, DEFAULT_PARAMS.fragility),
-    damping: num(p.damping, 0, 1, DEFAULT_PARAMS.damping),
-    debugView: dv === DebugView.Utilization || dv === DebugView.BubbleLevel ? dv : DebugView.None,
+    impact: num(p.impact, 0, 20, DEFAULT_PARAMS.impact),
+    dif: num(p.dif, 1, 5, DEFAULT_PARAMS.dif),
+    debugView: dv === DebugView.Utilization || dv === DebugView.Fragments ? dv : DebugView.None,
     paused: p.paused === true,
   };
 }
@@ -133,11 +143,11 @@ export class MockEngine {
   private readonly pendingSeeds = new Set<number>();
   private pendingCause: Cause | null = null;
   private events: EngineEvent[] = [];
-  private scheduled: Scheduled[] = [];
-  private bubbles: Bubble[] = [];
-  /** Chunks currently shown displaced -> their undisplaced culled-face mesh. */
-  private readonly wobbleBase = new Map<number, MeshData | null>();
-  private lastWobble = 0;
+  /** Rigid pieces, oldest first. */
+  private pieces: Piece[] = [];
+  /** Pieces were added or removed since the last `debris` message. */
+  private piecesChanged = false;
+  private lastPieceStep = -1;
   /** Sparse damage 0..1 per voxel (monotone), for the utilization view. */
   private readonly damage = new Map<number, number>();
   private viewer: Vec3 = [0, 0, 0];
@@ -153,6 +163,8 @@ export class MockEngine {
   private eventsAcc = 0;
   private islandsTotal = 0;
   private detachedVoxelsTotal = 0;
+  private landingsTotal = 0;
+  private ticksTotal = 0;
 
   constructor(post: PostFn) {
     this.post = post;
@@ -182,7 +194,7 @@ export class MockEngine {
         this.viewer = [cmd.pos[0], cmd.pos[1], cmd.pos[2]];
         break;
       case 'blast':
-        this.blast(cmd.pos, cmd.radius, cmd.energy, now);
+        this.blast(cmd.pos, cmd.radius, cmd.energy);
         break;
       case 'carve':
         this.carve(cmd.pos, cmd.radius);
@@ -212,7 +224,6 @@ export class MockEngine {
       // The debug byte is baked into vertices: re-send everything.
       for (const ci of this.meshed) this.dirty.add(ci);
     }
-    if ((p.amplification === 0 || p.paused) && this.wobbleBase.size > 0) this.endWobble([...this.wobbleBase.keys()]);
   }
 
   private resetWorldState(): void {
@@ -225,9 +236,9 @@ export class MockEngine {
     this.pendingSeeds.clear();
     this.pendingCause = null;
     this.events = [];
-    this.scheduled = [];
-    this.bubbles = [];
-    this.wobbleBase.clear();
+    this.pieces = []; // (the front end drops the old world's pieces when it requests a load)
+    this.piecesChanged = false;
+    this.lastPieceStep = -1;
     this.damage.clear();
   }
 
@@ -311,7 +322,6 @@ export class MockEngine {
             w.set(x, y, z, AIR);
             w.affectedChunks(x, y, z, this.dirty);
             this.damage.delete(id);
-            this.invalidateWobble(x, y, z);
             removed++;
             if (x > 0) this.pendingSeeds.add(id - 1);
             if (x + 1 < w.nx) this.pendingSeeds.add(id + 1);
@@ -344,7 +354,7 @@ export class MockEngine {
     }
   }
 
-  private blast(pos: Vec3, radius: number, energy: number, now: number): void {
+  private blast(pos: Vec3, radius: number, energy: number): void {
     const w = this.world;
     if (!w) return;
     const r = radius * (0.75 + 0.25 * this.params.fragility);
@@ -363,7 +373,6 @@ export class MockEngine {
       const p: Vec3 = [pos[0] + dir[0] * hit.distance, pos[1] + dir[1] * hit.distance, pos[2] + dir[2] * hit.distance];
       this.events.push({ kind: 'crack', pos: p, normal: hit.normal, strength: 0.4 + 0.6 * this.rand() });
     }
-    if (!this.params.paused) this.openBubble(pos, r, energy, now);
   }
 
   /** Outward normal estimate at a surface point: away from nearby solid voxels. */
@@ -390,137 +399,6 @@ export class MockEngine {
   }
 
   // -------------------------------------------------------------------------------------
-  // Bubbles and wobble
-  // -------------------------------------------------------------------------------------
-
-  private openBubble(pos: Vec3, radius: number, energy: number, now: number): void {
-    const w = this.world;
-    if (!w) return;
-    const p = this.params;
-    const bubbleRadius = Math.max(2, radius * 2.5);
-    const amplitude = Math.min(0.2, 0.04 * Math.sqrt(Math.max(0, energy) / 1e6) * (p.compliance / 6) * (p.amplification / 3));
-    const chunks: number[] = [];
-    const s = CHUNK_SIZE * w.h;
-    const c = pos;
-    for (let ci = 0; ci < w.chunkCount; ci++) {
-      if (w.chunkSolid(ci) === 0) continue;
-      const o = w.chunkOrigin(ci);
-      // Sphere vs chunk box.
-      let d2 = 0;
-      for (let a = 0; a < 3; a++) {
-        const v = c[a]! < o[a]! ? o[a]! - c[a]! : c[a]! > o[a]! + s ? c[a]! - o[a]! - s : 0;
-        d2 += v * v;
-      }
-      if (d2 <= bubbleRadius * bubbleRadius) chunks.push(ci);
-    }
-    const bubble: Bubble = {
-      id: this.nextId++,
-      center: [...pos],
-      radius: bubbleRadius,
-      start: now,
-      amplitude,
-      omega: (2 * Math.PI * 1.6) / Math.sqrt(p.compliance / 6),
-      zeta: Math.max(0.03, p.damping),
-      chunks,
-    };
-    this.bubbles.push(bubble);
-    const ev: BubbleEvent = { kind: 'bubble', id: bubble.id, center: bubble.center, radius: bubbleRadius, level: 0 };
-    this.events.push(ev);
-    if (p.debugView === DebugView.BubbleLevel) for (const ci of chunks) this.dirty.add(ci);
-  }
-
-  private updateBubbles(now: number): void {
-    if (this.bubbles.length === 0) return;
-    const alive: Bubble[] = [];
-    const ended: number[] = [];
-    for (const b of this.bubbles) {
-      if (now - b.start < BUBBLE_DURATION_MS) alive.push(b);
-      else ended.push(...b.chunks);
-    }
-    if (ended.length === 0) return;
-    this.bubbles = alive;
-    const still = new Set<number>();
-    for (const b of alive) for (const ci of b.chunks) still.add(ci);
-    const done = ended.filter((ci) => !still.has(ci));
-    this.endWobble(done.filter((ci) => this.wobbleBase.has(ci)));
-    if (this.params.debugView === DebugView.BubbleLevel) for (const ci of done) this.dirty.add(ci);
-  }
-
-  private endWobble(chunks: number[]): void {
-    for (const ci of chunks) {
-      this.wobbleBase.delete(ci);
-      this.dirty.add(ci); // back to the regular undisplaced mesh
-    }
-  }
-
-  private invalidateWobble(x: number, y: number, z: number): void {
-    if (this.wobbleBase.size === 0 || !this.gen) return;
-    const touched = new Set<number>();
-    this.gen.world.affectedChunks(x, y, z, touched);
-    for (const ci of touched) if (this.wobbleBase.has(ci)) this.wobbleBase.set(ci, null);
-  }
-
-  /** Displacement at a world point (metres): a damped sag-and-sway around each bubble. */
-  private displacement(px: number, py: number, pz: number, now: number, out: number[]): void {
-    out[0] = 0;
-    out[1] = 0;
-    out[2] = 0;
-    for (const b of this.bubbles) {
-      const dx = px - b.center[0];
-      const dy = py - b.center[1];
-      const dz = pz - b.center[2];
-      const r2 = (dx * dx + dy * dy + dz * dz) / (b.radius * b.radius);
-      if (r2 >= 1) continue;
-      const t = (now - b.start) / 1000;
-      const falloff = (1 - r2) * (1 - r2);
-      const osc = Math.exp(-b.zeta * b.omega * t * 4) * Math.sin(b.omega * t);
-      const a = b.amplitude * falloff * osc;
-      const horiz = Math.hypot(dx, dy) || 1;
-      out[0] += (a * 0.35 * dx) / horiz;
-      out[1] += (a * 0.35 * dy) / horiz;
-      out[2] -= a;
-    }
-  }
-
-  private wobble(now: number, out: ChunkMesh[]): void {
-    const w = this.world;
-    const p = this.params;
-    if (!w || this.bubbles.length === 0 || p.amplification === 0 || p.paused) return;
-    if (now - this.lastWobble < WOBBLE_INTERVAL_MS) return;
-    this.lastWobble = now;
-    const chunks = new Set<number>();
-    for (const b of this.bubbles) if (b.amplitude > 0) for (const ci of b.chunks) chunks.add(ci);
-    const d = [0, 0, 0];
-    for (const ci of chunks) {
-      let base = this.wobbleBase.get(ci) ?? null;
-      if (!base) {
-        base = this.buildChunkMesh(ci, false);
-        if (!base) continue;
-        this.wobbleBase.set(ci, base);
-      }
-      this.dirty.delete(ci); // the displaced mesh below supersedes a regular remesh
-      const vertices = base.vertices.slice(0);
-      const f = new Float32Array(vertices);
-      const stride = VERTEX_STRIDE / 4;
-      for (let o = 0; o < f.length; o += stride) {
-        this.displacement(f[o]!, f[o + 1]!, f[o + 2]!, now, d);
-        f[o] = f[o]! + d[0]!;
-        f[o + 1] = f[o + 1]! + d[1]!;
-        f[o + 2] = f[o + 2]! + d[2]!;
-      }
-      out.push({
-        key: w.chunkKey(ci),
-        origin: w.chunkOrigin(ci),
-        vertices,
-        vertexCount: base.vertexCount,
-        indices: base.indices.slice(0),
-        indexCount: base.indexCount,
-      });
-      this.meshed.add(ci);
-    }
-  }
-
-  // -------------------------------------------------------------------------------------
   // Meshing
   // -------------------------------------------------------------------------------------
 
@@ -528,20 +406,9 @@ export class MockEngine {
     const w = this.world;
     if (!w) return null;
     const view = this.params.debugView;
-    if (view === DebugView.BubbleLevel) {
-      if (this.bubbles.length === 0) return null;
-      const h = w.h;
-      const o = w.origin;
-      return (gx, gy, gz) => {
-        let best = 0;
-        for (const b of this.bubbles) {
-          const r0 = b.radius / 4;
-          const d = Math.hypot(o[0] + (gx + 0.5) * h - b.center[0], o[1] + (gy + 0.5) * h - b.center[1], o[2] + (gz + 0.5) * h - b.center[2]);
-          const level = d < r0 ? 1 : d < 2 * r0 ? 2 : d < 4 * r0 ? 3 : 0;
-          if (level > 0 && (best === 0 || level < best)) best = level;
-        }
-        return best;
-      };
+    if (view === DebugView.Fragments) {
+      // every destructible voxel belongs to a fragment (pieces keep their fragments' colours)
+      return (gx, gy, gz) => (isIndestructible(w.get(gx, gy, gz)) ? 0 : fragmentId(gx, gy, gz));
     }
     if (view === DebugView.Utilization) {
       // Heuristic: solid voxels stacked above (up to 8 m) x slenderness, or crater damage.
@@ -599,10 +466,6 @@ export class MockEngine {
     order.sort((a, b) => a.d - b.d);
     const t0 = performance.now();
     for (const { ci } of order) {
-      if (this.wobbleBase.has(ci)) {
-        this.dirty.delete(ci); // being displaced; the wobble pass re-sends it
-        continue;
-      }
       const m = this.buildChunkMesh(ci, true);
       this.dirty.delete(ci);
       this.meshedAcc++;
@@ -621,7 +484,7 @@ export class MockEngine {
   // Support checks and detached islands
   // -------------------------------------------------------------------------------------
 
-  private checkSupport(now: number): void {
+  private checkSupport(): void {
     const w = this.world;
     if (!w || this.pendingSeeds.size === 0 || this.params.paused) return;
     const t0 = performance.now();
@@ -630,11 +493,11 @@ export class MockEngine {
     const cause = this.pendingCause ?? { kind: 'carve' as const, pos: this.viewer, energy: 0 };
     this.pendingCause = null;
     const { islands } = findIslands(w, seeds, MAX_ISLAND_SEARCH);
-    for (const island of islands) this.events.push(this.detach(island, cause, now));
+    for (const island of islands) this.events.push(this.detach(island, cause));
     this.structuralMsAcc += performance.now() - t0;
   }
 
-  private detach(island: Island, cause: Cause, now: number): DetachedEvent {
+  private detach(island: Island, cause: Cause): DetachedEvent {
     const gen = this.gen!;
     const w = gen.world;
     const { nx, ny } = w;
@@ -696,7 +559,13 @@ export class MockEngine {
         grid: [x0, y0, z0],
         h,
       },
-      { faceTextures: this.faceTextures, texelsPerMetre: DOOM_TEXELS_PER_METRE, light: gen.light, debug: null, greedy: true },
+      {
+        faceTextures: this.faceTextures,
+        texelsPerMetre: DOOM_TEXELS_PER_METRE,
+        light: gen.light,
+        debug: this.params.debugView === DebugView.Fragments ? this.debugFunction() : null,
+        greedy: true,
+      },
       builder,
     );
     const mesh = builder.finish();
@@ -709,7 +578,6 @@ export class MockEngine {
       const z = Math.floor(v / plane);
       w.set(x, y, z, AIR);
       w.affectedChunks(x, y, z, this.dirty);
-      this.invalidateWobble(x, y, z);
       this.damage.delete(v);
     }
 
@@ -734,21 +602,90 @@ export class MockEngine {
     const al = Math.hypot(axis[0], axis[1], axis[2]) || 1;
     const angular: Vec3 = [(axis[0] / al) * spin, (axis[1] / al) * spin, (axis[2] / al) * spin];
 
-    // Virtual impact where it lands (plan §B7): mass x fall.
+    // It lands where its bottom meets the surface below its detachment point.
     const below = traceVoxels(w, centroid, [0, 0, -1], 200);
-    if (below) {
-      const bottomOffset = centroid[2] - (w.origin[2] + z0 * h);
-      const fall = Math.max(0, below.distance - bottomOffset);
-      const v0 = velocity[2];
-      const t = (v0 + Math.sqrt(v0 * v0 + 2 * GRAVITY * fall)) / GRAVITY;
-      const landing: Vec3 = [centroid[0] + velocity[0] * t, centroid[1] + velocity[1] * t, centroid[2] - below.distance];
-      const energy = mass * (GRAVITY * fall + 0.5 * (velocity[0] ** 2 + velocity[1] ** 2 + v0 * v0));
-      if (fall > 0.2) this.scheduled.push({ at: now + t * 1000, event: { kind: 'impact', pos: landing, energy } });
-    }
+    const bottomOffset = centroid[2] - (w.origin[2] + z0 * h);
+    const restZ = below ? centroid[2] - Math.max(0, below.distance - bottomOffset) : -Infinity;
+    const id = this.nextId++;
+    this.pieces.push({
+      id,
+      pos: [...centroid],
+      vel: [...velocity],
+      axis: [angular[0] / spin, angular[1] / spin, angular[2] / spin],
+      spin,
+      angle: 0,
+      mass,
+      restZ,
+      awake: true,
+      fadeStart: -1,
+    });
+    this.piecesChanged = true;
 
     this.islandsTotal++;
     this.detachedVoxelsTotal += n;
-    return { kind: 'detached', id: this.nextId++, voxels: n, centroid, velocity, angular, mesh };
+    return { kind: 'detached', id, voxels: n, centroid, velocity, angular, mesh, rigid: true };
+  }
+
+  /**
+   * Moves the falling pieces (no collision: each lands on the surface below its detachment
+   * point, with an impact scaled by the `impact` knob), fades the oldest resting ones beyond
+   * MAX_PIECES, and posts the poses.
+   */
+  private stepPieces(now: number): void {
+    const w = this.world;
+    if (!w) return;
+    const dt = this.lastPieceStep < 0 ? 0 : Math.min(0.1, Math.max(0, (now - this.lastPieceStep) / 1000));
+    this.lastPieceStep = now;
+    if (this.params.paused || this.pieces.length === 0) {
+      this.postPoses(false);
+      return;
+    }
+    const killZ = w.bounds.min[2] - KILL_DEPTH;
+    let over = this.pieces.length - MAX_PIECES;
+    let moving = false;
+    for (const p of this.pieces) {
+      if (p.fadeStart >= 0) {
+        moving = true;
+        over--;
+      } else if (over > 0 && !p.awake) {
+        p.fadeStart = now; // oldest resting pieces first
+        moving = true;
+        over--;
+      }
+      if (!p.awake) continue;
+      moving = true;
+      p.vel[2] -= GRAVITY * dt;
+      for (let a = 0; a < 3; a++) p.pos[a] = p.pos[a]! + p.vel[a]! * dt;
+      p.angle += p.spin * dt;
+      if (p.pos[2] <= p.restZ) {
+        p.pos[2] = p.restZ;
+        p.awake = false;
+        this.landingsTotal++;
+        const speed = Math.hypot(p.vel[0], p.vel[1], p.vel[2]);
+        if (speed > MIN_IMPACT_SPEED) {
+          const energy = 0.5 * p.mass * speed * speed * this.params.impact;
+          this.events.push({ kind: 'impact', pos: [p.pos[0], p.pos[1], p.pos[2]], energy });
+        }
+      }
+    }
+    const before = this.pieces.length;
+    this.pieces = this.pieces.filter((p) => p.pos[2] > killZ && (p.fadeStart < 0 || now - p.fadeStart < PIECE_FADE_MS));
+    if (this.pieces.length !== before) this.piecesChanged = true;
+    this.postPoses(moving);
+  }
+
+  /** Packed poses, when anything moved or the set changed (resting rubble is not re-sent). */
+  private postPoses(moving: boolean): void {
+    if (!moving && !this.piecesChanged) return;
+    this.piecesChanged = false;
+    const poses = new Float64Array(this.pieces.length * DEBRIS_STRIDE);
+    const now = this.lastPieceStep;
+    this.pieces.forEach((p, i) => {
+      const s = Math.sin(p.angle / 2);
+      const opacity = p.fadeStart < 0 ? 1 : Math.max(0, 1 - (now - p.fadeStart) / PIECE_FADE_MS);
+      poses.set([p.id, p.pos[0], p.pos[1], p.pos[2], p.axis[0] * s, p.axis[1] * s, p.axis[2] * s, Math.cos(p.angle / 2), opacity], i * DEBRIS_STRIDE);
+    });
+    this.post({ type: 'debris', poses });
   }
 
   // -------------------------------------------------------------------------------------
@@ -760,12 +697,12 @@ export class MockEngine {
     if (!w) return;
     const t0 = performance.now();
 
-    this.checkSupport(now);
-    this.updateBubbles(now);
+    this.ticksTotal++;
+    this.checkSupport();
+    this.stepPieces(now);
 
     const meshes: ChunkMesh[] = [];
     const removed: string[] = [];
-    this.wobble(now, meshes);
     this.meshDirty(this.loading ? MESH_BUDGET_LOADING_MS : MESH_BUDGET_MS, meshes, removed);
     for (let k = 0; k < meshes.length; k += MESHES_PER_MESSAGE) {
       this.post({ type: 'chunkMeshes', meshes: meshes.slice(k, k + MESHES_PER_MESSAGE) });
@@ -777,13 +714,6 @@ export class MockEngine {
       if (this.dirty.size === 0) this.loading = false;
     }
 
-    if (this.scheduled.length > 0) {
-      const due = this.scheduled.filter((s) => s.at <= now);
-      if (due.length > 0) {
-        this.scheduled = this.scheduled.filter((s) => s.at > now);
-        for (const s of due) this.events.push(s.event);
-      }
-    }
     if (this.events.length > 0) {
       const list = this.events;
       this.events = [];
@@ -798,24 +728,29 @@ export class MockEngine {
   }
 
   private postStats(now: number, w: VoxelWorld): void {
-    let activeNodes = 0;
-    for (const b of this.bubbles) for (const ci of b.chunks) activeNodes += w.chunkSolid(ci);
     const ticks = Math.max(1, this.ticksAcc);
+    let awake = 0;
+    for (const p of this.pieces) if (p.awake) awake++;
+    // (the structure and solver counters have no counterpart in the mock: zero)
     const stats: EngineStats = {
+      ...emptyEngineStats(),
       tickMs: this.tickMsEma,
       structuralMs: this.structuralMsAcc / ticks,
-      activeBubbles: this.bubbles.length,
-      activeNodes,
+      meshMs: this.meshMsAcc / ticks,
       voxels: w.solidCount,
       chunks: this.meshed.size,
       memoryMB: w.allocatedBytes / (1024 * 1024),
       events: this.eventsAcc,
+      ticks: this.ticksTotal,
+      detachedVoxels: this.detachedVoxelsTotal,
+      detachedPieces: this.islandsTotal,
+      pieces: this.pieces.length,
+      awakePieces: awake,
+      impactLoads: this.landingsTotal,
+      residentChunks: w.chunkCount,
       engine: 'mock',
       meshQueue: this.dirty.size,
       meshMsPerChunk: this.meshedAcc > 0 ? this.meshMsAcc / this.meshedAcc : 0,
-      displacedChunks: this.wobbleBase.size,
-      islands: this.islandsTotal,
-      detachedVoxels: this.detachedVoxelsTotal,
       damagedVoxels: this.damage.size,
     };
     this.post({ type: 'stats', stats });

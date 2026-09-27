@@ -95,39 +95,12 @@ try {
   });
   await sleep(1500);
   s = await state(page);
-  check(s.engine.voxels < v0, `pistol carved ${v0 - s.engine.voxels} voxels (static settles ${s.engine.staticSettles})`);
+  check(s.engine.voxels < v0, `pistol carved ${v0 - s.engine.voxels} voxels (${s.engine.structures} structures, ${s.engine.bondsBroken} bonds broken)`);
   await page.screenshot({ path: `${outDir}/02-pistol.png` });
-  const v1 = s.engine.voxels;
-  await page.evaluate(async () => {
-    const sv = window.__structvox;
-    sv.select('rocket');
-    await new Promise((r) => setTimeout(r, 400));
-    sv.look(0, 8);
-    // sample the displacement fields every frame: the bubble's motion must reach the GPU
-    window.__smokeFields = { max: 0, stop: false };
-    const sample = () => {
-      const f = window.__smokeFields;
-      f.max = Math.max(f.max, sv.renderer.fields.maxDisp);
-      if (!f.stop) requestAnimationFrame(sample);
-    };
-    requestAnimationFrame(sample);
-    sv.fire();
-  });
-  await waitFor(page, (v) => window.__structvox.state().engine.voxels < v, v1, 8000, 'rocket removed voxels');
-  await sleep(600);
-  await page.screenshot({ path: `${outDir}/03-rocket.png` });
-  await waitFor(page, () => window.__structvox.state().engine.activeBubbles === 0, null, 30000, 'bubble settled');
-  s = await state(page);
-  check(s.engine.bubblesSpawned >= 1, `bubbles spawned ${s.engine.bubblesSpawned}, ruptures ${s.engine.ruptures}, detached ${s.engine.detachedVoxels}`);
-  const fieldMax = await page.evaluate(() => {
-    window.__smokeFields.stop = true;
-    return window.__smokeFields.max;
-  });
-  check(fieldMax > 0, `rocket bubble displaced geometry on the GPU (field bound ${(1000 * fieldMax).toFixed(2)} mm)`);
-  await page.screenshot({ path: `${outDir}/04-after.png` });
-  // Rigid debris: cut a 1.5 m square out of the first room's ceiling slab; the piece falls 3 m
-  // as a rigid body, lands on the floor, rests and fades.
-  const d0 = s.engine.debrisLandings ?? 0;
+  // Rigid piece: cut a 1.5 m square out of the first room's ceiling slab (before the rocket,
+  // whose collapse may bring that ceiling down); the piece falls 3 m as a rigid body, lands on
+  // the floor and stays there as rubble.
+  const p0 = s.engine.pieces;
   await page.evaluate(() => {
     const sv = window.__structvox;
     const h = 0.125, cx = 27, cy = 23, z = 25.5, half = 6;
@@ -137,21 +110,35 @@ try {
       for (const [x, y] of [[cx + k, cy - half], [cx + k, cy + half], [cx - half, cy + k], [cx + half, cy + k]])
         sv.engine.carve([x * h, y * h, z * h], 0.25);
   });
-  const pieces = await waitFor(page, () => {
+  const pieces = await waitFor(page, (p) => {
     const s = window.__structvox.state();
-    return s.render && s.render.islands > 0 && s.engine.debrisPieces > 0 ? s.engine.debrisPieces : 0;
-  }, null, 8000, 'ceiling piece became rigid debris');
+    return s.render && s.render.islands > 0 && s.engine.pieces > p ? s.engine.pieces : 0;
+  }, p0, 8000, 'ceiling piece became a rigid piece');
   await sleep(350);
-  await page.screenshot({ path: `${outDir}/04b-debris-falling.png` });
-  await waitFor(page, (d) => (window.__structvox.state().engine.debrisLandings ?? 0) > d, d0, 8000, 'debris landed');
-  await sleep(700);
-  await page.screenshot({ path: `${outDir}/04c-debris-landed.png` });
+  await page.screenshot({ path: `${outDir}/03-piece-falling.png` });
+  await waitFor(page, () => window.__structvox.state().engine.awakePieces === 0, null, 8000, 'piece came to rest');
+  await sleep(2000);
+  await page.screenshot({ path: `${outDir}/03b-piece-resting.png` });
   s = await state(page);
-  check(pieces > 0 && s.engine.debrisLandings > d0, `debris: ${pieces} piece(s), landings ${s.engine.debrisLandings}, debris ${s.engine.debrisMs} ms/tick`);
+  check(pieces > p0 && s.engine.pieces >= pieces && s.render.islands >= pieces, `pieces: ${s.engine.pieces} alive as rubble, ${s.engine.contacts} contacts, rigid ${s.engine.rigidMs} ms/tick`);
+  const v1 = s.engine.voxels;
+  await page.evaluate(async () => {
+    const sv = window.__structvox;
+    sv.select('rocket');
+    await new Promise((r) => setTimeout(r, 400));
+    sv.look(0, 8);
+    sv.fire();
+  });
+  await waitFor(page, (v) => window.__structvox.state().engine.voxels < v, v1, 8000, 'rocket removed voxels');
+  await sleep(600);
+  await page.screenshot({ path: `${outDir}/04-rocket.png` });
   await waitFor(page, () => {
-    const s = window.__structvox.state();
-    return s.engine.debrisPieces === 0 && s.render.islands === 0;
-  }, null, 20000, 'debris faded out and released');
+    const e = window.__structvox.state().engine;
+    return e.structuresSolving === 0 && e.awakePieces === 0;
+  }, null, 30000, 'structures and pieces settled');
+  s = await state(page);
+  console.log(`info rocket: ${s.engine.bondsBroken} bonds broken, ${s.engine.detachedPieces} pieces (${s.engine.pieces} alive, ${s.render.islands} islands), max util ${s.engine.maxUtilization}`);
+  await page.screenshot({ path: `${outDir}/04b-after.png` });
   // Streamed 1 km^2 city: fly along a street and check bounded residency
   await page.evaluate(() => window.__structvox.load('city', 2));
   await waitFor(page, () => {
@@ -202,7 +189,7 @@ try {
     await sleep(4000);
     await page.screenshot({ path: `${outDir}/08-map01-rocket.png` });
     s = await state(page);
-    console.log(`info MAP01 after rocket: bubbles ${s.engine.bubblesSpawned}, settles ${s.engine.staticSettles}, tick ${s.engine.tickMs} ms`);
+    console.log(`info MAP01 after rocket: ${s.engine.structures} structures, ${s.engine.bondsBroken} bonds broken, ${s.engine.pieces} pieces, tick ${s.engine.tickMs} ms`);
     // a map the WAD does not have: an error toast, and the rooms world instead of an empty view
     await page.evaluate(() => {
       const map = [...document.querySelectorAll('input[type=text]')].find((i) => i.value === 'MAP01');

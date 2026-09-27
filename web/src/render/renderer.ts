@@ -4,8 +4,8 @@
  *
  * Bind groups: group 0 = frame uniforms + texture atlas + displacement fields (shared by all
  * pipelines); group 1 = per-object uniforms (model matrix, opacity, displaced flag) with
- * dynamic offsets: slot 0 is the identity used by chunks (displaced by the fields), slots 1..
- * are islands.
+ * dynamic offsets: slot 0 is the identity used by chunks (displaced by the fields), slots
+ * 1..MAX_ISLANDS belong to islands (each keeps its slot; only changed slots are uploaded).
  */
 import type { TextureInfo, Vec3 } from '../engine/protocol.ts';
 import { DebugView, Material, VERTEX_STRIDE } from '../engine/protocol.ts';
@@ -26,7 +26,8 @@ const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
 /** Floats in the Frame uniform (see shaders/frame.wgsl). */
 const FRAME_FLOATS = 16 + 8 * 4 + 8 * 4;
 const OBJECT_BYTES = 80; // mat4 + vec4
-const MAX_ISLANDS = 128;
+/** Detached pieces drawn at once (the engine keeps up to ~3000 rigid pieces plus fading ones). */
+const MAX_ISLANDS = 4096;
 const MAX_VIEW_DISTANCE = 600;
 
 export interface Camera {
@@ -53,6 +54,7 @@ export interface RenderStats {
   chunksTotal: number;
   triangles: number;
   islands: number;
+  islandsDrawn: number;
   particles: number;
   gpuMB: number;
   width: number;
@@ -128,6 +130,7 @@ export class Renderer {
       size: FRAME_FLOATS * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    // one slot per object at the dynamic-offset alignment: (1 + MAX_ISLANDS) x 256 B = 1 MB
     this.objectStride = Math.max(256, device.limits.minUniformBufferOffsetAlignment);
     this.objectData = new Float32Array(((1 + MAX_ISLANDS) * this.objectStride) / 4);
     this.objectBuffer = device.createBuffer({
@@ -135,6 +138,12 @@ export class Renderer {
       size: this.objectData.byteLength,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
+    // slot 0: identity for chunks, which move by the displacement fields
+    const o = this.objectData;
+    o[0] = o[5] = o[10] = o[15] = 1;
+    o[16] = 1; // opacity
+    o[17] = 1; // displaced
+    device.queue.writeBuffer(this.objectBuffer, 0, o, 0, this.objectStride / 4);
     this.sampler = device.createSampler({
       label: 'atlas sampler',
       magFilter: 'nearest', // crisp Doom texels up close
@@ -367,22 +376,24 @@ export class Renderer {
     f.set(PALETTE, 48);
     this.device.queue.writeBuffer(this.frameBuffer, 0, f);
 
-    // Object slots: 0 = identity (chunks), 1.. = islands.
+    // Object slots of the islands: upload the range spanning the changed ones (resting rubble
+    // does not change, so a quiet frame uploads nothing).
     this.islands.update(input.timeS);
-    const islands = this.islands.list;
     const o = this.objectData;
     const stride = this.objectStride / 4;
-    o.fill(0, 0, stride);
-    o[0] = o[5] = o[10] = o[15] = 1;
-    o[16] = 1; // opacity
-    o[17] = 1; // chunks move by the displacement fields
-    islands.forEach((isl, i) => {
-      const base = (i + 1) * stride;
+    let lo = Infinity;
+    let hi = -1;
+    for (const isl of this.islands.list) {
+      if (!isl.dirty) continue;
+      isl.dirty = false;
+      const base = isl.slot * stride;
       o.set(isl.model, base);
       o[base + 16] = isl.opacity;
       o[base + 17] = 0;
-    });
-    this.device.queue.writeBuffer(this.objectBuffer, 0, o, 0, (islands.length + 1) * stride);
+      lo = Math.min(lo, isl.slot);
+      hi = Math.max(hi, isl.slot);
+    }
+    if (hi >= lo) this.device.queue.writeBuffer(this.objectBuffer, lo * this.objectStride, o, lo * stride, (hi - lo + 1) * stride);
 
     const particleCount = this.particles.upload();
     if (this.fields.version !== this.boundFieldsVersion) this.rebuildFrameBindGroup();
@@ -416,14 +427,8 @@ export class Renderer {
     pass.setBindGroup(1, this.objectBindGroup, [0]);
     const fields = this.fields;
     const drawn = this.chunks.draw(pass, this.planes, cam.eye, MAX_VIEW_DISTANCE, fields.count > 0 ? (mn, mx) => fields.inflation(mn, mx) : undefined);
-    let triangles = drawn.triangles;
-    islands.forEach((isl, i) => {
-      pass.setBindGroup(1, this.objectBindGroup, [(i + 1) * this.objectStride]);
-      pass.setVertexBuffer(0, isl.vbuf);
-      pass.setIndexBuffer(isl.ibuf, 'uint32');
-      pass.drawIndexed(isl.indexCount);
-      triangles += isl.indexCount / 3;
-    });
+    const pieces = this.islands.draw(pass, this.objectBindGroup, this.objectStride, this.planes, cam.eye, MAX_VIEW_DISTANCE);
+    const triangles = drawn.triangles + pieces.triangles;
 
     if (particleCount > 0) {
       pass.setPipeline(this.particlePipeline);
@@ -437,7 +442,8 @@ export class Renderer {
       chunksDrawn: drawn.drawn,
       chunksTotal: this.chunks.count,
       triangles,
-      islands: islands.length,
+      islands: this.islands.count,
+      islandsDrawn: pieces.drawn,
       particles: particleCount,
       gpuMB: (this.chunks.bytes + this.atlas.bytes) / (1024 * 1024),
       width,

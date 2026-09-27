@@ -409,13 +409,13 @@ function sampleTimeline(tickMs: number, flushMs: number): void {
 function sendStats(now: number): void {
   const m = mod as SvxModule;
   m._svx_stats(eng, scratch);
-  const ms = (i: number): number => Number(f64(i).toFixed(2));
+  const r2 = (i: number): number => Number(f64(i).toFixed(2)); // (two decimals)
   const stats: EngineStats = {
     tickMs: f64(0),
     structuralMs: f64(1),
-    eventMs: ms(2),
-    rigidMs: ms(3),
-    meshMs: ms(4),
+    eventMs: r2(2),
+    rigidMs: r2(3),
+    meshMs: r2(4),
     voxels: f64(5),
     chunks: f64(6),
     memoryMB: f64(7),
@@ -430,7 +430,7 @@ function sendStats(now: number): void {
     bondsBroken: f64(16),
     detachedVoxels: f64(17),
     detachedPieces: f64(18),
-    maxUtilization: ms(19),
+    maxUtilization: r2(19),
     pieces: f64(20),
     awakePieces: f64(21),
     contacts: f64(22),
@@ -439,10 +439,10 @@ function sendStats(now: number): void {
     impactLoads: f64(25),
     residentChunks: f64(26),
     archivedChunks: f64(27),
-    streamMs: ms(28),
+    streamMs: r2(28),
     evictedChunks: f64(29),
     movers: f64(30),
-    designMaxUtilization: ms(31),
+    designMaxUtilization: r2(31),
     strengthenedVoxels: f64(32),
     floatingVoxelsRemoved: f64(33),
     bakeMs: Math.round(f64(34)),
@@ -455,10 +455,14 @@ function sendStats(now: number): void {
 
 /**
  * Threads for loading and baking (the module is built with pthreads; the pool's threads come
- * from a pre-spawned set). Gameplay keeps up to 4 for the structure solves and pieces.
+ * from a pre-spawned set of 16). Gameplay leaves two cores to the page and the renderer.
  */
 function loadThreads(): number {
-  return typeof SharedArrayBuffer !== 'undefined' && self.crossOriginIsolated ? Math.max(1, Math.min(6, config.threads)) : 1;
+  return typeof SharedArrayBuffer !== 'undefined' && self.crossOriginIsolated ? Math.max(1, Math.min(8, config.threads)) : 1;
+}
+
+function playThreads(): number {
+  return Math.max(1, Math.min(8, loadThreads(), config.threads - 2));
 }
 
 function finishLoad(texturesSent: boolean, label: string): void {
@@ -467,8 +471,8 @@ function finishLoad(texturesSent: boolean, label: string): void {
   const t0 = performance.now();
   m._svx_set_threads(loadThreads());
   const baked = m._svx_bake(eng) === 1;
-  // gameplay: structure solves and pieces share up to 4 threads
-  m._svx_set_threads(Math.min(4, loadThreads()));
+  // gameplay: structure solves and pieces
+  m._svx_set_threads(playThreads());
   console.info(`[wasm] ${label}: bake ${baked ? 'done' : 'skipped (world too large)'} in ${(performance.now() - t0).toFixed(0)} ms`);
   postToMain({ type: 'progress', stage: `meshing ${label}`, done: 2, total: 3 });
   postToMain({ type: 'ready', info: worldInfo(texturesSent) });

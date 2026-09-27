@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <cmath>
 
+#include "svx/base/parallel.hpp"
 #include "svx/engine/engine.hpp"
 #include "svx/engine/engine_internal.hpp"
 
@@ -104,6 +105,22 @@ Body* Engine::make_body_from_world(const std::vector<FragKey>& frags, const V3& 
   const V3 m{h, h, h};
   rigid_.wake_box(V3{h * lo[0], h * lo[1], h * lo[2]} - m * 2.0, V3{h * hi[0], h * hi[1], h * hi[2]} + m * 2.0);
   st_.detached_voxels += static_cast<i64>(vox.size());
+  if (static_cast<i32>(vox.size()) < cfg_.min_body_voxels) {
+    // (a shard: dust and a few chips for the front end, not a rigid piece)
+    if (crack_budget_ > 0) {
+      --crack_budget_;
+      EngineEvent ev;
+      ev.kind = EngineEvent::Kind::Crack;
+      ev.pos = to_arr(b->x);
+      ev.vel = to_arr(v);
+      ev.strength = 1.5;
+      ev.voxels = static_cast<i32>(vox.size());
+      ev.radius = 0.5 * h * std::cbrt(static_cast<f64>(vox.size()));
+      events_.push_back(std::move(ev));
+    }
+    st_.pulverized_voxels += static_cast<i64>(vox.size());
+    return nullptr;
+  }
   ++st_.detached_pieces;
   Body* ptr = b.get();
   rigid_.add(std::move(b));
@@ -311,10 +328,28 @@ void Engine::refragment_body(Body& b) {
 
 std::vector<i32> Engine::body_stress(Body& b, const std::vector<PointForce>& forces, bool inertia, f64 energy,
                                      std::vector<i32>* crushed) {
-  std::vector<i32> out;
+  StressOut o;
+  body_stress_run(b, forces, inertia, energy, o);
+  apply_stress_out(o);
+  if (crushed) *crushed = o.crushed;
+  return o.broken;
+}
+
+void Engine::apply_stress_out(const StressOut& o) {
+  st_.body_checks += o.checks;
+  st_.pcg_iters += o.pcg_iters;
+  st_.bonds_broken += static_cast<i64>(o.broken.size());
+  st_.impact_breaks += o.impact_breaks;
+  st_.steady_breaks += o.steady_breaks;
+  for (int m = 0; m < 4; ++m) st_.mode_breaks[m] += o.modes[m];
+  for (const auto& [p, n] : o.cracks) crack_event(p, n, 1.0);
+}
+
+void Engine::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool inertia, f64 energy, StressOut& o) {
+  std::vector<i32>& out = o.broken;
   if (b.graph_dirty || !b.graph) rebuild_body_graph(b);
   BodyGraph& G = *b.graph;
-  if (G.P.bonds.empty()) return out;
+  if (G.P.bonds.empty()) return;
   const i32 n = static_cast<i32>(G.P.nodes.size());
   const M3 R = to_matrix(b.q), Rt = transpose(R);
   std::vector<f64> f(6 * size_t(n), 0.0);
@@ -354,7 +389,7 @@ std::vector<i32> Engine::body_stress(Body& b, const std::vector<PointForce>& for
     StressOptions so;
     so.rtol = cfg_.body_stress_rtol;
     so.amg_min_nodes = 0;  // (small pieces: the coarsest level is the whole graph, solved exactly)
-    if (!G.P.assemble(so)) return out;
+    if (!G.P.assemble(so)) return;
   }
   // Break rounds: a progressive failure within the substep (steps of a sequentially linear
   // analysis). The worst bonds go first, the load redistributes, and the first time the piece
@@ -377,8 +412,8 @@ std::vector<i32> Engine::body_stress(Body& b, const std::vector<PointForce>& for
       std::fill(G.u.begin(), G.u.end(), 0.0);
       break;
     }
-    ++st_.body_checks;
-    st_.pcg_iters += r.iters;
+    ++o.checks;
+    o.pcg_iters += r.iters;
     over.clear();
     f64 maxphi = 0.0;
     for (i32 k = 0; k < static_cast<i32>(G.P.bonds.size()); ++k) {
@@ -431,11 +466,10 @@ std::vector<i32> Engine::body_stress(Body& b, const std::vector<PointForce>& for
         const i32 i = b.shape.index(G.face_p[size_t(e)]);
         if (i >= 0) b.shape.brk[size_t(i)] |= static_cast<u8>(1u << G.face_axis[size_t(e)]);
       }
-      ++st_.bonds_broken;
-      ++(impact ? st_.impact_breaks : st_.steady_breaks);
-      if (crushed && modes[size_t(k)] == FailMode::Crush) crushed->push_back(k);
-      ++st_.mode_breaks[static_cast<int>(modes[size_t(k)])];
-      crack_event(b.to_world(B.p), rotate(b.q, B.n), 1.0);
+      ++(impact ? o.impact_breaks : o.steady_breaks);
+      if (modes[size_t(k)] == FailMode::Crush) o.crushed.push_back(k);
+      ++o.modes[static_cast<int>(modes[size_t(k)])];
+      o.cracks.push_back({b.to_world(B.p), rotate(b.q, B.n)});
     }
     if (poor || out.size() == before || round + 1 == rounds) break;
     // Come apart? A part of some size (freed, or on supports of its own) goes its own way: the
@@ -525,7 +559,6 @@ std::vector<i32> Engine::body_stress(Body& b, const std::vector<PointForce>& for
     for (i32 i : chip_nodes)
       for (int q = 0; q < 6; ++q) G.u[6 * size_t(i) + size_t(q)] = 0.0;
   }
-  return out;
 }
 
 bool Engine::pulverize(Body& b, const std::vector<i32>& crushed) {
@@ -798,7 +831,15 @@ bool Engine::fracture_hook(f64 dt) {
       fsum[size_t(c.b)] += norm(Fb);
     }
   }
-  bool changed = false;
+  // which pieces are checked (in body order)
+  struct Check {
+    size_t i;
+    bool impact;
+    f64 budget;
+    bool split = false;  // (in several parts already: they go their own ways)
+    StressOut out;
+  };
+  std::vector<Check> checks;
   for (size_t i = 0; i < nb; ++i) {
     Body& b = *rigid_.bodies[i];
     if (b.asleep || static_cast<i32>(b.frags.size()) < cfg_.min_fracture_frags) continue;
@@ -815,21 +856,42 @@ bool Engine::fracture_hook(f64 dt) {
     const f64 wr = norm(b.w);
     const bool spin = wr * wr * b.radius > 2.0 * cfg_.rigid.gravity && b.stress_cooldown <= 0;
     if (!impact && !steady && !spin) continue;
+    static const bool no_spread = std::getenv("SVX_NO_SPREAD") != nullptr;
+    if (!no_spread) spread_contact_forces(per[i]);
+    checks.push_back({i, impact, impact ? dissipated[i] : -1.0});
+  }
+  // the checks, concurrently (each touches only its piece; a single check keeps the threads for
+  // its own solve)
+  auto run = [&](Check& c) {
+    Body& b = *rigid_.bodies[c.i];
     if (b.graph_dirty || !b.graph) rebuild_body_graph(b);
     if (b.graph->components > 1) {
-      // (a piece in several parts: they go their own ways)
+      c.split = true;
+      return;
+    }
+    body_stress_run(b, per[c.i], true, c.budget, c.out);
+  };
+  if (checks.size() == 1) {
+    run(checks[0]);
+  } else {
+    parallel_for(static_cast<i64>(checks.size()), 1, [&](i64 k0, i64 k1) {
+      SerialScope serial;
+      for (i64 k = k0; k < k1; ++k) run(checks[size_t(k)]);
+    });
+  }
+  // their outcomes, in body order
+  bool changed = false;
+  for (Check& c : checks) {
+    Body& b = *rigid_.bodies[c.i];
+    if (c.split) {
       if (split_body(b, true, false)) changed = true;
       continue;
     }
-    b.stress_cooldown = impact ? cfg_.body_check_ticks : 3 * cfg_.body_check_ticks;
-    b.last_load = fsum[i];
-    const f64 budget = impact ? dissipated[i] : -1.0;
-    static const bool no_spread = std::getenv("SVX_NO_SPREAD") != nullptr;
-    if (!no_spread) spread_contact_forces(per[i]);
-    std::vector<i32> crushed;
-    const std::vector<i32> broken = body_stress(b, per[i], true, budget, &crushed);
-    if (broken.empty()) continue;
-    const bool reshaped = cfg_.pulverize && pulverize(b, crushed);
+    b.stress_cooldown = c.impact ? cfg_.body_check_ticks : 3 * cfg_.body_check_ticks;
+    b.last_load = fsum[c.i];
+    apply_stress_out(c.out);
+    if (c.out.broken.empty()) continue;
+    const bool reshaped = cfg_.pulverize && pulverize(b, c.out.crushed);
     if (reshaped && b.shape.count == 0) {
       pending_retire_.push_back(b.id);
       changed = true;
@@ -965,9 +1027,17 @@ ChunkMesh Engine::body_mesh(const Body& b) const {
 }
 
 void Engine::announce_bodies() {
-  for (auto& bp : rigid_.bodies) {
-    Body& b = *bp;
-    if (b.announced) continue;
+  // new pieces' meshes (concurrently), then their events in body order
+  std::vector<Body*> fresh;
+  for (auto& bp : rigid_.bodies)
+    if (!bp->announced) fresh.push_back(bp.get());
+  std::vector<ChunkMesh> meshes(fresh.size());
+  parallel_for(static_cast<i64>(fresh.size()), 4, [&](i64 k0, i64 k1) {
+    SerialScope serial;
+    for (i64 k = k0; k < k1; ++k) meshes[size_t(k)] = body_mesh(*fresh[size_t(k)]);
+  });
+  for (size_t k = 0; k < fresh.size(); ++k) {
+    Body& b = *fresh[k];
     EngineEvent ev;
     ev.kind = EngineEvent::Kind::Detached;
     ev.id = b.id;
@@ -976,7 +1046,7 @@ void Engine::announce_bodies() {
     ev.ang = to_arr(b.w);
     ev.voxels = b.shape.count;
     ev.rigid = true;
-    ev.mesh = body_mesh(b);
+    ev.mesh = std::move(meshes[k]);
     b.x0 = b.x;
     b.q0 = b.q;
     b.announced = true;

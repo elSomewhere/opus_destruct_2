@@ -12,8 +12,8 @@ namespace {
 // Fracture energies are those of the whole crack (the reinforcement's pull-out included for RC).
 //                name        E       G      rho    ft       fb       fc      cohesion friction Gf      frag x y z  noise
 constexpr Material kMaterials[static_cast<int>(MaterialId::Count)] = {
-    {"rc",       30e9,  12.5e9, 2400, 1.2e6,   3.5e6,   30e6,  1.6e6,   0.7,     2000,   3.6, 3.6, 3.6, 0.35},
-    {"concrete", 28e9,  11.5e9, 2300, 0.8e6,   1.2e6,   25e6,  1.2e6,   0.7,     400,    3.4, 3.4, 3.4, 0.45},
+    {"rc",       30e9,  12.5e9, 2400, 1.2e6,   3.5e6,   30e6,  1.6e6,   0.7,     2000,   4.5, 4.5, 4.5, 0.35},
+    {"concrete", 28e9,  11.5e9, 2300, 0.8e6,   1.2e6,   25e6,  1.2e6,   0.7,     400,    4.2, 4.2, 4.2, 0.45},
     {"steel",    200e9, 80e9,   7850, 180e6,   180e6,   200e6, 100e6,   0.35,    1e6,    6.0, 6.0, 6.0, 0.15},
     {"masonry",  10e9,  4e9,    1900, 0.15e6,  0.3e6,   8e6,   0.35e6,  0.75,    120,    3.0, 2.0, 1.6, 0.25},
     {"soil",     0.1e9, 0.04e9, 1700, 0.01e6,  0.01e6,  0.4e6, 0.03e6,  0.55,    20,     2.5, 2.5, 2.5, 0.5},

@@ -13,20 +13,35 @@ export interface SettingsCallbacks {
 }
 
 interface SliderDef {
-  key: 'compliance' | 'amplification' | 'fragility' | 'damping';
+  key: 'fragility' | 'impact' | 'dif';
   label: string;
   min: number;
   max: number;
   step: number;
+  /** Logarithmic slider (equal travel per factor of two), for scale factors around 1. */
+  log?: boolean;
   hint: string;
 }
 
 const SLIDERS: readonly SliderDef[] = [
-  { key: 'compliance', label: 'Compliance S_p', min: 1, max: 16, step: 0.5, hint: 'physical softness (jelly feel)' },
-  { key: 'amplification', label: 'Amplification A', min: 0, max: 8, step: 0.25, hint: 'visible sag / wobble' },
-  { key: 'fragility', label: 'Fragility F', min: 0.1, max: 4, step: 0.05, hint: 'strength scale (lower snaps sooner)' },
-  { key: 'damping', label: 'Damping', min: 0, max: 1, step: 0.01, hint: 'wobble decay' },
+  { key: 'fragility', label: 'Fragility', min: 0.25, max: 4, step: 0.01, log: true, hint: 'Fragility — weaker bonds, more collapse' },
+  { key: 'impact', label: 'Impact', min: 0.25, max: 4, step: 0.01, log: true, hint: 'Impact — how hard landings hit' },
+  { key: 'dif', label: 'Dynamic factor', min: 1, max: 2.5, step: 0.05, hint: 'Dynamic factor — overshoot of sudden load changes' },
 ];
+
+/** Log sliders run over 0..LOG_STEPS. */
+const LOG_STEPS = 1000;
+
+function toSlider(d: SliderDef, v: number): number {
+  if (!d.log) return v;
+  return Math.round((LOG_STEPS * Math.log(v / d.min)) / Math.log(d.max / d.min));
+}
+
+function fromSlider(d: SliderDef, x: number): number {
+  if (!d.log) return x;
+  const v = d.min * Math.pow(d.max / d.min, x / LOG_STEPS);
+  return Number((Math.round(v / d.step) * d.step).toFixed(6));
+}
 
 export class SettingsPanel {
   readonly root: HTMLElement;
@@ -41,10 +56,11 @@ export class SettingsPanel {
     this.callbacks = callbacks;
 
     const sliders = SLIDERS.map((d) => {
-      const input = h('input', { type: 'range', min: d.min, max: d.max, step: d.step, value: this.params[d.key] });
+      const range = d.log ? { min: 0, max: LOG_STEPS, step: 1 } : { min: d.min, max: d.max, step: d.step };
+      const input = h('input', { type: 'range', ...range, value: toSlider(d, this.params[d.key]) });
       const value = h('span', { class: 'value' }, this.params[d.key].toFixed(2));
       input.addEventListener('input', () => {
-        this.params[d.key] = Number(input.value);
+        this.params[d.key] = fromSlider(d, Number(input.value));
         value.textContent = this.params[d.key].toFixed(2);
         this.emit();
       });

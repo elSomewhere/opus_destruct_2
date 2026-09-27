@@ -2,7 +2,8 @@
  * Displacement fields of running physics bubbles (protocol `ChunkMeshesMessage.fields`): one
  * rgba16float 3D texture per bubble, sampled trilinearly in the world vertex shader, so chunks
  * inside a bubble move every tick without being re-meshed. Up to MAX_FIELDS at once (the engine
- * runs at most 4 bubbles); unused slots bind a 1x1x1 empty texture.
+ * runs at most 4 bubbles); unused slots bind a 1x1x1 empty texture. v1 engines only: the v2
+ * engine has no displacement and never sends fields, so every slot stays empty.
  */
 import type { DisplacementField, Vec3 } from '../engine/protocol.ts';
 

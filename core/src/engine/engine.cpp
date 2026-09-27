@@ -1277,12 +1277,17 @@ void Engine::tick() {
     structure_loads(dts);
   }
   st_.rigid_ms = ms_since(tr);
+  const auto tl = Clock::now();
   refresh_structures();  // (bodies landing on structures not registered yet)
   apply_blast_loads();
   finish_loads(ns);
+  const f64 loads_ms = ms_since(tl);
   const auto ts = Clock::now();
   step_structures();
   st_.structural_ms = ms_since(ts);
+  static const bool tprof = std::getenv("SVX_PROFILE_TICK") != nullptr;
+  if (tprof && st_.ticks % 30 == 0)
+    std::printf("  [tick] events %.2f rigid %.2f loads %.2f structures %.2f ms\n", st_.event_ms, st_.rigid_ms, loads_ms, st_.structural_ms);
   // bodies that left the world
   const f64 floor_z = grid_.h * grid_.lo[2] - cfg_.rigid.kill_depth;
   rigid_.remove_if([&](const Body& b) {

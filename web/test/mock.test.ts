@@ -6,7 +6,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import type { ChunkMesh, DetachedEvent, EngineEvent, MeshData, Vec3, WorkerMessage } from '../src/engine/protocol.ts';
-import { DebugView, DEFAULT_PARAMS, TEXTURE_MATERIAL_BASE, VERTEX_STRIDE } from '../src/engine/protocol.ts';
+import { DEBRIS_STRIDE, DebugView, DEFAULT_PARAMS, TEXTURE_MATERIAL_BASE, VERTEX_STRIDE } from '../src/engine/protocol.ts';
 import { decodeVertex, MeshBuilder, vertexBounds } from '../src/engine/vertex.ts';
 import { Block, resolveFaceTextures } from '../src/worker/mock/blocks.ts';
 import { collideAabb } from '../src/worker/mock/collide.ts';
@@ -293,12 +293,23 @@ test('engine: shooting the bridge columns detaches the bridge', () => {
   const events = eventsOf(messages);
   assert.ok(events.some((e) => e.kind === 'impact'));
   assert.ok(events.some((e) => e.kind === 'crack'));
-  assert.ok(events.some((e) => e.kind === 'bubble'));
-  // The virtual impact of the falling bridge arrives later.
+  // A rigid piece: it falls, lands (the landing impact arrives later) and stays as rubble.
+  assert.equal(big.rigid, true);
   const impactsBefore = events.filter((e) => e.kind === 'impact').length;
   tick(3000);
   const impactsAfter = eventsOf(messages).filter((e) => e.kind === 'impact').length;
-  assert.ok(impactsAfter > impactsBefore, 'virtual landing impact');
+  assert.ok(impactsAfter > impactsBefore, 'landing impact');
+  const poses = messages.flatMap((m) => (m.type === 'debris' ? [m.poses] : [])).at(-1);
+  assert.ok(poses && poses.length % DEBRIS_STRIDE === 0, 'packed debris poses');
+  let rest: number[] | null = null;
+  for (let o = 0; o < poses.length; o += DEBRIS_STRIDE) if (poses[o] === big.id) rest = [...poses.subarray(o, o + DEBRIS_STRIDE)];
+  assert.ok(rest !== null && rest[3]! < big.centroid[2] - 1 && rest[8] === 1, 'the bridge came down and is still there');
+  const n = messages.length;
+  tick(2000);
+  assert.ok(!messages.slice(n).some((m) => m.type === 'debris'), 'resting rubble is not re-sent');
+  const stats = messages.filter((m) => m.type === 'stats').at(-1);
+  assert.ok(stats && stats.type === 'stats' && stats.stats.pieces >= 1 && stats.stats.awakePieces === 0, 'rubble at rest');
+  assert.ok(stats.stats.detachedPieces >= 1 && stats.stats.detachedVoxels > 1000);
 });
 
 test('engine: debug view change re-sends meshes with debug bytes', () => {
@@ -315,6 +326,21 @@ test('engine: debug view change re-sends meshes with debug bytes', () => {
     for (let i = 0; i < mesh.vertexCount; i += 7) if (decodeVertex(mesh.vertices, i).debug > 128) hot++;
   }
   assert.ok(hot > 0, 'some vertices show high utilization');
+});
+
+test('engine: fragments view gives the voxels fragment ids 1..254', () => {
+  const { engine, messages, tick } = runEngine();
+  engine.handle({ type: 'loadProcedural', kind: 'tower', seed: 3 }, 0);
+  tick(20_000);
+  const n = messages.length;
+  engine.handle({ type: 'setParams', params: { ...DEFAULT_PARAMS, debugView: DebugView.Fragments } });
+  tick(20_000);
+  const ids = new Set<number>();
+  for (const mesh of meshesOf(messages.slice(n))) {
+    for (let i = 0; i < mesh.vertexCount; i += 5) ids.add(decodeVertex(mesh.vertices, i).debug);
+  }
+  assert.ok(ids.size > 50, `${ids.size} distinct fragment ids`);
+  assert.ok(!ids.has(255));
 });
 
 test('engine: loadWad on the mock reports an error and falls back', () => {

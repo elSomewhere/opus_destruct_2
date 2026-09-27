@@ -86,7 +86,7 @@ struct EngineConfig {
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
   f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)
   i32 body_check_ticks = 12;       // steady contact: re-check every so many substeps
-  i32 min_body_voxels = 8;         // smaller parts of a breaking piece turn to dust (not rigid pieces)
+  i32 min_body_voxels = 16;        // smaller pieces (breaking off, or coming loose) turn to dust, not rigid pieces
   f64 fade_time = 1.0;
   // blasts
   f64 blast_shatter = 1.7;         // shatter radius / crater radius: fragments come loose
@@ -345,6 +345,16 @@ class Engine {
   // crushed: (optional) the broken bonds that failed by crushing.
   std::vector<i32> body_stress(Body& b, const std::vector<PointForce>& forces, bool inertia, f64 energy = -1.0,
                                std::vector<i32>* crushed = nullptr);
+  // The check itself touches only the piece (pieces are checked concurrently); what it did for
+  // the stats and the front end is applied afterwards, in body order.
+  struct StressOut {
+    std::vector<i32> broken, crushed;
+    std::vector<std::pair<V3, V3>> cracks;  // world position, normal
+    i64 checks = 0, pcg_iters = 0, impact_breaks = 0, steady_breaks = 0;
+    i64 modes[4] = {0, 0, 0, 0};
+  };
+  void body_stress_run(Body& b, const std::vector<PointForce>& forces, bool inertia, f64 energy, StressOut& o);
+  void apply_stress_out(const StressOut& o);
   // Crushed material turns to gravel and dust: the fragments on the lighter side of crushed
   // bonds leave the piece (dust events). Returns whether the shape changed.
   bool pulverize(Body& b, const std::vector<i32>& crushed);

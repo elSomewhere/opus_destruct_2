@@ -196,9 +196,6 @@ export class Game {
         case 'impact':
           this.effects.impact(ev, eye);
           break;
-        case 'bubble':
-          // Debug only; shown through the bubble-level view and the HUD counters.
-          break;
       }
     }
   }

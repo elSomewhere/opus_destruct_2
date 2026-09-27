@@ -1,6 +1,10 @@
 /**
  * Visual feedback: particles for hits, cracks, impacts and detachments, a transient
  * point light (muzzle flash / explosions) and camera shake ("trauma" model).
+ *
+ * Engine events can come in floods (a collapse announces hundreds of pieces, every split of
+ * a piece is a new detached event, up to 24 cracks per tick), so their particles draw on
+ * per-frame budgets, refilled in `update`.
  */
 import type { CrackEvent, DetachedEvent, ImpactEvent, MaterialId, RaycastHit, Vec3 } from '../engine/protocol.ts';
 import { Material, VERTEX_STRIDE } from '../engine/protocol.ts';
@@ -18,6 +22,10 @@ const MATERIAL_DUST: Record<number, Rgb> = {
   [Material.Rock]: [0.28, 0.26, 0.24],
   [Material.Bedrock]: [0.1, 0.1, 0.1],
 };
+
+/** Particles per frame from detached events (dust) and from cracks (chips and puffs). */
+const DETACHED_DUST_PER_FRAME = 300;
+const CRACK_PARTICLES_PER_FRAME = 150;
 
 function dustColor(material: MaterialId): Rgb {
   return MATERIAL_DUST[material] ?? [0.4, 0.4, 0.4];
@@ -49,12 +57,16 @@ export class Effects {
   flashIntensity = 0;
   /** Seconds the on-screen muzzle flash stays visible. */
   muzzle = 0;
+  private detachedBudget = DETACHED_DUST_PER_FRAME;
+  private crackBudget = CRACK_PARTICLES_PER_FRAME;
 
   constructor(particles: ParticleSystem) {
     this.particles = particles;
   }
 
   update(dt: number): void {
+    this.detachedBudget = DETACHED_DUST_PER_FRAME;
+    this.crackBudget = CRACK_PARTICLES_PER_FRAME;
     this.trauma = Math.max(0, this.trauma - dt * 1.1);
     this.flashIntensity *= Math.exp(-dt * 18);
     if (this.flashIntensity < 0.01) this.flashIntensity = 0;
@@ -132,11 +144,16 @@ export class Effects {
     }
   }
 
+  /** A few chips and a puff per crack (strength = utilization, about 1..2). */
   crack(ev: CrackEvent): void {
     const n = ev.normal;
-    for (let k = 0; k < 3 + Math.round(ev.strength * 5); k++) {
+    const s = Math.min(1, Math.max(0, ev.strength - 0.5));
+    const chips = Math.min(2 + Math.round(s * 3), this.crackBudget - 1);
+    if (chips < 0) return;
+    this.crackBudget -= chips + 1;
+    for (let k = 0; k < chips; k++) {
       const d = hemisphere(n, 1.1);
-      const v = rand(0.5, 2.5) * (0.5 + ev.strength);
+      const v = rand(0.5, 2.5) * (0.5 + s);
       this.particles.spawn({ pos: ev.pos, vel: [d[0] * v, d[1] * v, d[2] * v], life: rand(0.5, 1.2), size: rand(0.015, 0.035), color: [0.3, 0.29, 0.27, 1], gravity: 1 });
     }
     this.particles.spawn({ pos: ev.pos, vel: [n[0] * 0.3, n[1] * 0.3, n[2] * 0.3], life: 1.4, size: 0.1, grow: 0.3, color: [0.4, 0.39, 0.36, 0.35], drag: 2, gravity: -0.02 });
@@ -169,8 +186,10 @@ export class Effects {
   detached(ev: DetachedEvent): void {
     const m = ev.mesh;
     if (m.vertexCount === 0) return;
+    const count = Math.min(120, 8 + Math.round(ev.voxels / 40), this.detachedBudget);
+    if (count <= 0) return;
+    this.detachedBudget -= count;
     const f = new Float32Array(m.vertices, 0, m.vertexCount * (VERTEX_STRIDE / 4));
-    const count = Math.min(120, 8 + Math.round(ev.voxels / 40));
     for (let k = 0; k < count; k++) {
       const i = Math.floor(Math.random() * m.vertexCount) * (VERTEX_STRIDE / 4);
       const p: Vec3 = [f[i]!, f[i + 1]!, f[i + 2]!];

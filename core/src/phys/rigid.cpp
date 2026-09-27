@@ -133,7 +133,7 @@ void body_refresh(Body& b, f64 h, int max_points) {
   for (const Cand& cd : uniq) sharp += cd.sharp ? 1 : 0;
   // small pieces need few samples (their corners), large ones more (flat faces as well)
   const f64 surf = std::cbrt(static_cast<f64>(std::max(1, S.count)));
-  const size_t cap = static_cast<size_t>(std::max(8, std::min(max_points, static_cast<int>(16.0 + 3.0 * surf * surf))));
+  const size_t cap = static_cast<size_t>(std::max(8, std::min(max_points, static_cast<int>(12.0 + 1.5 * surf * surf))));
   if (uniq.size() <= cap) {
     for (const Cand& cd : uniq) keep.push_back(&cd);
   } else {
@@ -273,9 +273,20 @@ void RigidWorld::collide(const VoxelGrid& g, const std::vector<u8>* only) {
   // only (optional): contacts of these bodies alone (the others' contacts are kept by the caller)
   if (!only) contacts_.clear();
   const f64 h = g.h, ih = 1.0 / h;
-  refresh_boxes();
   const i32 nb = static_cast<i32>(bodies.size());
+  {
+    bool any = false;
+    for (const auto& bp : bodies)
+      if (!bp->asleep) {
+        any = true;
+        break;
+      }
+    if (!any) return;  // (everything asleep: no contacts)
+  }
+  refresh_boxes();
   auto selected = [&](i32 i) { return !only || (*only)[size_t(i)]; };
+  using CClock = std::chrono::steady_clock;
+  const auto c0 = CClock::now();
   // sample positions (in parallel; every body a pair may test)
   parallel_for(nb, 64, [&](i64 b0, i64 b1) {
     for (i64 i = b0; i < b1; ++i) world_points(*bodies[size_t(i)]);
@@ -328,6 +339,7 @@ void RigidWorld::collide(const VoxelGrid& g, const std::vector<u8>* only) {
   });
   for (auto& v : wc)
     for (const Contact& c : v) contacts_.push_back(c);
+  const auto c1 = CClock::now();
   // body pairs: sweep over x (the order of the sweep is the pairs' order)
   std::vector<i32> order(static_cast<size_t>(nb));
   for (i32 i = 0; i < nb; ++i) order[size_t(i)] = i;
@@ -335,19 +347,28 @@ void RigidWorld::collide(const VoxelGrid& g, const std::vector<u8>* only) {
     const f64 ax = bodies[size_t(x)]->box_lo.x, ay = bodies[size_t(y)]->box_lo.x;
     return ax < ay || (ax == ay && x < y);
   });
-  std::vector<std::pair<i32, i32>> pairs;
-  for (size_t i = 0; i < order.size(); ++i) {
-    const Body& A = *bodies[size_t(order[i])];
-    for (size_t j = i + 1; j < order.size(); ++j) {
-      const Body& B = *bodies[size_t(order[j])];
-      if (B.box_lo.x > A.box_hi.x) break;
-      if (A.asleep && B.asleep) continue;
-      if (!selected(order[i]) && !selected(order[j])) continue;
-      if (A.family_ticks > 0 && B.family_ticks > 0 && A.family == B.family) continue;
-      if (A.box_hi.y < B.box_lo.y || B.box_hi.y < A.box_lo.y || A.box_hi.z < B.box_lo.z || B.box_hi.z < A.box_lo.z) continue;
-      pairs.push_back({std::min(order[i], order[j]), std::max(order[i], order[j])});
+  // (in parallel over fixed runs of the sorted order, joined in order)
+  constexpr i64 kSweepGrain = 64;
+  const i64 nruns = (static_cast<i64>(order.size()) + kSweepGrain - 1) / kSweepGrain;
+  std::vector<std::vector<std::pair<i32, i32>>> runs(static_cast<size_t>(nruns));
+  parallel_for(static_cast<i64>(order.size()), kSweepGrain, [&](i64 i0, i64 i1) {
+    auto& out = runs[size_t(i0 / kSweepGrain)];
+    for (i64 i = i0; i < i1; ++i) {
+      const Body& A = *bodies[size_t(order[size_t(i)])];
+      for (size_t j = size_t(i) + 1; j < order.size(); ++j) {
+        const Body& B = *bodies[size_t(order[j])];
+        if (B.box_lo.x > A.box_hi.x) break;
+        if (A.asleep && B.asleep) continue;
+        if (!selected(order[size_t(i)]) && !selected(order[j])) continue;
+        if (A.family_ticks > 0 && B.family_ticks > 0 && A.family == B.family) continue;
+        if (A.box_hi.y < B.box_lo.y || B.box_hi.y < A.box_lo.y || A.box_hi.z < B.box_lo.z || B.box_hi.z < A.box_lo.z) continue;
+        out.push_back({std::min(order[size_t(i)], order[j]), std::max(order[size_t(i)], order[j])});
+      }
     }
-  }
+  });
+  std::vector<std::pair<i32, i32>> pairs;
+  for (const auto& r : runs) pairs.insert(pairs.end(), r.begin(), r.end());
+  const auto c2 = CClock::now();
   std::vector<std::vector<Contact>> pc(pairs.size());
   parallel_for(static_cast<i64>(pairs.size()), 8, [&](i64 q0, i64 q1) {
     std::vector<Contact> one;
@@ -397,6 +418,23 @@ void RigidWorld::collide(const VoxelGrid& g, const std::vector<u8>* only) {
       }
     }
   });
+  const auto c3 = CClock::now();
+  static const bool cprof = std::getenv("SVX_PROFILE_COLLIDE") != nullptr;
+  if (cprof) {
+    auto ms = [](CClock::time_point a, CClock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
+    static f64 acc[3] = {0, 0, 0};
+    static i64 np = 0, calls = 0;
+    acc[0] += ms(c0, c1);
+    acc[1] += ms(c1, c2);
+    acc[2] += ms(c2, c3);
+    np += static_cast<i64>(pairs.size());
+    if (++calls % 120 == 0) {
+      std::printf("  [collide] per call: world %.2f ms, broadphase %.2f ms, pairs %.2f ms (%lld pairs)\n", acc[0] / 120, acc[1] / 120,
+                  acc[2] / 120, static_cast<long long>(np / 120));
+      acc[0] = acc[1] = acc[2] = 0;
+      np = 0;
+    }
+  }
   for (size_t q = 0; q < pairs.size(); ++q) {
     for (const Contact& c : pc[q]) contacts_.push_back(c);
     // an awake body moving near a sleeping one wakes it (whether it pushes it, or moves away

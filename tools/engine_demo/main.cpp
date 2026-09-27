@@ -147,8 +147,9 @@ int main(int argc, char** argv) {
   }
   par.debug_view = debug_view;
   Engine eng;
-  if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC")) {
+  if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC") || std::getenv("SVX_MIN_BODY")) {
     EngineConfig c = eng.config();
+    if (const char* e = std::getenv("SVX_MIN_BODY")) c.min_body_voxels = std::atoi(e);
     if (work > 0) c.stress_work = work;
     if (std::getenv("SVX_NO_BODY_FRACTURE")) c.min_fracture_frags = 1 << 30;
     if (const char* e = std::getenv("SVX_MIN_FRAC")) c.min_fracture_frags = std::atoi(e);

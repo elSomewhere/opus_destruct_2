@@ -5,7 +5,7 @@ struct Frame {
   eye: vec4f,      // xyz camera position, w = time (s)
   right: vec4f,    // xyz camera right, w = tan(fovY/2) * aspect
   up: vec4f,       // xyz camera up, w = tan(fovY/2)
-  forward: vec4f,  // xyz camera forward, w = debug view (0 none, 1 utilization, 2 bubble level)
+  forward: vec4f,  // xyz camera forward, w = debug view (0 none, 1 utilization, 2 fragments)
   fog: vec4f,      // rgb horizon / fog colour, w = fog density (1/m)
   zenith: vec4f,   // rgb zenith colour, w = voxel size (m)
   sun: vec4f,      // xyz unit direction towards the sun, w = texture count

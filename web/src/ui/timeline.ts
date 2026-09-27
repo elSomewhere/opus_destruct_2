@@ -1,26 +1,27 @@
 /**
  * Job and budget timeline (plan §B9 debug overlay): the worker's last ticks as stacked bars,
- * one colour per part of the tick (bubble steps, events, streaming, debris, verification,
- * meshing and the rest), against the 8 ms structural budget and the 16.7 ms frame, with the
- * active bubble nodes as a line against the engine's node budget.
+ * one colour per part of the tick (structure solves, rigid pieces, event processing,
+ * streaming, the rest of the tick, and the worker's flush of meshes / events / poses after
+ * it), against the 8 ms budget and the 16.7 ms frame, with the awake pieces as a line
+ * (scaled to the window's peak).
  */
 import { TIMELINE_FIELDS, TIMELINE_STRIDE } from '../engine/protocol.ts';
 import { h } from './dom.ts';
 
 const TICKS = 240;         // 4 s at 60 Hz
 const MS_TOP = 33.3;        // full height: two frames
-const NODE_BUDGET = 24000;  // EngineConfig::node_budget
+const AWAKE_TOP_MIN = 50;   // the awake line's full height is at least this many pieces
 const COLORS: Record<(typeof TIMELINE_FIELDS)[number], string> = {
   structural: '#e0a040',
+  rigid: '#a070e0',
   events: '#e05050',
   stream: '#50a0e0',
-  debris: '#a070e0',
-  verify: '#60c060',
-  mesh: '#909090',
   other: '#5a5a5a',
-  nodes: '#f0f0f0',
+  flush: '#909090',
+  awake: '#f0f0f0',
 };
-const BARS = TIMELINE_FIELDS.filter((f) => f !== 'nodes');
+const BARS = TIMELINE_FIELDS.filter((f) => f !== 'awake');
+const AWAKE = TIMELINE_FIELDS.indexOf('awake');
 
 export class Timeline {
   readonly root: HTMLElement;
@@ -35,7 +36,7 @@ export class Timeline {
       'div',
       { class: 'timeline-legend' },
       ...BARS.map((f) => h('span', {}, h('i', { style: `background:${COLORS[f]}` }), f)),
-      h('span', {}, h('i', { style: `background:${COLORS.nodes}` }), 'nodes / budget'),
+      h('span', {}, h('i', { style: `background:${COLORS.awake}` }), 'awake pieces'),
     );
     this.root = h('div', { class: 'timeline' }, this.canvas, legend);
   }
@@ -75,7 +76,7 @@ export class Timeline {
         acc += v;
       });
     }
-    // budgets: 8 ms of structural work, 16.7 ms frame
+    // budgets: 8 ms of engine work per tick, 16.7 ms frame
     ctx.strokeStyle = 'rgba(255, 220, 120, 0.8)';
     ctx.setLineDash([4, 3]);
     for (const ms of [8, 16.7]) {
@@ -85,13 +86,15 @@ export class Timeline {
       ctx.stroke();
     }
     ctx.setLineDash([]);
-    // active nodes against the node budget (full height = budget)
-    ctx.strokeStyle = COLORS.nodes;
+    // awake pieces (full height = the window's peak, rounded up to 50s)
+    const awake = (i: number): number => this.samples[((this.head - this.count + i + TICKS) % TICKS) * TIMELINE_STRIDE + AWAKE] ?? 0;
+    let peak = 0;
+    for (let i = 0; i < this.count; i++) peak = Math.max(peak, awake(i));
+    const top = Math.max(AWAKE_TOP_MIN, Math.ceil(peak / 50) * 50);
+    ctx.strokeStyle = COLORS.awake;
     ctx.beginPath();
     for (let i = 0; i < this.count; i++) {
-      const slot = (this.head - this.count + i + TICKS) % TICKS;
-      const nodes = this.samples[slot * TIMELINE_STRIDE + TIMELINE_STRIDE - 1] ?? 0;
-      const px = (TICKS - this.count + i + 0.5) * bw, py = H - Math.min(1, nodes / NODE_BUDGET) * H;
+      const px = (TICKS - this.count + i + 0.5) * bw, py = H - (awake(i) / top) * H;
       if (i === 0) ctx.moveTo(px, py);
       else ctx.lineTo(px, py);
     }
@@ -100,5 +103,7 @@ export class Timeline {
     ctx.font = '10px monospace';
     ctx.fillText('8 ms', 2, y(8) - 2);
     ctx.fillText('16.7 ms', 2, y(16.7) - 2);
+    const label = `${top} awake`;
+    ctx.fillText(label, W - 2 - ctx.measureText(label).width, 10);
   }
 }

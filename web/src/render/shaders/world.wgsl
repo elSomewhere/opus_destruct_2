@@ -11,8 +11,8 @@ struct Object {
   params: vec4f, // x = opacity (dithered), y = displaced by the fields (1/0), zw unused
 };
 
-// Displacement fields of running physics bubbles (fields.ts): per field (origin.xyz, 1/h) and
-// (size.xyz, active); rgba16float texels (w d, w), w = solid weight.
+// Displacement fields of running physics bubbles (fields.ts; v1 engines, v2 sends none): per
+// field (origin.xyz, 1/h) and (size.xyz, active); rgba16float texels (w d, w), w = solid weight.
 struct Fields {
   f: array<vec4f, 8>,
 };
@@ -44,6 +44,7 @@ struct VertexOut {
   @location(4) light: f32,
   @location(5) debugValue: f32,
   @location(6) @interpolate(flat) tex: u32,
+  @location(7) @interpolate(flat) debugId: u32, // the debug byte, not interpolated (fragment ids)
 };
 
 // Normalized texture coordinates of p in field k (w = 1 inside the field's texel box).
@@ -89,6 +90,7 @@ fn vs(v: VertexIn) -> VertexOut {
   o.ao = v.normalAo.w * 0.5 + 0.5;
   o.light = f32((v.packed >> 16u) & 0xffu) / 255.0;
   o.debugValue = f32(v.packed >> 24u);
+  o.debugId = v.packed >> 24u;
   o.tex = v.packed & 0xffffu;
   return o;
 }
@@ -105,15 +107,15 @@ fn heat(t: f32) -> vec3f {
   return clamp(vec3f(1.5 - abs(4.0 * c - 3.0), 1.5 - abs(4.0 * c - 2.0), 1.5 - abs(4.0 * c - 1.0)), vec3f(0.0), vec3f(1.0));
 }
 
-// Bubble level: debug byte 1 + L for level L (0 = not in a bubble).
-fn levelColor(level: u32) -> vec3f {
-  switch level {
-    case 1u: { return vec3f(1.0, 0.12, 0.08); }
-    case 2u: { return vec3f(1.0, 0.55, 0.05); }
-    case 3u: { return vec3f(0.95, 0.9, 0.1); }
-    case 4u: { return vec3f(0.15, 0.8, 0.25); }
-    default: { return vec3f(0.15, 0.45, 1.0); }
-  }
+// Rubble fragment: debug byte 1..254 (pseudo-random per fragment) -> a distinct colour.
+// Golden-ratio hue steps, with saturation and brightness varied by the low bits so that
+// neighbouring fragments of similar hue still separate.
+fn fragmentColor(id: u32) -> vec3f {
+  let hue = fract(f32(id) * 0.618034);
+  let rgb = clamp(abs(fract(vec3f(hue) + vec3f(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0, vec3f(0.0), vec3f(1.0));
+  let sat = select(0.9, 0.6, (id & 1u) == 1u);
+  let val = select(1.0, 0.72, (id & 2u) == 2u);
+  return val * mix(vec3f(1.0), rgb, sat);
 }
 
 fn bayer4(p: vec2u) -> f32 {
@@ -175,12 +177,12 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
   if (view == 1u) {
     color = heat(i.debugValue / 255.0) * (0.25 + 0.75 * shade);
   } else if (view == 2u) {
-    let lvl = u32(i.debugValue + 0.5);
+    // fragments: each rubble fragment in its own colour, the rest greyed out
     let grey = dot(color, vec3f(0.3, 0.59, 0.11));
-    if (lvl == 0u) {
+    if (i.debugId == 0u) {
       color = vec3f(grey * 0.6);
     } else {
-      color = levelColor(lvl) * (0.35 + 0.65 * shade);
+      color = fragmentColor(i.debugId) * (0.35 + 0.65 * shade);
     }
   }
 
