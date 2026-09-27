@@ -120,6 +120,7 @@ export class Game {
     this.renderer.clearWorld();
     this.occupancy.clear();
     this.effects.setFlames(new Float32Array(0));
+    this.effects.setSmoke(new Float32Array(0));
     this.overlay.setLoading(text, 0.05);
     this.overlay.setPrompt(false);
   }
@@ -158,7 +159,10 @@ export class Game {
     e.on('events', (msg) => this.handleEvents(msg.list));
     e.on('occupancy', (msg) => this.occupancy.apply(msg));
     e.on('debris', (msg) => this.renderer.islands.applyDebris(msg.poses, performance.now() / 1000));
-    e.on('env', (msg) => this.effects.setFlames(msg.flames));
+    e.on('env', (msg) => {
+      this.effects.setFlames(msg.flames);
+      this.effects.setSmoke(msg.smoke);
+    });
     e.on('stats', (msg) => {
       if (this.info === null) return; // posted before the current world's ready (worker messages are ordered)
       this.engineStats = msg.stats;
@@ -241,6 +245,7 @@ export class Game {
     if (this.frameCount % 2 === 0) this.engine.viewer(eye, forward);
     this.effects.update(dt);
     this.effects.fire(dt, eye, t / 1000);
+    this.effects.smokeField(t / 1000, this.voxelSize);
     this.renderer.particles.update(dt);
 
     // Camera shake perturbs only the rendered view, not aiming.

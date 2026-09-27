@@ -22,7 +22,7 @@ import type {
   WadOptions,
   WorldInfo,
 } from '../engine/protocol.ts';
-import { DEBRIS_STRIDE, DEFAULT_PARAMS, FLAME_STRIDE, TIMELINE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
+import { DEBRIS_STRIDE, DEFAULT_PARAMS, FLAME_STRIDE, SMOKE_STRIDE, TIMELINE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { postToMain, reportError, serveCommands } from './host.ts';
 // Generated Emscripten ES module (see the header comment); typed by SvxModule below.
 import createSvxModule from '../wasm/svx_web.js';
@@ -59,8 +59,10 @@ interface SvxModule {
   _svx_blast(e: number, x: number, y: number, z: number, r: number, energy: number): void;
   _svx_ignite(e: number, x: number, y: number, z: number, r: number): void;
   _svx_extinguish(e: number, x: number, y: number, z: number, r: number): void;
-  _svx_poll_env(e: number, maxFlames: number): number;
+  _svx_poll_env(e: number, maxFlames: number, maxSmoke: number): number;
   _svx_env_flames(e: number): number;
+  _svx_env_smoke_count(e: number): number;
+  _svx_env_smoke(e: number): number;
   _svx_use(e: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): number;
   _svx_raycast(e: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number, out: number): number;
   _svx_collide(e: number, a: number, b: number, c: number, d: number, f: number, g: number, mx: number, my: number, mz: number, out: number): void;
@@ -96,10 +98,11 @@ const STATS_MS = 250;
 // job and budget timeline: per-tick samples since the last stats message (TIMELINE_FIELDS)
 let timeline: number[] = [];
 const AUTOSAVE_MS = 5000;
-/** svx_stats fills out[0..45]. */
-const STATS_COUNT = 46;
-/** Flames sent to the renderer at most (an even sample), and how often (ticks: the fire's step). */
+/** svx_stats fills out[0..47]. */
+const STATS_COUNT = 48;
+/** Flames and smoke cells sent to the renderer at most, and how often (ticks: their step). */
 const MAX_FLAMES = 4096;
+const MAX_SMOKE = 4096;
 const ENV_TICKS = 6;
 
 let mod: SvxModule | null = null;
@@ -116,7 +119,7 @@ let lastSave = 0;
 let saving = false;
 let debrisLive = 0;
 let debrisSent = new Float64Array(0); // poses of the last debris message (resting rubble is not re-sent)
-let flamesLive = 0;
+let envLive = false;
 let envTick = 0;
 let fieldsLive = 0;
 let fieldsKey = ''; // (id:version of each field last sent: an unchanged set is not sent again)
@@ -407,16 +410,18 @@ function flushDebris(): void {
   postToMain({ type: 'debris', poses });
 }
 
-/** The environment for the renderer: the flames (one final empty set after the last is out). */
+/** The environment for the renderer: flames and smoke (one final empty set when all is clear). */
 function flushEnv(): void {
   if (++envTick < ENV_TICKS) return;
   envTick = 0;
   const m = mod as SvxModule;
-  const n = m._svx_poll_env(eng, MAX_FLAMES);
-  if (n === 0 && flamesLive === 0) return;
-  flamesLive = n;
+  const n = m._svx_poll_env(eng, MAX_FLAMES, MAX_SMOKE);
+  const ns = m._svx_env_smoke_count(eng);
+  if (n === 0 && ns === 0 && !envLive) return;
+  envLive = n > 0 || ns > 0;
   const b = m._svx_env_flames(eng) >> 2;
-  postToMain({ type: 'env', flames: m.HEAPF32.slice(b, b + n * FLAME_STRIDE) });
+  const bs = m._svx_env_smoke(eng) >> 2;
+  postToMain({ type: 'env', flames: m.HEAPF32.slice(b, b + n * FLAME_STRIDE), smoke: m.HEAPF32.slice(bs, bs + ns * SMOKE_STRIDE) });
 }
 
 /** One timeline sample: the tick's parts (engine timings of that tick) and the flush after it. */
@@ -484,6 +489,8 @@ function sendStats(now: number): void {
     fireHot: f64(43),
     fireBurning: f64(44),
     envMs: r2(45),
+    smokeCells: f64(46),
+    smokeBlocks: f64(47),
   };
   eventsSinceStats = 0;
   lastStats = now;
@@ -529,7 +536,7 @@ function clearChunks(): void {
   fieldsKey = '';
   debrisLive = 0; // (the front end drops the old world's pieces when it requests a load)
   debrisSent = new Float64Array(0);
-  flamesLive = 0;
+  envLive = false;
 }
 
 async function loadProcedural(kind: ProceduralKind, seed: number): Promise<void> {

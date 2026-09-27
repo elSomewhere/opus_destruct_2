@@ -7,7 +7,8 @@
 //   - output for the renderer: chunk meshes (with debug views), piece meshes (sent once, in world
 //     coordinates) and poses, fading of culled pieces, the far render tier of streamed levels;
 //   - a command log (record / replay / lockstep);
-//   - the environment (svx_env: fire, ...) and its output for the renderer (flames, charring).
+//   - the environment (svx_env: fire, smoke, ...) and its output for the renderer (flames,
+//     charring, smoke); blasts raise dust into the smoke.
 // The core never sees any of it: a different game (or tool) builds its own harness on World.
 #pragma once
 
@@ -61,6 +62,7 @@ struct GameStats : WorldStats {
   i32 movers = 0;
   // environment
   i32 fire_hot = 0, fire_burning = 0;
+  i32 smoke_cells = 0, smoke_blocks = 0;
   f64 env_ms = 0.0;
 };
 
@@ -68,6 +70,12 @@ struct GameStats : WorldStats {
 struct FlamePoint {
   V3 pos;
   f32 heat = 0.0f;
+};
+
+// Smoke for the renderer: a cell of the smoke field (its centre, density: about 1 is thick).
+struct SmokePoint {
+  V3 pos;
+  f32 density = 0.0f;
 };
 
 class Game {
@@ -136,6 +144,8 @@ class Game {
   const FarConfig& far_config() const { return far_; }
   // The flames burning now (at most max: an even sample of them).
   std::vector<FlamePoint> flames(i32 max) const;
+  // The smoke (at most max cells: the densest).
+  std::vector<SmokePoint> smoke(i32 max) const;
   Environment& env() { return env_; }
   const Environment& env() const { return env_; }
   f64 char_remesh_s = 1.0;  // s: charring chunks are meshed again at most this often

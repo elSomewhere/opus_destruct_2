@@ -70,6 +70,21 @@ try {
     if (s % 15 === 0) await shot(`fire-${String(s).padStart(2, '0')}`);
   }
   check(peak > 50, `the house caught fire (peak ${peak} burning voxels)`);
+  // from farther away and above: the smoke over the house
+  await page.evaluate(() => {
+    const sv = window.__structvox;
+    sv.teleport(7, 26, 5);
+    sv.look(-90, -12);
+  });
+  await sleep(1500);
+  await shot('fire-overview');
+  const smoke = await page.evaluate(() => window.__structvox.state().engine.smokeCells);
+  check(smoke > 50, `smoke rises from the fire (${smoke} cells)`);
+  await page.evaluate(() => {
+    const sv = window.__structvox;
+    sv.teleport(7, 13.5, 0.2);
+    sv.look(-90, -5);
+  });
   // put it out
   await page.evaluate(() => window.__structvox.select('extinguisher'));
   for (let k = 0; k < 40; k++) {

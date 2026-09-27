@@ -7,9 +7,9 @@
  * per-frame budgets, refilled in `update`.
  */
 import type { CrackEvent, DetachedEvent, ImpactEvent, MaterialId, RaycastHit, Vec3 } from '../engine/protocol.ts';
-import { FLAME_STRIDE, Material, VERTEX_STRIDE } from '../engine/protocol.ts';
+import { FLAME_STRIDE, Material, SMOKE_CELL_VOXELS, SMOKE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { distance, normalize } from '../render/math.ts';
-import type { ParticleSystem } from '../render/particles.ts';
+import { FIELD_CAPACITY, FLOATS_PER_INSTANCE, type ParticleSystem } from '../render/particles.ts';
 
 type Rgb = [number, number, number];
 
@@ -30,8 +30,8 @@ const CRACK_PARTICLES_PER_FRAME = 150;
 const FLAME_RATE = 2.5;
 const FLAME_PARTICLES_PER_FRAME = 140;
 const EMBER_RATE = 0.05;
-const FIRE_SMOKE_RATE = 0.25;
-const FIRE_SMOKE_PER_FRAME = 16;
+const FIRE_SMOKE_RATE = 0.08;
+const FIRE_SMOKE_PER_FRAME = 6;
 
 function dustColor(material: MaterialId): Rgb {
   return MATERIAL_DUST[material] ?? [0.4, 0.4, 0.4];
@@ -67,6 +67,9 @@ export class Effects {
   private crackBudget = CRACK_PARTICLES_PER_FRAME;
   /** The engine's flames (FLAME_STRIDE floats each). */
   private flames: Float32Array = new Float32Array(0);
+  /** The engine's smoke cells (SMOKE_STRIDE floats each), and their sprites. */
+  private smoke: Float32Array = new Float32Array(0);
+  private readonly smokeSprites = new Float32Array(FIELD_CAPACITY * FLOATS_PER_INSTANCE);
   private fireCarry = 0;
   private emberCarry = 0;
   private smokeCarry = 0;
@@ -259,6 +262,41 @@ export class Effects {
   /** The engine's burning voxels (an `env` message). */
   setFlames(flames: Float32Array): void {
     this.flames = flames;
+  }
+
+  setSmoke(smoke: Float32Array): void {
+    this.smoke = smoke;
+  }
+
+  /**
+   * The smoke field as soft sprites (one per cell, a little bigger than it, jittered and slowly
+   * drifting so the grid does not show), handed to the particle system every frame.
+   */
+  smokeField(timeS: number, voxelSize: number): void {
+    const s = this.smoke;
+    const n = Math.min(s.length / SMOKE_STRIDE, FIELD_CAPACITY);
+    const cell = voxelSize * SMOKE_CELL_VOXELS;
+    const out = this.smokeSprites;
+    for (let k = 0; k < n; k++) {
+      const i = k * SMOKE_STRIDE;
+      const x = s[i]!;
+      const y = s[i + 1]!;
+      const z = s[i + 2]!;
+      // (a hash of the cell: its own jitter and phase)
+      const hsh = Math.abs(Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453) % 1;
+      const ph = hsh * 6.283;
+      const o = k * FLOATS_PER_INSTANCE;
+      out[o] = x + cell * (0.25 * Math.sin(ph * 3.1) + 0.15 * Math.sin(timeS * 0.5 + ph));
+      out[o + 1] = y + cell * (0.25 * Math.cos(ph * 2.3) + 0.15 * Math.cos(timeS * 0.43 + ph));
+      out[o + 2] = z + cell * (0.2 * Math.sin(ph * 5.7) + 0.1 * Math.sin(timeS * 0.61 + ph * 1.3));
+      out[o + 3] = cell * (0.95 + 0.25 * hsh);
+      const g = 0.11 + 0.04 * hsh;
+      out[o + 4] = g;
+      out[o + 5] = g;
+      out[o + 6] = g * 0.95;
+      out[o + 7] = 0.6 * (1 - Math.exp(-1.6 * s[i + 3]!));
+    }
+    this.particles.setField(out.subarray(0, n * FLOATS_PER_INSTANCE));
   }
 
   get flameCount(): number {

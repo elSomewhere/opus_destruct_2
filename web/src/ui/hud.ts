@@ -96,7 +96,7 @@ export class Hud {
         `pieces ${formatCount(e.pieces)} (${formatCount(e.awakePieces)} awake)  ${formatCount(e.contacts)} contacts  ${formatCount(e.pieceSplits)} splits  ${formatCount(e.pieceChecks)} checks  ${formatCount(e.impactLoads)} impacts`,
         `detach ${formatCount(e.detachedPieces)} pieces  ${formatCount(e.detachedVoxels)} voxels  (${formatCount(e.ticks)} ticks  ${e.movers} movers)`,
         `bake   ${formatCount(e.bakeMs)} ms  design util ${ms(e.designMaxUtilization)}  ${formatCount(e.strengthenedVoxels)} strengthened  ${formatCount(e.floatingVoxelsRemoved)} floating removed`,
-        `fire   ${formatCount(e.fireBurning)} burning  ${formatCount(e.fireHot)} hot  env ${ms(e.envMs)} ms`,
+        `env    fire ${formatCount(e.fireBurning)} burning  ${formatCount(e.fireHot)} hot  smoke ${formatCount(e.smokeCells)} cells  ${e.smokeBlocks} blocks  ${ms(e.envMs)} ms`,
         `memory ${e.worldMemoryMB.toFixed(0)} MB  (frags ${e.fragmentCacheMB.toFixed(0)}  structs ${e.structureMemoryMB.toFixed(0)}  pieces ${e.pieceMemoryMB.toFixed(0)})  archive ${e.archiveMB.toFixed(1)}/${e.archiveCapacityMB.toFixed(0)} MB  forgot ${formatCount(e.forgottenRegions)} regions  culled ${formatCount(e.culledPieces)}`,
       );
       const extras = Object.entries(e).filter(([k]) => !KNOWN.has(k));

@@ -58,9 +58,13 @@ void svx_ignite(svx_engine* e, double x, double y, double z, double radius);
 void svx_extinguish(svx_engine* e, double x, double y, double z, double radius);
 /* Environment output for the renderer, taken after a tick: returns the number of flames (at
  * most max_flames, an even sample of the burning voxels); svx_env_flames then holds float32
- * x, y, z, heat (degC) per flame. */
-int svx_poll_env(svx_engine* e, int max_flames);
+ * x, y, z, heat (degC) per flame. The smoke: svx_env_smoke_count cells (at most max_smoke, the
+ * densest), svx_env_smoke float32 x, y, z (the cell's centre; cells of 4 voxels), density
+ * (about 1: thick) each. */
+int svx_poll_env(svx_engine* e, int max_flames, int max_smoke);
 const float* svx_env_flames(svx_engine* e);
+int svx_env_smoke_count(svx_engine* e);
+const float* svx_env_smoke(svx_engine* e);
 
 /* out[8]: pos xyz, normal xyz, distance, material; returns 1 on hit. */
 /* The player's "use" (doors, lift switches): returns 1 if a mover was activated. */
@@ -132,7 +136,7 @@ void svx_set_debris(svx_engine* e, int enabled);
  * utilization, 32 strengthened voxels, 33 floating voxels removed, 34 bake ms, 35 world memory
  * MB (all kinds), 36 fragment caches MB, 37 structures MB, 38 pieces MB, 39 archive used MB,
  * 40 archive capacity MB, 41 forgotten regions, 42 culled pieces, 43 hot voxels (fire),
- * 44 burning voxels, 45 environment ms (46 doubles). */
+ * 44 burning voxels, 45 environment ms, 46 smoke cells, 47 smoke blocks (48 doubles). */
 void svx_stats(svx_engine* e, double* out);
 /* Deterministic digest of the session (voxels, bonds, damage, debris poses), split in two
  * 32-bit halves (JS numbers). */

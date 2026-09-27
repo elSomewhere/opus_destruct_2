@@ -130,6 +130,8 @@ void Game::blast(const V3& pos, f64 radius, f64 energy) {
   if (log_) log_->push({world_.ticks(), Command::Type::Blast, {pos.x, pos.y, pos.z, radius, energy, 0.0}});
   if (!movers_.empty()) shots_.push_back({pos, radius});
   world_.blast(pos, radius, energy);
+  // (dust: into the smoke)
+  if (env_.smoke() && std::isfinite(energy) && energy > 0.0) env_.smoke()->emit_sphere(pos, 1.5 * radius, std::min(40.0, 6.0 * energy / 1e6));
 }
 
 void Game::ignite(const V3& pos, f64 radius) {
@@ -140,6 +142,13 @@ void Game::ignite(const V3& pos, f64 radius) {
 void Game::extinguish(const V3& pos, f64 radius) {
   if (log_) log_->push({world_.ticks(), Command::Type::Extinguish, {pos.x, pos.y, pos.z, radius, 0.0, 0.0}});
   if (env_.fire()) env_.fire()->extinguish(world_, pos, radius);
+}
+
+std::vector<SmokePoint> Game::smoke(i32 max) const {
+  std::vector<SmokePoint> out;
+  if (!env_.smoke() || max <= 0) return out;
+  for (const auto& c : env_.smoke()->cells(world_, max)) out.push_back({c.pos, c.density});
+  return out;
 }
 
 std::vector<FlamePoint> Game::flames(i32 max) const {
@@ -437,6 +446,11 @@ GameStats Game::stats() const {
     s.fire_hot = f->stats().hot;
     s.fire_burning = f->stats().burning;
     s.env_ms += f->stats().step_ms;
+  }
+  if (const SmokeSystem* m = env_.smoke()) {
+    s.smoke_cells = m->stats().cells;
+    s.smoke_blocks = m->stats().blocks;
+    s.env_ms += m->stats().step_ms;
   }
   return s;
 }

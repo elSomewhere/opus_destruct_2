@@ -523,6 +523,9 @@ export interface EngineStats {
   fireHot: number;
   fireBurning: number;
   envMs: number;
+  /** Smoke: cells with smoke, blocks (chunks) holding them. */
+  smokeCells: number;
+  smokeBlocks: number;
   /** Engine-specific extras are shown generically by the HUD. */
   [extra: string]: number | string | boolean;
 }
@@ -576,6 +579,8 @@ export function emptyEngineStats(): EngineStats {
     fireHot: 0,
     fireBurning: 0,
     envMs: 0,
+    smokeCells: 0,
+    smokeBlocks: 0,
   };
 }
 
@@ -600,16 +605,23 @@ export interface DebrisMessage {
 
 /** Floats per flame in `EnvMessage.flames`: world position xyz, temperature (degC). */
 export const FLAME_STRIDE = 4;
+/** Floats per smoke cell in `EnvMessage.smoke`: its centre xyz, density (about 1: thick). */
+export const SMOKE_STRIDE = 4;
+/** Edge of a smoke cell, in voxels. */
+export const SMOKE_CELL_VOXELS = 4;
 
 /**
  * (front-end extension) The environment's state for the renderer, sent when it changes (about
- * ten times a second while anything burns, plus one empty set when the last flame is out):
- * the flames (burning voxels, an even sample of at most a few thousand).
+ * ten times a second while anything burns or smokes, plus one empty set when all is clear):
+ * the flames (burning voxels, an even sample of at most a few thousand) and the smoke (the
+ * densest cells of the smoke field).
  */
 export interface EnvMessage {
   type: 'env';
   /** FLAME_STRIDE floats per flame; transferred. */
   flames: Float32Array<ArrayBuffer>;
+  /** SMOKE_STRIDE floats per cell; transferred. */
+  smoke: Float32Array<ArrayBuffer>;
 }
 
 export interface StatsMessage {
@@ -751,6 +763,7 @@ export function workerMessageTransferables(msg: WorkerMessage): ArrayBuffer[] {
       break;
     case 'env':
       pushUnique(out, seen, msg.flames.buffer);
+      pushUnique(out, seen, msg.smoke.buffer);
       break;
     case 'events':
       for (const e of msg.list) {
