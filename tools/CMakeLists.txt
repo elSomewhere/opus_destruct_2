@@ -1,3 +1,4 @@
+if(SVX_BUILD_GAME)
 # Streaming cost while flying through the procedural city.
 add_executable(svx_stream_bench bench/stream_bench.cpp)
 target_link_libraries(svx_stream_bench PRIVATE svx_game)
@@ -48,6 +49,7 @@ if(SVX_WASM)
     RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/web/src/wasm
     SUFFIX ".js")
 endif()
+endif()  # SVX_BUILD_GAME
 
 # The physics core alone for JavaScript hosts (docs/CORE.md): the C API of svx/svx_core.h.
 if(SVX_WASM)

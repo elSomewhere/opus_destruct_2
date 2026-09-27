@@ -193,7 +193,7 @@ announced as new pieces.
 
 ## 8. Knobs
 
-Runtime (`EngineParams`, the front end's settings):
+Runtime (`WorldParams`, the front end's settings):
 
 | Knob | Default | Meaning |
 |---|---|---|
@@ -201,7 +201,8 @@ Runtime (`EngineParams`, the front end's settings):
 | impact | 1 | scales contact loads on structures and pieces (impact severity) |
 | dynamic increase factor | 1.5 | overshoot of sudden load changes on structures |
 
-Configuration (`EngineConfig`, `RigidParams`, the material table):
+Configuration (`WorldConfig`, `RigidParams`, the material registry; the C API sets any of them
+by name, see [`CORE.md`](CORE.md)):
 
 | Knob | Default | Meaning |
 |---|---|---|
@@ -214,5 +215,5 @@ Configuration (`EngineConfig`, `RigidParams`, the material table):
 | impact_wave_speed | 400 m/s | how long an impact takes to load a piece |
 | crush_energy | 20 | crushing cost relative to a crack |
 | min_body_voxels, min_fracture_frags | 16, 8 | dust below; unbreakable rubble below |
-| max_bodies | 3,000 | beyond: the smallest sleeping pieces fade |
+| max_bodies | 3,000 | beyond: the smallest sleeping pieces are culled (the game fades them) |
 | substeps, iterations | 2, 10 | rigid solver |

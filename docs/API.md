@@ -1,6 +1,8 @@
-# structvox engine ↔ front-end contract (v2)
+# structvox game ↔ front-end contract (v2)
 
-The C++ core runs in a **Web Worker**, compiled to WASM (SIMD128). The main thread owns
+This is the protocol of the prototype game: the game harness (`svx_game`, around the physics
+core `svx_core`, see [`CORE.md`](CORE.md)) runs in a **Web Worker**, compiled to WASM (SIMD128).
+Hosts that want the physics alone use the core's own C API (`svx/svx_core.h`) instead. The main thread owns
 input, UI and WebGPU rendering. The two sides talk through `postMessage` with transferable
 `ArrayBuffer`s. SAB rings are a later optimization behind the same message shapes.
 
@@ -198,7 +200,7 @@ the same world is loaded again. Worlds are identified by:
 
 ## C ABI (inside the worker)
 
-`core/include/svx/api/svx_api.h` exposes a flat C API that the worker script
+`game/include/svx/game/api/svx_api.h` exposes the game's flat C API that the worker script
 (`web/src/worker/wasm-worker.ts`) wraps into the messages above:
 
 - lifecycle: `svx_create`, `svx_load_*`;

@@ -378,3 +378,28 @@ TEST_CASE("world: nested parallel loops run inline (no deadlock)") {
   });
   for (i64 v : sum) CHECK(v == 4950);
 }
+
+TEST_CASE("world: free voxels written into the air become a piece (dropping and throwing things)") {
+  World w;
+  w.load(table_world());
+  REQUIRE(w.bake());
+  std::vector<VoxelEdit> crate;
+  for (i32 x = 12; x < 20; ++x)
+    for (i32 y = 12; y < 20; ++y)
+      for (i32 z = 60; z < 68; ++z) crate.push_back({{x, y, z}, kConcrete});
+  CHECK(w.set_voxels(crate) == 512);
+  w.tick();
+  i64 id = 0;
+  for (const WorldEvent& e : w.take_events())
+    if (e.kind == WorldEvent::Kind::PieceAdded) id = e.id;
+  REQUIRE(id != 0);
+  const PieceState p = w.pieces().front();
+  CHECK(p.voxels == 512);
+  CHECK_FALSE(vox_solid(w.grid().get(16, 16, 64)));  // (a piece, not the grid's any more)
+  CHECK(w.apply_impulse(id, p.pos, V3{8.0 * p.mass, 0, 0}));  // thrown sideways at 8 m/s
+  for (int t = 0; t < 30; ++t) w.tick();
+  const Body* b = w.piece(id);
+  REQUIRE(b != nullptr);
+  CHECK(b->x.x > p.pos.x + 2.0);
+  CHECK(b->x.z < p.pos.z);
+}

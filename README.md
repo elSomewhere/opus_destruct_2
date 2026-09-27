@@ -1,8 +1,8 @@
 # structvox v2
 
-A C++20 structural-destruction engine for large streaming voxel worlds. It runs in the browser
-as WebAssembly (a pthreads worker with a TypeScript/WebGPU front end) and natively for tools and
-tests.
+A C++20 structural-destruction physics engine for large streaming voxel worlds, and a prototype
+game built on it. The game runs in the browser as WebAssembly (a pthreads worker with a
+TypeScript/WebGPU front end); everything also builds natively for tools and tests.
 
 Structures stand under their own weight, crack and collapse when they lose support, and what
 comes loose keeps breaking: a tower that loses its ground columns fails at its base, comes down
@@ -12,6 +12,11 @@ wall panels and blocks that settles and sleeps.
 - **Video:** [`docs/media/tower_collapse.mp4`](docs/media/tower_collapse.mp4): the tower losing its
   two west rows of ground columns (`svx_engine_demo --world tower --scenario pillars`, CPU
   renderer).
+- **The physics as a library:** [`docs/CORE.md`](docs/CORE.md). The destruction physics
+  (`svx_core`: `svx::World`, and a C API in `svx/svx_core.h`) knows nothing of the game: no
+  rendering, players or levels. It is reusable on its own, from C++, C (or any language with a C
+  FFI) and JavaScript (a core-only WASM module). The game harness (`svx_game`) is one host of it,
+  and the two iterate separately.
 - **Method:** [`docs/V2_DESIGN.md`](docs/V2_DESIGN.md). In short:
   - Voxels form pre-scored rubble **fragments**, joined by **bonds**.
   - Every standing structure and every falling piece gets its stress from the same elastic
@@ -19,7 +24,7 @@ wall panels and blocks that settles and sleeps.
   - Bonds fail by fibre-stress checks: tension, flexure, crushing, Mohr–Coulomb shear.
   - Falling pieces are rigid bodies that keep their bonds and break on impact, progressively,
     part by part.
-- **Engine ↔ front-end contract:** [`docs/API.md`](docs/API.md).
+- **Game ↔ front-end contract:** [`docs/API.md`](docs/API.md).
 - **v1** (the bubble/lattice engine this version replaces): [`docs/v1/`](docs/v1) (plan, status,
   phase reports).
 
@@ -33,8 +38,12 @@ cmake --preset native-release && cmake --build --preset native-release -j
 ./build/native-release/tests/svx_core_tests       # the physics core alone (stress, fragments, rigid, world)
 ./build/native-release/tests/svx_game_tests       # the game harness (collapse, game, movers, replay, doom, ...)
 
-# browser module (pthreads; written to web/src/wasm/)
+./build/native-release/examples/svx_core_minimal # the core from C++ (and svx_core_c: from C)
+
+# browser module of the game (pthreads; written to web/src/wasm/)
 cmake --preset wasm-release-threads && cmake --build --preset wasm-release-threads -j --target svx_web
+# the physics core alone for JavaScript hosts (build/.../tools/svx_core_web.js)
+cmake --build --preset wasm-release-threads -j --target svx_core_web
 ```
 
 `scripts/fetch_freedoom.sh` downloads Freedoom (BSD-3-Clause) into `data/freedoom/`.
@@ -68,26 +77,33 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
 | `svx_map_check [--threads T] [--movers] WAD...` | Imports, bakes and design-checks every map, then runs it idle. |
 | `svx_stream_bench`, `svx_wad_textures` | Streaming cost of the city; WAD graphics. |
 
-Debug environment variables of the engine: `SVX_DEBUG_BODY` (piece checks), `SVX_PROFILE`,
-`SVX_PROFILE_TICK`, `SVX_PROFILE_COLLIDE`.
+Diagnostics of the core (printing only, never changing results; compiled out with
+`SVX_NO_DIAGNOSTICS`): `SVX_DEBUG_BODY` (piece checks), `SVX_PROFILE`, `SVX_PROFILE_TICK`,
+`SVX_PROFILE_COLLIDE`, `SVX_PROFILE_FRACTURE`, `SVX_DEBUG_DESIGN`, `SVX_AMG_INFO`.
 
 ## Layout
 
 ```
-core/include/svx, core/src
-  base/    types, vectors, deterministic parallel pool, deterministic math
-  mech/    material table (strengths, fracture energies, fragment sizes)
-  frag/    fragments (pre-scored rubble pieces per chunk)
-  solve/   smoothed-aggregation multigrid, PCG
-  stress/  fragment-graph stress problems, bond failure checks
-  phys/    rigid voxel bodies: contacts, solver, sleep
-  world/   voxel grid (chunks, broken faces), procedural worlds, streaming sources
-  mesh/    chunk mesher
-  engine/  structures, pieces and their fracture, events, persistence, movers, replay
-  doom/    WAD reader, voxelizer, textures, Doom world, specials and movers
-  api/     flat C ABI for the WASM worker
-tools/     command-line tools
-tests/     doctest suites
+core/      svx_core: the destruction physics (docs/CORE.md). Depends on the standard library only.
+  include/svx/world/world.hpp   svx::World, the public C++ API
+  include/svx/svx_core.h        the C API
+  base/      types, vectors, deterministic parallel pool, diagnostics
+  material/  the material registry (strengths, fracture energies, rubble sizes)
+  world/     voxel grid, chunk sources, World (structures, pieces and their fracture, streaming,
+             persistence, queries)
+  frag/      fragments (pre-scored rubble pieces per chunk)
+  solve/     smoothed-aggregation multigrid, PCG
+  stress/    fragment-graph stress problems, bond failure checks
+  phys/      rigid voxel bodies: contacts, solver, sleep
+  capi/      the C API
+mesh/      svx_mesh: chunk, piece and far-tile meshing for renderers
+game/      svx_game: the prototype game harness
+  game.hpp   svx::Game: viewer, movers, triggers, command log, piece meshes and poses, far tier
+  procgen, city, columns, dmath, replay; doom/ (WAD reader, voxelizer, textures, specials,
+  movers); api/ (the web worker's flat C ABI)
+examples/  minimal hosts of the core (C++, C)
+tools/     command-line tools (game level runs, replays, map checks, benches), WASM modules
+tests/     core/ (links svx_core only) and game/ doctest suites
 web/       TypeScript + Vite front end: worker host, WebGPU renderer, FPS sandbox
-docs/      design, API, v1 history
+docs/      the core guide, design, game API, v1 history
 ```

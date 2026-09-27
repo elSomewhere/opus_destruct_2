@@ -12,6 +12,9 @@ svx_wasm_exe_options(svx_core_tests)
 add_test(NAME svx_core_tests COMMAND svx_core_tests)
 
 # Game harness tests: levels (procedural, city, Doom), movers, replays, meshing.
+if(NOT SVX_BUILD_GAME)
+  return()
+endif()
 add_executable(svx_game_tests
   test_main.cpp
   game/test_collapse.cpp
