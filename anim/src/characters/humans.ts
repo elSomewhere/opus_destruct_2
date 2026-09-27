@@ -476,6 +476,60 @@ export function civilianPalette(seed: number): Palette {
   });
 }
 
+/** A thug spec: heavier set, hoodies and dark jackets, beanies, caps or a balaclava, gloves. */
+export function thugSpec(seed: number, opts: { voxelSize?: number } = {}): HumanSpec {
+  const r = new Rng(seed * 2654435761 + 71);
+  const female = r.chance(0.15);
+  return {
+    build: female
+      ? { height: r.range(0.94, 1.0), shoulders: r.range(0.92, 0.98), hips: r.range(1.0, 1.05), girth: r.range(0.98, 1.06) }
+      : { height: r.range(0.98, 1.06), shoulders: r.range(1.03, 1.1), hips: 1, girth: r.range(1.0, 1.12) },
+    female,
+    top: r.pick(['hoodie', 'hoodie', 'jacket', 'jacket', 'tanktop', 'tshirt'] as const),
+    bottom: 'trousers',
+    shoes: r.pick(['sneakers', 'sneakers', 'boots'] as const),
+    hair: female ? r.pick(['ponytail', 'short', 'bun'] as const) : r.pick(['buzz', 'buzz', 'none', 'short'] as const),
+    headgear: r.pick(['beanie', 'beanie', 'cap', 'balaclava', 'none', 'none'] as const),
+    beard: !female && r.chance(0.5),
+    glasses: false,
+    vest: false,
+    backpack: false,
+    belt: r.chance(0.6),
+    gloves: r.chance(0.45),
+    kneepads: false,
+    camo: false,
+    voxelSize: opts.voxelSize ?? DEFAULT_VOXEL_SIZE,
+    seed,
+    name: `thug-${seed}`,
+  };
+}
+
+/** Dark street clothes: black, charcoal, olive, maroon, navy, with a bright accent now and then. */
+export function thugPalette(seed: number): Palette {
+  const r = new Rng(seed * 40503 + 29);
+  const dark = [0x1c1c1f, 0x2a2b2e, 0x33352f, 0x3d2a2a, 0x252c3a, 0x3b3b3b, 0x4a4032, 0x2f3a2c];
+  return makePalette({
+    skin: r.pick(SKIN_TONES),
+    hair: r.pick(HAIR_COLOURS),
+    top: r.pick(dark),
+    top2: r.pick([0x8a1f1f, 0xb0b0b0, 0x1f1f1f, 0xc9a227, 0x3a6ea5]),
+    bottom: r.pick([0x1d2430, 0x2a2e36, 0x39342c, 0x202020, 0x3a4a5c]),
+    bottom2: r.pick([0x1d2430, 0x2a2e36]),
+    shoes: r.pick([0xe8e8e8, 0x1a1a1a, 0x3a2a1c, 0xb03030]),
+    gear: r.pick([0x1f1f1f, 0x2b2b2b, 0x4a3b2a]),
+    gearDark: 0x151515,
+    metal: 0xb8b8b8,
+    furniture: 0x3a2a1c,
+    detail: 0x121212,
+    accent: r.pick([0xc9a227, 0x8a1f1f, 0x2a2a2a, 0xd8d8d8]),
+  });
+}
+
+export function makeThug(seed: number, opts: { voxelSize?: number } = {}): HumanVariant {
+  const spec = thugSpec(seed, opts);
+  return { model: sculptHuman(spec), palette: thugPalette(seed), spec };
+}
+
 export function makeSoldier(seed: number, opts: { voxelSize?: number; scheme?: number } = {}): HumanVariant {
   const spec = soldierSpec(seed, opts);
   return { model: sculptHuman(spec), palette: soldierPalette(seed, opts.scheme), spec };

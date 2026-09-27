@@ -209,6 +209,27 @@ const A: ActionDef[] = [
     },
   },
   {
+    // a knife fighter's guard: the blade low and forward, the free hand up in front
+    name: 'knifeGuard',
+    layer: 'pose',
+    loop: true,
+    duration: 1.4,
+    fadeIn: 0.2,
+    fadeOut: 0.25,
+    ch: {
+      handR: [k(0, [0.17, 0.28, 0.02]), k(0.7, [0.19, 0.3, 0.05]), k(1.4, [0.17, 0.28, 0.02])],
+      handRrot: [k(0, [0, 90, 0]), k(1.4, [0, 90, 0])],
+      elbowR: [k(0, [0.7, -0.3, -0.7]), k(1.4, [0.7, -0.3, -0.7])],
+      handL: [k(0, [-0.12, 0.3, 0.24]), k(0.7, [-0.14, 0.32, 0.22]), k(1.4, [-0.12, 0.3, 0.24])],
+      handLrot: [k(0, FIST_UP_L), k(1.4, FIST_UP_L)],
+      elbowL: [k(0, POLE_L), k(1.4, POLE_L)],
+      crouch: [k(0, 0.24), k(0.35, 0.3), k(0.7, 0.24), k(1.05, 0.3), k(1.4, 0.24)],
+      pelvisRot: [k(0, [0, 0, -18]), k(1.4, [0, 0, -18])],
+      chest: [k(0, [-8, 0, -6]), k(1.4, [-8, 0, -6])],
+      head: [k(0, [-8, 0, 16]), k(1.4, [-8, 0, 16])],
+    },
+  },
+  {
     // lead-hand jab: fast out, fast back
     name: 'jab',
     targeted: true,
@@ -374,6 +395,49 @@ const A: ActionDef[] = [
     events: [{ t: 0.22, name: 'strike', limb: 'blade' }],
   },
   {
+    // underhand thrust into the gut: low from the hip, driving up, the free hand pulling
+    name: 'gutStab',
+    targeted: true,
+    reach: 0.62,
+    prop: 'knife',
+    duration: 0.72,
+    fadeIn: 0.06,
+    fadeOut: 0.15,
+    ch: {
+      handR: [k(0, [0.18, 0.12, -0.12]), k(0.2, [0.2, -0.02, -0.2], 'out'), k(0.7, [0.18, 0.12, -0.12])],
+      handRrot: [k(0, [-40, 90, 0]), k(0.7, [-40, 90, 0])],
+      strikeR: [k(0, 0), k(0.2, 0), k(0.32, 1, 'snap'), k(0.4, 1), k(0.66, 0, 'out')],
+      elbowR: [k(0, [0.7, -0.5, -0.6]), k(0.7, [0.7, -0.5, -0.6])],
+      handL: [k(0, [-0.16, 0.3, 0.16]), k(0.32, [-0.12, 0.44, 0.1]), k(0.7, [-0.16, 0.3, 0.16])],
+      handLw: [k(0, 0.7), k(0.7, 0.7)],
+      pelvisRot: [k(0, [0, 0, 0]), k(0.2, [0, 0, -8]), k(0.32, [0, 0, 14], 'snap'), k(0.7, [0, 0, 0])],
+      chest: [k(0, [0, 0, 0]), k(0.2, [6, 0, -8]), k(0.32, [-16, 0, 16], 'snap'), k(0.7, [0, 0, 0], 'out')],
+      pelvis: [k(0, [0, 0, 0]), k(0.32, [0, 0.14, -0.06], 'snap'), k(0.7, [0, 0, 0], 'out')],
+      crouch: [k(0, 0.15), k(0.32, 0.32), k(0.7, 0.15)],
+    },
+    events: [{ t: 0.32, name: 'strike', limb: 'blade' }],
+  },
+  {
+    // forehand slash: from high on the left across and down
+    name: 'forehandSlash',
+    targeted: true,
+    reach: 0.62,
+    prop: 'knife',
+    duration: 0.66,
+    fadeIn: 0.06,
+    fadeOut: 0.15,
+    ch: {
+      handR: [k(0, [0.2, 0.2, 0.0]), k(0.16, [-0.08, 0.2, 0.34], 'out'), k(0.25, [0.12, 0.42, 0.14], 'snap'), k(0.34, [0.36, 0.3, -0.08]), k(0.64, [0.2, 0.2, 0.0], 'inout')],
+      strikeR: [k(0, 0), k(0.16, 0), k(0.25, 0.9, 'snap'), k(0.32, 0.3), k(0.64, 0)],
+      handRrot: [k(0, [0, 90, 0]), k(0.16, [40, 60, 60]), k(0.25, [0, 90, 42], 'snap'), k(0.34, [-20, 120, -40]), k(0.64, [0, 90, 0])],
+      elbowR: [k(0, [0.6, -0.4, -0.8]), k(0.16, [0.3, 0.2, 1]), k(0.32, [1, -0.2, -0.6]), k(0.64, [0.6, -0.4, -0.8])],
+      chest: [k(0, [0, 0, 0]), k(0.16, [0, -6, 24]), k(0.32, [-8, 6, -28], 'snap'), k(0.64, [0, 0, 0])],
+      pelvisRot: [k(0, [0, 0, 0]), k(0.16, [0, 0, 12]), k(0.32, [0, 0, -16], 'snap'), k(0.64, [0, 0, 0])],
+      pelvis: [k(0, [0, 0, 0]), k(0.25, [0, 0.08, -0.02]), k(0.64, [0, 0, 0])],
+    },
+    events: [{ t: 0.25, name: 'strike', limb: 'blade' }],
+  },
+  {
     // shove / rifle jab: both hands (or the weapon) driven forward
     name: 'riflePush',
     targeted: true,
@@ -438,6 +502,145 @@ const A: ActionDef[] = [
       look: [k(0, 1), k(0.25, 0.2), k(1.3, 0.2), k(1.55, 1)],
     },
     events: [{ t: 1.3, name: 'reloaded' }],
+  },
+  // ---- a soldier's pauses ----
+  {
+    // the weapon lowered a moment: a deep breath, the shoulders rising and settling, a glance down
+    name: 'catchBreath',
+    duration: 2.6,
+    fadeIn: 0.4,
+    fadeOut: 0.5,
+    ch: {
+      chest: [k(0, [0, 0, 0]), k(0.7, [5, 0, 0]), k(1.2, [-3, 0, 0], 'inout'), k(1.8, [4, 0, 0]), k(2.3, [-2, 0, 0]), k(2.6, [0, 0, 0])],
+      spine: [k(0, [0, 0, 0]), k(1.2, [-4, 0, 0]), k(2.6, [0, 0, 0])],
+      clavR: [k(0, [0, 0, 0]), k(0.7, [0, -7, 0]), k(1.2, [0, 2, 0]), k(1.8, [0, -5, 0]), k(2.6, [0, 0, 0])],
+      clavL: [k(0, [0, 0, 0]), k(0.7, [0, 7, 0]), k(1.2, [0, -2, 0]), k(1.8, [0, 5, 0]), k(2.6, [0, 0, 0])],
+      head: [k(0, [0, 0, 0]), k(0.7, [10, 0, 0]), k(1.3, [-16, 0, 6]), k(2.0, [-10, 0, -4]), k(2.6, [0, 0, 0])],
+      look: [k(0, 1), k(0.5, 0.3), k(2.1, 0.3), k(2.6, 1)],
+    },
+  },
+  {
+    // a look round: the eyes and the trunk sweep one way, then the other
+    name: 'lookAround',
+    duration: 2.8,
+    fadeIn: 0.3,
+    fadeOut: 0.4,
+    ch: {
+      head: [k(0, [0, 0, 0]), k(0.6, [4, 0, 50]), k(1.1, [4, 0, 50]), k(1.8, [2, 0, -45]), k(2.3, [2, 0, -45]), k(2.8, [0, 0, 0])],
+      chest: [k(0, [0, 0, 0]), k(0.6, [0, 0, 14]), k(1.1, [0, 0, 14]), k(1.8, [0, 0, -12]), k(2.3, [0, 0, -12]), k(2.8, [0, 0, 0])],
+      look: [k(0, 1), k(0.4, 0), k(2.4, 0), k(2.8, 1)],
+    },
+  },
+  {
+    // a hand to the helmet (or the head), setting it straight
+    name: 'adjustHelmet',
+    duration: 1.8,
+    fadeIn: 0.3,
+    fadeOut: 0.35,
+    ch: {
+      handL: [k(0, [-0.12, 0.06, 0.52]), k(0.7, [-0.1, 0.02, 0.55]), k(1.0, [-0.13, 0.06, 0.53]), k(1.8, [-0.12, 0.06, 0.52])],
+      handLw: [k(0, 1), k(1.8, 1)],
+      handLrot: [k(0, [130, -90, -60]), k(1.8, [130, -90, -60])],
+      elbowL: [k(0, [-1, 0.3, 0.3]), k(1.8, [-1, 0.3, 0.3])],
+      head: [k(0, [0, 0, 0]), k(0.5, [-8, 4, 4]), k(1.3, [-8, 4, 4]), k(1.8, [0, 0, 0])],
+    },
+  },
+  {
+    // the back of the hand across the brow
+    name: 'wipeBrow',
+    duration: 1.5,
+    fadeIn: 0.25,
+    fadeOut: 0.3,
+    ch: {
+      handL: [k(0, [-0.12, 0.18, 0.42]), k(0.55, [-0.1, 0.19, 0.45]), k(0.9, [0.08, 0.19, 0.45], 'inout'), k(1.5, [0.08, 0.19, 0.45])],
+      handLw: [k(0, 1), k(1.5, 1)],
+      handLrot: [k(0, [90, -90, 0]), k(1.5, [90, -90, 0])],
+      elbowL: [k(0, [-1, 0.4, -0.3]), k(1.5, [-1, 0.4, -0.3])],
+      head: [k(0, [0, 0, 0]), k(0.5, [-10, 0, 0]), k(1.1, [-10, 0, 0]), k(1.5, [0, 0, 0])],
+    },
+  },
+  {
+    // shoulders rolled and the neck stretched
+    name: 'rollShoulders',
+    duration: 1.8,
+    fadeIn: 0.25,
+    fadeOut: 0.3,
+    ch: {
+      clavR: [k(0, [0, 0, 0]), k(0.4, [0, -10, 6]), k(0.8, [0, 4, -6]), k(1.2, [0, -6, 0]), k(1.8, [0, 0, 0])],
+      clavL: [k(0, [0, 0, 0]), k(0.4, [0, 10, 6]), k(0.8, [0, -4, -6]), k(1.2, [0, 6, 0]), k(1.8, [0, 0, 0])],
+      head: [k(0, [0, 0, 0]), k(0.5, [0, 20, 0]), k(1.0, [0, -20, 0]), k(1.5, [6, 0, 0]), k(1.8, [0, 0, 0])],
+      look: [k(0, 1), k(0.3, 0.2), k(1.5, 0.2), k(1.8, 1)],
+    },
+  },
+  {
+    // a glance at the weapon: turned a little and looked over
+    name: 'checkWeapon',
+    duration: 2.0,
+    fadeIn: 0.3,
+    fadeOut: 0.35,
+    ch: {
+      weaponRot: [k(0, [0, 0, 0]), k(0.5, [10, 25, -20]), k(1.5, [10, 25, -20]), k(2.0, [0, 0, 0])],
+      weaponPos: [k(0, [0, 0, 0]), k(0.5, [-0.04, 0.02, 0.06]), k(1.5, [-0.04, 0.02, 0.06]), k(2.0, [0, 0, 0])],
+      head: [k(0, [0, 0, 0]), k(0.5, [-25, 0, 10]), k(1.5, [-25, 0, 10]), k(2.0, [0, 0, 0])],
+      look: [k(0, 1), k(0.4, 0), k(1.6, 0), k(2.0, 1)],
+    },
+  },
+  // ---- balance and reflexes ----
+  {
+    // flinching from a round close by: the head ducks, the shoulders come up, the knees dip
+    name: 'flinch',
+    duration: 0.7,
+    fadeIn: 0.04,
+    fadeOut: 0.3,
+    ch: {
+      crouch: [k(0, 0), k(0.1, 0.22, 'snap'), k(0.35, 0.18), k(0.7, 0, 'out')],
+      head: [k(0, [0, 0, 0]), k(0.1, [-22, 0, 8], 'snap'), k(0.4, [-18, 0, 6]), k(0.7, [0, 0, 0])],
+      neck: [k(0, [0, 0, 0]), k(0.1, [-8, 0, 0], 'snap'), k(0.7, [0, 0, 0])],
+      chest: [k(0, [0, 0, 0]), k(0.1, [-8, 0, 0], 'snap'), k(0.7, [0, 0, 0])],
+      clavR: [k(0, [0, 0, 0]), k(0.1, [0, -12, 0], 'snap'), k(0.7, [0, 0, 0])],
+      clavL: [k(0, [0, 0, 0]), k(0.1, [0, 12, 0], 'snap'), k(0.7, [0, 0, 0])],
+      handL: [k(0, [-0.1, 0.24, 0.35]), k(0.1, [-0.06, 0.2, 0.4], 'snap'), k(0.7, [-0.06, 0.2, 0.4])],
+      handLw: [k(0, 0), k(0.1, 0.7, 'snap'), k(0.45, 0.6), k(0.7, 0)],
+      look: [k(0, 1), k(0.08, 0), k(0.5, 0), k(0.7, 1)],
+    },
+  },
+  {
+    // thrown off balance (a blast close by, a shove): the arms go out, the knees give, the trunk
+    // catches up; the push itself moves the body and the feet stumble after it
+    name: 'stumble',
+    duration: 1.3,
+    fadeIn: 0.05,
+    fadeOut: 0.4,
+    ch: {
+      crouch: [k(0, 0), k(0.15, 0.3, 'snap'), k(0.6, 0.2), k(1.3, 0, 'out')],
+      handL: [k(0, [-0.3, 0.15, 0.0]), k(0.15, [-0.5, 0.15, 0.05], 'snap'), k(0.7, [-0.42, 0.2, 0.0]), k(1.3, [-0.3, 0.15, -0.1])],
+      handLw: [k(0, 0), k(0.12, 1, 'snap'), k(0.9, 0.8), k(1.3, 0)],
+      handR: [k(0, [0.3, 0.15, 0.0]), k(0.15, [0.5, 0.15, 0.05], 'snap'), k(0.7, [0.42, 0.2, 0.0]), k(1.3, [0.3, 0.15, -0.1])],
+      handRw: [k(0, 0), k(0.12, 1, 'snap'), k(0.9, 0.8), k(1.3, 0)],
+      handLrot: [k(0, [0, -90, -80]), k(1.3, [0, -90, -80])],
+      handRrot: [k(0, [0, 90, 80]), k(1.3, [0, 90, 80])],
+      head: [k(0, [0, 0, 0]), k(0.15, [-15, 0, 0], 'snap'), k(0.6, [5, 0, 0]), k(1.3, [0, 0, 0])],
+      chest: [k(0, [0, 0, 0]), k(0.2, [-10, 0, 0]), k(0.7, [4, 0, 0]), k(1.3, [0, 0, 0])],
+      look: [k(0, 1), k(0.1, 0.2), k(1.0, 0.4), k(1.3, 1)],
+    },
+  },
+  {
+    // a foot caught: the body pitches forward, the arms go out in front, quick steps catch it
+    name: 'trip',
+    duration: 1.2,
+    fadeIn: 0.05,
+    fadeOut: 0.35,
+    ch: {
+      spine: [k(0, [0, 0, 0]), k(0.25, [-22, 0, 0]), k(0.55, [-16, 0, 0]), k(1.2, [0, 0, 0], 'out')],
+      chest: [k(0, [0, 0, 0]), k(0.25, [-14, 0, 0]), k(0.55, [-8, 0, 0]), k(1.2, [0, 0, 0], 'out')],
+      head: [k(0, [0, 0, 0]), k(0.25, [22, 0, 0]), k(0.8, [8, 0, 0]), k(1.2, [0, 0, 0])],
+      crouch: [k(0, 0), k(0.3, 0.3), k(0.7, 0.15), k(1.2, 0, 'out')],
+      handL: [k(0, [-0.2, 0.35, 0.0]), k(0.25, [-0.22, 0.5, -0.05]), k(0.7, [-0.25, 0.4, -0.05]), k(1.2, [-0.2, 0.2, -0.2])],
+      handLw: [k(0, 0), k(0.15, 1), k(0.8, 0.8), k(1.2, 0)],
+      handR: [k(0, [0.2, 0.35, 0.0]), k(0.25, [0.22, 0.5, -0.05]), k(0.7, [0.25, 0.4, -0.05]), k(1.2, [0.2, 0.2, -0.2])],
+      handRw: [k(0, 0), k(0.15, 1), k(0.8, 0.8), k(1.2, 0)],
+      look: [k(0, 1), k(0.1, 0.3), k(0.9, 0.5), k(1.2, 1)],
+    },
   },
   // ---- idle poses (held) ----
   {
@@ -731,7 +934,9 @@ export function actionDef(name: string): ActionDef {
 }
 
 export const STRIKES = ['jab', 'cross', 'hook', 'uppercut', 'frontKick', 'roundhouse'] as const;
-export const KNIFE_ATTACKS = ['stab', 'slash'] as const;
+export const KNIFE_ATTACKS = ['stab', 'slash', 'gutStab', 'forehandSlash'] as const;
+/** What an armed body does in a pause (the weapon hand stays on the weapon). */
+export const ARMED_FIDGETS = ['adjustHelmet', 'wipeBrow', 'rollShoulders', 'checkWeapon', 'lookAround'] as const;
 export const IDLE_POSES = ['armsCrossed', 'pockets', 'handsOnHips', 'handsBehind', 'handsFolded', 'phone'] as const;
 export const FIDGETS = ['checkWatch', 'scratchHead', 'stretch', 'rubNeck'] as const;
 export const GESTURES = ['gestureOpen', 'gesturePoint', 'shrug', 'handOnChest'] as const;

@@ -45,7 +45,7 @@ export const NEUTRAL_STYLE: Readonly<GaitStyle> = {
   fidget: 0.5,
 };
 
-export type StyleKind = 'soldier' | 'civilian' | 'civilianFemale';
+export type StyleKind = 'soldier' | 'civilian' | 'civilianFemale' | 'thug';
 
 /** A random style of a kind (deterministic by seed). */
 export function randomStyle(seed: number, kind: StyleKind): GaitStyle {
@@ -64,6 +64,22 @@ export function randomStyle(seed: number, kind: StyleKind): GaitStyle {
       heavy: n(0.75, 0.1),
       headStill: n(0.8, 0.1),
       fidget: n(0.3, 0.15),
+    };
+  }
+  if (kind === 'thug') {
+    // a swagger: wide, rolling shoulders, arms swinging out, heavy on the feet, restless
+    return {
+      stride: n(1.02, 0.05),
+      bounce: n(1.15, 0.12),
+      sway: n(1.35, 0.15),
+      arms: n(1.3, 0.12),
+      elbow: n(0.28, 0.06),
+      posture: n(0.15, 0.3),
+      width: n(1.22, 0.06),
+      toeOut: n(0.22, 0.04),
+      heavy: n(0.65, 0.1),
+      headStill: n(0.35, 0.1),
+      fidget: n(0.75, 0.1),
     };
   }
   const female = kind === 'civilianFemale';

@@ -434,7 +434,13 @@ const ACTION_STATE: Record<string, RetroState> = {
   roundhouse: 'kick',
   stab: 'stab',
   slash: 'stab',
+  gutStab: 'stab',
+  forehandSlash: 'stab',
   block: 'block',
+  // (losing balance and flinching read as a hit)
+  stumble: 'pain',
+  trip: 'pain',
+  flinch: 'pain',
   reloadRifle: 'reload',
   reloadPistol: 'reload',
 };

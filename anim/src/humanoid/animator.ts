@@ -38,10 +38,10 @@ import { gaitFor, type GaitParams } from '../locomotion/gait.ts';
 import { writeRigid } from '../math/mat4.ts';
 import { Rng, valueNoise } from '../math/random.ts';
 import { qconj, qeuler, qexp, qmirrorX, qmul, qnlerp, qrotate, qx, qz, type Quat } from '../math/quat.ts';
-import { DEG, clamp, fract, lerp, smoothstep, vadd, vcopy, vdist, vlerp, vnorm, vscale, vsub, wrapAngle, type V3 } from '../math/vec.ts';
+import { DEG, clamp, fract, lerp, smoothstep, vadd, vcopy, vcross, vdist, vlerp, vnorm, vscale, vsub, wrapAngle, type V3 } from '../math/vec.ts';
 import type { CollisionWorld } from '../physics/collision.ts';
 import type { Prop } from '../characters/props.ts';
-import { actionDef, ActionPlayer, FIDGETS, GESTURES, IDLE_POSES, type ActionDef, type ChannelFrame, type Limb } from './actions.ts';
+import { actionDef, ActionPlayer, ARMED_FIDGETS, FIDGETS, GESTURES, IDLE_POSES, type ActionDef, type ChannelFrame, type Limb } from './actions.ts';
 import { Reactions, type HitInfo, type Zone } from './reactions.ts';
 import { H } from './rig.ts';
 import {
@@ -471,6 +471,50 @@ export class HumanoidAnimator {
     this.downState = true;
   }
 
+  /**
+   * Thrown off balance by a push (a blast close by, a shove): `dir` is the push (world),
+   * `strength` about 0.5 (a jolt) .. 2 (thrown). The body is pushed its way and the feet stumble
+   * after it, arms out for balance, the trunk rocking with it; a strong push fells it.
+   */
+  stumble(dir: Readonly<V3>, strength: number): void {
+    if (this.stance !== 'stand' || this.stanceP < 1 || this.downState) return;
+    const l = Math.hypot(dir[0], dir[1]);
+    if (l < 1e-6) return;
+    const s = clamp(strength, 0, 3);
+    const R = this.reactions;
+    R.knockback[0] += (dir[0] / l) * (0.8 + 1.4 * s);
+    R.knockback[1] += (dir[1] / l) * (0.8 + 1.4 * s);
+    // the trunk rocks with the push, the head lags (model space)
+    const m = qrotate(qconj(this.rootRot()), [dir[0] / l, dir[1] / l, 0]);
+    const axis = vnorm(vcross([0, 0, 1], m), [0, 0, 0], [1, 0, 0]);
+    R.springs.get(H.spine)?.kick(axis, 2.2 * s);
+    R.springs.get(H.chest)?.kick(axis, 2.6 * s);
+    R.springs.get(H.head)?.kick(axis, -1.5 * s);
+    R.sinceHit = 0;
+    if (s >= 1.8) this.knockDown(m[1] < 0.3);
+    else this.play('stumble');
+  }
+
+  /**
+   * A foot caught while walking or running: the body pitches forward, the arms go out and quick
+   * steps catch it; with `fall` it goes down on its front.
+   */
+  trip(fall = false): void {
+    if (this.stance !== 'stand' || this.stanceP < 1 || this.downState) return;
+    const f = qrotate(this.rootRot(), [0, 1, 0]);
+    const push = 0.6 + 0.35 * Math.hypot(this.velocity[0], this.velocity[1]);
+    this.reactions.knockback[0] += f[0] * push;
+    this.reactions.knockback[1] += f[1] * push;
+    this.play('trip');
+    if (fall) this.fallIn = 0.3;
+  }
+
+  /** Flinching from something close by (a round, a blast): head down, shoulders up. */
+  flinch(): void {
+    if (this.stance !== 'stand' || this.stanceP < 1 || this.downState || this.busy) return;
+    this.play('flinch');
+  }
+
   /** Knockback displacement for this frame (world, m): hosts move the root by it. */
   takeKnockback(dt: number): V3 {
     return this.reactions.takeKnockback(dt);
@@ -615,6 +659,10 @@ export class HumanoidAnimator {
     // ---- reactions, stance, actions --------------------------------------------------------
     const R = this.reactions;
     R.update(dt);
+    if (this.fallIn >= 0) {
+      this.fallIn -= dt;
+      if (this.fallIn < 0) this.knockDown(false);
+    }
     this.updateStance(dt);
     this.updateActions(dt);
     const chP = this.poseAct && !this.poseAct.done ? this.chPose : null;
@@ -1198,9 +1246,11 @@ export class HumanoidAnimator {
     const speed = Math.hypot(this.velocity[0], this.velocity[1]);
     const free = this.stance === 'stand' && this.stanceP >= 1 && inp.mood === 'normal';
     const armed = this.weapon !== null && this.weapon.kind !== 'knife';
+    // (a pause with the weapon down: standing still, not aiming)
+    this.armedIdle = armed && free && speed < 0.15 && inp.carry !== 'aim' && inp.carry !== 'hip' ? this.armedIdle + dt : 0;
     // the posture layer: guard, talk, idle poses
     let want: string | null = null;
-    if (inp.guard && free) want = 'guard';
+    if (inp.guard && free) want = this.weapon?.kind === 'knife' ? 'knifeGuard' : 'guard';
     else if (inp.talk === 'speak' && free && !armed) want = 'talk';
     else if (inp.talk === 'listen' && free && !armed) want = this.idlePoseFor(true);
     else if (inp.idle && free && !armed && speed < 0.15 && !inp.aimAt) {
@@ -1238,6 +1288,13 @@ export class HumanoidAnimator {
           this.nextFidget = 5 + this.rng.next() * 10 * (1.3 - this.style.fidget);
           if (this.rng.chance(0.7)) this.play(this.rng.pick([...FIDGETS]));
         }
+      } else if (inp.idle && armed && this.armedIdle > 2.5) {
+        // an armed body in a pause: the helmet, the brow, the shoulders, the weapon, a look round
+        this.nextFidget -= dt;
+        if (this.nextFidget <= 0) {
+          this.nextFidget = 6 + this.rng.next() * 9 * (1.3 - this.style.fidget);
+          if (this.rng.chance(0.75)) this.play(this.rng.pick([...ARMED_FIDGETS]));
+        }
       }
     }
     // advance and sample
@@ -1255,6 +1312,9 @@ export class HumanoidAnimator {
   }
 
   private idleChoice: string | null = null;
+  private armedIdle = 0;
+  /** Seconds until a trip turns into a fall (negative: none pending). */
+  private fallIn = -1;
   private readonly pendingEvents: { e: { name: string; limb?: Limb }; p: ActionPlayer }[] = [];
 
   /** An idle posture that suits the character (stable per character). */

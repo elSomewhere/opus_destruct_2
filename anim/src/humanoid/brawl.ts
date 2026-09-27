@@ -34,9 +34,9 @@ export interface LandedBlow {
   result: WoundResult & { zone: string };
 }
 
-const FORCE: Record<string, number> = { jab: 0.7, cross: 1.2, hook: 1.45, uppercut: 1.55, frontKick: 1.9, roundhouse: 2.3, stab: 1.1, slash: 0.9, riflePush: 1.3 };
+const FORCE: Record<string, number> = { jab: 0.7, cross: 1.2, hook: 1.45, uppercut: 1.55, frontKick: 1.9, roundhouse: 2.3, stab: 1.1, slash: 0.9, gutStab: 1.2, forehandSlash: 0.95, riflePush: 1.3 };
 /** Where each strike aims: bone. */
-const AIM: Record<string, number> = { jab: H.head, cross: H.head, hook: H.head, uppercut: H.head, frontKick: H.spine, roundhouse: H.chest, stab: H.spine, slash: H.chest, riflePush: H.chest };
+const AIM: Record<string, number> = { jab: H.head, cross: H.head, hook: H.head, uppercut: H.head, frontKick: H.spine, roundhouse: H.chest, stab: H.spine, slash: H.chest, gutStab: H.spine, forehandSlash: H.chest, riflePush: H.chest };
 
 export class Brawler {
   readonly self: Character;
@@ -149,7 +149,7 @@ export class Brawler {
     for (const e of events) {
       if (e.name !== 'strike') continue;
       const base = e.action.replace('.m', '');
-      const kind = base === 'stab' || base === 'slash' ? 'blade' : 'blunt';
+      const kind = base === 'stab' || base === 'slash' || base === 'gutStab' || base === 'forehandSlash' ? 'blade' : 'blunt';
       // where the limb is against the opponent's body
       const bone = o.animator.nearestBone(e.pos);
       const bp = o.pose.p[bone]!;
