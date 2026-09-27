@@ -136,7 +136,7 @@ void body_refresh(Body& b, f64 h, int max_points) {
   // 12 + 1.5 count^(2/3), in integers (no cube root: the same on every platform)
   const i64 n2 = static_cast<i64>(std::max(1, S.count)) * static_cast<i64>(std::max(1, S.count));
   i64 m23 = 0;  // floor(count^(2/3)): the largest m with m^3 <= count^2
-  for (i64 lo = 0, hi = 1 << 22; lo <= hi;) {
+  for (i64 lo = 0, hi = 1 << 20; lo <= hi;) {  // (2^60 fits; beyond, the cap is max_points anyway)
     const i64 mid = (lo + hi) / 2;
     if (mid * mid * mid <= n2) {
       m23 = mid;

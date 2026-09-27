@@ -48,3 +48,20 @@ if(SVX_WASM)
     RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/web/src/wasm
     SUFFIX ".js")
 endif()
+
+# The physics core alone for JavaScript hosts (docs/CORE.md): the C API of svx/svx_core.h.
+if(SVX_WASM)
+  add_executable(svx_core_web wasm_core/module.cpp)
+  target_link_libraries(svx_core_web PRIVATE svx_core)
+  set(_svxc_exports
+    _svxc_apply_impulse _svxc_bake _svxc_blast _svxc_carve _svxc_chunk_voxels _svxc_collide _svxc_create _svxc_destroy _svxc_enable_streaming _svxc_event_at _svxc_get _svxc_get_stats _svxc_load_box _svxc_load_delta _svxc_material_find _svxc_material_get _svxc_material_set _svxc_materials_reset _svxc_modified _svxc_piece_at _svxc_piece_voxels _svxc_poll_changed_chunks _svxc_poll_events _svxc_poll_evicted_chunks _svxc_poll_pieces _svxc_raycast _svxc_remove_piece _svxc_save_delta _svxc_session_hash _svxc_set _svxc_set_focus _svxc_set_threads _svxc_set_voxels _svxc_state_hash _svxc_tick
+    _malloc _free)
+  string(REPLACE ";" "," _svxc_exports_csv "${_svxc_exports}")
+  target_link_options(svx_core_web PRIVATE
+    -sMODULARIZE=1 -sEXPORT_ES6=1 -sEXPORT_NAME=createSvxCore -sENVIRONMENT=web,worker,node
+    -sALLOW_MEMORY_GROWTH=1 -sINITIAL_MEMORY=128MB -sMAXIMUM_MEMORY=4GB -sSTACK_SIZE=8MB
+    -sFILESYSTEM=0 --no-entry -sDYNAMIC_EXECUTION=0 -sALLOW_TABLE_GROWTH=1
+    "-sEXPORTED_FUNCTIONS=[${_svxc_exports_csv}]"
+    "-sEXPORTED_RUNTIME_METHODS=[HEAPU8,HEAP32,HEAPF64,addFunction,UTF8ToString,stringToUTF8,lengthBytesUTF8]")
+  set_target_properties(svx_core_web PROPERTIES SUFFIX ".js")
+endif()

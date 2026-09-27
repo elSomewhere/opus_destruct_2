@@ -4,7 +4,8 @@ add_executable(svx_core_tests
   core/test_stress.cpp
   core/test_fragments.cpp
   core/test_rigid.cpp
-  core/test_world.cpp)
+  core/test_world.cpp
+  core/test_capi.cpp)
 target_include_directories(svx_core_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
 target_link_libraries(svx_core_tests PRIVATE svx_core)
 svx_wasm_exe_options(svx_core_tests)
