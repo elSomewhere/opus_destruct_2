@@ -27,7 +27,8 @@ struct SNode {
 
 struct SBond {
   i32 a = -1, b = -1;     // nodes; b < 0: a fixed support (anchored voxels, a frozen frontier)
-  bool broken = false;
+  bool broken = false;    // severed (the topology: connectivity reads this)
+  bool in_k = false;      // (its stiffness is in the assembled K; kept by StressProblem)
   MaterialId ma = MaterialId::Concrete, mb = MaterialId::Concrete;
   // Local frame: n from a towards b (supports: out of a into the support), t1, t2 in the section
   // plane. The section is the shared voxel faces projected onto the plane normal to n.
@@ -80,7 +81,9 @@ class StressProblem {
   // Incremental changes that keep the preconditioner (a stale one still converges; callers
   // rebuild it with assemble() when solves slow down or much has changed):
   //   remove_bond: the bond breaks, its stiffness leaves K in place;
-  //   retire_nodes: the nodes leave (with all their bonds), their rows become identities;
+  //   retire_nodes: the nodes leave (with all their bonds), their rows become identities (a
+  //   caller may restore `broken = false` on bonds between retired nodes to keep their topology:
+  //   they stay out of K);
   //   reassemble: K again from nodes and bonds (nodes appended since the last assemble() are
   //   preconditioned by their diagonal blocks).
   void remove_bond(i32 b);

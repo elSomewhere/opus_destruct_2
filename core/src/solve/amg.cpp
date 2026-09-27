@@ -239,7 +239,12 @@ bool Amg::build(const Bsr6& A, const std::vector<V3>& pos, const AmgOptions& opt
   factor_coarsest();
   make_fast();
   for (size_t l = 0; l < lv_.size(); ++l) {
-    const i64 per = lv_[l].A.blocks() * (l + 1 < lv_.size() ? (4 * opt_.sweeps + 2) : 1);
+    // (the coarsest: a dense solve of chol_n_ nodes (36 flops a block), or 8 smoothing sweeps
+    // when coarsening stalled)
+    const bool last = l + 1 == lv_.size();
+    const i64 coarsest = chol_n_ > 0 ? std::max<i64>(lv_[l].A.blocks(), 2 * static_cast<i64>(chol_n_) * chol_n_)
+                                     : 8 * 2 * lv_[l].A.blocks();
+    const i64 per = last ? coarsest : lv_[l].A.blocks() * (4 * opt_.sweeps + 2);
     i64 g = 1;
     for (size_t k = 0; k < l; ++k) g *= opt_.gamma;
     work_ += per * g;
@@ -259,9 +264,11 @@ bool Amg::coarsen(size_t l) {
   };
   std::vector<i32> agg(size_t(n), -1);
   i32 na = 0;
-  // pass 1: roots whose strong neighbourhood is free
+  // pass 1: roots whose strong neighbourhood is free (rows without couplings - retired nodes -
+  // are grouped in pass 3: as singleton roots they would stall the coarsening)
+  auto isolated = [&](i32 i) { return A.rowptr[size_t(i) + 1] - A.rowptr[size_t(i)] <= 1; };
   for (i32 i = 0; i < n; ++i) {
-    if (agg[size_t(i)] >= 0) continue;
+    if (agg[size_t(i)] >= 0 || isolated(i)) continue;
     bool free = true;
     for (i32 k = A.rowptr[size_t(i)]; k < A.rowptr[size_t(i) + 1] && free; ++k)
       if (strong(i, k) && agg[size_t(A.col[size_t(k)])] >= 0) free = false;
@@ -294,8 +301,7 @@ bool Amg::coarsen(size_t l) {
     i32 open = -1, fill = 0;
     for (i32 i = 0; i < n; ++i) {
       if (agg[size_t(i)] >= 0) continue;
-      const bool isolated = A.rowptr[size_t(i) + 1] - A.rowptr[size_t(i)] <= 1;
-      if (!isolated) {
+      if (!isolated(i)) {
         agg[size_t(i)] = na++;
         continue;
       }

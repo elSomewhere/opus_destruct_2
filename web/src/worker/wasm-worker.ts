@@ -470,12 +470,15 @@ function playThreads(): number {
   return Math.max(1, Math.min(8, loadThreads(), config.threads - 2));
 }
 
-function finishLoad(texturesSent: boolean, label: string): void {
+async function finishLoad(texturesSent: boolean, label: string): Promise<void> {
   const m = mod as SvxModule;
   postToMain({ type: 'progress', stage: `baking ${label}`, done: 1, total: 3 });
   const t0 = performance.now();
   m._svx_set_threads(loadThreads());
   const baked = m._svx_bake(eng) === 1;
+  // the saved changes go onto the designed world (a delta carries its chunks' design classes;
+  // baked after it, damaged members would be designed again as if built that way)
+  await restoreDelta();
   // gameplay: structure solves and pieces
   m._svx_set_threads(playThreads());
   console.info(`[wasm] ${label}: bake ${baked ? 'done' : 'skipped (world too large)'} in ${(performance.now() - t0).toFixed(0)} ms`);
@@ -502,8 +505,7 @@ async function loadProcedural(kind: ProceduralKind, seed: number): Promise<void>
   postToMain({ type: 'progress', stage: `generating ${kind}`, done: 0, total: 3 });
   withString(kind, (p) => m._svx_load_procedural(eng, p, seed >>> 0));
   worldId = `proc-${kind}-${seed >>> 0}`;
-  await restoreDelta();
-  finishLoad(false, kind);
+  await finishLoad(false, kind);
 }
 
 async function loadWad(buffer: ArrayBuffer, map: string, options: WadOptions): Promise<void> {
@@ -534,8 +536,7 @@ async function loadWad(buffer: ArrayBuffer, map: string, options: WadOptions): P
   let fp = bytes.length >>> 0;
   for (let i = 0; i < bytes.length; i += 4099) fp = (Math.imul(fp, 31) + (bytes[i] ?? 0)) >>> 0;
   worldId = `wad-${map}-${fp.toString(16)}`;
-  await restoreDelta();
-  finishLoad(tex, map);
+  await finishLoad(tex, map);
 }
 
 async function handle(cmd: EngineCommand): Promise<void> {

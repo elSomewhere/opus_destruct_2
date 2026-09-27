@@ -9,6 +9,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include "svx/base/diag.hpp"
 #include "svx/base/parallel.hpp"
 #include "world_internal.hpp"
 
@@ -115,7 +116,6 @@ World::Structure* World::structure(i64 id) {
 }
 
 FragChunk& World::frag_chunk(const IVec3& cc) {
-  static FragChunk empty;
   const u64 key = key3(cc[0], cc[1], cc[2]);
   const Chunk* ch = grid_.chunk(cc);
   if (!ch) {
@@ -125,8 +125,8 @@ FragChunk& World::frag_chunk(const IVec3& cc) {
       owner_.erase(key);
       frags_.erase(it);
     }
-    empty = FragChunk{};
-    return empty;
+    empty_frags_ = FragChunk{};
+    return empty_frags_;
   }
   auto it = frags_.find(key);
   if (it != frags_.end() && it->second.vox_version == ch->vox_version) return it->second;
@@ -258,15 +258,19 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
           const bool inside = l[a] + sg >= 0 && l[a] + sg < kChunk;
           const int qi2 = li + sg * kStride[a];
           const Vox vq = inside ? (ch->uniform ? ch->value : ch->v[size_t(qi2)]) : grid_.get(q);
-          if (!vox_solid(vq)) continue;
-          const bool face_broken = sg > 0 ? ((brk_p >> a) & 1) != 0 : grid_.broken(q, a);
-          if (face_broken) continue;
-          const IVec3 lower = sg > 0 ? p : q;
+          // a neighbour in a chunk not resident (not generated yet, or evicted) holds it: the
+          // world there is unknown, and is not air
           const bool unloaded = !inside && !chunk_resident(chunk_of(q));
+          if (!unloaded) {
+            if (!vox_solid(vq)) continue;
+            const bool face_broken = sg > 0 ? ((brk_p >> a) & 1) != 0 : grid_.broken(q, a);
+            if (face_broken) continue;
+          }
+          const IVec3 lower = sg > 0 ? p : q;
           if (unloaded) touched_unloaded = true;
           if (vox_anchored(vq) || unloaded) {
             SecAcc& A = acc_for(nF, -1, a, sg);
-            A.mb = vox_mat(vq);
+            A.mb = unloaded ? vox_mat(ch->uniform ? ch->value : ch->v[size_t(li)]) : vox_mat(vq);
             A.add(lower, a);
             any_support = true;
             continue;
@@ -328,9 +332,11 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
   std::sort(superseded.begin(), superseded.end());
   superseded.erase(std::unique(superseded.begin(), superseded.end()), superseded.end());
   for (i64 id : superseded)
-    if (Structure* o = structure(id)) o->dead = true;
-  structures_.erase(std::remove_if(structures_.begin(), structures_.end(), [](const std::unique_ptr<Structure>& x) { return x->dead; }),
-                    structures_.end());
+    if (Structure* o = structure(id)) {
+      // (the fragments the new structure did not take lose their owner and are extracted again)
+      reseed(*o);
+      drop_structure(id);
+    }
   structures_.push_back(std::move(s));  // (ids ascend: the list stays sorted)
   Structure* out = structures_.back().get();
   if (detach_free && touches_undesigned(*out)) {
@@ -340,7 +346,7 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
     // and extracted again with their new strengths. (A structure damaged before it was designed
     // is left as it is.)
     const i64 id = out->id;
-    static const bool dbgd = std::getenv("SVX_DEBUG_DESIGN") != nullptr;
+    static const bool dbgd = diag("SVX_DEBUG_DESIGN");
     if (dbgd)
       std::printf("  [first touch] s%lld: %zu nodes, unloaded %d, ensuring %d, pristine %d\n", static_cast<long long>(id), out->P.nodes.size(),
                   touched_unloaded ? 1 : 0, ensuring_, pristine(*out) ? 1 : 0);
@@ -365,7 +371,7 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
       design_structure(*out);
       drop_structure(id);
       Structure* again = extract(seed, max_nodes, max_radius, detach_free);
-      static const bool dbg = std::getenv("SVX_DEBUG_DESIGN") != nullptr;
+      static const bool dbg = diag("SVX_DEBUG_DESIGN");
       if (dbg && again) design_structure(*again, true);
       return again;
     }
@@ -506,7 +512,7 @@ void World::drop_structure(i64 id) {
 }
 
 void World::refresh_structures() {
-  static const bool prof = std::getenv("SVX_PROFILE") != nullptr;
+  static const bool prof = diag("SVX_PROFILE");
   for (int round = 0; round < 3; ++round) {
     std::vector<i64> stale;
     for (auto& s : structures_)
@@ -517,8 +523,10 @@ void World::refresh_structures() {
       const auto tpt = Clock::now();
       const size_t nch = s->changed.size();
       if (patch_structure(*s)) {
+        s = structure(id);  // (the patch may have detached all of it, or enough to drop it)
+        if (!s) continue;
         if (touches_undesigned(*s)) {
-          static const bool dbgd = std::getenv("SVX_DEBUG_DESIGN") != nullptr;
+          static const bool dbgd = diag("SVX_DEBUG_DESIGN");
           if (dbgd) std::printf("  [patch touch] s%lld: pristine %d\n", static_cast<long long>(id), pristine(*s) ? 1 : 0);
           // (new chunks streamed in under it: designed with them if still intact, else as is)
           if (pristine(*s)) {
@@ -577,7 +585,7 @@ std::vector<f64> World::load_vector(const Structure& s) const {
 }
 
 void World::step_structures() {
-  static const bool prof = std::getenv("SVX_PROFILE") != nullptr;
+  static const bool prof = diag("SVX_PROFILE");
   i64 budget = cfg_.stress_work;
   st_.solving = 0;
   st_.solve_nodes = 0;
@@ -592,14 +600,14 @@ void World::step_structures() {
       ++s.idle;
       continue;
     }
-    if (prof && std::getenv("SVX_PROFILE_ALL"))
+    if (prof && diag("SVX_PROFILE_ALL"))
       std::printf("  [prof] step s%lld: assembled %d running %d budget %lld\n", static_cast<long long>(s.id), s.P.assembled() ? 1 : 0,
                   s.P.running() ? 1 : 0, static_cast<long long>(budget));
     s.idle = 0;
     ++st_.solving;
     st_.solve_nodes += static_cast<i64>(s.P.nodes.size());
     if (budget <= 0) continue;
-    static const bool prof = std::getenv("SVX_PROFILE") != nullptr;
+    static const bool prof = diag("SVX_PROFILE");
     const auto tp = Clock::now();
     if (!s.P.assembled()) {
       StressOptions so;
@@ -621,7 +629,7 @@ void World::step_structures() {
     const int maxit = static_cast<int>(std::clamp<i64>(budget / per, 1, 400));
     const auto tq = Clock::now();
     const PcgResult r = s.P.iterate(maxit, cfg_.stress_rtol);
-    if (prof && (r.converged || s.run_iters % 20 == 0 || std::getenv("SVX_PROFILE_ALL")))
+    if (prof && (r.converged || s.run_iters % 20 == 0 || diag("SVX_PROFILE_ALL")))
       std::printf("  [prof] solve s%lld: %d its (run %d, maxit %d, rel %.2e%s, appended %d) %.1f ms (%.2f ms/it, work/it %lld)\n",
                   static_cast<long long>(s.id), r.iters, s.run_iters + r.iters, maxit, r.rel_res, r.converged ? " conv" : "",
                   s.P.appended(), ms_since(tq), ms_since(tq) / std::max(1, r.iters), static_cast<long long>(per));
@@ -667,6 +675,27 @@ void World::step_structures() {
     if (!loaded) drop.push_back(s->id);
   }
   for (i64 id : drop) drop_structure(id);
+  prune_caches();
+}
+
+void World::prune_caches() {
+  // The reference loads of judged bonds and the warm starts of fragments outlive their
+  // structures (a structure extracted again starts from them), but not forever: beyond a bound
+  // only the registered structures' entries are kept (a long session in a streamed world).
+  if (judged_.size() > kMaxJudged) {
+    std::unordered_map<u64, BondLoad> keep;
+    for (const auto& s : structures_)
+      for (u64 b : s->bid)
+        if (const auto it = judged_.find(b); it != judged_.end()) keep.emplace(b, it->second);
+    judged_.swap(keep);
+  }
+  if (warm_u_.size() > kMaxWarm) {
+    std::unordered_map<u64, std::array<f32, 6>> keep;
+    for (const auto& s : structures_)
+      for (u64 id : s->ident)
+        if (const auto it = warm_u_.find(id); it != warm_u_.end()) keep.emplace(id, it->second);
+    warm_u_.swap(keep);
+  }
 }
 
 void World::judge(Structure& s) {
@@ -674,7 +703,7 @@ void World::judge(Structure& s) {
   std::vector<std::pair<f64, i32>> over;
   f64 maxphi = 0.0;
   const i32 nb = static_cast<i32>(s.P.bonds.size());
-  static const bool dbgj = std::getenv("SVX_DEBUG_JUDGE") != nullptr;
+  static const bool dbgj = diag("SVX_DEBUG_JUDGE");
   for (i32 b = 0; b < nb; ++b) {
     const SBond& B = s.P.bonds[size_t(b)];
     if (B.broken) continue;
@@ -721,7 +750,7 @@ void World::judge(Structure& s) {
   }
   std::sort(over.begin(), over.end(), [](const auto& x, const auto& y) { return x.first > y.first || (x.first == y.first && x.second < y.second); });
   const f64 thr = std::max(1.0, cfg_.break_band * over.front().first);
-  static const bool dbg = std::getenv("SVX_DEBUG_JUDGE") != nullptr;
+  static const bool dbg = diag("SVX_DEBUG_JUDGE");
   if (dbg) {
     {
       f64 W = 0.0, E = 0.0;
@@ -901,21 +930,25 @@ bool World::patch_structure(Structure& s) {
         // (a cluster reaching out of the chunk: its other fragments are released as well)
         auto it = s.nodemap.find(f.chunk);
         if (it != s.nodemap.end() && f.idx < static_cast<i32>(it->second.size())) it->second[size_t(f.idx)] = -1;
-        if (owner_of(f) == s.id) owner_[f.chunk][size_t(f.idx)] = 0;
       }
+      // (a chunk re-fragmented reset its owners; one whose supports changed kept them)
+      if (owner_of(f) == s.id) owner_[f.chunk][size_t(f.idx)] = 0;
       f = FragKey{};
     }
     for (int q = 0; q < 6; ++q) {
       s.ext[6 * size_t(i) + q] = 0.0;
       s.ext_solved[6 * size_t(i) + q] = 0.0;
+      s.acc[6 * size_t(i) + q] = 0.0;
+      s.peak[6 * size_t(i) + q] = 0.0;
       s.u[6 * size_t(i) + q] = 0.0;
       if (s.pending_impact) s.pending[6 * size_t(i) + q] = 0.0;
     }
     s.weight[size_t(i)] = 0.0;
+    s.peak_mag[size_t(i)] = 0.0;
     ++s.gone;
   }
   const i32 n0 = static_cast<i32>(s.P.nodes.size());
-  if (s.gone > std::max<i32>(64, (n0 - s.gone) / 2)) return false;  // (mostly changed: extract again)
+  if (n0 - s.gone <= 0 || s.gone > std::max<i32>(64, (n0 - s.gone) / 2)) return false;  // (mostly changed: extract again)
   // 2. the fragments of those chunks that touch the structure, and what they reach there
   std::vector<FragKey> members;
   std::unordered_map<u64, std::vector<i32>> member_of;  // chunk -> member index per fragment (-1)
@@ -1008,12 +1041,15 @@ bool World::patch_structure(Structure& s) {
           IVec3 q = p;
           q[a] += sg;
           const Vox vq = grid_.get(q);
-          if (!vox_solid(vq)) continue;
-          if (sg > 0 ? grid_.broken(p, a) : grid_.broken(q, a)) continue;
+          const bool unloaded = !chunk_resident(chunk_of(q));  // (holds it, as in extract)
+          if (!unloaded) {
+            if (!vox_solid(vq)) continue;
+            if (sg > 0 ? grid_.broken(p, a) : grid_.broken(q, a)) continue;
+          }
           const IVec3 lower = sg > 0 ? p : q;
-          if (vox_anchored(vq) || !chunk_resident(chunk_of(q))) {
+          if (vox_anchored(vq) || unloaded) {
             SecAcc& A = acc_for(eF, -1, a, sg);
-            A.mb = vox_mat(vq);
+            A.mb = unloaded ? vox_mat(grid_.get(p)) : vox_mat(vq);
             A.add(lower, a);
             continue;
           }
@@ -1112,9 +1148,13 @@ void World::finish_loads(int substeps) {
   const f64 ema = cfg_.dead_load_ema;
   for (auto& s : structures_)
     for (f64& v : s->acc) v /= std::max(1, substeps);
-  // dead loads of sleeping bodies
-  for (const auto& [id, list] : dead_loads_)
-    for (const DeadLoad& d : list) {
+  // dead loads of sleeping bodies (in body order: the sums are the same on every platform)
+  std::vector<i64> sleepers;
+  sleepers.reserve(dead_loads_.size());
+  for (const auto& [id, list] : dead_loads_) sleepers.push_back(id);
+  std::sort(sleepers.begin(), sleepers.end());
+  for (i64 id : sleepers)
+    for (const DeadLoad& d : dead_loads_.at(id)) {
       FragKey f;
       if (!frag_at(d.vox, &f)) continue;
       Structure* s = structure(owner_of(f));
@@ -1204,8 +1244,14 @@ f64 World::probe_utilization(const IVec3& voxel, i32* over) {
 // ---------------------------------------------------------------------------------------------
 // Events
 
+bool World::in_range(const V3& p) const {
+  // finite, and within the range of voxel keys (+-2^20 voxels) with room for an event's radius
+  const f64 lim = grid_.h * static_cast<f64>((1 << 20) - 4096);
+  return finite3(p) && std::abs(p.x) < lim && std::abs(p.y) < lim && std::abs(p.z) < lim;
+}
+
 void World::carve(const V3& pos, f64 radius) {
-  if (!finite3(pos) || !std::isfinite(radius) || radius <= 0.0) return;
+  if (!in_range(pos) || !std::isfinite(radius) || radius <= 0.0) return;
   PendingEvent e;
   e.pos = pos;
   e.radius = std::min(radius, cfg_.max_event_radius);
@@ -1213,7 +1259,7 @@ void World::carve(const V3& pos, f64 radius) {
 }
 
 void World::blast(const V3& pos, f64 radius, f64 energy) {
-  if (!finite3(pos) || !std::isfinite(radius) || radius <= 0.0 || !std::isfinite(energy)) return;
+  if (!in_range(pos) || !std::isfinite(radius) || radius <= 0.0 || !std::isfinite(energy)) return;
   PendingEvent e;
   e.blast = true;
   e.pos = pos;
@@ -1222,7 +1268,14 @@ void World::blast(const V3& pos, f64 radius, f64 energy) {
   queue_.push_back(e);
 }
 
-i32 World::set_voxels(const std::vector<VoxelEdit>& edits, u32 flags) {
+i32 World::set_voxels(const std::vector<VoxelEdit>& in, u32 flags) {
+  // (voxels within the key range, values of registered materials)
+  constexpr i32 kLim = (1 << 20) - 4096;
+  std::vector<VoxelEdit> edits;
+  edits.reserve(in.size());
+  for (const VoxelEdit& e : in)
+    if (std::abs(e.p[0]) < kLim && std::abs(e.p[1]) < kLim && std::abs(e.p[2]) < kLim && (e.v & 0x7F) <= kMaxMaterials)
+      edits.push_back(e);
   if (edits.empty()) return 0;
   IVec3 lo{INT32_MAX, INT32_MAX, INT32_MAX}, hi{INT32_MIN, INT32_MIN, INT32_MIN};
   for (const VoxelEdit& e : edits)
@@ -1268,7 +1321,7 @@ i32 World::set_voxels(const std::vector<VoxelEdit>& edits, u32 flags) {
 
 bool World::apply_impulse(i64 id, const V3& point, const V3& J) {
   Body* b = rigid_.find(id);
-  if (!b || !finite3(point) || !finite3(J)) return false;
+  if (!b || !in_range(point) || !finite3(J)) return false;
   rigid_.wake(*b);
   b->v += J * b->inv_mass;
   b->w += b->inv_inertia_world() * cross(point - b->x, J);
@@ -1391,7 +1444,9 @@ void World::blast_world(const PendingEvent& e) {
     const V3 dir = (fi.com - e.pos) * (1.0 / d);
     const u64 hs = mix64(frag_ident(f.chunk, fi.first) ^ static_cast<u64>(st_.ticks));
     const V3 spin{(unit01(hs) - 0.5) * 12.0, (unit01(mix64(hs ^ 1)) - 0.5) * 12.0, (unit01(mix64(hs ^ 2)) - 0.5) * 12.0};
-    // its faces are torn (the piece keeps none of the world's bonds)
+    // its faces are torn (the piece keeps none of the world's bonds); the structure holding it
+    // is patched (the fragment cache is updated in place: nothing else would tell it)
+    if (owner_of(f)) mark_owners_stale(f.chunk);
     std::vector<IVec3> vox;
     voxels_of(f, vox);
     for (const IVec3& p : vox)
@@ -1478,7 +1533,7 @@ void World::tick() {
   const auto ts = Clock::now();
   step_structures();
   st_.structural_ms = ms_since(ts);
-  static const bool tprof = std::getenv("SVX_PROFILE_TICK") != nullptr;
+  static const bool tprof = diag("SVX_PROFILE_TICK");
   if (tprof && st_.ticks % 30 == 0)
     std::printf("  [tick] events %.2f rigid %.2f loads %.2f structures %.2f ms\n", st_.event_ms, st_.rigid_ms, loads_ms, st_.structural_ms);
   // bodies that left the world (or whose state is no longer finite: never expected, but one

@@ -11,7 +11,8 @@
 // are reduced to a spread manifold. Solver: sequential impulses (projected Gauss-Seidel) with
 // warm starting, Coulomb friction, restitution for fast impacts and split-impulse position
 // correction (the impulses stay true forces: the fracture layer reads them). Islands sleep.
-// No transcendental functions: bit-identical across native and WASM.
+// No transcendental functions (at whole-numbered substeps of 1/120 s): bit-identical across
+// native and WASM.
 #pragma once
 
 #include <functional>
@@ -28,7 +29,7 @@ struct BodyShape {
   IVec3 lo{0, 0, 0};                  // shape-frame voxel coordinates of cell (0, 0, 0)
   std::array<i32, 3> dim{0, 0, 0};
   std::vector<Vox> vox;               // air or a (non-anchored) voxel value
-  std::vector<u16> frag;              // body fragment + 1 (0 none)
+  std::vector<u32> frag;              // body fragment + 1 (0 none) (a large piece has more than 2^16)
   std::vector<u8> brk;                // broken face bits (+x, +y, +z), like the grid
   i32 count = 0;                      // solid voxels
   i32 index(const IVec3& p) const {   // -1 outside
@@ -169,6 +170,8 @@ class RigidWorld {
   std::vector<std::unique_ptr<Body>> bodies;  // ascending id (deterministic order)
 
   // Contacts of the last substep's final solve (read by the fracture layer / structure loads).
+  // Their body indices refer to the body list of that substep: valid until bodies are added or
+  // removed.
   const std::vector<Contact>& contacts() const { return contacts_; }
 
   // One substep of dt. `fracture` (optional) runs after the contact solve and returns 0 (nothing

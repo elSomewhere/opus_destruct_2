@@ -71,7 +71,11 @@ bool VoxelGrid::bond(const IVec3& p, int axis) const {
 }
 
 void VoxelGrid::break_bond(const IVec3& p, int axis) {
-  Chunk& c = chunk_mut(chunk_of(p));
+  // (a voxel in no chunk is air: it has no bond to break, and no chunk is made for it)
+  const auto it = chunks_.find(key3(p[0] >> kChunkBits, p[1] >> kChunkBits, p[2] >> kChunkBits));
+  if (it == chunks_.end()) return;
+  Chunk& c = it->second;
+  if (c.uniform && !vox_solid(c.value)) return;
   if (c.broken.empty()) c.broken.assign(kChunkVox, 0);
   u8& b = c.broken[chunk_index(p)];
   if (b & (1u << axis)) return;
@@ -87,7 +91,9 @@ u8 VoxelGrid::strength(const IVec3& p) const {
 }
 
 void VoxelGrid::set_strength(const IVec3& p, u8 cls) {
-  Chunk& c = chunk_mut(chunk_of(p));
+  const auto it = chunks_.find(key3(p[0] >> kChunkBits, p[1] >> kChunkBits, p[2] >> kChunkBits));
+  if (it == chunks_.end()) return;  // (air: nothing to strengthen)
+  Chunk& c = it->second;
   if (c.strength.empty()) {
     if (cls == 0) return;
     c.strength.assign(kChunkVox, 0);
@@ -212,7 +218,7 @@ struct In {
   size_t p = 0;
   bool ok = true;
   bool need(size_t n) {
-    if (p + n > b.size()) ok = false;
+    if (n > b.size() - p) ok = false;  // (p <= size always; no overflow on 32-bit size_t)
     return ok;
   }
   u8 u8_() { return need(1) ? b[p++] : 0; }
@@ -360,6 +366,11 @@ struct ChunkDelta {
 bool parse_record(const std::vector<u8>& rec, ChunkDelta* cd) {
   In in{rec};
   cd->key = in.u64_();
+  // a canonical chunk key (21 bits per axis), of a chunk within +-2^19 chunks of the origin
+  const IVec3 cc = unkey3(cd->key);
+  if (!in.ok || key3(cc[0], cc[1], cc[2]) != cd->key) return false;
+  for (int a = 0; a < 3; ++a)
+    if (cc[a] < -(1 << 19) || cc[a] >= (1 << 19)) return false;
   if (!in.rle(cd->vox, kChunkVox) || !in.rle(cd->brk, kChunkVox) || !in.rle(cd->str, kChunkVox, true)) return false;
   if (in.p != rec.size()) return false;
   // valid voxel values only: a material id beyond the registry's range is refused
@@ -369,6 +380,11 @@ bool parse_record(const std::vector<u8>& rec, ChunkDelta* cd) {
 }
 
 }  // namespace
+
+bool VoxelGrid::check_record(const std::vector<u8>& rec) {
+  ChunkDelta cd;
+  return parse_record(rec, &cd);
+}
 
 bool VoxelGrid::apply_record(const std::vector<u8>& rec, u64* key_out) {
   ChunkDelta cd;

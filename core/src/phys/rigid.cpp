@@ -1,5 +1,6 @@
 #include "svx/phys/rigid.hpp"
 
+#include "svx/base/diag.hpp"
 #include "svx/base/parallel.hpp"
 
 #include <algorithm>
@@ -131,9 +132,20 @@ void body_refresh(Body& b, f64 h, int max_points) {
   std::vector<const Cand*> keep;
   size_t sharp = 0;
   for (const Cand& cd : uniq) sharp += cd.sharp ? 1 : 0;
-  // small pieces need few samples (their corners), large ones more (flat faces as well)
-  const f64 surf = std::cbrt(static_cast<f64>(std::max(1, S.count)));
-  const size_t cap = static_cast<size_t>(std::max(8, std::min(max_points, static_cast<int>(12.0 + 1.5 * surf * surf))));
+  // small pieces need few samples (their corners), large ones more (flat faces as well): about
+  // 12 + 1.5 count^(2/3), in integers (no cube root: the same on every platform)
+  const i64 n2 = static_cast<i64>(std::max(1, S.count)) * static_cast<i64>(std::max(1, S.count));
+  i64 m23 = 0;  // floor(count^(2/3)): the largest m with m^3 <= count^2
+  for (i64 lo = 0, hi = 1 << 22; lo <= hi;) {
+    const i64 mid = (lo + hi) / 2;
+    if (mid * mid * mid <= n2) {
+      m23 = mid;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  const size_t cap = static_cast<size_t>(std::max<i64>(8, std::min<i64>(max_points, 12 + (3 * m23) / 2)));
   if (uniq.size() <= cap) {
     for (const Cand& cd : uniq) keep.push_back(&cd);
   } else {
@@ -419,7 +431,7 @@ void RigidWorld::collide(const VoxelGrid& g, const std::vector<u8>* only) {
     }
   });
   const auto c3 = CClock::now();
-  static const bool cprof = std::getenv("SVX_PROFILE_COLLIDE") != nullptr;
+  static const bool cprof = diag("SVX_PROFILE_COLLIDE");
   if (cprof) {
     auto ms = [](CClock::time_point a, CClock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
     static f64 acc[3] = {0, 0, 0};
@@ -541,7 +553,7 @@ void RigidWorld::solve(f64 dt) {
       colour[size_t(col)].push_back(gi);
     }
   }
-  static const bool dbg_col = std::getenv("SVX_DEBUG_COLOUR") != nullptr;
+  static const bool dbg_col = diag("SVX_DEBUG_COLOUR");
   if (dbg_col && contacts_.size() > 10000) {
     static int shown = 0;
     if (shown++ % 50 == 0) {
@@ -656,8 +668,16 @@ void RigidWorld::sleep_update(f64 dt) {
   // others); an awake body touching a sleeping one fast enough wakes it (collide). Rates are per
   // 1/120 s (the same at any substep length).
   const f64 k = dt * 120.0;
-  const f64 rest = std::pow(1.0 - par.rest_damping, k);
-  const f64 keep = std::pow(0.8, k);
+  // x^k: by multiplication for whole k (the substeps in use: the same on every platform)
+  auto powk = [&](f64 x) {
+    const f64 kr = std::round(k);
+    if (std::abs(k - kr) > 1e-9 || kr < 1.0 || kr > 64.0) return std::pow(x, k);
+    f64 r = 1.0;
+    for (int i = 0; i < static_cast<int>(kr); ++i) r *= x;
+    return r;
+  };
+  const f64 rest = powk(1.0 - par.rest_damping);
+  const f64 keep = powk(0.8);
   const i32 steps = std::max<i32>(1, static_cast<i32>(std::lround(k)));
   const f64 sleep_speed = sleep_speed_;
   std::vector<u8> touching(bodies.size(), 0);
@@ -683,6 +703,8 @@ void RigidWorld::sleep_update(f64 dt) {
       b.asleep = true;
       b.v = V3{};
       b.w = V3{};
+      b.v_pre = V3{};  // (woken inside a step, it is rolled back to rest, not to an old jitter)
+      b.w_pre = V3{};
     }
   }
 }
@@ -709,13 +731,13 @@ void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<int(f64
   const auto t0 = Clock::now();
   integrate_velocities(dt);
   {
-    static const bool sc = std::getenv("SVX_SERIAL_COLLIDE") != nullptr;
+    static const bool sc = diag("SVX_SERIAL_COLLIDE");
     std::unique_ptr<SerialScope> ss(sc ? new SerialScope() : nullptr);
     collide(g);
   }
   const auto t1 = Clock::now();
   {
-    static const bool sv = std::getenv("SVX_SERIAL_SOLVE") != nullptr;
+    static const bool sv = diag("SVX_SERIAL_SOLVE");
     std::unique_ptr<SerialScope> ss(sv ? new SerialScope() : nullptr);
     solve(dt);
   }

@@ -16,7 +16,8 @@ namespace svx {
 int num_threads();
 void set_num_threads(int n);  // 1 = serial; takes effect for subsequent calls
 
-// Calls f(begin, end) for consecutive chunks of [0, n) of size `grain`.
+// Calls f(begin, end) for consecutive chunks of [0, n) of size `grain`. A parallel_for inside a
+// chunk runs inline (in order). Callers on several threads take turns on the pool.
 void parallel_for(i64 n, i64 grain, const std::function<void(i64, i64)>& f);
 
 // Deterministic sum: per-chunk partial sums combined in chunk order.

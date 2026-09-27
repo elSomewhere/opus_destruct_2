@@ -55,6 +55,8 @@ inline const Material& material(u8 id) { return material(static_cast<MaterialId>
 
 // Registry (setup time only). register_material takes the next free id after the presets and
 // the ones taken; returns false (and leaves *id) when all kMaxMaterials ids are taken.
+// Properties that are not positive and finite are replaced by defaults; fragment sizes are
+// clamped to 1..64 voxels.
 bool register_material(const Material& m, MaterialId* id);
 void set_material(MaterialId id, const Material& m);  // override (e.g. a preset's strengths)
 bool material_registered(MaterialId id);

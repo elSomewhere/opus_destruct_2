@@ -7,6 +7,7 @@
 #include <cstdlib>
 #include <cmath>
 
+#include "svx/base/diag.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/world/world.hpp"
 #include "world_internal.hpp"
@@ -57,7 +58,7 @@ Body* World::make_body_from_world(const std::vector<FragKey>& frags, const V3& v
   for (size_t k = 0; k < vox.size(); ++k) {
     const i32 i = S.index(vox[k]);
     S.vox[size_t(i)] = static_cast<Vox>(grid_.get(vox[k]) & ~kAnchorBit);
-    S.frag[size_t(i)] = static_cast<u16>(vfrag[k] + 1);
+    S.frag[size_t(i)] = static_cast<u32>(vfrag[k] + 1);
     ++S.count;
   }
   for (const IVec3& p : vox) {
@@ -93,7 +94,7 @@ Body* World::make_body_from_world(const std::vector<FragKey>& frags, const V3& v
     if (!current[f.chunk]) continue;
     FragChunk* fc = frag_chunk_if(f.chunk);
     const Chunk* ch = grid_.chunk(unkey3(f.chunk));
-    if (!fc || !ch) continue;
+    if (!fc || !ch || f.idx < 0 || f.idx >= static_cast<i32>(fc->frags.size())) continue;  // (as the first loop)
     for (i32 k = fc->vox_start[size_t(f.idx)]; k < fc->vox_start[size_t(f.idx) + 1]; ++k) {
       const i32 i = fc->vox[size_t(k)];
       if (fc->id[size_t(i)] == static_cast<u16>(f.idx + 1)) fc->id[size_t(i)] = 0;
@@ -131,7 +132,7 @@ void World::rebuild_body_graph(Body& b) {
   const i32 cells = static_cast<i32>(S.vox.size());
   for (i32 i = 0; i < cells; ++i) {
     if (!vox_solid(S.vox[size_t(i)])) continue;
-    const i32 fp = S.frag[size_t(i)] - 1;
+    const i32 fp = static_cast<i32>(S.frag[size_t(i)]) - 1;
     if (fp < 0) continue;
     const IVec3 p = S.voxel(i);
     for (int a = 0; a < 3; ++a) {
@@ -140,7 +141,7 @@ void World::rebuild_body_graph(Body& b) {
       q[a] += 1;
       const i32 j = S.index(q);
       if (j < 0 || !vox_solid(S.vox[size_t(j)])) continue;
-      const i32 fq = S.frag[size_t(j)] - 1;
+      const i32 fq = static_cast<i32>(S.frag[size_t(j)]) - 1;
       if (fq == fp || fq < 0) continue;
       const u64 key = acc_key(fp, fq, a, 1);
       auto it = index.find(key);
@@ -278,7 +279,7 @@ void World::refragment_body(Body& b) {
   S.count = 0;
   for (i32 i = 0; i < cells; ++i) {
     if (!vox_solid(S.vox[size_t(i)]) || nl[size_t(i)] >= 0) continue;
-    const u16 lab = S.frag[size_t(i)];
+    const u32 lab = S.frag[size_t(i)];
     const i32 f = static_cast<i32>(nf.size());
     BodyFrag bf;
     bf.mat = vox_mat(S.vox[size_t(i)]);
@@ -314,7 +315,7 @@ void World::refragment_body(Body& b) {
     nf[f].com = mp.com;
     nf[f].inertia = mp.inertia;
   }
-  for (i32 i = 0; i < cells; ++i) S.frag[size_t(i)] = nl[size_t(i)] >= 0 ? static_cast<u16>(nl[size_t(i)] + 1) : 0;
+  for (i32 i = 0; i < cells; ++i) S.frag[size_t(i)] = nl[size_t(i)] >= 0 ? static_cast<u32>(nl[size_t(i)] + 1) : 0;
   b.frags.swap(nf);
   b.graph_dirty = true;
 }
@@ -396,7 +397,7 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
   // cracks from the energy the collision dissipates; a resting load (gravity) is not limited.
   const bool impact = energy >= 0.0;
   const i32 rounds = std::max(1, cfg_.impact_rounds);
-  static const bool dbg = std::getenv("SVX_DEBUG_BODY") != nullptr;
+  static const bool dbg = diag("SVX_DEBUG_BODY");
   f64 spent = 0.0;
   std::vector<std::pair<f64, i32>> over;
   std::vector<FailMode> modes(G.P.bonds.size(), FailMode::None);
@@ -595,7 +596,7 @@ bool World::pulverize(Body& b, const std::vector<i32>& crushed) {
         if (s2) p[G.face_axis[size_t(e)]] += 1;
         const i32 i = S.index(p);
         if (i < 0) continue;
-        const i32 f = S.frag[size_t(i)] - 1;
+        const i32 f = static_cast<i32>(S.frag[size_t(i)]) - 1;
         if (f >= 0 && f < static_cast<i32>(kill.size()) && G.frag_node[size_t(f)] == side) kill[size_t(f)] = 1;
       }
     }
@@ -606,7 +607,7 @@ bool World::pulverize(Body& b, const std::vector<i32>& crushed) {
   const f64 h = grid_.h;
   for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
     if (!vox_solid(S.vox[size_t(i)])) continue;
-    const i32 f = S.frag[size_t(i)] - 1;
+    const i32 f = static_cast<i32>(S.frag[size_t(i)]) - 1;
     if (f < 0 || !kill[size_t(f)]) continue;
     const IVec3 p = S.voxel(i);
     at[size_t(f)] += V3{h * p[0], h * p[1], h * p[2]};
@@ -644,7 +645,7 @@ std::unique_ptr<Body> World::sub_body(const Body& parent, const std::vector<i32>
   // fragments of the child, in parent order
   std::vector<i32> remap(parent.frags.size(), -1);
   for (i32 i : voxels) {
-    const i32 fp = P.frag[size_t(i)] - 1;
+    const i32 fp = static_cast<i32>(P.frag[size_t(i)]) - 1;
     if (fp >= 0 && remap[size_t(fp)] < 0) remap[size_t(fp)] = 0;
   }
   for (size_t k = 0; k < parent.frags.size(); ++k)
@@ -664,8 +665,8 @@ std::unique_ptr<Body> World::sub_body(const Body& parent, const std::vector<i32>
     const IVec3 p = P.voxel(i);
     const i32 j = S.index(p);
     S.vox[size_t(j)] = P.vox[size_t(i)];
-    const i32 fp = P.frag[size_t(i)] - 1;
-    S.frag[size_t(j)] = fp >= 0 ? static_cast<u16>(remap[size_t(fp)] + 1) : 0;
+    const i32 fp = static_cast<i32>(P.frag[size_t(i)]) - 1;
+    S.frag[size_t(j)] = fp >= 0 ? static_cast<u32>(remap[size_t(fp)] + 1) : 0;
     S.brk[size_t(j)] = P.brk[size_t(i)];
     ++S.count;
   }
@@ -703,13 +704,16 @@ bool World::split_body(Body& b, bool use_pre, bool force_replace) {
   const BodyShape& S = b.shape;
   for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
     if (!vox_solid(S.vox[size_t(i)])) continue;
-    const i32 f = S.frag[size_t(i)] - 1;
+    const i32 f = static_cast<i32>(S.frag[size_t(i)]) - 1;
     const i32 c = f >= 0 ? frag_comp[size_t(f)] : -1;
     if (c >= 0) parts[size_t(c)].push_back(i);
   }
   // A part of some size came apart in this contact step: the step is solved again without the
   // piece (its parts keep the velocity they had before it). Chips only: they take the velocity the
   // step left the piece with, and the step stands.
+  // (One part only - the piece reshaped, e.g. crushed chips turned to dust - is no separation:
+  // it keeps the step's velocity. Given the pre-solve one, it would drive on into what it hit
+  // for another substep and grind itself down.)
   bool separated = false;
   if (use_pre && nc > 1) {
     std::vector<size_t> sizes;
@@ -717,8 +721,8 @@ bool World::split_body(Body& b, bool use_pre, bool force_replace) {
     std::sort(sizes.rbegin(), sizes.rend());
     separated = sizes.size() > 1 && static_cast<i32>(sizes[1]) >= cfg_.rollback_part_voxels;
     if (separated) rollback_ = true;
-    else use_pre = false;
   }
+  use_pre = use_pre && separated;
   for (auto& part : parts) {
     if (part.empty()) continue;
     if (nc > 1 && static_cast<i32>(part.size()) < cfg_.min_body_voxels) {
@@ -834,12 +838,12 @@ int World::fracture_hook(f64 dt) {
     if (norm2(J) <= 0.0) continue;
     Body& A = *rigid_.bodies[size_t(c.a)];
     const V3 Fa = J * (resting ? 1.0 / dt : kf[size_t(c.a)]);
-    per[size_t(c.a)].push_back({A.shape.frag[size_t(c.vox_a)] - 1, Fa, c.p});
+    per[size_t(c.a)].push_back({static_cast<i32>(A.shape.frag[size_t(c.vox_a)]) - 1, Fa, c.p});
     fsum[size_t(c.a)] += norm(Fa);
     if (c.b >= 0) {
       Body& B = *rigid_.bodies[size_t(c.b)];
       const V3 Fb = J * -(resting ? 1.0 / dt : kf[size_t(c.b)]);
-      per[size_t(c.b)].push_back({B.shape.frag[size_t(c.vox_b)] - 1, Fb, c.p});
+      per[size_t(c.b)].push_back({static_cast<i32>(B.shape.frag[size_t(c.vox_b)]) - 1, Fb, c.p});
       fsum[size_t(c.b)] += norm(Fb);
     }
   }
@@ -952,7 +956,7 @@ int World::fracture_hook(f64 dt) {
   const auto f3 = FClock::now();
   flush_body_changes();
   const int result = rollback_ ? 2 : (changed ? 1 : 0);
-  static const bool fprof = std::getenv("SVX_PROFILE_FRACTURE") != nullptr;
+  static const bool fprof = diag("SVX_PROFILE_FRACTURE");
   if (fprof) {
     auto ms = [](FClock::time_point a, FClock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
     static f64 acc[4] = {0, 0, 0, 0}, reb = 0.0, str = 0.0, reb_big = 0.0, str_big = 0.0;
@@ -1083,10 +1087,13 @@ void World::remove_bodies(std::vector<i64> ids, PieceEnd end) {
   if (ids.empty()) return;
   std::sort(ids.begin(), ids.end());
   ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+  const f64 h = grid_.h;
   for (i64 id : ids) {
     const Body* b = rigid_.find(id);
     if (!b) continue;
     dead_loads_.erase(id);
+    // what rested on it falls (a split piece's parts take its place)
+    if (end != PieceEnd::Split) rigid_.wake_box(b->box_lo - V3{2 * h, 2 * h, 2 * h}, b->box_hi + V3{2 * h, 2 * h, 2 * h});
     if (!b->announced) continue;  // (made and gone within one tick: never reported)
     WorldEvent ev;
     ev.kind = WorldEvent::Kind::PieceRemoved;

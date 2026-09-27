@@ -334,6 +334,9 @@ class World {
   void blast_world(const PendingEvent& e);
   void seed_near(const std::vector<IVec3>& removed);
   void support_changed(const IVec3& p, std::vector<u64>* chunks);  // (before an anchored voxel goes / after one comes)
+  bool in_range(const V3& p) const;  // finite and within the voxel key range (commands and queries elsewhere are refused)
+  void prune_caches();
+  static constexpr size_t kMaxJudged = 400000, kMaxWarm = 600000;
   // Extracts the structure holding fragment f (bounded: max_nodes / max_radius, 0 = config): a
   // new Structure, or nullptr after detaching it (it reaches no support).
   // detach_free false (bake): a piece reaching no support is removed from the source world.
@@ -430,6 +433,7 @@ class World {
   bool focus_set_ = false;
 
   std::unordered_map<u64, FragChunk> frags_;
+  FragChunk empty_frags_;                    // (frag_chunk of a chunk that is not there)
   std::unordered_map<u64, std::vector<i64>> owner_;  // chunk -> structure id per fragment (0 none)
   std::vector<std::unique_ptr<Structure>> structures_;  // ascending id
   std::vector<IVec3> seeds_;                 // voxels whose structures must be (re)extracted

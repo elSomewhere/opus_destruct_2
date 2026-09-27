@@ -105,6 +105,7 @@ class VoxelGrid {
   // Record-level access (streaming: archive evicted modified chunks, restore on reload).
   std::vector<u8> chunk_record(u64 key) const;
   bool apply_record(const std::vector<u8>& rec, u64* key_out = nullptr);
+  static bool check_record(const std::vector<u8>& rec);  // (well-formed: apply_record will succeed)
   static std::vector<u8> pack_delta(const std::vector<std::vector<u8>>& records);
   static bool unpack_delta(const std::vector<u8>& bytes, std::vector<std::pair<u64, std::vector<u8>>>* records);
   // Streaming: install a generated chunk / drop a chunk with all its overlays.

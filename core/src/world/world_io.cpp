@@ -9,6 +9,7 @@
 #include <optional>
 #include <unordered_set>
 
+#include "svx/base/diag.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/world/world.hpp"
 #include "world_internal.hpp"
@@ -57,7 +58,7 @@ bool World::bake(f64* ms) {
       const Chunk* ch0 = grid_.chunk(cc);
       const u32 ver = ch0 ? ch0->vox_version : 0;
       Structure* s = extract(f, 4000000, 1e9, false);
-      static const bool bdbg = std::getenv("SVX_DEBUG_BAKE") != nullptr;
+      static const bool bdbg = diag("SVX_DEBUG_BAKE");
       if (bdbg && s && s->P.nodes.size() > 1000)
         std::printf("  [bake] chunk (%d %d %d) fragment %d: structure of %zu nodes\n", cc[0], cc[1], cc[2], fi, s->P.nodes.size());
       if (!s) {
@@ -78,7 +79,7 @@ bool World::bake(f64* ms) {
       }
       std::fill(s->ext_solved.begin(), s->ext_solved.end(), 0.0);
       const std::vector<f64> F = load_vector(*s);
-      static const bool dbg = std::getenv("SVX_DEBUG") != nullptr;
+      static const bool dbg = diag("SVX_DEBUG");
       const auto ts = Clock::now();
       const PcgResult pr = s->P.solve(F, s->u, 1e-6, 4000, true);
       if (dbg) {
@@ -181,6 +182,8 @@ bool World::load_delta(const std::vector<u8>& bytes) {
   if (source_) {
     std::vector<std::pair<u64, std::vector<u8>>> recs;
     if (!VoxelGrid::unpack_delta(bytes, &recs)) return false;
+    for (const auto& [k, r] : recs)  // (all or nothing: every record is checked first)
+      if (!VoxelGrid::check_record(r)) return false;
     for (auto& [k, r] : recs) {
       if (generated_.count(k)) {
         u64 key = 0;
@@ -230,7 +233,7 @@ void World::enable_streaming(std::shared_ptr<const ChunkSource> src, const Strea
 void World::set_focus(const std::vector<V3>& points) {
   focus_.clear();
   for (const V3& p : points)
-    if (finite3(p)) focus_.push_back(p);
+    if (in_range(p)) focus_.push_back(p);
   if (!source_ || focus_.empty() || focus_set_) return;
   // the first focus: the world around it at once (a player must not fall through)
   focus_set_ = true;
@@ -277,9 +280,8 @@ void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
   const auto ait = archive_.find(key);
   if (ait != archive_.end()) {
     grid_.track_changes(true);
-    grid_.apply_record(*ait->second);
+    changed = grid_.apply_record(*ait->second) || changed;  // (records were checked when archived or loaded)
     archive_.erase(ait);
-    changed = true;
   } else if (any) {
     // (fresh from the generator: designed when first touched; an archived chunk was designed
     // before it was changed)
@@ -306,6 +308,16 @@ void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
 
 void World::evict_chunk(u64 k) {
   const IVec3 cc = unkey3(k);
+  // registered structures reaching into it are dropped, not patched: extracted again when
+  // something happens to them, they are held where they reach into chunks not resident
+  if (const auto ot = owner_.find(k); ot != owner_.end()) {
+    std::vector<i64> ids;
+    for (i64 id : ot->second)
+      if (id) ids.push_back(id);
+    std::sort(ids.begin(), ids.end());
+    ids.erase(std::unique(ids.begin(), ids.end()), ids.end());
+    for (i64 id : ids) drop_structure(id);
+  }
   undesigned_.erase(k);
   if (grid_.is_modified(k)) archive_[k] = std::make_shared<const std::vector<u8>>(grid_.chunk_record(k));
   const bool resident = grid_.chunk(cc) != nullptr;
@@ -391,10 +403,10 @@ int World::stream_update() {
     }
     i += n;
   }
-  // evict behind the viewer (never under a moving piece or a structure being solved)
+  // evict far from the focus points (never under a piece, which would fall through, or a
+  // structure being solved)
   std::unordered_set<u64> busy;
   for (const auto& bp : rigid_.bodies) {
-    if (bp->asleep) continue;
     const IVec3 a = voxel_of(bp->box_lo, grid_.h), b = voxel_of(bp->box_hi, grid_.h);
     for (i32 x = (a[0] >> kChunkBits) - 1; x <= (b[0] >> kChunkBits) + 1; ++x)
       for (i32 y = (a[1] >> kChunkBits) - 1; y <= (b[1] >> kChunkBits) + 1; ++y)
@@ -406,11 +418,13 @@ int World::stream_update() {
         if (f.idx >= 0) busy.insert(f.chunk);
   std::vector<u64> keys(generated_.begin(), generated_.end());
   std::sort(keys.begin(), keys.end());
+  std::vector<u64> out;
   for (u64 k : keys) {
     const IVec3 cc = unkey3(k);
     if (hdist(cc) <= stream_.evict_radius || busy.count(k)) continue;
-    evict_chunk(k);
+    out.push_back(k);
   }
+  for (u64 k : out) evict_chunk(k);
   if (stream_.max_resident_mb > 0.0 && st_.ticks % 30 == 0) {
     const i64 budget_b = static_cast<i64>(stream_.max_resident_mb * 1048576.0);
     i64 bytes = grid_.memory_bytes();
@@ -458,8 +472,15 @@ std::vector<u64> World::take_evicted_chunks() {
 
 bool World::debug_field(const IVec3& cc, DebugField field, std::vector<u8>* out) {
   const u64 k = key3(cc[0], cc[1], cc[2]);
-  if (!grid_.chunk(cc)) return false;
-  FragChunk& fc = frag_chunk(cc);
+  const Chunk* ch = grid_.chunk(cc);
+  FragChunk* fcp = frag_chunk_if(k);
+  // (a chunk whose fragments are not current reads as none: the diagnostics never rebuild
+  // them, which would change when the structures learn of changes)
+  if (!ch || !fcp || fcp->vox_version != ch->vox_version) {
+    out->assign(kChunkVox, 0);
+    return ch != nullptr;
+  }
+  FragChunk& fc = *fcp;
   // per fragment of the chunk, then per voxel
   std::vector<u8> v(fc.frags.size(), 0);
   std::unordered_map<i64, std::vector<f32>> node_phi;
@@ -604,7 +625,7 @@ RayHit World::raycast(const V3& o, const V3& dir, f64 max_dist) const {
   RayHit hit;
   const f64 h = grid_.h;
   V3 d = dir;
-  if (!finite3(o) || !finite3(d) || !(max_dist > 0.0)) return hit;
+  if (!in_range(o) || !finite3(d) || !(max_dist > 0.0)) return hit;
   max_dist = std::min(max_dist, 1e4);
   const f64 len = norm(d);
   if (len <= 0.0) return hit;
@@ -658,7 +679,7 @@ CollideResult World::collide(const V3& mn, const V3& mx, const V3& mv) const {
   const f64 h = grid_.h;
   const f64 eps = 1e-4;
   // (bounded work: a box of at most 16 m a side, a move of at most 16 m per axis)
-  if (!finite3(mn) || !finite3(mx) || !finite3(mv)) return res;
+  if (!in_range(mn) || !in_range(mx) || !finite3(mv)) return res;
   for (int a = 0; a < 3; ++a)
     if (mx[a] < mn[a] || mx[a] - mn[a] > 16.0) return res;
   std::array<f64, 3> lo = {mn.x, mn.y, mn.z}, hi = {mx.x, mx.y, mx.z};
@@ -729,18 +750,30 @@ bool World::touches_undesigned(const Structure& s) const {
 
 void World::design_structure(Structure& s, bool dry) {
   // self-weight only (the design state), to a tight tolerance
+  auto designed = [&] {
+    if (dry) return;
+    for (const FragKey& f : s.frags)
+      if (f.idx >= 0) undesigned_.erase(f.chunk);
+  };
   if (!s.P.assembled()) {
     StressOptions so;
     so.rtol = 1e-5;
-    if (!s.P.assemble(so)) return;
+    if (!s.P.assemble(so)) {
+      designed();  // (given up: never tried again, or extract and design would recurse)
+      return;
+    }
   }
   const size_t n = s.P.nodes.size();
   std::vector<f64> F(6 * n, 0.0);
   for (size_t i = 0; i < n; ++i) F[6 * i + 2] = -s.weight[i];
   std::vector<f64> u(6 * n, 0.0);
   const PcgResult r = s.P.solve(F, u, 1e-5, 2000, false);
+  if (r.breakdown || !std::isfinite(r.rel_res)) {
+    designed();
+    return;
+  }
   const f64 target = cfg_.design_utilization;
-  static const bool dbg = std::getenv("SVX_DEBUG_DESIGN") != nullptr;
+  static const bool dbg = diag("SVX_DEBUG_DESIGN");
   f64 maxphi = 0.0;
   i32 over = 0;
   for (i32 b = 0; b < static_cast<i32>(s.P.bonds.size()); ++b) {
@@ -781,8 +814,7 @@ void World::design_structure(Structure& s, bool dry) {
     for (int q = 0; q < 6; ++q) w[size_t(q)] = static_cast<f32>(u[6 * i + size_t(q)]);
     warm_u_[s.ident[i]] = w;
   }
-  for (const FragKey& f : s.frags)
-    if (f.idx >= 0) undesigned_.erase(f.chunk);
+  designed();
 }
 
 void World::design_near(const V3& c, f64 r) {

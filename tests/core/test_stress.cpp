@@ -196,3 +196,110 @@ TEST_CASE("stress: failure modes follow the fibre stresses") {
   CHECK(bond_utilization(b, L, 1.0) == doctest::Approx(0.75));
   CHECK(bond_utilization(b, L, 2.0) == doctest::Approx(1.0));
 }
+
+namespace {
+
+// n^3 cubes of side L standing on supports; nodes with z >= keep_z are retired (gone) when
+// retire_top, else left out.
+StressProblem block(int n, f64 L, int keep_z, bool retire_top) {
+  StressProblem P;
+  const int nz = retire_top ? n : keep_z;
+  auto id = [&](int x, int y, int z) { return (x * n + y) * nz + z; };
+  for (int x = 0; x < n; ++x)
+    for (int y = 0; y < n; ++y)
+      for (int z = 0; z < nz; ++z) {
+        SNode nd;
+        nd.c = V3{(x + 0.5) * L, (y + 0.5) * L, (z + 0.5) * L};
+        nd.mass = 400.0;
+        nd.gone = z >= keep_z;
+        P.nodes.push_back(nd);
+      }
+  for (int x = 0; x < n; ++x)
+    for (int y = 0; y < n; ++y)
+      for (int z = 0; z < nz; ++z) {
+        const V3 c = P.nodes[size_t(id(x, y, z))].c;
+        if (z == 0) P.bonds.push_back(bond(P, id(x, y, z), -1, V3{0, 0, -1}, c - V3{0, 0, 0.5 * L}, L));
+        if (x + 1 < n) P.bonds.push_back(bond(P, id(x, y, z), id(x + 1, y, z), V3{1, 0, 0}, c + V3{0.5 * L, 0, 0}, L));
+        if (y + 1 < n) P.bonds.push_back(bond(P, id(x, y, z), id(x, y + 1, z), V3{0, 1, 0}, c + V3{0, 0.5 * L, 0}, L));
+        if (z + 1 < nz) P.bonds.push_back(bond(P, id(x, y, z), id(x, y, z + 1), V3{0, 0, 1}, c + V3{0, 0, 0.5 * L}, L));
+      }
+  return P;
+}
+
+std::vector<f64> gravity_live(const StressProblem& P) {
+  std::vector<f64> f(6 * P.nodes.size(), 0.0);
+  for (size_t i = 0; i < P.nodes.size(); ++i)
+    if (!P.nodes[i].gone) f[6 * i + 2] = -9.81 * P.nodes[i].mass;
+  return f;
+}
+
+}  // namespace
+
+TEST_CASE("stress: retiring one group, then another, never takes a bond out of K twice") {
+  // A retired chip keeps its inner bonds intact (its topology) while they are out of K; a later
+  // retirement must not subtract them again (K would turn indefinite).
+  StressProblem A = cantilever(12, 0.5, 200.0), B = cantilever(12, 0.5, 200.0);
+  for (StressProblem* P : {&A, &B})
+    for (int i : {3, 6, 9}) P->bonds.push_back(bond(*P, i, -1, V3{0, 0, -1}, P->nodes[size_t(i)].c - V3{0, 0, 0.25}, 0.5));
+  StressOptions so;
+  so.amg_min_nodes = 1 << 30;
+  REQUIRE(A.assemble(so));
+  A.retire_nodes({10, 11});  // a chip
+  for (SBond& b : A.bonds)
+    if (b.a == 10 && b.b == 11) b.broken = false;  // (its inner bond: intact, out of K)
+  A.retire_nodes({1});       // another one
+  for (int i : {1, 10, 11}) B.nodes[size_t(i)].gone = true;
+  REQUIRE(B.assemble(so));
+  std::vector<f64> ua, ub;
+  const PcgResult ra = A.solve(gravity_live(A), ua, 1e-11, 2000, false);
+  const PcgResult rb = B.solve(gravity_live(B), ub, 1e-11, 2000, false);
+  CHECK(ra.converged);
+  CHECK_FALSE(ra.breakdown);
+  CHECK(rb.converged);
+  f64 err = 0.0, mag = 0.0;
+  for (size_t i = 0; i < A.nodes.size(); ++i) {
+    if (A.nodes[i].gone) continue;
+    for (int q = 0; q < 6; ++q) {
+      err = std::max(err, std::abs(ua[6 * i + size_t(q)] - ub[6 * i + size_t(q)]));
+      mag = std::max(mag, std::abs(ub[6 * i + size_t(q)]));
+    }
+  }
+  CHECK(err <= 1e-6 * mag);
+  // the chip's bond stays intact for the topology (a split keeps the chip whole)
+  bool inner = false;
+  for (const SBond& b : A.bonds) inner = inner || (b.a == 10 && b.b == 11 && !b.broken);
+  CHECK(inner);
+  // ... also through a fresh assembly
+  REQUIRE(A.assemble(so));
+  for (const SBond& b : A.bonds)
+    if (b.a == 10 && b.b == 11) CHECK_FALSE(b.broken);
+}
+
+TEST_CASE("stress: retired rows do not slow the multigrid down") {
+  StressOptions so;
+  so.amg_min_nodes = 16;
+  StressProblem with = block(14, 0.4, 9, true), without = block(14, 0.4, 9, false);
+  REQUIRE(with.assemble(so));
+  REQUIRE(without.assemble(so));
+  std::vector<f64> uw, uo;
+  const PcgResult rw = with.solve(gravity_live(with), uw, 1e-8, 500, false);
+  const PcgResult ro = without.solve(gravity_live(without), uo, 1e-8, 500, false);
+  MESSAGE("pcg iterations: " << ro.iters << " without the retired rows, " << rw.iters << " with them");
+  CHECK(rw.converged);
+  CHECK(ro.converged);
+  CHECK(rw.iters <= ro.iters + 4);
+}
+
+TEST_CASE("stress: a solve reports no answer for non-finite loads, and u = 0 for none") {
+  StressProblem P = cantilever(6, 0.5, 100.0);
+  REQUIRE(P.assemble());
+  std::vector<f64> u(6 * P.nodes.size(), 1.0);  // (a warm start)
+  std::vector<f64> f(6 * P.nodes.size(), 0.0);
+  const PcgResult r0 = P.solve(f, u, 1e-9, 100, true);
+  CHECK(r0.converged);
+  for (f64 v : u) CHECK(v == 0.0);
+  f[2] = NAN;
+  const PcgResult r1 = P.solve(f, u, 1e-9, 100, false);
+  CHECK_FALSE(r1.converged);
+  CHECK(r1.breakdown);
+}

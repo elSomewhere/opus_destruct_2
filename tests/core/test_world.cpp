@@ -1,4 +1,5 @@
 // The physics core on its own: hand-built worlds, no game harness (links svx_core only).
+#include <cmath>
 #include <vector>
 
 #include "doctest.h"
@@ -152,4 +153,228 @@ TEST_CASE("world: the material registry") {
   CHECK(vox_solid(w.grid().get(11, 11, 2)));
   reset_materials();
   CHECK_FALSE(material_registered(id));
+}
+
+namespace {
+
+// A column 2 x 2 voxels, 2 m tall, standing on the rock plate at (8, 8).
+VoxelGrid column_world() {
+  VoxelGrid g = table_world();
+  box(g, {8, 8, 0}, {10, 10, 16}, kConcrete);
+  return g;
+}
+
+// A streamed world: an anchored ground (z < 0) and a free concrete pillar (2 x 2 voxels, 3 m) in
+// the middle of every 8th chunk column, and a 12 m long wall straddling chunk columns 16 / 17.
+class PillarSource final : public ChunkSource {
+ public:
+  bool generate(const IVec3& cc, std::vector<Vox>& out) const override {
+    out.assign(kChunkVox, kAir);
+    bool any = false;
+    for (int x = 0; x < kChunk; ++x)
+      for (int y = 0; y < kChunk; ++y)
+        for (int z = 0; z < kChunk; ++z) {
+          const IVec3 p{cc[0] * kChunk + x, cc[1] * kChunk + y, cc[2] * kChunk + z};
+          Vox v = kAir;
+          if (p[2] < 0 && p[2] >= -8) v = kRock;
+          const bool pillar = (cc[0] % 8 == 0) && (cc[1] % 8 == 0) && (x == 16 || x == 17) && (y == 16 || y == 17) &&
+                              p[2] >= 0 && p[2] < 24;
+          const bool wall = p[0] >= 16 * kChunk - 48 && p[0] < 17 * kChunk + 48 && p[1] >= 40 * kChunk && p[1] < 40 * kChunk + 2 &&
+                            p[2] >= 0 && p[2] < 16;
+          if (pillar || wall) v = kConcrete;
+          if (v != kAir) {
+            out[size_t(chunk_index(p))] = v;
+            any = true;
+          }
+        }
+    return any;
+  }
+  IVec3 chunk_lo() const override { return {0, 0, -1}; }
+  IVec3 chunk_hi() const override { return {64, 64, 2}; }
+};
+
+}  // namespace
+
+TEST_CASE("world: removing the ground under a registered structure drops it") {
+  World w;
+  w.load(column_world());
+  REQUIRE(w.bake());
+  REQUIRE(w.probe_utilization({8, 8, 4}) >= 0.0);  // (its structure is registered now)
+  Run r;
+  run(w, 10, &r);
+  CHECK(r.added == 0);
+  // the rock under it goes (anchored voxels: the free voxels' fragments do not change)
+  std::vector<VoxelEdit> dig;
+  for (i32 x = 7; x <= 10; ++x)
+    for (i32 y = 7; y <= 10; ++y)
+      for (i32 z = -4; z < 0; ++z) dig.push_back({{x, y, z}, kAir});
+  CHECK(w.set_voxels(dig) == 64);
+  run(w, 60, &r);
+  CHECK(r.added >= 1);
+  CHECK_FALSE(vox_solid(w.grid().get(8, 8, 8)));
+}
+
+TEST_CASE("world: hostile inputs are refused without effect") {
+  World w;
+  w.load(table_world());
+  REQUIRE(w.bake());
+  const u64 h0 = w.state_hash();
+  const f64 inf = INFINITY;
+  w.carve({NAN, 0, 0}, 1.0);
+  w.carve({1, 1, 1}, NAN);
+  w.carve({1, 1, 1}, -1.0);
+  w.carve({1e12, 0, 0}, 1.0);
+  w.carve({inf, 0, 0}, 1.0);
+  w.blast({1, 1, 1}, 1.0, NAN);
+  w.blast({NAN, 1, 1}, 1.0, 1e6);
+  w.carve({3000, 3000, 3000}, 1e9);  // (far away: clamped to max_event_radius, carves nothing there)
+  w.set_focus({V3{NAN, 0, 0}, V3{1e30, 0, 0}});
+  WorldParams p;
+  p.fragility = NAN;
+  p.impact = -inf;
+  p.dif = 1e30;
+  w.set_params(p);
+  CHECK(w.params().fragility == 1.0);  // (non-finite: the default)
+  CHECK(w.params().impact == 1.0);
+  CHECK(w.params().dif <= 10.0);
+  w.set_params(WorldParams{});
+  CHECK_FALSE(w.raycast({NAN, 0, 0}, {1, 0, 0}, 10.0).hit);
+  CHECK_FALSE(w.raycast({0, 0, 1}, {0, 0, 0}, 10.0).hit);
+  CHECK_FALSE(w.raycast({0, 0, 1}, {1, 0, 0}, NAN).hit);
+  const CollideResult c = w.collide({0, 0, 5}, {0.5, 0.5, 6}, {1e9, NAN, -1e9});
+  CHECK(std::isfinite(c.move.x));
+  CHECK(c.move.x == 0.0);  // (a non-finite move is refused whole)
+  const CollideResult c2 = w.collide({10, 10, 5}, {10.5, 10.5, 6}, {0, 0, -1e9});
+  CHECK(c2.move.z >= -16.0);
+  CHECK(w.set_voxels({{{1 << 21, 0, 0}, kConcrete}, {{0, -(1 << 20), 0}, kConcrete}}) == 0);
+  CHECK_FALSE(w.load_delta({}));
+  CHECK_FALSE(w.load_delta({1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}));
+  std::vector<u8> d = w.save_delta();
+  d.resize(d.size() / 2 + 3);
+  CHECK_FALSE(w.load_delta(d));
+  CHECK_FALSE(w.apply_impulse(1, {NAN, 0, 0}, {1, 0, 0}));
+  CHECK_FALSE(w.remove_piece(12345));
+  for (int t = 0; t < 10; ++t) w.tick();
+  CHECK(w.state_hash() == h0);
+  CHECK(w.stats().events == 1);  // (the far carve only)
+}
+
+TEST_CASE("world: a delta restores the voxels and their design classes (v2 records)") {
+  World a;
+  VoxelGrid g = table_world();
+  box(g, {0, 12, 24}, {32, 20, 26}, kAir);  // (the slab gets a hole: its members work harder)
+  a.load(std::move(g));
+  REQUIRE(a.bake());
+  REQUIRE(a.design_report().strengthened_voxels > 0);
+  a.set_voxels({{{16, 4, 26}, kConcrete}, {{16, 28, 26}, kConcrete}});  // (tracked edits on the slab)
+  a.tick();
+  const std::vector<u8> delta = a.save_delta();
+  REQUIRE_FALSE(delta.empty());
+  World b;
+  VoxelGrid g2 = table_world();
+  box(g2, {0, 12, 24}, {32, 20, 26}, kAir);
+  b.load(std::move(g2));  // (no bake: the classes come from the delta)
+  REQUIRE(b.load_delta(delta));
+  CHECK(b.state_hash() == a.state_hash());
+  i64 classes = 0, differ = 0;
+  for (u64 k : a.grid().modified_chunks()) {
+    const IVec3 cc = unkey3(k);
+    for (int i = 0; i < kChunkVox; ++i) {
+      const IVec3 l{i / (kChunk * kChunk), (i / kChunk) % kChunk, i % kChunk};
+      const IVec3 p{cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]};
+      classes += a.grid().strength(p) > 0;
+      differ += a.grid().strength(p) != b.grid().strength(p);
+    }
+  }
+  CHECK(classes > 0);
+  CHECK(differ == 0);
+}
+
+TEST_CASE("world: streaming around several focus points; edits survive eviction; a wall cut by the evict radius stands") {
+  World w;
+  VoxelGrid g;
+  g.h = kH;
+  w.load(std::move(g));
+  StreamConfig sc;
+  sc.load_radius = 20.0;
+  sc.evict_radius = 28.0;
+  sc.chunks_per_tick = 400;
+  w.enable_streaming(std::make_shared<PillarSource>(), sc);
+  const V3 a{kH * (8 * kChunk + 16), kH * (8 * kChunk + 16), 0.0}, b{kH * (40 * kChunk + 16), kH * (8 * kChunk + 16), 0.0};
+  w.set_focus({a, b});
+  for (int t = 0; t < 10; ++t) w.tick();
+  CHECK(w.chunk_resident({8, 8, 0}));
+  CHECK(w.chunk_resident({40, 8, 0}));
+  CHECK_FALSE(w.chunk_resident({24, 8, 0}));
+  CHECK(vox_solid(w.grid().get(8 * kChunk + 16, 8 * kChunk + 16, 10)));
+  // cut the pillar at a (it falls), and knock a notch into the one at b
+  w.carve({a.x + 0.06, a.y + 0.06, 1.0}, 0.3);
+  w.set_voxels({{{40 * kChunk + 16, 8 * kChunk + 16, 23}, kAir}});
+  for (int t = 0; t < 30; ++t) w.tick();
+  CHECK_FALSE(vox_solid(w.grid().get(8 * kChunk + 16, 8 * kChunk + 16, 20)));
+  const u64 before = w.state_hash();
+  (void)before;
+  // move away from b and back: its edit comes back with its chunk
+  w.set_focus(a);
+  for (int t = 0; t < 10; ++t) w.tick();
+  CHECK_FALSE(w.chunk_resident({40, 8, 0}));
+  CHECK(w.stats().archived_chunks >= 1);
+  CHECK_FALSE(w.take_evicted_chunks().empty());
+  w.set_focus({a, b});
+  for (int t = 0; t < 10; ++t) w.tick();
+  CHECK_FALSE(vox_solid(w.grid().get(40 * kChunk + 16, 8 * kChunk + 16, 23)));
+  CHECK(vox_solid(w.grid().get(40 * kChunk + 16, 8 * kChunk + 16, 22)));
+  // the long wall: register it, then let the evict radius cut through it - no collapse
+  const V3 c{kH * (16 * kChunk), kH * (40 * kChunk), 0.0};
+  w.set_focus(c);
+  for (int t = 0; t < 10; ++t) w.tick();
+  REQUIRE(vox_solid(w.grid().get(16 * kChunk, 40 * kChunk, 8)));
+  REQUIRE(w.probe_utilization({16 * kChunk, 40 * kChunk, 8}) >= 0.0);
+  const i64 broken0 = w.stats().bonds_broken;
+  const V3 c2{c.x - 25.0, c.y, 0.0};  // (the wall's east end is beyond the evict radius now)
+  w.set_focus(c2);
+  Run r;
+  run(w, 60, &r);
+  CHECK(w.stats().bonds_broken == broken0);
+  int near_wall = 0;  // (the pillar cut before may still be breaking where it landed)
+  for (const WorldEvent& e : r.events) near_wall += e.kind == WorldEvent::Kind::PieceAdded && std::abs(e.pos.y - c.y) < 10.0;
+  CHECK(near_wall == 0);
+  CHECK(vox_solid(w.grid().get(16 * kChunk - 40, 40 * kChunk, 8)));
+}
+
+TEST_CASE("world: a session is bit-identical on any thread count, and after load() again") {
+  auto session = [](int threads, World* reuse) {
+    set_num_threads(threads);
+    World local;
+    World& w = reuse ? *reuse : local;
+    w.load(table_world());
+    w.bake();
+    for (i32 lx : {0, 30})
+      for (i32 ly : {0, 30}) w.carve(leg_centre(lx, ly, 1.5), 0.3);
+    for (int t = 0; t < 180; ++t) {
+      if (t == 60) w.blast({2.0, 2.0, 1.0}, 0.5, 1e5);
+      w.tick();
+    }
+    return w.session_hash();
+  };
+  const int hw = num_threads();
+  const u64 h1 = session(1, nullptr);
+  const u64 h4 = session(4, nullptr);
+  World twice;
+  session(4, &twice);
+  const u64 again = session(4, &twice);  // (ids and solver state start over at load())
+  set_num_threads(hw);
+  CHECK(h1 == h4);
+  CHECK(again == h4);
+}
+
+TEST_CASE("world: nested parallel loops run inline (no deadlock)") {
+  std::vector<i64> sum(64, 0);
+  parallel_for(64, 1, [&](i64 a, i64 b) {
+    for (i64 i = a; i < b; ++i)
+      parallel_for(100, 7, [&](i64 c, i64 d) {
+        for (i64 k = c; k < d; ++k) sum[size_t(i)] += k;
+      });
+  });
+  for (i64 v : sum) CHECK(v == 4950);
 }

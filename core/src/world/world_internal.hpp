@@ -107,6 +107,38 @@ struct SecAcc {
       pc += x * ws[k];
     }
     pc *= 1.0 / W;
+    // the section's principal axes (an L- or T-shaped interface has a product of inertia in an
+    // arbitrary frame: ignoring it would make its weak axis stiffer and stronger than it is).
+    // The eigenvector of [[s11, s12], [s12, s22]] with sqrt only (the same on every platform).
+    {
+      f64 s11 = 0.0, s22 = 0.0, s12 = 0.0;
+      for (size_t k = 0; k < faces.size(); ++k) {
+        const V3 d = xs[k] - pc;
+        const f64 y1 = dot(d, t1), y2 = dot(d, t2);
+        s11 += ws[k] * y1 * y1;
+        s22 += ws[k] * y2 * y2;
+        s12 += ws[k] * y1 * y2;
+      }
+      if (std::abs(s12) > 1e-9 * (s11 + s22)) {
+        const f64 half = 0.5 * (s11 - s22);
+        const f64 l1 = 0.5 * (s11 + s22) + std::sqrt(half * half + s12 * s12);
+        // (two forms of the eigenvector of l1: the better conditioned one)
+        f64 e1 = s12, e2 = l1 - s11;
+        if (std::abs(l1 - s22) > std::abs(e2)) {
+          e1 = l1 - s22;
+          e2 = s12;
+        }
+        const f64 en = std::sqrt(e1 * e1 + e2 * e2);
+        if (en > 0.0) {
+          e1 /= en;
+          e2 /= en;
+          const V3 u1 = t1 * e1 + t2 * e2;
+          const V3 u2 = t2 * e1 - t1 * e2;  // (the same handedness: n x u1 = u2)
+          t1 = u1;
+          t2 = u2;
+        }
+      }
+    }
     B.n = n;
     B.t1 = t1;
     B.t2 = t2;

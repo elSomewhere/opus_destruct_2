@@ -52,9 +52,12 @@ extern "C" {
 
 svx_engine* svx_create(double voxel_size) {
   auto* e = new svx_engine;
-  e->h = voxel_size > 0.0 ? voxel_size : 0.125;
+  e->h = std::isfinite(voxel_size) && voxel_size >= 0.01 && voxel_size <= 10.0 ? voxel_size : 0.125;
   return e;
 }
+
+// (a seed from the front end: any double, the same u64 for the same whole number)
+static u64 seed_of(double s) { return std::isfinite(s) ? static_cast<u64>(static_cast<i64>(std::clamp(s, -9e15, 9e15))) : 0; }
 
 void svx_destroy(svx_engine* e) { delete e; }
 
@@ -77,15 +80,19 @@ int svx_load_procedural(svx_engine* e, const char* kind, double seed) {
   e->doom.reset();
   if (k == "city") {
     // the 1 km^2 city streams around the viewer (plan Phase 6)
-    e->eng.load_streaming(make_city_source(static_cast<u64>(seed), 1000.0, e->h), e->h);
+    e->eng.load_streaming(make_city_source(seed_of(seed), 1000.0, e->h), e->h);
     return 0;
   }
-  ProcWorld w = make_procedural(k, static_cast<u64>(seed), e->h);
+  ProcWorld w = make_procedural(k, seed_of(seed), e->h);
   e->eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
   return 0;
 }
 
 int svx_load_wad(svx_engine* e, const uint8_t* data, size_t size, const char* map, int mode, int shell_voxels) {
+  if (!data || size == 0) {
+    e->error = "no WAD data";
+    return 1;
+  }
   doom::Wad wad;
   std::string err;
   if (!wad.load_memory(std::vector<u8>(data, data + size), &err)) {

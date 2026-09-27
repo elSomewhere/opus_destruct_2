@@ -1,6 +1,8 @@
 #include "svx/material/material.hpp"
 
+#include <algorithm>
 #include <array>
+#include <cmath>
 
 namespace svx {
 
@@ -58,6 +60,27 @@ Registry& registry() {
   return r;
 }
 
+// Properties a solve can use: positive and finite (a zero stiffness or strength would divide
+// by zero), fragments at least a voxel.
+Material sanitized(const Material& in) {
+  Material m = in;
+  auto pos = [](f64 v, f64 def) { return std::isfinite(v) && v > 0.0 ? v : def; };
+  m.E = pos(m.E, 30e9);
+  m.G = pos(m.G, 0.4 * m.E);
+  m.rho = pos(m.rho, 2400.0);
+  m.ft = pos(m.ft, 1e6);
+  m.fb = pos(m.fb, m.ft);
+  m.fc = pos(m.fc, 30e6);
+  m.cohesion = pos(m.cohesion, 1e6);
+  m.friction = std::isfinite(m.friction) ? std::clamp(m.friction, 0.0, 10.0) : 0.7;
+  m.Gf = pos(m.Gf, 400.0);
+  m.frag_x = std::isfinite(m.frag_x) ? std::clamp(m.frag_x, 1.0, 64.0) : 4.0;
+  m.frag_y = std::isfinite(m.frag_y) ? std::clamp(m.frag_y, 1.0, 64.0) : 4.0;
+  m.frag_z = std::isfinite(m.frag_z) ? std::clamp(m.frag_z, 1.0, 64.0) : 4.0;
+  m.frag_noise = std::isfinite(m.frag_noise) ? std::clamp(m.frag_noise, 0.0, 1.0) : 0.4;
+  return m;
+}
+
 }  // namespace
 
 const Material& material(MaterialId id) {
@@ -70,7 +93,7 @@ bool register_material(const Material& m, MaterialId* id) {
   Registry& r = registry();
   for (int i = kStandardMaterials; i < kMaxMaterials; ++i) {
     if (r.used[size_t(i)]) continue;
-    r.m[size_t(i)] = m;
+    r.m[size_t(i)] = sanitized(m);
     r.used[size_t(i)] = true;
     if (id) *id = static_cast<MaterialId>(i);
     return true;
@@ -82,7 +105,7 @@ void set_material(MaterialId id, const Material& m) {
   const int i = static_cast<int>(id);
   if (i < 0 || i >= kMaxMaterials) return;
   Registry& r = registry();
-  r.m[size_t(i)] = m;
+  r.m[size_t(i)] = sanitized(m);
   r.used[size_t(i)] = true;
 }
 

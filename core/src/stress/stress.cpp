@@ -1,5 +1,6 @@
 #include "svx/stress/stress.hpp"
 
+#include "svx/base/diag.hpp"
 #include "svx/base/parallel.hpp"
 
 #include <algorithm>
@@ -83,11 +84,11 @@ bool StressProblem::build_matrix() {
     if (dof_[size_t(i)] >= 0) B.block(dof_[size_t(i)], dof_[size_t(i)]);
   f64 Dm[36], Ba[36], Bb[36];
   for (SBond& b : bonds) {
-    if (b.broken) continue;
-    if (nodes[size_t(b.a)].gone || (b.b >= 0 && nodes[size_t(b.b)].gone)) {
-      b.broken = true;
-      continue;
-    }
+    b.in_k = false;
+    // (bonds of retired nodes stay out of K; their topology is the caller's: a retired chip
+    // keeps its inner bonds intact)
+    if (b.broken || nodes[size_t(b.a)].gone || (b.b >= 0 && nodes[size_t(b.b)].gone)) continue;
+    b.in_k = true;
     bond_matrices(b, Dm, Ba, Bb);
     const i32 ia = dof_[size_t(b.a)];
     const i32 ib = b.b >= 0 ? dof_[size_t(b.b)] : -1;
@@ -130,12 +131,7 @@ bool StressProblem::assemble(const StressOptions& opt) {
   std::vector<V3> pos(static_cast<size_t>(nfree_));
   for (size_t i = 0; i < nodes.size(); ++i)
     if (dof_[i] >= 0) pos[size_t(dof_[i])] = nodes[i].c;
-  AmgOptions ao = opt_.amg;
-  if (const char* env = std::getenv("SVX_AMG")) {
-    int sm = ao.smoothed ? 1 : 0;
-    std::sscanf(env, "%d,%d,%lf,%lf,%d,%d", &ao.gamma, &ao.sweeps, &ao.coarse_scale, &ao.strength, &ao.coarse_max, &sm);
-    ao.smoothed = sm != 0;
-  }
+  const AmgOptions ao = opt_.amg;
   jacobi_only_ = nfree_ < opt_.amg_min_nodes;
   if (jacobi_only_) {
     amg_ = Amg{};
@@ -150,7 +146,7 @@ bool StressProblem::assemble(const StressOptions& opt) {
     return true;
   }
   if (!amg_.build(K_, pos, ao)) return false;
-  if (std::getenv("SVX_AMG_INFO")) {
+  if (diag("SVX_AMG_INFO")) {
     std::printf("  amg levels:");
     for (i32 k : amg_.level_sizes()) std::printf(" %d", k);
     std::printf(" | blocks:");
@@ -247,9 +243,9 @@ f64* StressProblem::block(i32 r, i32 c) {
 
 void StressProblem::remove_bond(i32 bi) {
   SBond& b = bonds[size_t(bi)];
-  if (b.broken) return;
   b.broken = true;
-  if (!assembled_) return;
+  if (!assembled_ || !b.in_k) return;  // (never subtracted twice)
+  b.in_k = false;
   f64 Dm[36], Ba[36], Bb[36];
   bond_matrices(b, Dm, Ba, Bb);
   const i32 ia = dof_[size_t(b.a)];
@@ -272,11 +268,16 @@ void StressProblem::remove_bond(i32 bi) {
 
 void StressProblem::retire_nodes(const std::vector<i32>& list) {
   if (list.empty()) return;
-  for (i32 i : list) nodes[size_t(i)].gone = true;
+  // the bonds of the nodes retired now leave K and break (bonds between nodes retired before
+  // are left as they are: a caller may have restored their topology)
+  std::vector<u8> now(nodes.size(), 0);
+  for (i32 i : list) {
+    now[size_t(i)] = nodes[size_t(i)].gone ? 0 : 1;
+    nodes[size_t(i)].gone = true;
+  }
   for (i32 b = 0; b < static_cast<i32>(bonds.size()); ++b) {
     const SBond& B = bonds[size_t(b)];
-    if (B.broken) continue;
-    if (nodes[size_t(B.a)].gone || (B.b >= 0 && nodes[size_t(B.b)].gone)) remove_bond(b);
+    if (now[size_t(B.a)] || (B.b >= 0 && now[size_t(B.b)])) remove_bond(b);
   }
   if (assembled_)
     for (i32 i : list) {
@@ -305,7 +306,12 @@ void StressProblem::precondition(const f64* r, f64* z) const {
 }
 
 PcgResult StressProblem::solve(const std::vector<f64>& f, std::vector<f64>& u, f64 rtol, int maxit, bool warm) {
-  if (!assembled_ && !assemble(opt_)) return PcgResult{};
+  if (!assembled_ && !assemble(opt_)) {
+    PcgResult failed;  // (no answer: never mistaken for an accurate one)
+    failed.rel_res = INFINITY;
+    failed.breakdown = true;
+    return failed;
+  }
   begin(f, warm ? u : std::vector<f64>{});
   const PcgResult r = iterate(maxit < 0 ? 100000 : maxit, rtol);
   current(u);
@@ -340,6 +346,12 @@ void StressProblem::begin(const std::vector<f64>& f, const std::vector<f64>& u0)
     bn += fb[k] * fb[k];
   }
   run_.bn = std::sqrt(bn);
+  if (!(bn > 0.0)) {
+    // no load (the answer is u = 0, whatever the warm start), or a load that is not finite
+    // (reported as a breakdown by iterate())
+    std::fill(run_.x.begin(), run_.x.end(), 0.0);
+    std::fill(run_.r.begin(), run_.r.end(), 0.0);
+  }
   precondition(run_.r.data(), run_.z.data());
   run_.p = run_.z;
   run_.rz = 0.0;
@@ -362,6 +374,12 @@ PcgResult StressProblem::iterate(int maxit, f64 rtol) {
   };
   f64 rn = std::sqrt(dot(run_.r, run_.r));
   const f64 target = rtol * run_.bn;
+  if (!std::isfinite(run_.bn) || !std::isfinite(rn)) {
+    res.rel_res = INFINITY;  // (non-finite loads: no answer)
+    res.breakdown = true;
+    run_.active = false;
+    return res;
+  }
   res.rel_res = run_.bn > 0 ? rn / run_.bn : 0.0;
   if (rn <= target || !(run_.bn > 0) || m == 0) {
     res.converged = true;
@@ -392,6 +410,10 @@ PcgResult StressProblem::iterate(int maxit, f64 rtol) {
     }
     precondition(run_.r.data(), run_.z.data());
     const f64 rz1 = dot(run_.r, run_.z);
+    if (!(rz1 > 0)) {
+      res.breakdown = true;  // (the preconditioner is not positive definite along r)
+      break;
+    }
     const f64 beta = rz1 / run_.rz;
     run_.rz = rz1;
     parallel_for(m, G, [&](i64 k0, i64 k1) {
