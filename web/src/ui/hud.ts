@@ -22,6 +22,8 @@ export interface HudState {
   player: { pos: Vec3; onGround: boolean; noclip: boolean };
   debugView: DebugView;
   rockets: number;
+  /** More lines at the end (the characters' counters). */
+  extra?: string[];
 }
 
 /** Stats shown on the fixed lines below; anything else an engine sends is listed as extras. */
@@ -38,6 +40,9 @@ export class Hud {
   private readonly stats: HTMLElement;
   private readonly weaponBar: HTMLElement;
   private readonly flash: HTMLElement;
+  private readonly health: HTMLElement;
+  private readonly healthFill: HTMLElement;
+  private readonly hurt: HTMLElement;
   private readonly timeline = new Timeline();
   private lastWeapon: WeaponDef | null = null;
 
@@ -45,13 +50,18 @@ export class Hud {
     this.stats = h('pre', { class: 'hud-stats' });
     this.weaponBar = h('div', { class: 'hud-weapons' });
     this.flash = h('div', { class: 'hud-flash' });
+    this.healthFill = h('div', { class: 'hud-health-fill' });
+    this.health = h('div', { class: 'hud-health hidden' }, this.healthFill);
+    this.hurt = h('div', { class: 'hud-hurt' });
     this.root = h(
       'div',
       { class: 'hud' },
+      this.hurt,
       this.stats,
       this.timeline.root,
       h('div', { class: 'crosshair' }),
       this.flash,
+      this.health,
       this.weaponBar,
     );
     parent.append(this.root);
@@ -70,6 +80,20 @@ export class Hud {
 
   setVisible(v: boolean): void {
     this.root.classList.toggle('hidden', !v);
+  }
+
+  /** Player health 0..1 (null hides the bar). */
+  setHealth(frac: number | null): void {
+    this.health.classList.toggle('hidden', frac === null);
+    if (frac !== null) {
+      this.healthFill.style.width = `${Math.max(0, Math.min(1, frac)) * 100}%`;
+      this.healthFill.classList.toggle('low', frac < 0.3);
+    }
+  }
+
+  /** Red vignette of a hit, 0..1 (fades by itself). */
+  setHurt(amount: number): void {
+    this.hurt.style.opacity = String(Math.max(0, Math.min(0.85, amount)));
   }
 
   setMuzzleFlash(on: boolean): void {
@@ -112,6 +136,7 @@ export class Hud {
     lines.push(
       `player ${p.map((v) => v.toFixed(1)).join(' ')}${s.player.onGround ? '  ground' : ''}${s.player.noclip ? '  NOCLIP' : ''}`,
       `view   ${DEBUG_VIEW_NAMES[s.debugView]}`,
+      ...(s.extra ?? []),
     );
     this.stats.textContent = lines.join('\n');
 

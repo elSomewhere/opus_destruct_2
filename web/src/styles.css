@@ -327,3 +327,33 @@ button:hover {
   color: var(--error);
   white-space: pre-wrap;
 }
+
+/* player health and hits */
+.hud-health {
+  position: absolute;
+  left: 50%;
+  bottom: 44px;
+  width: 220px;
+  height: 8px;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.hud-health-fill {
+  height: 100%;
+  width: 100%;
+  background: #4fbf5a;
+  transition: width 0.15s;
+}
+.hud-health-fill.low {
+  background: #e0453a;
+}
+.hud-hurt {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  background: radial-gradient(ellipse at center, rgba(160, 0, 0, 0) 45%, rgba(170, 0, 0, 0.75) 100%);
+}

@@ -2,9 +2,13 @@
  * Game orchestration: wires engine messages to the renderer and effects, runs the frame
  * loop (input -> player -> weapons -> effects -> render -> HUD) and owns the UI.
  */
+import { ActorWorld, type PlayerView } from '../actors/actors.ts';
+import { WorldAccess } from '../actors/env.ts';
 import type { EngineClient } from '../engine/client.ts';
 import type { DebugView, EngineEvent, EngineParams, EngineStats, ProceduralKind, Vec3, WorldInfo } from '../engine/protocol.ts';
+import { Material } from '../engine/protocol.ts';
 import type { Renderer, RenderStats } from '../render/renderer.ts';
+import { CharacterPanel, type CharacterPanelState } from '../ui/characters.ts';
 import { Hud } from '../ui/hud.ts';
 import type { Overlay } from '../ui/overlay.ts';
 import { SettingsPanel } from '../ui/settings.ts';
@@ -26,6 +30,16 @@ export interface GameOptions {
 }
 
 const FOV_Y = (70 * Math.PI) / 180;
+const PLAYER_HEALTH = 100;
+
+/** Characters placed when a world loads: `?civilians=N&soldiers=M` override, `?actors=0` none. */
+function populationFor(kind: ProceduralKind | 'wad'): { civilians: number; soldiers: number; rMin: number; rMax: number } {
+  const url = new URLSearchParams(location.search);
+  const base = { rooms: [5, 3, 2, 12], city: [18, 8, 6, 34], tower: [12, 6, 6, 30], wad: [8, 6, 3, 24] }[kind];
+  const off = url.get('actors') === '0';
+  const num = (k: string, d: number): number => (off ? 0 : Math.max(0, Math.min(80, Number(url.get(k) ?? d) || 0)));
+  return { civilians: num('civilians', base[0]!), soldiers: num('soldiers', base[1]!), rMin: base[2]!, rMax: base[3]! };
+}
 const NEAR = 0.05;
 const HUD_INTERVAL_MS = 200;
 
@@ -40,6 +54,15 @@ export class Game {
   private readonly weapons: Weapons;
   private readonly hud: Hud;
   private readonly settings: SettingsPanel;
+  /** Soldiers and civilians (svx_anim characters driven by the actors layer). */
+  readonly actors: ActorWorld;
+  private readonly charPanel: CharacterPanel;
+  private charState: CharacterPanelState;
+  private playerHealth = PLAYER_HEALTH;
+  private hurt = 0;
+  private respawnAt = 0;
+  private populateAt = 0;
+  private worldKind: ProceduralKind | 'wad' = 'rooms';
   private readonly voxelSize: number;
   private readonly world: { kind: ProceduralKind; seed: number };
   private params: EngineParams;
@@ -83,6 +106,89 @@ export class Game {
           .catch((err: unknown) => this.overlay.toast(`Could not read ${file.name}: ${String(err)}`, 'error'));
       },
     });
+    // characters
+    const env = new WorldAccess(this.occupancy, this.voxelSize);
+    const player = this.player;
+    const self = this;
+    const playerView: PlayerView = {
+      get feet() {
+        return player.pos;
+      },
+      get forward() {
+        return player.forward();
+      },
+      get alive() {
+        return player.active && self.playerHealth > 0;
+      },
+      eye: () => player.eye(),
+      chest: () => {
+        const e = player.eye();
+        return [e[0], e[1], e[2] - 0.35];
+      },
+    };
+    const particles = this.renderer.particles;
+    this.actors = new ActorWorld(this.renderer.characters, env, playerView, {
+      carve: (pos, r) => this.engine.carve(pos, r),
+      impact: (pos, normal) => this.effects.bulletImpact({ pos, normal, distance: 0, material: Material.Concrete }),
+      hurtPlayer: (d) => this.hurtPlayer(d),
+      muzzleFlash: (pos, dir) => {
+        this.effects.light(pos, 1.1);
+        for (let k = 0; k < 4; k++) {
+          const v = 1.5 + Math.random() * 3;
+          particles.spawn({ pos, vel: [dir[0] * v, dir[1] * v, dir[2] * v], life: 0.05, size: 0.04 + Math.random() * 0.03, color: [3, 2, 0.8, 1], additive: true, gravity: 0 });
+        }
+      },
+      tracer: (from, to) => {
+        const d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
+        const len = Math.hypot(d[0]!, d[1]!, d[2]!);
+        const n = Math.min(40, Math.ceil(len / 0.6));
+        for (let k = 1; k <= n; k++) {
+          const t = k / (n + 1);
+          particles.spawn({ pos: [from[0] + d[0]! * t, from[1] + d[1]! * t, from[2] + d[2]! * t], vel: [0, 0, 0], life: 0.035 + 0.05 * t, size: 0.012, color: [4, 3, 1.4, 1], additive: true, gravity: 0 });
+        }
+      },
+      bloodMist: (pos, dir, amount) => {
+        for (let k = 0; k < 6 * amount; k++) {
+          const v = 0.4 + Math.random() * 1.6;
+          particles.spawn({
+            pos,
+            vel: [dir[0] * v + (Math.random() - 0.5), dir[1] * v + (Math.random() - 0.5), dir[2] * v + Math.random() * 0.5],
+            life: 0.4 + Math.random() * 0.6,
+            size: 0.05 + Math.random() * 0.08,
+            grow: 0.25,
+            color: [0.28, 0.01, 0.01, 0.75],
+            drag: 3,
+            gravity: 0.3,
+          });
+        }
+      },
+    }, this.renderer.islands);
+    this.charState = { ai: true, god: new URLSearchParams(location.search).get('god') === '1', style: (new URLSearchParams(location.search).get('anim') as CharacterPanelState['style']) ?? 'smooth' };
+    if (!['smooth', 'retro', 'retro-chunky'].includes(this.charState.style)) this.charState.style = 'smooth';
+    this.applyCharState();
+    this.charPanel = new CharacterPanel(this.charState, {
+      onChange: (st) => {
+        this.charState = st;
+        this.applyCharState();
+      },
+      onSpawn: (kind, n) => {
+        if (!this.info) return;
+        const placed = this.actors.populate(this.player.pos, kind === 'civilian' ? n : 0, kind === 'soldier' ? n : 0, 8, 30);
+        this.overlay.toast(`${placed} ${kind === 'civilian' ? 'civilians' : 'soldiers'} placed`, 'info', 2500);
+      },
+      onClear: () => this.actors.clear(),
+    });
+    this.settings.root.insertBefore(this.charPanel.root, this.settings.root.lastChild);
+    this.weapons.targets = {
+      hit: (origin, dir, maxDist) => {
+        const r = this.actors.raycast(origin, dir, maxDist);
+        if (!r) return null;
+        return { distance: r.hit.distance, apply: (damage, radius) => void this.actors.wound(r.actor, r.hit, [...dir], damage, [...this.player.pos], radius) };
+      },
+      blast: (pos, radius) => this.actors.blast([...pos], radius, 1),
+      fired: (pos) => this.actors.noise({ pos: [...pos], radius: 55, kind: 'shot', source: null }),
+    };
+
     this.input = new Input(opts.canvas, (locked) => {
       this.overlay.setPrompt(!locked && this.info !== null);
       this.settings.setVisible(!locked);
@@ -119,6 +225,8 @@ export class Game {
     // keeps the view clean if one does not.
     this.renderer.clearWorld();
     this.occupancy.clear();
+    this.actors.clear();
+    this.populateAt = 0;
     this.overlay.setLoading(text, 0.05);
     this.overlay.setPrompt(false);
   }
@@ -141,6 +249,9 @@ export class Game {
     });
     e.on('ready', (msg) => {
       this.info = msg.info;
+      this.worldKind = msg.info.textures ? 'wad' : this.world.kind;
+      this.playerHealth = PLAYER_HEALTH;
+      this.populateAt = performance.now() / 1000 + 1.0;
       this.player.spawn(msg.info.spawn.pos, msg.info.spawn.dir);
       this.overlay.setLoading('Streaming chunk meshes', 0.5);
       this.overlay.setPrompt(!this.input.locked);
@@ -239,6 +350,7 @@ export class Game {
     if (this.frameCount % 2 === 0) this.engine.viewer(eye, forward);
     this.effects.update(dt);
     this.renderer.particles.update(dt);
+    this.updateActors(dt, t / 1000);
 
     // Camera shake perturbs only the rendered view, not aiming.
     const shake = this.effects.shake(t / 1000);
@@ -257,6 +369,7 @@ export class Game {
       voxelSize: this.voxelSize,
     });
     this.hud.setMuzzleFlash(this.effects.muzzle > 0);
+    this.hud.setHurt(this.hurt);
     if (t - this.lastHud > HUD_INTERVAL_MS) {
       this.lastHud = t;
       this.updateHud();
@@ -280,7 +393,54 @@ export class Game {
       player: { pos: this.player.pos, onGround: this.player.onGround, noclip: this.player.noclip },
       debugView: this.params.debugView,
       rockets: this.weapons.liveRockets,
+      extra: [this.actorLine()],
     });
+  }
+
+  private actorLine(): string {
+    const s = this.actors.stats();
+    return `actors ${s.civilians} civilians  ${s.soldiers} soldiers  ${s.dead} dead  ${s.gibs} gibs  ${s.stains} stains  ${this.actors.shotsFired} rounds fired  health ${Math.max(0, Math.round(this.playerHealth))}${this.charState.god ? ' (god)' : ''}${s.bakes > 0 ? `  baking ${s.bakes}` : ''}`;
+  }
+
+  private applyCharState(): void {
+    const st = this.actors.settings;
+    st.ai = this.charState.ai;
+    st.playerDamage = !this.charState.god;
+    st.retro = this.charState.style !== 'smooth';
+    st.retroVoxel = this.charState.style === 'retro-chunky' ? 1 / 16 : 1 / 32;
+  }
+
+  private hurtPlayer(damage: number): void {
+    if (this.playerHealth <= 0 || !this.player.active) return;
+    this.playerHealth -= damage;
+    this.hurt = Math.min(1, this.hurt + 0.3 + damage / 40);
+    this.effects.addTrauma(0.12);
+    if (this.playerHealth <= 0) {
+      this.playerHealth = 0;
+      this.respawnAt = performance.now() / 1000 + 2.5;
+      this.overlay.toast('You were killed', 'error', 2500);
+    }
+  }
+
+  private updateActors(dt: number, now: number): void {
+    this.hurt = Math.max(0, this.hurt - dt * 1.2);
+    if (this.playerHealth <= 0 && this.respawnAt > 0 && now >= this.respawnAt) {
+      this.respawnAt = 0;
+      this.playerHealth = PLAYER_HEALTH;
+      this.player.respawn();
+    }
+    if (this.info && this.populateAt > 0 && now >= this.populateAt && (this.occupancy.ready || this.engine.kind === 'mock')) {
+      this.populateAt = 0;
+      const pop = populationFor(this.worldKind);
+      this.actors.populate(this.player.pos, pop.civilians, pop.soldiers, pop.rMin, pop.rMax);
+    }
+    this.actors.update(dt);
+    this.actors.draw();
+    this.hud.setHealth(this.info ? this.playerHealth / PLAYER_HEALTH : null);
+    if (this.frameCount % 15 === 0) {
+      const s = this.actors.stats();
+      this.charPanel.setInfo(`${s.civilians} civilians, ${s.soldiers} soldiers alive, ${s.dead} dead`);
+    }
   }
 
   /** Scriptable hooks for automated browser checks and console debugging. */
@@ -303,6 +463,15 @@ export class Game {
       },
       setDebugView: (v) => this.settings.setDebugView(v),
       load: (kind, seed) => this.loadProcedural(kind, seed),
+      spawn: (kind, n, rMin = 6, rMax = 30) => this.actors.populate(this.player.pos, kind === 'civilian' ? n : 0, kind === 'soldier' ? n : 0, rMin, rMax),
+      spawnAt: (kind, x, y, z, yaw = 0) => this.actors.spawn(kind, [x, y, z], yaw).id,
+      actors: () =>
+        this.actors.actors.map((a) => ({ id: a.id, faction: a.faction, alive: a.char.alive, pos: [...a.pos], state: a.brain.state, health: a.char.health })),
+      characters: (st) => {
+        this.charState = { ...this.charState, ...st };
+        this.applyCharState();
+      },
+      actorWorld: () => this.actors,
       state: () => ({
         ready: this.info !== null,
         player: [...this.player.pos],
@@ -329,6 +498,13 @@ export interface StructvoxDebugApi {
   collideLocal(min: Vec3, max: Vec3, move: Vec3): { move: Vec3; onGround: boolean } | null;
   setDebugView(v: DebugView): void;
   load(kind: ProceduralKind, seed: number): void;
+  /** Places n civilians or soldiers around the player; returns how many were placed. */
+  spawn(kind: 'civilian' | 'soldier', n: number, rMin?: number, rMax?: number): number;
+  spawnAt(kind: 'civilian' | 'soldier', x: number, y: number, z: number, yaw?: number): number;
+  actors(): { id: number; faction: string; alive: boolean; pos: number[]; state: string; health: number }[];
+  /** Character settings: AI, god mode, animation style. */
+  characters(st: Partial<CharacterPanelState>): void;
+  actorWorld(): ActorWorld;
   state(): {
     ready: boolean;
     player: number[];

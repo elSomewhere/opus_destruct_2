@@ -39,6 +39,20 @@ export const ROCKET_BLAST_RADIUS = 1.0;
 /** Joules passed with `blast` (roughly a quarter kilogram of TNT). */
 export const ROCKET_ENERGY_J = 1.0e6;
 const ROCKET_LIFETIME = 6;
+/** Damage of a round to characters (before hit zones: the head takes x4). */
+export const PISTOL_DAMAGE = 30;
+export const SHOTGUN_PELLET_DAMAGE = 14;
+
+/**
+ * Characters (or anything else) a round can hit before it reaches the world. `hit` is
+ * synchronous; the world's raycast is not, so the nearer of the two wins when it returns.
+ */
+export interface ShotTargets {
+  hit(origin: Vec3, dir: Vec3, maxDist: number): { distance: number; apply(damage: number, radius: number): void } | null;
+  blast(pos: Vec3, radius: number): void;
+  /** The player fired from here (noise). */
+  fired(pos: Vec3): void;
+}
 /** Length of each look-ahead raycast and how far ahead the path is kept verified. */
 const ROCKET_SEGMENT = 8;
 const ROCKET_LOOKAHEAD = 3;
@@ -81,6 +95,8 @@ export class Weapons {
   current: WeaponDef = WEAPONS[0]!;
   /** Shots fired (all weapons), for the HUD. */
   shots = 0;
+  /** What rounds can hit besides the world (the characters). */
+  targets: ShotTargets | null = null;
 
   constructor(engine: EngineClient, effects: Effects) {
     this.engine = engine;
@@ -124,13 +140,14 @@ export class Weapons {
     this.shots++;
     const muzzle: Vec3 = [eye[0] + forward[0] * 0.5, eye[1] + forward[1] * 0.5, eye[2] + forward[2] * 0.5 - 0.1];
     this.effects.muzzleFlash(muzzle);
+    this.targets?.fired(eye);
     switch (this.current.id) {
       case 'pistol':
-        this.hitscan(eye, jitter(forward, 0.004), PISTOL_CARVE_RADIUS);
+        this.hitscan(eye, jitter(forward, 0.004), PISTOL_CARVE_RADIUS, PISTOL_DAMAGE, 0.045);
         this.effects.addTrauma(0.05);
         break;
       case 'shotgun':
-        for (let k = 0; k < SHOTGUN_PELLETS; k++) this.hitscan(eye, jitter(forward, SHOTGUN_SPREAD), SHOTGUN_CARVE_RADIUS);
+        for (let k = 0; k < SHOTGUN_PELLETS; k++) this.hitscan(eye, jitter(forward, SHOTGUN_SPREAD), SHOTGUN_CARVE_RADIUS, SHOTGUN_PELLET_DAMAGE, 0.04);
         this.effects.addTrauma(0.18);
         break;
       case 'rocket':
@@ -149,10 +166,16 @@ export class Weapons {
     }
   }
 
-  private hitscan(eye: Vec3, dir: Vec3, radius: number): void {
+  private hitscan(eye: Vec3, dir: Vec3, radius: number, damage: number, woundRadius: number): void {
+    // a character in the way (found now, applied when the world's answer says it is nearer)
+    const body = this.targets?.hit(eye, dir, HITSCAN_RANGE) ?? null;
     this.engine
       .raycast(eye, dir, HITSCAN_RANGE)
       .then((hit: RaycastHit | null) => {
+        if (body && (!hit || body.distance < hit.distance)) {
+          body.apply(damage, woundRadius);
+          return;
+        }
         if (!hit) return;
         this.engine.carve(hit.pos, radius);
         this.effects.bulletImpact(hit);
@@ -179,7 +202,12 @@ export class Weapons {
             r.dead = true;
           });
       }
-      if (r.impact !== null && next >= r.impact) {
+      // a character on the rocket's path this frame
+      const body = this.targets?.hit(along(r, r.travelled), r.dir, next - r.travelled) ?? null;
+      if (body && (r.impact === null || r.travelled + body.distance < r.impact)) {
+        this.explode(along(r, r.travelled + body.distance));
+        r.dead = true;
+      } else if (r.impact !== null && next >= r.impact) {
         this.explode(along(r, r.impact));
         r.dead = true;
       } else if (r.age > ROCKET_LIFETIME) {
@@ -195,5 +223,6 @@ export class Weapons {
   private explode(pos: Vec3): void {
     this.effects.explosion(pos, ROCKET_BLAST_RADIUS);
     this.engine.blast(pos, ROCKET_BLAST_RADIUS, ROCKET_ENERGY_J);
+    this.targets?.blast(pos, ROCKET_BLAST_RADIUS);
   }
 }

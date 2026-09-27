@@ -319,14 +319,14 @@ export class Character {
     const reach = radius * 3.5;
     if (d > reach) return { damage: 0, killed: false, gibbed: false, gibs: [] };
     const f = Math.max(0, 1 - d / reach);
-    const damage = 260 * strength * f * f;
+    const damage = 330 * strength * f * f;
     const away = vnorm(vsub(c, center), [0, 0, 1]);
     const wasAlive = this.alive;
     this.health -= damage;
     this.flash = 1;
     const gibs: GibSpec[] = [];
     let gibbed = false;
-    if (this.health <= -60 || d < radius * 0.9) {
+    if (this.health <= -40 || d < radius * 1.3) {
       // torn apart: every part flies, the torso in chunks
       gibbed = true;
       this.ownModel();
