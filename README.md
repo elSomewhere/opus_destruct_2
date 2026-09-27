@@ -33,7 +33,9 @@ wall panels and blocks that settles and sleeps.
   reactions by where a blow lands, fight choreography, soldiers and civilians sculpted from
   voxels, voxel-exact wounds and severed limbs, ragdolls, gibs, blood, and a retro (Voxel Doom
   style) presentation baked from the smooth animation. In the game, civilians live a day in the
-  city (strolling, talking, sitting on benches and at café tables, the occasional brawl) and flee the fighting;
+  city (strolling, talking, sitting on benches and at café tables, the occasional brawl, now
+  and then tripping); thugs go for civilians, soldiers and the player with fists or knives (the
+  player has a knife too) and flee the fighting;
   soldiers fight the player from cover, kneeling or prone; the rounds carve the world, so the
   battle destroys the level. The animation lab (`/lab.html`) runs the characters without the
   physics engine.

@@ -25,7 +25,7 @@ anim/                 svx_anim (TypeScript, zero dependencies, runs in node, bro
   voxel/              VoxelModel, sculpting (SDF shapes), meshing, damage (hits, wounds, severing)
   physics/            CollisionWorld (the only view of the world), particle ragdoll, gibs and blood
   retro/              re-voxelized frames of poses, Doom-style state sequences and playback
-  characters/         procedural soldiers and civilians (many looks per geometry), weapons,
+  characters/         procedural soldiers, civilians and thugs (many looks per geometry), weapons,
                       furniture (benches, chairs, desks, café tables)
   character.ts        Character: model + animator + ragdoll + wounds + retro, what hosts drive
 web/src/render/characters.ts + shaders/character.wgsl   WebGPU drawing of svx_anim meshes
@@ -98,8 +98,11 @@ from it (section 6), so every improvement here shows in both.
 
 Calls: `play(name, target?)` (one-shot actions), `fire()` (recoil), `hitAt({point, dir, force,
 kind, bone})` (a hit reaction, returns the zone), `knockDown(back, seconds?)`,
-`takeKnockback(dt)` (hosts move the root by it), `takeEvents()` (strikes landing, reloads
-done).
+`stumble(dir, strength)` (thrown off balance: pushed its way, arms out, the trunk rocking, the
+feet stumbling after it; felled when strong), `trip(fall)` (a foot caught: pitching forward and
+catching itself with quick steps, or going down on its front), `flinch()` (a round or a blast
+close by), `takeKnockback(dt)` (hosts move the root by it), `takeEvents()` (strikes landing,
+reloads done).
 
 **Locomotion** is a foot planter driven by a gait clock (`locomotion/gait.ts`):
 
@@ -142,8 +145,9 @@ strike weights towards a target, elbow poles, trunk, head, pelvis, crouch, weapo
 events. A pose layer holds postures (guard, talking, idle poses); the action layer plays
 one-shots on top and blends out. Mirrored versions (`.m`) are generated.
 
-- **Strikes:** jab, cross, hook, uppercut, front kick, roundhouse; knife stab and slash; a rifle
-  butt push. Targeted strikes step in to a target out of reach: the pelvis drives forward with
+- **Strikes:** jab, cross, hook, uppercut, front kick, roundhouse; with a knife a stab, a
+  backhand slash, a forehand slash and an underhand gut stab (a knife holder's guard holds the
+  blade low and forward, the free hand up); a rifle butt push. Targeted strikes step in to a target out of reach: the pelvis drives forward with
   the blow, a punch leans the trunk into it, a kick thrusts the hips and meets the target with
   the ball of the foot (push kick) or the instep (roundhouse).
 - **Defence and weapons:** block, rifle and pistol reloads (with a `reloaded` event).
@@ -151,6 +155,10 @@ one-shots on top and blends out. Mirrored versions (`.m`) are generated.
   folded, looking at a phone), fidgets (checking the watch, scratching the head, stretching,
   rubbing the neck), waves, conversation gestures (open hands, pointing, shrugging, hand on
   the chest), nods, head shakes, laughing.
+- **A soldier's pauses:** catching a breath with the weapon lowered, a look round, setting the
+  helmet straight, wiping the brow, rolling the shoulders, checking the weapon; an armed body
+  standing easy (not aiming) picks these by itself now and then.
+- **Balance and reflexes:** flinch, stumble, trip.
 
 **Weapons** are separate one-bone prop models (`characters/props.ts`: rifle, SMG, light machine
 gun, pistol, knife; small props on a 1/64 m lattice) placed at the rig's `weapon` socket, with
@@ -282,17 +290,18 @@ The retro look is a function of the modern animation, not separate content (`ret
 
 - **Population.** When a world loads, characters are placed on standable ground around the
   player, with benches and café tables (a chair, a laptop, a cup) for the civilians:
-  - city: 18 civilians, 8 soldiers;
-  - tower: 12 civilians, 6 soldiers;
-  - rooms: 5 civilians, 3 soldiers;
-  - Doom maps: 8 civilians, 6 soldiers.
+  - city: 18 civilians, 8 soldiers, 3 thugs;
+  - tower: 12 civilians, 6 soldiers, 2 thugs;
+  - rooms: 5 civilians, 3 soldiers, 1 thug;
+  - Doom maps: 8 civilians, 6 soldiers, 2 thugs.
 
-  `?civilians=N&soldiers=M` overrides the counts and `?actors=0` places none. The settings
-  panel's Characters section adds more and clears them.
+  `?civilians=N&soldiers=M&thugs=K` overrides the counts and `?actors=0` places none. The
+  settings panel's Characters section adds more and clears them.
 - **Looks and loadouts** (`cast.ts`): every character gets a geometry, a palette and a
   personal gait style. Soldiers carry a rifle (55%), an SMG, a light machine gun or a pistol;
   about one civilian in eight carries a pistol, a few an SMG or a knife (kept out of sight until
-  needed). Weapons differ in damage, rate of fire, spread, magazine size and how much of the
+  needed). Thugs (heavier set, hoodies and dark jackets, beanies, caps, balaclavas; a swagger)
+  carry a knife most of the time, otherwise they use their fists. Weapons differ in damage, rate of fire, spread, magazine size and how much of the
   world a round carves.
 - **Navigation** (`nav.ts`) is A* over 0.25 m cells found on the fly from the occupancy (ground
   within a step, room above), with string-pulled paths. A straight walkable line needs no
@@ -323,6 +332,12 @@ The retro look is a function of the modern animation, not separate content (`ret
     their hands up when the player aims at them from close by (not while the player
     spectates in noclip). Armed civilians may draw and shoot back at soldiers firing nearby
     (then soldiers treat them as hostile).
+- **Thugs** (`thug.ts`): they loiter with a swagger, eyeing people, and pick a victim: the
+  player when close and in sight, civilians, now and then a soldier. They walk up, draw the
+  knife and shout (civilians close by run), then charge. Against a character they fight through
+  the brawls (guard, footwork, strikes, knife attacks, blocks); against the player they keep
+  close, circling, and strike and cut. Badly hurt, or under fire from soldiers, they run.
+  Soldiers engage thugs they see (the nearer threat before a player further off).
 - **Soldiers:**
   - patrol their post; gunfire, impacts, screams, shouts and bodies alert them and send them
     to look;
@@ -333,11 +348,21 @@ The retro look is a function of the modern animation, not separate content (`ret
     move or from the hip; machine gunners fire from the hip on the move; they reload (the
     magazine refills when the reload action says so) and don't fire with a friend in the line;
   - at arm's length they hit with the rifle butt (or punch, holding a pistol); they hunt the
-    last known position when they lose sight of their target.
+    last known position when they lose sight of their target;
+  - between bursts now and then, or with the target out of sight, they lower the weapon a
+    moment (a deep breath, a look round) and top up a half-empty magazine; standing easy they
+    fidget (helmet, brow, shoulders, weapon).
+- **Bodies with balance:** a blast staggers everyone around it away from it (thrown down when
+  close, flinching further off); a round smacking in close by makes people flinch; now and
+  then a foot catches (more often running, most when panicking, rarely a soldier): the body
+  pitches forward and catches itself, or goes down and gets up.
 - **Combat.** A round (theirs or the player's) hits the first thing on its line:
   - a character, voxel-exact: a wound, and a reaction by where it hit;
   - the player's capsule (health, a red vignette, respawn after death);
   - or the world, where it sends `carve` to the engine (about one world voxel per round).
+
+  The player has a knife too (key 4): a cut into whoever is within reach in front, carving the
+  voxel body open like the thugs' knives.
 
   The battle destroys the level: rounds break bonds and bring down storeys. Rockets tear
   characters apart and throw bodies. Falling rigid debris crushes characters, and a long fall
@@ -350,11 +375,12 @@ Controls and parameters, in addition to the game's:
 
 | | |
 |---|---|
-| `?civilians=N&soldiers=M`, `?actors=0` | initial population |
+| `?civilians=N&soldiers=M&thugs=K`, `?actors=0` | initial population (city: 18, 8, 3) |
 | `?anim=smooth\|retro\|retro-chunky` | animation presentation (also in the panel) |
 | `?god=1` | soldiers' rounds don't hurt the player (also in the panel) |
-| panel "Characters" | +6 civilians, +4 soldiers, clear, animation style, AI on/off, god mode |
-| `window.__structvox` | `spawn`, `spawnAt`, `actors`, `characters({ai, god, style})`, `actorWorld()`, `brawl(idA, idB)` |
+| panel "Characters" | +6 civilians, +4 soldiers, +3 thugs, clear, animation style, AI on/off, god mode |
+| key 4 | the knife |
+| `window.__structvox` | `spawn('civilian' \| 'soldier' \| 'thug', n)`, `spawnAt(kind, x, y, z)`, `actors`, `characters({ai, god, style})`, `actorWorld()`, `brawl(idA, idB)` |
 
 **The lab** (`/lab.html`) runs svx_anim without the physics engine: a test course (stairs,
 ramp, rubble, a wall corner, benches, a desk) and a scripted cast in four groups, each with a
@@ -365,8 +391,11 @@ camera bookmark:
   stairs;
 - **soldiers:** kneeling fire, prone, crawling, peeking round the corner, pistol walk-and-fire,
   one-handed pistol, machine gun from the hip, reloading, crouch-walk, patrol, sprint;
-- **fights:** two brawlers, a knife against an unarmed fighter (they reset after a while);
-- **reactions:** a line-up to shoot at.
+- **fights:** two brawlers, a knife against an unarmed fighter, a thug with a knife on a
+  civilian, a thug with his fists on a rifleman (they reset after a while);
+- **reactions:** a line-up to shoot at, a stumbler (pushed by pretend blasts, felled every third
+  time), a tripper (walking to and fro, now and then falling), a soldier at ease (fidgets,
+  breathers, reloads, flinches).
 
 Click a character to shoot it, shift-click the ground to fire a rocket; switch smooth / retro
 / chunky, change time scale (slow motion) or follow a character.
@@ -411,11 +440,12 @@ the blows that landed.
 ## 9. Tests and checks
 
 ```bash
-cd anim && npm install && npm test          # 62 unit tests: models, animator, IK, gait, stances, actions,
+cd anim && npm install && npm test          # 72 unit tests: models, animator, IK, gait, stances, actions,
                                             # reactions, weapons, strikes, brawls, ragdolls, damage, gibs, retro
 cd web && npm run typecheck && npm test     # includes typechecking anim/
 node scripts/smoke-actors.mjs http://localhost:5190/   # browser: population, fighting, kills, gibs, retro,
-                                            # city life (talking, benches), a brawl ending in a knockout, MAP01, lab
+                                            # city life (talking, benches), a brawl ending in a knockout,
+                                            # a thug going for a civilian, the player's knife, MAP01, lab
 ```
 
 `anim/test/behaviour.test.ts` checks the behaviours measurably, for example: stances reach
@@ -427,7 +457,9 @@ hand is on the handguard; a jab steps in to reach a head 0.95 m away and a push 
 a fist fight lands blows on both; the feet stay half a cycle apart walking and running; walking
 keeps the trunk upright; turning on the spot, the legs point with their feet, the trunk leads
 within its twist and the feet follow. `web/test/steer.test.ts` checks acceleration, braking,
-turn rates and path look-ahead. `anim/test/ragdoll-quality.test.ts` checks deaths (front, back,
+turn rates and path look-ahead. `anim/test/melee-balance.test.ts` checks the knife guard, that
+every knife attack reaches a body, a thug's knife fight, stumbles (caught, or felled), trips,
+flinches, the soldier's pauses and the thugs' looks. `anim/test/ragdoll-quality.test.ts` checks deaths (front, back,
 running, head shot, blast): no bone rolls more than 60° in a frame, bodies never bounce back up,
 they sleep on the ground, a body shot crumples over a good half second (never faster than a
 fall), bodies fall the way they were shot, and heads rest within the neck's range.

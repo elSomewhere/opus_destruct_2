@@ -21,6 +21,7 @@
  */
 import { vdist, vnorm, type V3 } from 'svx-anim';
 import type { Actor, ActorWorld, Noise, Seat } from './actors.ts';
+import { WEAPON_STATS } from './cast.ts';
 
 export interface Brain {
   /** ~10 Hz decisions. */
@@ -77,6 +78,10 @@ export class SoldierBrain implements Brain {
   private hold: 'stand' | 'crouch' | 'kneel' | 'prone' = 'stand';
   private peekSide = 0;
   private peekUntil = 0;
+  /** Seconds left of a breather (the weapon lowered), and the next look for hostiles. */
+  private breather = 0;
+  private scan = rnd(0, 0.5);
+  private burstDone = false;
   private popUp = false;
   private readonly crouchy = Math.random() < 0.6;
   private readonly aggressive = Math.random() < 0.4;
@@ -93,6 +98,24 @@ export class SoldierBrain implements Brain {
   think(a: Actor, w: ActorWorld, dt: number): void {
     // a dead or gone target: back to the player
     if (!targetAlive(w, this.target)) this.target = { kind: 'player' };
+    // hostiles (thugs, armed civilians) close by and in sight come before a player further off
+    this.scan -= dt;
+    if (this.scan <= 0) {
+      this.scan = 0.5;
+      const h = w.nearestHostile(a, 25);
+      if (h && (this.target.kind === 'player' || !targetAlive(w, this.target))) {
+        const dp = w.player.alive ? vdist(a.pos, w.player.feet) : Infinity;
+        if (vdist(a.pos, h.pos) < dp * 0.8) {
+          this.target = { kind: 'actor', actor: h };
+          if (this.state !== 'combat') {
+            this.state = 'combat';
+            this.reaction = rnd(0.3, 0.7);
+          }
+          this.lastSeen = [...h.pos];
+          this.seenAt = w.time;
+        }
+      }
+    }
     const chest = targetChest(w, this.target);
     const feet = targetFeet(w, this.target);
     const dist = vdist(a.pos, feet);
@@ -175,6 +198,7 @@ export class SoldierBrain implements Brain {
             }
             a.lookAt = p;
             this.lookTimer = rnd(1.8, 3.4);
+            if (chance(0.2)) a.char.animator.play('lookAround');
           }
         } else a.face = null;
         if (this.alertTime > 14) {
@@ -234,11 +258,26 @@ export class SoldierBrain implements Brain {
           }
         }
         const moving = !w.arrived(a);
+        // a breather: after a burst now and then, or with the target out of sight, the weapon comes
+        // down a moment (a deep breath, a look); a target showing up close ends it
+        const unseen = w.time - this.seenAt;
+        if (this.breather <= 0 && !moving && ((this.burstDone && chance(0.18)) || (unseen > 1.2 && unseen < 1.35 && chance(0.5)))) {
+          this.breather = rnd(1.2, 2.6);
+          if (chance(0.45)) a.char.animator.play('catchBreath');
+        }
+        this.burstDone = false;
+        if (this.breather > 0) {
+          this.breather -= dt;
+          if (this.seen && dist < 8) this.breather = 0;
+        }
+        // a half-empty magazine is topped up in a lull
+        const gunKind = a.char.weapon?.kind;
+        if (gunKind && gunKind !== 'knife' && !a.reloading && a.mag < WEAPON_STATS[gunKind].mag * 0.5 && (this.breather > 0 || unseen > 1.5) && !a.char.animator.busy) w.reload(a);
         const up = this.popUp && this.shotTimer > -0.6;
         a.stance = moving || up ? 'stand' : this.hold === 'kneel' ? 'kneel' : this.hold === 'prone' ? 'prone' : 'stand';
         a.crouch = !up && this.hold === 'crouch' ? 1 : moving && this.hold === 'crouch' ? 0.7 : 0;
         // aim while holding or walking; lower the weapon to run; machine guns fire from the hip on the move
-        a.carry = running ? 'ready' : a.weapon?.kind === 'lmg' && moving ? 'hip' : 'aim';
+        a.carry = running || (this.breather > 0 && !moving) ? 'ready' : a.weapon?.kind === 'lmg' && moving ? 'hip' : 'aim';
         if (this.popUp && this.burst <= 0 && this.pause > 0.3) this.popUp = false;
         break;
       }
@@ -268,7 +307,7 @@ export class SoldierBrain implements Brain {
     const an = a.char.animator;
     if (!this.seen || w.time - this.seenAt > 0.3 || this.reaction > 0 || this.aimTime < 0.35 || !targetAlive(w, this.target)) return;
     if (an.transitioning || an.knockedDown || (an.busy && an.actionName !== null && !an.actionName.startsWith('reload'))) return;
-    if (a.reloading) return;
+    if (a.reloading || this.breather > 0) return;
     if (this.burst <= 0) {
       this.pause -= dt;
       if (this.pause > 0) return;
@@ -284,6 +323,7 @@ export class SoldierBrain implements Brain {
     const spread = Math.max(0.006, 0.04 + 0.035 * moving + 0.012 * (d / 20) - 0.028 * steady - braced) * w.spreadOf(a);
     if (w.fireAt(a, target, spread)) {
       this.burst--;
+      if (this.burst <= 0) this.burstDone = true;
       this.shotTimer = w.intervalOf(a) * rnd(0.95, 1.25);
     } else this.burst = 0;
   }
@@ -661,7 +701,8 @@ export class CivilianBrain implements Brain {
     const d = vdist(a.pos, n.pos);
     if (d > n.radius) return;
     const near = 1 - d / n.radius;
-    const gain = { shot: 0.5, impact: 0.45, explosion: 1.4, death: 0.9, scream: 0.35, shout: 0.25, fight: 0.12 }[n.kind] * (0.4 + near) / this.bravery;
+    // (a thug shouting close by is a threat, not just noise)
+    const gain = ({ shot: 0.5, impact: 0.45, explosion: 1.4, death: 0.9, scream: 0.35, shout: 0.25, fight: 0.12 }[n.kind] * (0.4 + near) * (n.source?.faction === 'thug' ? 2.5 : 1)) / this.bravery;
     if (n.kind === 'fight') {
       // a fight nearby: heads turn to it; people walking by stop and watch (from a few metres)
       this.glanceAt = [n.pos[0], n.pos[1], n.pos[2]];

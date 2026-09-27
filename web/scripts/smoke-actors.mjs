@@ -3,7 +3,7 @@
  * Browser smoke test of the characters (svx_anim actors) in the real engine (?engine=wasm):
  * population, soldiers firing (their rounds carve the world), the player killing a soldier,
  * a rocket gibbing a group, the retro presentation, city life (conversations, benches, a brawl
- * ending in a knockout), the animation lab, and characters on a Freedoom map (when
+ * ending in a knockout), a thug going for a civilian, the player's knife, the animation lab, and characters on a Freedoom map (when
  * data/freedoom/freedoom2.wad exists). Fails on console / page / WebGPU
  * errors. Usage (dev server running): node scripts/smoke-actors.mjs [baseUrl] [outDir]
  */
@@ -172,7 +172,7 @@ try {
   check(fps > 20, `frame rate ${fps.toFixed(0)} fps`);
 
   // 6. city life without soldiers: conversations, benches, a brawl that ends in a knockout
-  await page.goto(`${base}?engine=wasm&world=city&seed=4&god=1&civilians=30&soldiers=0`, { waitUntil: 'load' });
+  await page.goto(`${base}?engine=wasm&world=city&seed=4&god=1&civilians=30&soldiers=0&thugs=0`, { waitUntil: 'load' });
   await waitFor(page, () => (window.__structvox?.actorWorld?.().stats().civilians ?? 0) >= 20, null, 60000, 'civilians populate the city');
   await page.evaluate(() => window.__structvox.noclip(true)); // a spectator frightens nobody
   const life = await waitFor(page, () => {
@@ -205,7 +205,45 @@ try {
   }, pair, 45000, 'the brawl ends');
   if (over) check(!over.dead, `the brawl ends (${over.a} / ${over.b}${over.ko ? ', knockout' : ''}), nobody beaten to death`);
 
-  // 7. Freedoom MAP01 with characters
+  // 7. thugs and knives: a thug goes for a civilian; the player's knife cuts
+  const thugFight = await page.evaluate(() => {
+    const sv = window.__structvox;
+    const p = sv.state().player;
+    const w = sv.actorWorld();
+    const victim = sv.spawnAt('civilian', p[0] + 4, p[1] + 2, p[2], 0);
+    const thug = sv.spawnAt('thug', p[0] + 9, p[1] + 2, p[2], Math.PI);
+    w.actors.find((x) => x.id === thug).weapon = w.cast.props.knife;
+    return { victim, thug };
+  });
+  const attacked = await waitFor(page, (ids) => {
+    const w = window.__structvox.actorWorld();
+    const v = w.actors.find((x) => x.id === ids.victim);
+    const t = w.actors.find((x) => x.id === ids.thug);
+    return v && t && (v.char.health < v.char.maxHealth || w.stats().fights > 0) ? { state: t.brain.state, knife: t.char.weapon?.kind ?? null } : null;
+  }, thugFight, 30000, 'a thug attacks a civilian');
+  if (attacked) check(true, `a thug attacks a civilian (${attacked.state}${attacked.knife ? ', knife out' : ''})`);
+  const knifed = await page.evaluate(async () => {
+    const sv = window.__structvox;
+    const w = sv.actorWorld();
+    sv.characters({ ai: false });
+    const p = sv.state().player;
+    const id = sv.spawnAt('civilian', p[0] + 1.2, p[1], p[2], Math.PI);
+    await new Promise((r) => setTimeout(r, 400));
+    const a = w.actors.find((x) => x.id === id);
+    const e = w.player.eye();
+    const c = a.char.pose.p[3];
+    sv.look((Math.atan2(c[1] - e[1], c[0] - e[0]) * 180) / Math.PI, (Math.atan2(c[2] - e[2], Math.hypot(c[0] - e[0], c[1] - e[1])) * 180) / Math.PI);
+    sv.select('knife');
+    const hp0 = a.char.health;
+    sv.fire();
+    await new Promise((r) => setTimeout(r, 300));
+    sv.select('pistol');
+    sv.characters({ ai: true });
+    return { hp0, hp: a.char.health };
+  });
+  check(knifed.hp < knifed.hp0, `the player's knife cuts (${knifed.hp0} -> ${Math.round(knifed.hp)} health)`);
+
+  // 8. Freedoom MAP01 with characters
   const wad = resolve('../data/freedoom/freedoom2.wad');
   if (existsSync(wad)) {
     await page.goto(`${base}?engine=wasm&world=rooms&god=1`, { waitUntil: 'load' });
@@ -223,7 +261,7 @@ try {
     await page.screenshot({ path: `${outDir}/07-map01.png` });
   } else console.log('skip Freedoom (run scripts/fetch_freedoom.sh)');
 
-  // 8. the animation lab (no engine)
+  // 9. the animation lab (no engine)
   const lab = await browser.newPage();
   watch(lab);
   await lab.goto(`${base}lab.html`, { waitUntil: 'load' });

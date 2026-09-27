@@ -50,6 +50,7 @@ import {
 import type { CharacterRenderer, GpuCharacterMesh } from '../render/characters.ts';
 import type { IslandRenderer } from '../render/islands.ts';
 import { CivilianBrain, SoldierBrain, type Brain, type Target } from './brain.ts';
+import { ThugBrain } from './thug.ts';
 import { Cast, WEAPON_STATS, type Faction, type Look } from './cast.ts';
 import type { WorldAccess } from './env.ts';
 import { Navigator } from './nav.ts';
@@ -175,7 +176,8 @@ interface GibUser {
 const DEFAULT_SETTINGS: ActorSettings = { ai: true, retro: false, retroVoxel: 1 / 32, maxCorpses: 40, playerDamage: true, roundCarve: 1, light: 1 };
 const BLOOD: [number, number, number] = [0.3, 0.012, 0.01];
 const RETRO_STEP = 4 / 35;
-const MELEE_FORCE: Record<string, number> = { riflePush: 1.4, cross: 1.2, jab: 0.8 };
+const MELEE_FORCE: Record<string, number> = { riflePush: 1.4, cross: 1.2, jab: 0.8, hook: 1.45, uppercut: 1.5, frontKick: 1.8, roundhouse: 2.2, stab: 1.1, slash: 0.9, gutStab: 1.2, forehandSlash: 0.95 };
+const BLADE_ACTIONS = new Set(['stab', 'slash', 'gutStab', 'forehandSlash']);
 
 export class ActorWorld {
   readonly env: WorldAccess;
@@ -223,7 +225,7 @@ export class ActorWorld {
     const weapon = this.cast.loadout(faction, seed);
     // soldiers hold their weapon; civilians keep theirs out of sight until they need it
     const held = faction === 'soldier' ? weapon : null;
-    const char = new Character({ model: look.model, palette: look.palette, collision: this.env, weapon: held, health: faction === 'soldier' ? 100 : 70, seed });
+    const char = new Character({ model: look.model, palette: look.palette, collision: this.env, weapon: held, health: faction === 'soldier' ? 100 : faction === 'thug' ? 90 : 70, seed });
     char.animator.style = look.style;
     char.place(pos, yaw);
     const a: Actor = {
@@ -231,7 +233,7 @@ export class ActorWorld {
       faction,
       look,
       char,
-      brain: faction === 'soldier' ? new SoldierBrain(pos) : new CivilianBrain(),
+      brain: faction === 'soldier' ? new SoldierBrain(pos) : faction === 'thug' ? new ThugBrain() : new CivilianBrain(),
       weapon,
       mag: weapon ? WEAPON_STATS[weapon.kind].mag : 0,
       reloading: false,
@@ -258,7 +260,7 @@ export class ActorWorld {
       turning: false,
       pace: 0.93 + Math.random() * 0.14,
       brawler: null,
-      hostile: false,
+      hostile: faction === 'thug',
       meleeTarget: null,
       stuck: 0,
       thinkAcc: Math.random() * 0.1,
@@ -277,8 +279,14 @@ export class ActorWorld {
    * (soldiers in a group further out), with benches and café tables for the civilians. Returns how many were
    * placed.
    */
-  populate(center: V3, civilians: number, soldiers: number, rMin = 6, rMax = 35): number {
+  populate(center: V3, civilians: number, soldiers: number, rMin = 6, rMax = 35, thugs = 0): number {
     let placed = 0;
+    for (let i = 0; i < thugs; i++) {
+      const p = this.nav.randomPoint(center, rMin, rMax, undefined, 30);
+      if (!p) continue;
+      this.spawn('thug', p, Math.random() * Math.PI * 2);
+      placed++;
+    }
     if (civilians > 0) {
       this.placeFurniture(this.cast.bench, center, Math.max(2, Math.round(civilians / 4)), rMin, rMax);
       this.placeFurniture(this.cast.table, center, Math.max(1, Math.round(civilians / 6)), rMin, rMax);
@@ -405,6 +413,36 @@ export class ActorWorld {
     }
   }
 
+  /** The nearest hostile (a thug, an armed civilian who shot at soldiers) `a` can see within r. */
+  nearestHostile(a: Actor, r: number): Actor | null {
+    let best: Actor | null = null;
+    let bd = r;
+    const eye = this.eyes(a);
+    for (const b of this.actors) {
+      if (b === a || !b.hostile || !b.char.alive || b.opacity < 0.5 || b.faction === a.faction) continue;
+      const d = vdist(a.pos, b.pos);
+      if (d >= bd || !this.env.lineOfSight(eye, b.char.animator.eyes())) continue;
+      bd = d;
+      best = b;
+    }
+    return best;
+  }
+
+  /** Takes the carried weapon in hand (a thug's knife, a civilian's pistol). */
+  drawWeapon(a: Actor): void {
+    if (!a.char.weapon && a.weapon) {
+      a.char.weapon = a.weapon;
+      a.char.animator.weapon = a.weapon;
+    }
+  }
+
+  /** Puts the weapon away (out of sight, still carried). */
+  holster(a: Actor): void {
+    if (a.faction === 'soldier' || !a.char.weapon) return;
+    a.char.weapon = null;
+    a.char.animator.weapon = null;
+  }
+
   /** Something worth a glance for `a`: the player close by, people near, a fight (eyes). */
   pointOfInterest(a: Actor): V3 | null {
     const pl = this.player;
@@ -490,6 +528,7 @@ export class ActorWorld {
         x.char.animator.weapon = x.weapon;
       }
       if (x.faction === 'civilian') (x.brain as CivilianBrain).brawl(x, y);
+      else if (x.faction === 'thug') (x.brain as ThugBrain).brawl(x, y);
       x.talk = null;
       this.stop(x);
     }
@@ -556,7 +595,8 @@ export class ActorWorld {
     return true;
   }
 
-  private reload(a: Actor): void {
+  /** Reloads the held gun (the action; the magazine refills when it says so). */
+  reload(a: Actor): void {
     const gun = a.char.weapon;
     if (!gun || a.reloading) return;
     if (a.char.animator.play(gun.kind === 'pistol' ? 'reloadPistol' : 'reloadRifle')) a.reloading = true;
@@ -584,6 +624,8 @@ export class ActorWorld {
         this.worldHits++;
       }
       this.hooks.impact(p, faceNormal(p, dir, this.env.h));
+      // a round smacking in close by makes people flinch
+      for (const b of this.actors) if (b !== shooter && b.char.alive && vdist(b.char.pose.p[3]!, p) < 1.6 && Math.random() < 0.7) b.char.animator.flinch();
       this.noise({ pos: p, radius: 10, kind: 'impact', source: shooter });
       return p;
     }
@@ -653,6 +695,18 @@ export class ActorWorld {
       if (wasAlive && !a.char.alive) this.onDeath(a, vnorm(vsub(a.pos, pos)));
       else if (wasAlive && this.settings.ai) a.brain.hurt(a, pos, this, null);
     }
+    // the blast's push: the living stagger away from it (thrown down when close; the hurt are
+    // already reeling from the hit), those further off flinch
+    for (const a of this.actors) {
+      if (!a.char.alive || a.opacity < 0.5 || a.char.animator.knockedDown) continue;
+      const c = a.char.pose.p[3]!;
+      const d = vdist(c, pos);
+      const reach = radius * 4 + 2;
+      if (d > reach * 1.5) continue;
+      const push = strength * 2.3 * (1 - d / reach);
+      if (push > 0.3) a.char.animator.stumble([c[0] - pos[0], c[1] - pos[1], 0], push);
+      else a.char.animator.flinch();
+    }
     this.gibs.impulse(pos, radius * 4, 11 * strength);
     this.noise({ pos, radius: 70, kind: 'explosion', source: null });
   }
@@ -714,6 +768,12 @@ export class ActorWorld {
           a.brawler?.update(dt);
         }
         this.move(a, dt);
+        // now and then a foot catches: more often running, most when panicking (rarely a soldier)
+        const hs = Math.hypot(a.vel[0], a.vel[1]);
+        if (hs > 1.2 && a.onGround && !an.busy && an.stance === 'stand' && !a.brawler && !an.knockedDown) {
+          const perSecond = hs > 2.6 ? (a.mood === 'panic' ? 1 / 30 : 1 / 80) : 1 / 400;
+          if (Math.random() < (a.faction === 'soldier' ? 0.2 : 1) * perSecond * dt) an.trip(hs > 2.6 && Math.random() < 0.4);
+        }
         const inp = an.input;
         inp.crouch = a.crouch;
         inp.carry = a.carry;
@@ -755,6 +815,41 @@ export class ActorWorld {
     this.fadeCorpses(dt);
   }
 
+  /**
+   * The player's knife: a cut into whoever is within reach in front (on the line of sight, or a
+   * little off it). Returns whether it cut someone.
+   */
+  playerMelee(origin: V3, dir: V3, reach = 1.9): boolean {
+    let target: { a: Actor; point: V3 } | null = null;
+    const hit = this.raycast(origin, dir, reach);
+    if (hit) target = { a: hit.actor, point: hit.hit.point };
+    else {
+      let best = Infinity;
+      for (const a of this.actors) {
+        if (!a.char.alive || a.opacity < 0.5) continue;
+        const c = a.char.pose.p[3]!;
+        const v = vsub(c, origin);
+        const d = Math.hypot(v[0], v[1], v[2]);
+        if (d > reach + 0.2 || d < 1e-3) continue;
+        if ((v[0] * dir[0] + v[1] * dir[1] + v[2] * dir[2]) / d < 0.8) continue;
+        if (d < best) {
+          best = d;
+          target = { a, point: [c[0], c[1], c[2] + 0.1] };
+        }
+      }
+    }
+    this.noise({ pos: [origin[0], origin[1], origin[2]], radius: 6, kind: 'fight', source: null });
+    if (!target) return false;
+    const { a, point } = target;
+    const wasAlive = a.char.alive;
+    const r = a.char.melee(point, dir, 'blade', 1.3);
+    if (wasAlive) this.bleed(a, point, dir, r.removed.slice(0, 10), 1);
+    for (const g of r.gibs) this.spawnGib(g, a, 30);
+    if (wasAlive && r.killed) this.onDeath(a, dir);
+    else if (wasAlive && this.settings.ai) a.brain.hurt(a, this.player.feet, this, null);
+    return true;
+  }
+
   /** Animation events: reloads done, blows landing. */
   private handleEvents(a: Actor): void {
     const events = a.char.animator.takeEvents();
@@ -784,16 +879,21 @@ export class ActorWorld {
       const dir = vnorm(vsub(e.target ?? e.pos, a.char.pose.p[3]!));
       if (t.kind === 'player') {
         const chest = this.player.chest();
-        if (vdist(e.pos, chest) < 0.55 || vdist(e.pos, this.player.eye()) < 0.45) {
-          if (this.settings.playerDamage) this.hooks.hurtPlayer(10 * force, a.pos);
-          this.hooks.pushPlayer([dir[0] * 3 * force, dir[1] * 3 * force, 0.5]);
+        if (vdist(e.pos, chest) < 0.6 || vdist(e.pos, this.player.eye()) < 0.5) {
+          const blade = BLADE_ACTIONS.has(e.action.replace('.m', ''));
+          if (this.settings.playerDamage) this.hooks.hurtPlayer((blade ? 13 : 9) * force, a.pos);
+          if (blade) this.hooks.bloodMist(e.pos, dir, 1);
+          this.hooks.pushPlayer([dir[0] * (blade ? 1 : 3) * force, dir[1] * (blade ? 1 : 3) * force, 0.4]);
         }
       } else {
         const v = t.actor;
         const bone = v.char.animator.nearestBone(e.pos);
         const bp = v.char.pose.p[bone]!;
         if (vdist(e.pos, bp) < 0.45) {
-          const r = v.char.melee(e.pos, dir, 'blunt', force);
+          const blade = BLADE_ACTIONS.has(e.action.replace('.m', '')) && a.char.weapon?.kind === 'knife';
+          const r = v.char.melee(e.pos, dir, blade ? 'blade' : 'blunt', force);
+          if (blade) this.bleed(v, e.pos, dir, r.removed.slice(0, 8), 1);
+          for (const g of r.gibs) this.spawnGib(g, v, 30);
           if (r.killed) this.onDeath(v, dir);
           else if (this.settings.ai) v.brain.hurt(v, a.pos, this, a);
         }
@@ -942,7 +1042,8 @@ export class ActorWorld {
         if (!a.turning && off < 0.35) wantYaw = null;
         a.turning = off > 0.05 && (a.turning || off >= 0.35);
       } else a.turning = false;
-    } else if (hsNow > 0.3 && !locked) wantYaw = Math.atan2(a.vel[1], a.vel[0]);
+    } else if (wantDir && !locked) wantYaw = Math.atan2(wantDir[1], wantDir[0]);
+    else if (hsNow > 0.3 && !locked) wantYaw = Math.atan2(a.vel[1], a.vel[0]);
     if (wantYaw !== null && !(locked && settled !== 'kneel' && settled !== 'prone')) {
       const t = turn(a.yaw, a.yawRate, wantYaw, dt, maxRate * (settled === 'prone' ? 0.3 : 1), accel);
       a.yaw = t.yaw;
@@ -1053,16 +1154,17 @@ export class ActorWorld {
     return a.own.mesh;
   }
 
-  stats(): { civilians: number; soldiers: number; dead: number; gibs: number; stains: number; bakes: number; fights: number; talking: number; sitting: number } {
-    let civilians = 0, soldiers = 0, dead = 0, talking = 0, sitting = 0;
+  stats(): { civilians: number; soldiers: number; thugs: number; dead: number; gibs: number; stains: number; bakes: number; fights: number; talking: number; sitting: number } {
+    let civilians = 0, soldiers = 0, thugs = 0, dead = 0, talking = 0, sitting = 0;
     for (const a of this.actors) {
       if (!a.char.alive) dead++;
       else if (a.faction === 'soldier') soldiers++;
+      else if (a.faction === 'thug') thugs++;
       else civilians++;
       if (a.char.alive && a.talk) talking++;
       if (a.char.alive && a.char.animator.stance === 'sit') sitting++;
     }
-    return { civilians, soldiers, dead, gibs: this.gibs.gibs.length, stains: this.gibs.stains.length, bakes: this.cast.pendingBakes, fights: this.fights.length, talking, sitting };
+    return { civilians, soldiers, thugs, dead, gibs: this.gibs.gibs.length, stains: this.gibs.stains.length, bakes: this.cast.pendingBakes, fights: this.fights.length, talking, sitting };
   }
 }
 

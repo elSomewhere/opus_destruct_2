@@ -32,13 +32,16 @@ export interface GameOptions {
 const FOV_Y = (70 * Math.PI) / 180;
 const PLAYER_HEALTH = 100;
 
-/** Characters placed when a world loads: `?civilians=N&soldiers=M` override, `?actors=0` none. */
-function populationFor(kind: ProceduralKind | 'wad'): { civilians: number; soldiers: number; rMin: number; rMax: number } {
+/**
+ * Characters placed when a world loads: `?civilians=N&soldiers=M&thugs=K` override, `?actors=0`
+ * none.
+ */
+function populationFor(kind: ProceduralKind | 'wad'): { civilians: number; soldiers: number; thugs: number; rMin: number; rMax: number } {
   const url = new URLSearchParams(location.search);
-  const base = { rooms: [5, 3, 2, 12], city: [18, 8, 6, 34], tower: [12, 6, 6, 30], wad: [8, 6, 3, 24] }[kind];
+  const base = { rooms: [5, 3, 1, 2, 12], city: [18, 8, 3, 6, 34], tower: [12, 6, 2, 6, 30], wad: [8, 6, 2, 3, 24] }[kind];
   const off = url.get('actors') === '0';
   const num = (k: string, d: number): number => (off ? 0 : Math.max(0, Math.min(80, Number(url.get(k) ?? d) || 0)));
-  return { civilians: num('civilians', base[0]!), soldiers: num('soldiers', base[1]!), rMin: base[2]!, rMax: base[3]! };
+  return { civilians: num('civilians', base[0]!), soldiers: num('soldiers', base[1]!), thugs: num('thugs', base[2]!), rMin: base[3]!, rMax: base[4]! };
 }
 const NEAR = 0.05;
 const HUD_INTERVAL_MS = 200;
@@ -184,8 +187,8 @@ export class Game {
       },
       onSpawn: (kind, n) => {
         if (!this.info) return;
-        const placed = this.actors.populate(this.player.pos, kind === 'civilian' ? n : 0, kind === 'soldier' ? n : 0, 8, 30);
-        this.overlay.toast(`${placed} ${kind === 'civilian' ? 'civilians' : 'soldiers'} placed`, 'info', 2500);
+        const placed = this.actors.populate(this.player.pos, kind === 'civilian' ? n : 0, kind === 'soldier' ? n : 0, 8, 30, kind === 'thug' ? n : 0);
+        this.overlay.toast(`${placed} ${kind === 'civilian' ? 'civilians' : kind === 'soldier' ? 'soldiers' : 'thugs'} placed`, 'info', 2500);
       },
       onClear: () => this.actors.clear(),
     });
@@ -198,6 +201,7 @@ export class Game {
       },
       blast: (pos, radius) => this.actors.blast([...pos], radius, 1),
       fired: (pos) => this.actors.noise({ pos: [...pos], radius: 55, kind: 'shot', source: null }),
+      melee: (origin, dir) => this.actors.playerMelee([...origin], [...dir]),
     };
 
     this.input = new Input(opts.canvas, (locked) => {
@@ -414,7 +418,7 @@ export class Game {
 
   private actorLine(): string {
     const s = this.actors.stats();
-    return `actors ${s.civilians} civilians  ${s.soldiers} soldiers  ${s.dead} dead  ${s.gibs} gibs  ${s.stains} stains  ${this.actors.shotsFired} rounds fired  health ${Math.max(0, Math.round(this.playerHealth))}${this.charState.god ? ' (god)' : ''}${s.bakes > 0 ? `  baking ${s.bakes}` : ''}`;
+    return `actors ${s.civilians} civilians  ${s.soldiers} soldiers  ${s.thugs} thugs  ${s.dead} dead  ${s.gibs} gibs  ${s.stains} stains  ${this.actors.shotsFired} rounds fired  health ${Math.max(0, Math.round(this.playerHealth))}${this.charState.god ? ' (god)' : ''}${s.bakes > 0 ? `  baking ${s.bakes}` : ''}`;
   }
 
   private applyCharState(): void {
@@ -447,14 +451,14 @@ export class Game {
     if (this.info && this.populateAt > 0 && now >= this.populateAt && (this.occupancy.ready || this.engine.kind === 'mock')) {
       this.populateAt = 0;
       const pop = populationFor(this.worldKind);
-      this.actors.populate(this.player.pos, pop.civilians, pop.soldiers, pop.rMin, pop.rMax);
+      this.actors.populate(this.player.pos, pop.civilians, pop.soldiers, pop.rMin, pop.rMax, pop.thugs);
     }
     this.actors.update(dt);
     this.actors.draw();
     this.hud.setHealth(this.info ? this.playerHealth / PLAYER_HEALTH : null);
     if (this.frameCount % 15 === 0) {
       const s = this.actors.stats();
-      this.charPanel.setInfo(`${s.civilians} civilians, ${s.soldiers} soldiers alive, ${s.dead} dead`);
+      this.charPanel.setInfo(`${s.civilians} civilians, ${s.soldiers} soldiers, ${s.thugs} thugs alive, ${s.dead} dead`);
     }
   }
 
@@ -478,7 +482,7 @@ export class Game {
       },
       setDebugView: (v) => this.settings.setDebugView(v),
       load: (kind, seed) => this.loadProcedural(kind, seed),
-      spawn: (kind, n, rMin = 6, rMax = 30) => this.actors.populate(this.player.pos, kind === 'civilian' ? n : 0, kind === 'soldier' ? n : 0, rMin, rMax),
+      spawn: (kind, n, rMin = 6, rMax = 30) => this.actors.populate(this.player.pos, kind === 'civilian' ? n : 0, kind === 'soldier' ? n : 0, rMin, rMax, kind === 'thug' ? n : 0),
       spawnAt: (kind, x, y, z, yaw = 0) => this.actors.spawn(kind, [x, y, z], yaw).id,
       actors: () =>
         this.actors.actors.map((a) => ({ id: a.id, faction: a.faction, alive: a.char.alive, pos: [...a.pos], state: a.brain.state, health: a.char.health })),
@@ -521,8 +525,9 @@ export interface StructvoxDebugApi {
   setDebugView(v: DebugView): void;
   load(kind: ProceduralKind, seed: number): void;
   /** Places n civilians or soldiers around the player; returns how many were placed. */
-  spawn(kind: 'civilian' | 'soldier', n: number, rMin?: number, rMax?: number): number;
-  spawnAt(kind: 'civilian' | 'soldier', x: number, y: number, z: number, yaw?: number): number;
+  /** Places n civilians, soldiers or thugs around the player; returns how many were placed. */
+  spawn(kind: 'civilian' | 'soldier' | 'thug', n: number, rMin?: number, rMax?: number): number;
+  spawnAt(kind: 'civilian' | 'soldier' | 'thug', x: number, y: number, z: number, yaw?: number): number;
   actors(): { id: number; faction: string; alive: boolean; pos: number[]; state: string; health: number }[];
   /** Character settings: AI, god mode, animation style. */
   characters(st: Partial<CharacterPanelState>): void;

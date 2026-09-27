@@ -1,6 +1,6 @@
 /**
- * The "Characters" section of the settings panel: populate the world with civilians and
- * soldiers, AI on/off, god mode, and the animation presentation (smooth, or retro: baked
+ * The "Characters" section of the settings panel: populate the world with civilians,
+ * soldiers and thugs, AI on/off, god mode, and the animation presentation (smooth, or retro: baked
  * whole-body voxel frames stepped in Doom tics with 8-way facing, fine or chunky voxels).
  */
 import { h } from './dom.ts';
@@ -13,7 +13,7 @@ export interface CharacterPanelState {
 
 export interface CharacterPanelCallbacks {
   onChange(s: CharacterPanelState): void;
-  onSpawn(kind: 'civilian' | 'soldier', count: number): void;
+  onSpawn(kind: 'civilian' | 'soldier' | 'thug', count: number): void;
   onClear(): void;
 }
 
@@ -58,7 +58,7 @@ export class CharacterPanel {
       'section',
       {},
       h('h2', {}, 'Characters'),
-      h('div', { class: 'row' }, btn('+6 civilians', () => cb.onSpawn('civilian', 6)), btn('+4 soldiers', () => cb.onSpawn('soldier', 4)), btn('clear', cb.onClear)),
+      h('div', { class: 'row' }, btn('+6 civilians', () => cb.onSpawn('civilian', 6)), btn('+4 soldiers', () => cb.onSpawn('soldier', 4)), btn('+3 thugs', () => cb.onSpawn('thug', 3)), btn('clear', cb.onClear)),
       h('label', { class: 'row' }, h('span', {}, 'Animation'), style),
       h('label', { class: 'row' }, h('span', {}, 'AI'), ai, h('span', {}, 'God mode'), god),
       this.info,

@@ -6,8 +6,11 @@
  *   waiting (idle postures and fidgets), strollers, a commuter, a jogger and a runner;
  * - soldiers: kneeling fire, prone and crawling, peeking round a corner, a pistol shooter
  *   walking while firing, machine-gun hip fire, reloading, crouch-walking, a patrol, a sprint;
- * - fights: a fist fight and a knife fight (Brawler), with hits landing where they land;
- * - reactions: a line-up to shoot at (click: shoot where you click; shift-click: rocket).
+ * - fights (Brawler, hits landing where they land): a fist fight, a knife against fists, and
+ *   thugs: one with a knife on a civilian, one with his fists on a soldier;
+ * - reactions: a line-up to shoot at (click: shoot where you click; shift-click: rocket), a
+ *   stumbler (pushed by pretend blasts), a tripper, a soldier at ease (fidgets, breathers,
+ *   reloads, flinches).
  * Smooth or retro presentation, time scale. `window.__lab` drives it from scripts.
  */
 import '../styles.css';
@@ -24,6 +27,7 @@ import {
   makePistol,
   makeRifle,
   makeSoldier,
+  makeThug,
   meshPart,
   ModelMesher,
   qrotate,
@@ -158,7 +162,7 @@ async function main(): Promise<void> {
   const spawn = (s: Spec, index: number): Actor => {
     const variant = s.variant();
     const char = new Character({ model: variant.model, palette: variant.palette, collision, weapon: s.prop, seed: index + 1 });
-    char.animator.style = randomStyle(index * 17 + 3, variant.spec.name.startsWith('soldier') ? 'soldier' : variant.spec.female ? 'civilianFemale' : 'civilian');
+    char.animator.style = randomStyle(index * 17 + 3, variant.spec.name.startsWith('soldier') ? 'soldier' : variant.spec.name.startsWith('thug') ? 'thug' : variant.spec.female ? 'civilianFemale' : 'civilian');
     const pos: V3 = [s.pos[0], s.pos[1], groundAt(s.pos[0], s.pos[1], 1)];
     char.place(pos, s.yaw);
     const a: Actor = { name: s.name, group: s.group, variant, prop: s.prop, char, palette: cc.palette(variant.palette), script: s.script, pos, yaw: s.yaw, vel: [0, 0], yawRate: 0, cool: 0, brawler: null, own: null, propSkin: new Float32Array(16), stepSkin: new Float32Array(char.skin.length) };
@@ -440,11 +444,11 @@ async function main(): Promise<void> {
   add({ name: 'sprint', group: 'soldiers', variant: () => makeSoldier(12), prop: props.rifle, pos: [11, 11, 0], yaw: 0, script: circle(8, 11, 3, 5) });
 
   // ---- fights -------------------------------------------------------------------------------
-  const fighter = (name: string, other: string, x: number, y: number, yaw: number, seed: number, prop: Prop | null, soldier = false): void => {
+  const fighter = (name: string, other: string, x: number, y: number, yaw: number, seed: number, prop: Prop | null, kind: boolean | 'thug' = false): void => {
     add({
       name,
       group: 'fights',
-      variant: () => (soldier ? makeSoldier(seed) : makeCivilian(seed)),
+      variant: () => (kind === 'thug' ? makeThug(seed) : kind ? makeSoldier(seed) : makeCivilian(seed)),
       prop,
       pos: [x, y, 0],
       yaw,
@@ -468,6 +472,78 @@ async function main(): Promise<void> {
   fighter('brawler B', 'brawler A', 12.8, -10, Math.PI, 71, null);
   fighter('knife', 'unarmed', 11.8, -13.2, 0, 72, props.knife);
   fighter('unarmed', 'knife', 12.7, -13.2, Math.PI, 73, null, true);
+  // thugs: one with a knife on a civilian, one with his fists on a soldier (the rifle butt)
+  fighter('thug knife', 'victim', 14.6, -10, 0, 74, props.knife, 'thug');
+  fighter('victim', 'thug knife', 15.5, -10, Math.PI, 75, null);
+  fighter('thug fists', 'rifleman', 14.6, -13.2, 0, 76, null, 'thug');
+  fighter('rifleman', 'thug fists', 15.5, -13.2, Math.PI, 77, props.rifle, true);
+
+  // ---- balance, reflexes and a soldier's pauses ------------------------------------------------
+  // pushed by pretend blasts: staggers, and every third time off its feet
+  add({
+    name: 'stumbler',
+    group: 'reactions',
+    variant: () => makeCivilian(82),
+    prop: null,
+    pos: [-1.5, 4.8, 0],
+    yaw: -Math.PI / 2,
+    script: (a, t, dt) => {
+      const k = Math.floor(t / 4.5);
+      if (Math.floor((t - dt) / 4.5) !== k && k > 0) {
+        const ang = k * 2.1;
+        a.char.animator.stumble([Math.cos(ang), Math.sin(ang), 0], k % 3 === 0 ? 2.1 : 1.1);
+      }
+      // walk back to the spot between pushes
+      if (!a.char.animator.knockedDown && !a.char.animator.busy) moveTo(a, -1.5, 4.8, 0.8, dt, true, true);
+    },
+  });
+  // walking to and fro: now and then a foot catches (and every so often it goes down)
+  add({
+    name: 'tripper',
+    group: 'reactions',
+    variant: () => makeCivilian(83),
+    prop: null,
+    pos: [-3, 6.4, 0],
+    yaw: 0,
+    script: (() => {
+      const walk = waypoints([[3, 6.4], [-3, 6.4]], 1.6);
+      let next = 3;
+      let count = 0;
+      return (a: Actor, t: number, dt: number): void => {
+        const an = a.char.animator;
+        if (an.knockedDown || an.transitioning) return;
+        walk(a, t, dt);
+        if (t > next) {
+          next = t + 3.5 + Math.random() * 2;
+          count++;
+          an.trip(count % 3 === 0);
+        }
+      };
+    })(),
+  });
+  // a soldier at ease: fidgets by itself; now and then a breath, a reload, a flinch
+  add({
+    name: 'soldier at ease',
+    group: 'reactions',
+    variant: () => makeSoldier(15),
+    prop: props.rifle,
+    pos: [1.2, 4.8, 0],
+    yaw: -Math.PI / 2,
+    script: (() => {
+      let next = 6;
+      let k = 0;
+      return (a: Actor, t: number): void => {
+        inp(a).carry = 'ready';
+        const an = a.char.animator;
+        if (t > next && !an.busy) {
+          next = t + 5 + Math.random() * 3;
+          const what = ['catchBreath', 'reloadRifle', 'flinch', 'lookAround'][k++ % 4]!;
+          if (what === 'flinch') an.flinch();
+          else an.play(what);
+        }
+      };
+    })(),
+  });
 
   // ---- reactions line-up ---------------------------------------------------------------------
   const lineup: [string, () => HumanVariant, Prop | null][] = [
@@ -530,7 +606,7 @@ async function main(): Promise<void> {
     overview: { target: [0, 0, 0.5], dist: 30, yaw: -Math.PI / 2 - 0.25, pitch: 0.75 },
     city: { target: [-8.5, 12, 0.8], dist: 11, yaw: Math.PI / 2 + 0.12, pitch: 0.32 },
     soldiers: { target: [-5, -11, 0.7], dist: 12, yaw: -Math.PI / 2 + 0.35, pitch: 0.38 },
-    fights: { target: [12.3, -11.6, 0.9], dist: 5.5, yaw: -Math.PI / 2 - 0.5, pitch: 0.22 },
+    fights: { target: [13.6, -11.6, 0.9], dist: 8, yaw: -Math.PI / 2 - 0.5, pitch: 0.3 },
     reactions: { target: [0.5, 1, 1.0], dist: 5.5, yaw: -Math.PI / 2 - 0.2, pitch: 0.12 },
   };
   const setView = (g: Group | 'overview'): void => {

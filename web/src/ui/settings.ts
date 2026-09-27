@@ -128,7 +128,7 @@ export class SettingsPanel {
       h(
         'p',
         { class: 'help' },
-        'Click the view to play. WASD move, mouse look, Space jump, Shift run, 1/2/3 or wheel weapons, ' +
+        'Click the view to play. WASD move, mouse look, Space jump, Shift run, 1/2/3/4 or wheel weapons (4: knife), ' +
           'click fire, E use (doors, lifts, switches), G debug view, V noclip, R respawn, H hud, Esc menu.',
       ),
     );

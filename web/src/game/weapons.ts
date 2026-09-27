@@ -1,6 +1,7 @@
 /**
  * Weapons, mapped onto the engine's damage commands (docs/API.md):
  * - pistol and shotgun are hitscan: `raycast`, then `carve` a small sphere at the hit;
+ * - the knife cuts whoever is within reach in front (characters only: it leaves the world alone);
  * - the rocket launcher fires a visible projectile. It flies straight, so its path is
  *   verified with look-ahead `raycast`s along its line; when it reaches the first hit it
  *   explodes locally at once (effects within a frame) and sends `blast`.
@@ -10,7 +11,7 @@ import type { RaycastHit, Vec3 } from '../engine/protocol.ts';
 import { cross, normalize } from '../render/math.ts';
 import type { Effects } from './effects.ts';
 
-export type WeaponId = 'pistol' | 'shotgun' | 'rocket';
+export type WeaponId = 'pistol' | 'shotgun' | 'rocket' | 'knife';
 
 export interface WeaponDef {
   id: WeaponId;
@@ -27,6 +28,7 @@ export const WEAPONS: readonly WeaponDef[] = [
   { id: 'pistol', name: 'Pistol', key: 'Digit1', cooldown: 0.16, auto: false },
   { id: 'shotgun', name: 'Shotgun', key: 'Digit2', cooldown: 0.75, auto: false },
   { id: 'rocket', name: 'Rocket launcher', key: 'Digit3', cooldown: 0.7, auto: true },
+  { id: 'knife', name: 'Knife', key: 'Digit4', cooldown: 0.45, auto: true },
 ];
 
 export const HITSCAN_RANGE = 250;
@@ -52,6 +54,8 @@ export interface ShotTargets {
   blast(pos: Vec3, radius: number): void;
   /** The player fired from here (noise). */
   fired(pos: Vec3): void;
+  /** A knife cut from `origin` along `dir` into whoever is within reach; whether it cut someone. */
+  melee?(origin: Vec3, dir: Vec3): boolean;
 }
 /** Length of each look-ahead raycast and how far ahead the path is kept verified. */
 const ROCKET_SEGMENT = 8;
@@ -138,6 +142,12 @@ export class Weapons {
   /** Fires the current weapon along `forward` from `eye` (also used by the debug API). */
   fire(eye: Vec3, forward: Vec3): void {
     this.shots++;
+    if (this.current.id === 'knife') {
+      // a cut: no flash, no noise beyond the scuffle; a jolt when it lands
+      const cut = this.targets?.melee?.(eye, normalize(forward)) ?? false;
+      this.effects.addTrauma(cut ? 0.1 : 0.03);
+      return;
+    }
     const muzzle: Vec3 = [eye[0] + forward[0] * 0.5, eye[1] + forward[1] * 0.5, eye[2] + forward[2] * 0.5 - 0.1];
     this.effects.muzzleFlash(muzzle);
     this.targets?.fired(eye);

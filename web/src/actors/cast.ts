@@ -12,6 +12,7 @@ import {
   makeBench,
   makeCafeTable,
   makeCivilian,
+  makeThug,
   makeKnife,
   makeLmg,
   makePistol,
@@ -23,6 +24,7 @@ import {
   randomStyle,
   Rng,
   soldierPalette,
+  thugPalette,
   type Furniture,
   type GaitStyle,
   type Palette,
@@ -34,7 +36,7 @@ import {
 } from 'svx-anim';
 import type { CharacterRenderer, GpuCharacterMesh } from '../render/characters.ts';
 
-export type Faction = 'civilian' | 'soldier';
+export type Faction = 'civilian' | 'soldier' | 'thug';
 
 export interface Look {
   model: VoxelModel;
@@ -61,12 +63,14 @@ export const WEAPON_STATS: Record<PropKind, { mag: number; damage: number; inter
 
 const SOLDIER_GEOMETRIES = 4;
 const CIVILIAN_GEOMETRIES = 10;
+const THUG_GEOMETRIES = 5;
 
 export class Cast {
   readonly renderer: CharacterRenderer;
   readonly props: Record<PropKind, Prop>;
   private readonly soldiers: VoxelModel[] = [];
   private readonly civilians: { model: VoxelModel; female: boolean }[] = [];
+  private readonly thugs: { model: VoxelModel; female: boolean }[] = [];
   private readonly meshes = new Map<VoxelModel, GpuCharacterMesh>();
   private readonly partMeshes = new Map<VoxelPart, GpuCharacterMesh>();
   private readonly retro = new Map<string, RetroSet>();
@@ -93,6 +97,16 @@ export class Cast {
       const palette = soldierPalette(seed, this.scheme);
       return { model: this.soldiers[g], palette, paletteId: this.renderer.palette(palette), faction, geometry: g, female: false, style: randomStyle(seed, 'soldier') };
     }
+    if (faction === 'thug') {
+      const g = seed % THUG_GEOMETRIES;
+      if (!this.thugs[g]) {
+        const v = makeThug(g + 1);
+        this.thugs[g] = { model: v.model, female: v.spec.female };
+      }
+      const t = this.thugs[g]!;
+      const palette = thugPalette(seed * 13 + 5);
+      return { model: t.model, palette, paletteId: this.renderer.palette(palette), faction, geometry: g, female: t.female, style: randomStyle(seed, 'thug') };
+    }
     const g = seed % CIVILIAN_GEOMETRIES;
     if (!this.civilians[g]) {
       const v = makeCivilian(g + 1);
@@ -107,6 +121,8 @@ export class Cast {
   loadout(faction: Faction, seed: number): Prop | null {
     const r = new Rng(seed * 2654435761 + 99).next();
     if (faction === 'soldier') return this.props[r < 0.55 ? 'rifle' : r < 0.72 ? 'smg' : r < 0.86 ? 'lmg' : 'pistol'];
+    // thugs: mostly a knife, otherwise their fists
+    if (faction === 'thug') return r < 0.7 ? this.props.knife : null;
     return r < 0.12 ? this.props.pistol : r < 0.15 ? this.props.smg : r < 0.2 ? this.props.knife : null;
   }
 

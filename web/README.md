@@ -58,9 +58,12 @@ Soldiers and civilians are svx_anim characters (`../anim`, [docs/ANIM.md](../doc
   (hitscan rounds that hit characters voxel-exact, the player, or the world, where they carve
   it), wounds, severed limbs, gibs, blood, crushing by debris, and drawing (smooth or retro).
 - `brain.ts`: soldier behaviour (patrol, alert, combat from cover, kneeling or prone, corner
-  peeks, reloads, melee) and civilian life (strolling, waiting, conversations, benches,
+  peeks, reloads and breathers, melee, engaging thugs) and civilian life (strolling, waiting, conversations, benches,
   sitting on the ground, jogging, watching fights, brawls, fleeing, cowering, surrendering,
   armed civilians shooting back).
+- `thug.ts`: thugs (loitering, picking victims, stalking, knife fights, attacking the player,
+  running when hurt).
+- `steer.ts`: movement with weight (acceleration, braking, turn rates, rounded corners).
 - `nav.ts`: A* on standable cells found from the occupancy (straight lines without search,
   ground queries cached per chunk column).
 - `cast.ts`: models, palettes, gait styles, loadouts and weapon stats, benches, meshes and
@@ -70,7 +73,7 @@ Soldiers and civilians are svx_anim characters (`../anim`, [docs/ANIM.md](../doc
 `src/render/characters.ts` draws the svx_anim meshes (rigid skinning from a storage buffer of
 bone matrices), plus decals (blob shadows, blood) and instanced voxel bits.
 
-- URL parameters: `?civilians=N&soldiers=M`, `?actors=0`, `?god=1`,
+- URL parameters: `?civilians=N&soldiers=M&thugs=K`, `?actors=0`, `?god=1`,
   `?anim=smooth|retro|retro-chunky`.
 - The settings panel has a Characters section.
 - `window.__structvox` adds `spawn`, `spawnAt`, `actors`, `characters`, `actorWorld` and
