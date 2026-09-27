@@ -97,9 +97,8 @@ try {
   s = await state(page);
   check(s.engine.voxels < v0, `pistol carved ${v0 - s.engine.voxels} voxels (${s.engine.structures} structures, ${s.engine.bondsBroken} bonds broken)`);
   await page.screenshot({ path: `${outDir}/02-pistol.png` });
-  // Rigid piece: cut a 1.5 m square out of the first room's ceiling slab (before the rocket,
-  // whose collapse may bring that ceiling down); the piece falls 3 m as a rigid body, lands on
-  // the floor and stays there as rubble.
+  // The ceiling slab is reinforced: a 1.5 m square cut out of it by gunfire hangs from its bars
+  // (bullets do not cut steel).
   const p0 = s.engine.pieces;
   await page.evaluate(() => {
     const sv = window.__structvox;
@@ -110,10 +109,24 @@ try {
       for (const [x, y] of [[cx + k, cy - half], [cx + k, cy + half], [cx - half, cy + k], [cx + half, cy + k]])
         sv.engine.carve([x * h, y * h, z * h], 0.25);
   });
+  await sleep(2500);
+  await page.screenshot({ path: `${outDir}/03a-ceiling-hangs.png` });
+  s = await state(page);
+  check(s.engine.pieces === p0, `the cut ceiling square hangs from its bars (${s.engine.pieces - p0} new pieces)`);
+  // Rigid piece: the lintel of the middle room's masonry partition (unreinforced), cut free,
+  // falls 2 m through the doorway as a rigid body, lands and stays there as rubble.
+  await page.evaluate(() => {
+    const sv = window.__structvox;
+    const h = 0.125, px = 78.5;
+    sv.teleport(60 * h, 23 * h, 0.1);
+    sv.look(0, 12);
+    for (let z = 16; z <= 24; z += 2) for (const y of [17, 28]) sv.engine.carve([px * h, y * h, z * h], 0.25);
+    for (let y = 17; y <= 28; y += 2) sv.engine.carve([px * h, y * h, 23 * h], 0.25);
+  });
   const pieces = await waitFor(page, (p) => {
     const s = window.__structvox.state();
     return s.render && s.render.islands > 0 && s.engine.pieces > p ? s.engine.pieces : 0;
-  }, p0, 8000, 'ceiling piece became a rigid piece');
+  }, p0, 8000, 'the lintel became a rigid piece');
   await sleep(350);
   await page.screenshot({ path: `${outDir}/03-piece-falling.png` });
   await waitFor(page, () => window.__structvox.state().engine.awakePieces === 0, null, 8000, 'piece came to rest');
