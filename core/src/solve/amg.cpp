@@ -230,6 +230,10 @@ bool Amg::build(const Bsr6& A, const std::vector<V3>& pos, const AmgOptions& opt
     return false;
   }
   while (static_cast<int>(lv_.size()) < opt_.max_levels && lv_.back().A.n > opt_.coarse_max) {
+    // (a level grown dense, as on huge irregular structures, would make the next products
+    // expensive and the cycle no cheaper: it becomes the coarsest, smoothed)
+    const Bsr6& L = lv_.back().A;
+    if (lv_.size() > 1 && L.blocks() > 80 * static_cast<i64>(L.n)) break;
     if (!coarsen(lv_.size() - 1)) break;
   }
   factor_coarsest();
@@ -319,19 +323,20 @@ bool Amg::coarsen(size_t l) {
   // prolongation: rigid-body modes of each aggregate, smoothed by one damped Jacobi step
   {
     std::vector<std::vector<std::pair<i32, std::array<f64, 36>>>> rows(static_cast<size_t>(n));
-    auto add = [](std::vector<std::pair<i32, std::array<f64, 36>>>& row, i32 c, const f64* blk, f64 s) {
-      for (auto& e : row)
-        if (e.first == c) {
-          for (int q = 0; q < 36; ++q) e.second[size_t(q)] += s * blk[q];
-          return;
-        }
-      std::array<f64, 36> b;
-      for (int q = 0; q < 36; ++q) b[size_t(q)] = s * blk[q];
-      row.push_back({c, b});
-    };
     const f64 omega = opt_.smoothed ? (4.0 / 3.0) / std::max(1e-300, estimate_lmax(F)) : 0.0;
     parallel_for(n, kRowGrain / 2, [&](i64 i0, i64 i1) {
     f64 Pt[36];
+    // (a sparse accumulator: the row's entry of each coarse node, reset after the row)
+    std::vector<i32> slot(static_cast<size_t>(na), -1);
+    auto add = [&](std::vector<std::pair<i32, std::array<f64, 36>>>& row, i32 c, const f64* blk, f64 sc) {
+      i32& at = slot[size_t(c)];
+      if (at < 0) {
+        at = static_cast<i32>(row.size());
+        row.push_back({c, {}});
+      }
+      auto& b = row[size_t(at)].second;
+      for (int q = 0; q < 36; ++q) b[size_t(q)] += sc * blk[q];
+    };
     for (i64 i = i0; i < i1; ++i) {
       auto& row = rows[size_t(i)];
       blk6::rigid_block(F.off[size_t(i)], Pt);
@@ -357,6 +362,7 @@ bool Amg::coarsen(size_t l) {
           }
         add(row, agg[size_t(j)], U, -omega);
       }
+      for (const auto& e : row) slot[size_t(e.first)] = -1;
     }
     });
     F.Prow.assign(static_cast<size_t>(n) + 1, 0);
@@ -387,6 +393,7 @@ bool Amg::coarsen(size_t l) {
   // each row in a fixed order: the same for any thread count)
   std::vector<std::vector<std::pair<i32, std::array<f64, 36>>>> apr(static_cast<size_t>(n));
   parallel_for(n, kRowGrain / 2, [&](i64 i0, i64 i1) {
+    std::vector<i32> slot(static_cast<size_t>(na), -1);
     for (i64 i = i0; i < i1; ++i) {
       auto& ap = apr[size_t(i)];
       for (i32 k = A.rowptr[size_t(i)]; k < A.rowptr[size_t(i) + 1]; ++k) {
@@ -395,16 +402,12 @@ bool Amg::coarsen(size_t l) {
         for (i32 e = F.Prow[size_t(j)]; e < F.Prow[size_t(j) + 1]; ++e) {
           const i32 J = F.Pcol[size_t(e)];
           const f64* Pj = &F.Pval[36 * size_t(e)];
-          std::array<f64, 36>* dst = nullptr;
-          for (auto& x : ap)
-            if (x.first == J) {
-              dst = &x.second;
-              break;
-            }
-          if (!dst) {
+          i32& at = slot[size_t(J)];
+          if (at < 0) {
+            at = static_cast<i32>(ap.size());
             ap.push_back({J, {}});
-            dst = &ap.back().second;
           }
+          std::array<f64, 36>* dst = &ap[size_t(at)].second;
           for (int r = 0; r < 6; ++r)
             for (int c = 0; c < 6; ++c) {
               f64 acc = 0.0;
@@ -413,26 +416,24 @@ bool Amg::coarsen(size_t l) {
             }
         }
       }
+      for (const auto& x : ap) slot[size_t(x.first)] = -1;
     }
   });
   std::vector<std::vector<std::pair<i32, std::array<f64, 36>>>> crow(static_cast<size_t>(na));
   parallel_for(na, kRowGrain / 4, [&](i64 a0, i64 a1) {
+    std::vector<i32> slot(static_cast<size_t>(na), -1);
     for (i64 I = a0; I < a1; ++I) {
       auto& out = crow[size_t(I)];
       for (i32 r = F.Rrow[size_t(I)]; r < F.Rrow[size_t(I) + 1]; ++r) {
         const auto& [i, e] = F.Rent[size_t(r)];
         const f64* Pi = &F.Pval[36 * size_t(e)];
         for (const auto& x : apr[size_t(i)]) {
-          std::array<f64, 36>* dst = nullptr;
-          for (auto& y : out)
-            if (y.first == x.first) {
-              dst = &y.second;
-              break;
-            }
-          if (!dst) {
+          i32& at = slot[size_t(x.first)];
+          if (at < 0) {
+            at = static_cast<i32>(out.size());
             out.push_back({x.first, {}});
-            dst = &out.back().second;
           }
+          std::array<f64, 36>* dst = &out[size_t(at)].second;
           for (int rr = 0; rr < 6; ++rr)
             for (int c = 0; c < 6; ++c) {
               f64 acc = 0.0;
@@ -441,6 +442,7 @@ bool Amg::coarsen(size_t l) {
             }
         }
       }
+      for (const auto& y : out) slot[size_t(y.first)] = -1;
     }
   });
   apr.clear();
