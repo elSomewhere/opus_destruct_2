@@ -568,9 +568,11 @@ void RigidWorld::solve(f64 dt) {
   };
   // (many contacts: a collapse at its peak; fewer iterations each, a function of the contact count
   // alone so every thread count and platform does the same)
-  const size_t nc = contacts_.size();
-  const int vel_iters = nc > par.busy_contacts ? par.busy_iterations : par.iterations;
-  const int pos_iters = nc > par.busy_contacts ? std::min(2, par.position_iterations) : par.position_iterations;
+  // (a collapse's peak, or a large pile settling: fewer iterations; a function of the state and
+  // the contact count alone, the same on every thread count and platform)
+  const bool reduced = busy_ || contacts_.size() > par.busy_contacts;
+  const int vel_iters = reduced ? par.busy_iterations : par.iterations;
+  const int pos_iters = reduced ? std::min(2, par.position_iterations) : par.position_iterations;
   for (int it = 0; it < vel_iters; ++it)
     sweep([&](Contact& c) {
       V3 dv = vel(c.a, c.ra) - vel(c.b, c.rb);
@@ -649,9 +651,13 @@ void RigidWorld::integrate_positions(f64 dt) {
 }
 
 void RigidWorld::sleep_update(f64 dt) {
-  (void)dt;
   // Bodies sleep one by one once slow for a while (a sleeping body is a static support for the
-  // others); an awake body touching a sleeping one fast enough wakes it (collide).
+  // others); an awake body touching a sleeping one fast enough wakes it (collide). Rates are per
+  // 1/120 s (the same at any substep length).
+  const f64 k = dt * 120.0;
+  const f64 rest = std::pow(1.0 - par.rest_damping, k);
+  const f64 keep = std::pow(0.8, k);
+  const i32 steps = std::max<i32>(1, static_cast<i32>(std::lround(k)));
   std::vector<u8> touching(bodies.size(), 0);
   for (const Contact& c : contacts_) {
     touching[size_t(c.a)] = 1;
@@ -663,14 +669,14 @@ void RigidWorld::sleep_update(f64 dt) {
     const f64 sp = norm(b.v) + b.radius * norm(b.w);
     if (touching[i] && sp < 3.0 * par.sleep_speed) {
       // rest damping: settling rubble loses its last jitter
-      b.v *= 1.0 - par.rest_damping;
-      b.w *= 1.0 - par.rest_damping;
+      b.v *= rest;
+      b.w *= rest;
     }
     // (a smoothed speed: a settling piece's last jitter does not restart its count; real motion does)
-    b.sleep_ema = 0.8 * b.sleep_ema + 0.2 * sp;
+    b.sleep_ema = keep * b.sleep_ema + (1.0 - keep) * sp;
     if (sp > 3.0 * par.sleep_speed || !touching[i]) b.still = 0;
-    else if (b.sleep_ema < par.sleep_speed) ++b.still;
-    else b.still = std::max(0, b.still - 2);
+    else if (b.sleep_ema < par.sleep_speed) b.still += steps;
+    else b.still = std::max(0, b.still - 2 * steps);
     if (b.still >= par.sleep_substeps) {
       b.asleep = true;
       b.v = V3{};
@@ -679,7 +685,16 @@ void RigidWorld::sleep_update(f64 dt) {
   }
 }
 
+bool RigidWorld::busy() const {
+  i32 fast = 0;
+  const f64 v2 = par.busy_speed * par.busy_speed;
+  for (const auto& bp : bodies)
+    if (!bp->asleep && norm2(bp->v) > v2 && ++fast > par.busy_bodies) return true;
+  return false;
+}
+
 void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<bool(f64)>& fracture) {
+  busy_ = busy();
   using Clock = std::chrono::steady_clock;
   auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
   const auto t0 = Clock::now();

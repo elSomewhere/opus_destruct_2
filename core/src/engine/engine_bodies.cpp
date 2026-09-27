@@ -171,7 +171,7 @@ void Engine::rebuild_body_graph(Body& b) {
   // resolution: clusters of fragments for large pieces (cells in the shape frame)
   i64 live = 0;
   for (const BodyFrag& f : b.frags) live += f.count > 0 ? 1 : 0;
-  const i32 cell = cluster_cell(live);
+  const i32 cell = cluster_cell(live, cfg_.body_cluster_nodes);
   std::vector<u64> key(static_cast<size_t>(nf));
   for (i32 f = 0; f < nf; ++f) {
     if (cell <= 0) {
@@ -866,6 +866,7 @@ bool Engine::fracture_hook(f64 dt) {
     f64 budget;
     bool split = false;  // (in several parts already: they go their own ways)
     StressOut out;
+    f64 rebuild_ms = 0.0, stress_ms = 0.0;
   };
   std::vector<Check> checks;
   for (size_t i = 0; i < nb; ++i) {
@@ -911,12 +912,16 @@ bool Engine::fracture_hook(f64 dt) {
   // its own solve)
   auto run = [&](Check& c) {
     Body& b = *rigid_.bodies[c.i];
+    const auto r0 = FClock::now();
     if (b.graph_dirty || !b.graph) rebuild_body_graph(b);
+    const auto r1 = FClock::now();
+    c.rebuild_ms = std::chrono::duration<f64, std::milli>(r1 - r0).count();
     if (b.graph->components > 1) {
       c.split = true;
       return;
     }
     body_stress_run(b, per[c.i], true, c.budget, c.out);
+    c.stress_ms = std::chrono::duration<f64, std::milli>(FClock::now() - r1).count();
   };
   const auto f1 = FClock::now();
   // (large pieces one after the other, each with all the threads for its own solve; the small ones
@@ -957,8 +962,13 @@ bool Engine::fracture_hook(f64 dt) {
   static const bool fprof = std::getenv("SVX_PROFILE_FRACTURE") != nullptr;
   if (fprof) {
     auto ms = [](FClock::time_point a, FClock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
-    static f64 acc[4] = {0, 0, 0, 0};
+    static f64 acc[4] = {0, 0, 0, 0}, reb = 0.0, str = 0.0, reb_big = 0.0, str_big = 0.0;
     static i64 calls = 0, nchecks = 0, big = 0;
+    for (const Check& c : checks) {
+      const bool bg = rigid_.bodies.size() > c.i && rigid_.bodies[c.i]->shape.count > cfg_.big_piece_voxels;
+      (bg ? reb_big : reb) += c.rebuild_ms;
+      (bg ? str_big : str) += c.stress_ms;
+    }
     acc[0] += ms(f0, f1);
     acc[1] += ms(f1, f2);
     acc[2] += ms(f2, f3);
@@ -966,9 +976,11 @@ bool Engine::fracture_hook(f64 dt) {
     nchecks += static_cast<i64>(checks.size());
     for (const Check& c : checks) big += rigid_.bodies.size() > c.i && rigid_.bodies[c.i]->shape.count > cfg_.big_piece_voxels ? 1 : 0;
     if (++calls % 120 == 0) {
-      std::printf("  [fracture] per substep: triggers %.2f checks %.2f splits %.2f flush %.2f ms (%.1f checks, %.2f big)\n", acc[0] / 120,
-                  acc[1] / 120, acc[2] / 120, acc[3] / 120, nchecks / 120.0, big / 120.0);
+      std::printf("  [fracture] per substep: triggers %.2f checks %.2f splits %.2f flush %.2f ms (%.1f checks, %.2f big) | cpu: rebuild %.2f stress %.2f, big: rebuild %.2f stress %.2f\n",
+                  acc[0] / 120, acc[1] / 120, acc[2] / 120, acc[3] / 120, nchecks / 120.0, big / 120.0, reb / 120, str / 120, reb_big / 120,
+                  str_big / 120);
       acc[0] = acc[1] = acc[2] = acc[3] = 0;
+      reb = str = reb_big = str_big = 0.0;
       nchecks = big = 0;
     }
   }

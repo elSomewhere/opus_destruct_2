@@ -61,6 +61,7 @@ struct EngineConfig {
   // fragments (1 m cells; 2 m beyond 6x): its cracks follow cluster seams, its pieces break
   // finer once they are smaller (docs/V2_DESIGN.md §2).
   i32 cluster_nodes = 2500;
+  i32 body_cluster_nodes = 800;    // pieces (checked many times as they break): clustered beyond this
   f64 structure_max_radius = 60.0; // m from the seed (beyond: held fixed)
   i32 max_breaks_per_round = 256;
   f64 break_band = 0.85;           // a round breaks the bonds with phi >= max(1, band x max phi)
@@ -79,9 +80,9 @@ struct EngineConfig {
   f64 small_piece_mass = 1500.0;   // kg
   i32 min_fracture_frags = 8;      // smaller pieces never break further (the smallest rubble)
   i32 big_piece_voxels = 20000;     // checked with all threads (smaller pieces: concurrently)
-  i32 impact_rounds = 12;          // break rounds of an impact (it stops once the piece comes apart)
+  i32 impact_rounds = 8;           // break rounds of an impact (it stops once the piece comes apart)
   f64 impact_chip_fraction = 0.04; // parts lighter than this x the piece are crushed chips (they pass the load on)
-  f64 impact_round_fraction = 0.15;// an impact round breaks at least this fraction of the overloaded bonds (worst first)
+  f64 impact_round_fraction = 0.25;// an impact round breaks at least this fraction of the overloaded bonds (worst first)
   f64 crush_energy = 20.0;         // crushing a bond costs this x its fracture energy
   bool pulverize = true;           // crushed fragments turn to dust (the space they held opens)
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
@@ -335,7 +336,7 @@ class Engine {
   // fragments become the structure's (the ids of structures they belonged to go to superseded).
   void append_nodes(Structure& s, const std::vector<FragKey>& frags, const std::vector<engine_detail_SecAcc>& fine, i32 cell,
                     std::vector<i64>* superseded);
-  i32 cluster_cell(i64 fragments) const;
+  i32 cluster_cell(i64 fragments, i32 limit = 0) const;  // (limit: 0 = cluster_nodes)
   void retire_structure_nodes(Structure& s, const std::vector<i32>& list);
   void reseed(const Structure& s);  // seeds for extracting a dropped structure's fragments again
   void structure_loads(f64 dt_sub);          // contact forces of bodies on world fragments

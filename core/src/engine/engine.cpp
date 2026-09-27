@@ -377,9 +377,10 @@ bool Engine::pristine(const Structure& s) const {
   return true;
 }
 
-i32 Engine::cluster_cell(i64 fragments) const {
-  if (fragments <= cfg_.cluster_nodes) return 0;
-  return fragments <= 6 * static_cast<i64>(cfg_.cluster_nodes) ? 8 : 16;
+i32 Engine::cluster_cell(i64 fragments, i32 limit) const {
+  if (limit <= 0) limit = cfg_.cluster_nodes;
+  if (fragments <= limit) return 0;
+  return fragments <= 6 * static_cast<i64>(limit) ? 8 : 16;
 }
 
 void Engine::append_nodes(Structure& s, const std::vector<FragKey>& frags, const std::vector<SecAcc>& fine, i32 cell,
@@ -1375,9 +1376,10 @@ void Engine::tick() {
   st_.event_ms = ms_since(te);
   // rigid bodies (with fracture) and their loads on the structures
   const auto tr = Clock::now();
-  const int ns = std::max(1, cfg_.rigid.substeps);
-  const f64 dts = cfg_.dt / ns;
   rigid_.par = cfg_.rigid;
+  // (the violent part of a collapse: one substep a tick)
+  const int ns = rigid_.busy() ? 1 : std::max(1, cfg_.rigid.substeps);
+  const f64 dts = cfg_.dt / ns;
   for (int k = 0; k < ns; ++k) {
     rigid_.substep(dts, grid_, [this](f64 dt) { return fracture_hook(dt); });
     structure_loads(dts);

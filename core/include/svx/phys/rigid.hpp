@@ -120,8 +120,13 @@ struct RigidParams {
   int substeps = 2;
   int iterations = 10;
   int position_iterations = 4;
-  size_t busy_contacts = 6000;       // beyond (a collapse at its peak): busy_iterations, 2 position iterations
+  // Busy (the violent part of a collapse: more than busy_bodies pieces faster than busy_speed):
+  // one substep a tick, busy_iterations velocity and 2 position iterations. Settling rubble is
+  // never busy (full quality, so piles come to rest).
+  int busy_bodies = 150;
+  f64 busy_speed = 2.0;              // m/s
   int busy_iterations = 6;
+  size_t busy_contacts = 6000;       // also beyond this many contacts (a large pile settling): those iterations
   f64 restitution = 0.1;             // for impacts faster than bounce_speed
   f64 bounce_speed = 2.0;
   f64 friction = 0.65;
@@ -129,10 +134,10 @@ struct RigidParams {
   f64 baumgarte = 0.3;
   f64 max_correction = 2.0;          // m/s pseudo velocity cap
   f64 max_speed = 25.0;
-  f64 rest_damping = 0.12;           // per substep, for touching bodies slower than 3 x sleep_speed
+  f64 rest_damping = 0.12;           // per 1/120 s, for touching bodies slower than 3 x sleep_speed
   f64 linear_damping = 0.02, angular_damping = 0.08;  // 1/s
   f64 sleep_speed = 0.15;            // m/s (linear + radius x angular)
-  int sleep_substeps = 30;
+  int sleep_substeps = 30;           // (of 1/120 s) still before sleeping
   int max_points = 1024;             // collision samples per body
   int manifold = 12;                 // contacts kept per body pair ...
   f64 manifold_per_m = 8.0;          // ... plus this per m of the body's radius (a bearing surface)
@@ -175,6 +180,8 @@ class RigidWorld {
   void wake(Body& b);
   i32 awake_count() const;
   Body* find(i64 id);
+  // Busy now? (a function of the bodies' state: the same on every thread count and platform)
+  bool busy() const;
   // accumulated wall time (ms) per phase: collide, solve, fracture, rollback (collide + solve),
   // integrate + sleep
   f64 prof_ms[5] = {0, 0, 0, 0, 0};
@@ -188,6 +195,7 @@ class RigidWorld {
   void sleep_update(f64 dt);
   void refresh_boxes();
   std::vector<Contact> contacts_;
+  bool busy_ = false;
   std::unordered_map<u64, std::array<f64, 3>> warm_;  // contact key -> (ln, l1, l2)
   std::vector<i32> island_;  // (scratch)
   std::vector<V3> pseudo_v_, pseudo_w_;  // split-impulse pseudo velocities of the last solve
