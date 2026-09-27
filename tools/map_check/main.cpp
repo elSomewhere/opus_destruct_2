@@ -21,9 +21,9 @@
 #include <vector>
 
 #include "svx/base/parallel.hpp"
-#include "svx/doom/movers.hpp"
-#include "svx/doom/world.hpp"
-#include "svx/engine/engine.hpp"
+#include "svx/game/doom/movers.hpp"
+#include "svx/game/doom/world.hpp"
+#include "svx/game/game.hpp"
 
 using namespace svx;
 
@@ -64,8 +64,8 @@ int main(int argc, char** argv) {
         ++failed;
         continue;
       }
-      Engine eng;
-      EngineParams par;
+      Game eng;
+      GameParams par;
       par.fragility = 1.0;
       eng.set_params(par);
       eng.load(std::move(dw.grid), dw.spawn_pos, dw.spawn_dir);
@@ -85,8 +85,8 @@ int main(int argc, char** argv) {
         eng.tick();
         (void)eng.take_events();
       }
-      const auto& d = eng.design_report();
-      const EngineStats s = eng.stats();
+      const auto& d = eng.world().design_report();
+      const GameStats s = eng.stats();
       const bool stands = s.bonds_broken == 0 && s.detached_voxels == 0;
       std::string mover_note;
       bool movers_ok = true;
@@ -133,7 +133,7 @@ int main(int argc, char** argv) {
             else ++failed_moves;
           }
         }
-        const EngineStats s2 = eng.stats();
+        const GameStats s2 = eng.stats();
         movers_ok = failed_moves == 0 && s2.bonds_broken == s.bonds_broken && s2.detached_voxels == s.detached_voxels;
         char buf[256];
         std::snprintf(buf, sizeof buf, " movers %d (%d doors, %d lifts, %d floors, %d ceilings): %d moves, %d arrived, %d cycling, %d stuck%s",

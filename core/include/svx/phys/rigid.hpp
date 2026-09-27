@@ -3,7 +3,7 @@
 // A body is a set of voxels in its own grid-aligned frame (the "shape frame": the world voxel
 // coordinates it had when it was made, metres = h p), with a pose (centre of mass x, rotation q):
 // a shape-frame point s is at x + R (s - com). Bodies keep their fragments and bond graph (the
-// engine's fracture layer), so a body is structure that can keep breaking.
+// world's fracture layer), so a body is structure that can keep breaking.
 //
 // Contacts: surface sample points (lattice corners of exposed faces, pulled slightly inwards)
 // are tested against the world grid and against other bodies' shapes; a point inside a solid
@@ -47,7 +47,7 @@ struct BodyShape {
   }
 };
 
-struct BodyGraph;  // the fracture layer's bond graph of a body (engine)
+struct BodyGraph;  // the fracture layer's bond graph of a body (world)
 
 struct BodyFrag {
   V3 com;                             // shape frame
@@ -80,11 +80,10 @@ struct Body {
   i32 still = 0;                      // still substeps (a jitter takes some back, motion all)
   f64 sleep_ema = 1.0;                // smoothed speed (m/s)
   f64 age = 0.0;
-  // the front end's frame: the piece's mesh was sent in world coordinates at pose (x0, q0)
-  V3 x0;
-  Quat q0;
+  // (world) reported to the host (PieceAdded); the piece it broke from (0: the static world)
   bool announced = false;
-  // engine data (fracture layer)
+  i64 parent = 0;
+  // world data (fracture layer)
   std::shared_ptr<BodyGraph> graph;
   i32 stress_cooldown = 0;
   f64 last_load = 0.0, last_phi = 0.0;

@@ -1,23 +1,21 @@
-// structvox — world voxel store (plan §B8): the resident representation of a whole level.
+// structvox — the voxel grid: the resident representation of a world.
 //
 // One byte per voxel in 32^3 chunks (uniform chunks store a single value): 0 = air, low 7
-// bits = 1 + MaterialId, bit 7 = anchored (rock / bedrock: Dirichlet, never simulated).
-// A bond exists between every pair of face-adjacent solid voxels unless both are anchored
-// or it is marked broken (bit per voxel and +axis, allocated lazily per chunk). Sparse
-// overlays hold committed bond damage, per-brick (8^3) static baselines and persistent render
-// offsets. Physics works on Lattice windows extracted from here (world/region.hpp), so the
-// resident cost is ~1 B per voxel plus overlays for touched regions.
+// bits = 1 + MaterialId, bit 7 = anchored (a support: bedrock, foundations, kinematic parts;
+// never simulated). A bond exists between every pair of face-adjacent solid voxels unless both
+// are anchored or it is marked broken (bit per voxel and +axis, allocated lazily per chunk).
+// Design strength classes (the world's design pass) are a lazily allocated byte per voxel.
+// Voxel p is the cube h (p - 1/2) .. h (p + 1/2) (its centre is h p, metres).
 #pragma once
 
 #include <array>
 #include <memory>
-#include <span>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
 
 #include "svx/base/types.hpp"
-#include "svx/mech/material.hpp"
+#include "svx/material/material.hpp"
 
 namespace svx {
 
@@ -56,16 +54,10 @@ struct Chunk {
   std::vector<Vox> v;           // kChunkVox when mixed (index: (x * 32 + y) * 32 + z)
   std::vector<u8> broken;       // lazily allocated: bit a = bond to the +a neighbour broken
   std::vector<u8> strength;     // lazily allocated: design strength class per voxel
-  u32 version = 0;              // bumped on every change (mesh invalidation)
   u32 vox_version = 0;          // changes (unique value) when voxels change: fragment caches
   i32 solid = 0;                // solid voxel count (mixed chunks)
   i32 free = 0;                 // ... of them not anchored: structure, not rock (mixed chunks)
   i32 free_count() const { return uniform ? (vox_free(value) ? kChunkVox : 0) : free; }
-};
-
-struct BaselineBrick {
-  std::vector<f32> u;           // 6 per voxel (8^3 * 6), metres / rad
-  std::vector<u8> valid;        // per voxel
 };
 
 class VoxelGrid {
@@ -82,66 +74,33 @@ class VoxelGrid {
   bool bond(const IVec3& p, int axis) const;
   bool broken(const IVec3& p, int axis) const;
   void break_bond(const IVec3& p, int axis);
-  // Cracked bonds (unilateral contacts): ruptured, but the faces still touch; connected for
-  // detachment, contact-only for mechanics (Lattice::crack_bond). Stored in bits 3..5 of the
-  // broken byte; break_bond clears it.
-  bool cracked(const IVec3& p, int axis) const;
-  void crack_bond(const IVec3& p, int axis);
 
-  u8 strength(const IVec3& p) const;
+  u8 strength(const IVec3& p) const;  // design strength class (0: as the material)
   void set_strength(const IVec3& p, u8 cls);
-
-  f32 damage(const IVec3& p, int axis) const;
-  void set_damage(const IVec3& p, int axis, f32 d);
-
-  // baseline overlay (per 8^3 brick)
-  bool baseline(const IVec3& p, f32 out[6]) const;
-  void set_baseline(const IVec3& p, const f32 u[6]);
-  void clear_baseline(const IVec3& p);
-  // bumps the chunk's version (a change of its baselines: background jobs reading them are stale)
-  void touch(const IVec3& chunk_coord);
-  // persistent render offset (event-induced displacement after the bubble slept), metres
-  bool offset(const IVec3& p, f32 out[3]) const;
-  void set_offset(const IVec3& p, const f32 d[3]);
 
   // bulk construction: fill [z0, z1) of column (x, y) (no dirty marking), then compact()
   void fill_column(i32 x, i32 y, i32 z0, i32 z1, Vox v);
   void compact();
   void mark_all_dirty();
 
-  // deterministic digest of the damage and render-offset overlays
-  u64 overlay_hash() const;
-
-  // A self-contained copy of the chunks `keys` (and their damage and baseline overlays;
-  // baseline bricks are shared copy-on-write): the world a background job reads while this
-  // grid keeps changing. Chunks outside `keys` are absent from the copy (partial()).
-  VoxelGrid snapshot(std::span<const u64> keys) const;
-  bool partial() const { return partial_; }
-  // whether the chunk's content is known: always on a full grid; on a snapshot, the chunks it
-  // was taken of (present or absent = air)
-  bool known(const IVec3& cc) const { return !partial_ || known_.count(key3(cc[0], cc[1], cc[2])) > 0; }
-  void mark_known(const IVec3& cc) {  // (a snapshot's chunk added after it was taken, e.g. hydrated)
-    if (partial_) known_.insert(key3(cc[0], cc[1], cc[2]));
-  }
-
   // chunk access
   const Chunk* chunk(const IVec3& c) const;
   const std::unordered_map<u64, Chunk>& chunks() const { return chunks_; }
-  std::vector<u64> take_dirty();  // chunk keys changed since the last call (sorted)
+  std::vector<u64> take_dirty();  // keys of chunks whose voxels changed since the last call (sorted)
   void mark_dirty(const IVec3& chunk_coord);
 
   i64 solid_count() const;
   i64 memory_bytes() const;
 
-  // Persistence (plan §B8): chunks changed by gameplay since track_changes(true) was called,
-  // serialized as a binary coordinate-keyed delta against the regenerable base world.
+  // Persistence: chunks changed since track_changes(true) was called, serialized as a binary
+  // coordinate-keyed delta against the regenerable base world (voxels, broken bonds, strength
+  // classes per chunk).
   void track_changes(bool on) { track_ = on; }
   bool tracking() const { return track_; }
   const std::vector<u64>& modified_chunks() const { return modified_list_; }
   bool is_modified(u64 key) const { return modified_.count(key) > 0; }
   std::vector<u8> save_delta() const;
-  // Applies a delta (returns false on a malformed buffer; the grid is then unchanged). The
-  // affected chunks' baselines are dropped (they are recomputed lazily).
+  // Applies a delta (returns false on a malformed buffer; the grid is then unchanged).
   bool load_delta(const std::vector<u8>& bytes, std::vector<u64>* touched = nullptr);
   // Record-level access (streaming: archive evicted modified chunks, restore on reload).
   std::vector<u8> chunk_record(u64 key) const;
@@ -156,13 +115,6 @@ class VoxelGrid {
   Chunk& chunk_mut(const IVec3& c);
   std::unordered_map<u64, Chunk> chunks_;
   u32 vox_seq_ = 0;  // source of Chunk::vox_version (unique over the grid's life)
-  std::array<std::unordered_map<u64, f32>, 3> damage_;  // per axis: voxel key -> d
-  // Bricks are shared with snapshots and copied before a write while shared. Only the owning
-  // (simulation) thread creates and drops snapshots, so the use counts it reads are exact.
-  std::unordered_map<u64, std::shared_ptr<BaselineBrick>> baseline_;
-  bool partial_ = false;
-  std::unordered_set<u64> known_;  // snapshots: the chunk keys taken
-  std::unordered_map<u64, std::array<f32, 3>> offset_;
   std::vector<u64> dirty_;
   bool track_ = false;
   std::unordered_map<u64, u8> modified_;

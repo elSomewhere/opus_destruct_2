@@ -30,7 +30,8 @@ The WASM builds need Emscripten: run `source ~/emsdk/emsdk_env.sh` so that `EMSD
 ```bash
 # native: library, tools, tests
 cmake --preset native-release && cmake --build --preset native-release -j
-./build/native-release/tests/svx_tests            # doctest suites (stress, fragments, rigid, collapse, engine, doom, ...)
+./build/native-release/tests/svx_core_tests       # the physics core alone (stress, fragments, rigid, world)
+./build/native-release/tests/svx_game_tests       # the game harness (collapse, game, movers, replay, doom, ...)
 
 # browser module (pthreads; written to web/src/wasm/)
 cmake --preset wasm-release-threads && cmake --build --preset wasm-release-threads -j --target svx_web

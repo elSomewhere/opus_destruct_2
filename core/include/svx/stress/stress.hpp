@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "svx/base/vec.hpp"
-#include "svx/mech/material.hpp"
+#include "svx/material/material.hpp"
 #include "svx/solve/amg.hpp"
 
 namespace svx {

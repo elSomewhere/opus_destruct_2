@@ -1,33 +1,33 @@
 # Streaming cost while flying through the procedural city.
 add_executable(svx_stream_bench bench/stream_bench.cpp)
-target_link_libraries(svx_stream_bench PRIVATE svx_core)
+target_link_libraries(svx_stream_bench PRIVATE svx_game)
 svx_wasm_exe_options(svx_stream_bench)
 
 # Doom WAD graphics: palette, TEXTURE1/2 composites and flats -> counts + PNG dump.
 add_executable(svx_wad_textures wad_textures/main.cpp)
-target_link_libraries(svx_wad_textures PRIVATE svx_core)
+target_link_libraries(svx_wad_textures PRIVATE svx_game)
 svx_wasm_exe_options(svx_wad_textures)
 
 # Headless end-to-end engine run: scenario scripts (tower, rooms, city, WAD), stats, frames.
 add_executable(svx_engine_demo engine_demo/main.cpp)
-target_link_libraries(svx_engine_demo PRIVATE svx_core)
+target_link_libraries(svx_engine_demo PRIVATE svx_game)
 svx_wasm_exe_options(svx_engine_demo)
 
 # Record / replay sessions from command logs (determinism).
 add_executable(svx_replay replay/main.cpp)
-target_link_libraries(svx_replay PRIVATE svx_core)
+target_link_libraries(svx_replay PRIVATE svx_game)
 svx_wasm_exe_options(svx_replay)
 
 # Freedoom import / design / stability check of every map.
 add_executable(svx_map_check map_check/main.cpp)
-target_link_libraries(svx_map_check PRIVATE svx_core)
+target_link_libraries(svx_map_check PRIVATE svx_game)
 svx_wasm_exe_options(svx_map_check)
 
 # Browser engine module for the web worker (docs/API.md): ES6 module, written into
 # web/src/wasm/ so the Vite worker bundle imports it directly (generated, gitignored).
 if(SVX_WASM)
   add_executable(svx_web wasm_module/module.cpp)
-  target_link_libraries(svx_web PRIVATE svx_core)
+  target_link_libraries(svx_web PRIVATE svx_game)
   set(_svx_exports
     _svx_create _svx_destroy _svx_set_threads _svx_set_params _svx_load_procedural _svx_load_wad
     _svx_last_error _svx_save_delta _svx_load_delta _svx_modified _svx_texture_count _svx_texture_size _svx_texture_name _svx_texture_rgba _svx_bake

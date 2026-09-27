@@ -1,18 +1,28 @@
-add_executable(svx_tests
+# Core tests: link the physics core alone (no mesh, no game): the core must stand on its own.
+add_executable(svx_core_tests
   test_main.cpp
-  test_columns.cpp
-  test_doom.cpp
-  test_doom_textures.cpp
-  test_dmath.cpp
-  test_stress.cpp
-  test_fragments.cpp
-  test_rigid.cpp
-  test_collapse.cpp
-  test_engine.cpp
-  test_movers.cpp
-  test_replay.cpp)
-target_include_directories(svx_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
-target_link_libraries(svx_tests PRIVATE svx_core)
-target_compile_definitions(svx_tests PRIVATE SVX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
-svx_wasm_exe_options(svx_tests)
-add_test(NAME svx_tests COMMAND svx_tests)
+  core/test_stress.cpp
+  core/test_fragments.cpp
+  core/test_rigid.cpp
+  core/test_world.cpp)
+target_include_directories(svx_core_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
+target_link_libraries(svx_core_tests PRIVATE svx_core)
+svx_wasm_exe_options(svx_core_tests)
+add_test(NAME svx_core_tests COMMAND svx_core_tests)
+
+# Game harness tests: levels (procedural, city, Doom), movers, replays, meshing.
+add_executable(svx_game_tests
+  test_main.cpp
+  game/test_collapse.cpp
+  game/test_columns.cpp
+  game/test_doom.cpp
+  game/test_doom_textures.cpp
+  game/test_dmath.cpp
+  game/test_game.cpp
+  game/test_movers.cpp
+  game/test_replay.cpp)
+target_include_directories(svx_game_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
+target_link_libraries(svx_game_tests PRIVATE svx_game)
+target_compile_definitions(svx_game_tests PRIVATE SVX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+svx_wasm_exe_options(svx_game_tests)
+add_test(NAME svx_game_tests COMMAND svx_game_tests)

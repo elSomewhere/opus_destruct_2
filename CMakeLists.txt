@@ -31,12 +31,33 @@ else()
   set(SVX_WASM OFF)
 endif()
 
-# Core library: engine code only (no exceptions / RTTI needed by design).
+# ---------------------------------------------------------------------------------------------
+# Libraries (docs/CORE.md):
+#   svx_core  the destruction physics engine: voxel grid, materials, fragments, structures,
+#             stress solver, rigid pieces, streaming, persistence. Generic: no rendering, no
+#             levels, no players. Depends on nothing but the C++20 standard library.
+#   svx_mesh  voxel meshing (greedy chunk meshes, piece meshes) for renderers. Depends on core.
+#   svx_game  the prototype game harness: Game (movers, viewer, far tier, command log, piece
+#             meshes), procedural and city levels, Doom WAD import, the web worker C ABI.
+# No exceptions / RTTI are needed by the libraries.
+# ---------------------------------------------------------------------------------------------
 file(GLOB_RECURSE SVX_CORE_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/core/src/*.cpp)
 add_library(svx_core STATIC ${SVX_CORE_SOURCES})
 target_include_directories(svx_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/core/include)
 target_link_libraries(svx_core PUBLIC svx_flags)
 target_compile_options(svx_core PRIVATE -fno-exceptions -fno-rtti)
+
+file(GLOB_RECURSE SVX_MESH_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/mesh/src/*.cpp)
+add_library(svx_mesh STATIC ${SVX_MESH_SOURCES})
+target_include_directories(svx_mesh PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/mesh/include)
+target_link_libraries(svx_mesh PUBLIC svx_core)
+target_compile_options(svx_mesh PRIVATE -fno-exceptions -fno-rtti)
+
+file(GLOB_RECURSE SVX_GAME_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/game/src/*.cpp)
+add_library(svx_game STATIC ${SVX_GAME_SOURCES})
+target_include_directories(svx_game PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/game/include)
+target_link_libraries(svx_game PUBLIC svx_core svx_mesh)
+target_compile_options(svx_game PRIVATE -fno-exceptions -fno-rtti)
 
 # Helper for executables that must run under node when cross-compiled to WASM.
 function(svx_wasm_exe_options target)
@@ -47,6 +68,7 @@ function(svx_wasm_exe_options target)
   endif()
 endfunction()
 
+add_subdirectory(examples)
 add_subdirectory(tools)
 
 include(CTest)
