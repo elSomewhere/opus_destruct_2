@@ -63,6 +63,7 @@ export class Game {
   private respawnAt = 0;
   private populateAt = 0;
   private worldKind: ProceduralKind | 'wad' = 'rooms';
+  private loadingWad = false;
   private readonly voxelSize: number;
   private readonly world: { kind: ProceduralKind; seed: number };
   private params: EngineParams;
@@ -101,6 +102,7 @@ export class Game {
           .arrayBuffer()
           .then((buf) => {
             this.overlay.setLoading(`Loading ${map} from ${file.name}`, 0.1);
+            this.loadingWad = true;
             this.engine.loadWad(buf, map, options);
           })
           .catch((err: unknown) => this.overlay.toast(`Could not read ${file.name}: ${String(err)}`, 'error'));
@@ -234,6 +236,7 @@ export class Game {
   private loadProcedural(kind: ProceduralKind, seed: number): void {
     this.world.kind = kind;
     this.world.seed = seed;
+    this.loadingWad = false;
     this.beginLoad(`Generating ${kind} #${seed}`);
     this.engine.loadProcedural(kind, seed);
   }
@@ -249,7 +252,8 @@ export class Game {
     });
     e.on('ready', (msg) => {
       this.info = msg.info;
-      this.worldKind = msg.info.textures ? 'wad' : this.world.kind;
+      // (an engine that cannot load a WAD falls back to a procedural world: count that as one)
+      this.worldKind = this.loadingWad && msg.info.textures ? 'wad' : this.world.kind;
       // Doom sectors are darker than the procedural worlds' daylight
       this.actors.settings.light = this.worldKind === 'wad' ? 0.8 : 1;
       this.playerHealth = PLAYER_HEALTH;
