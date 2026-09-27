@@ -1377,8 +1377,9 @@ void Engine::tick() {
   // rigid bodies (with fracture) and their loads on the structures
   const auto tr = Clock::now();
   rigid_.par = cfg_.rigid;
-  // (the violent part of a collapse: one substep a tick)
-  const int ns = rigid_.busy() ? 1 : std::max(1, cfg_.rigid.substeps);
+  // (the violent part of a collapse, or a large pile settling: one substep a tick)
+  const bool busy = rigid_.busy() || rigid_.contacts().size() > cfg_.rigid.busy_contacts;
+  const int ns = busy ? 1 : std::max(1, cfg_.rigid.substeps);
   const f64 dts = cfg_.dt / ns;
   for (int k = 0; k < ns; ++k) {
     rigid_.substep(dts, grid_, [this](f64 dt) { return fracture_hook(dt); });

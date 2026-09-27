@@ -33,10 +33,16 @@ try {
   await page.goto(`${base}?engine=wasm&world=tower&seed=1`, { waitUntil: 'load' });
   const t0 = Date.now();
   for (;;) {
-    const ok = await page.evaluate(() => {
-      const s = window.__structvox?.state();
-      return !!s && s.ready && s.engine !== null && s.render !== null && s.render.chunksDrawn > 0;
-    });
+    let ok = false;
+    try {
+      ok = await page.evaluate(() => {
+        const s = window.__structvox?.state();
+        return !!s && s.ready && s.engine !== null && s.render !== null && s.render.chunksDrawn > 0;
+      });
+    } catch (e) {
+      // the dev server reloads the page when the WASM build output changes: keep waiting
+      if (!/Execution context was destroyed|Cannot find context/.test(String(e))) throw e;
+    }
     if (ok) break;
     if (Date.now() - t0 > 120000) throw new Error('tower world did not load');
     await sleep(200);

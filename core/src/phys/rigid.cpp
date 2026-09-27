@@ -445,7 +445,7 @@ void RigidWorld::collide(const VoxelGrid& g, const std::vector<u8>* only) {
       Body& moving = A.asleep ? B : A;
       Body& sleeper = A.asleep ? A : B;
       const f64 sp = norm(moving.v) + moving.radius * norm(moving.w);
-      if (sp > (!pc[q].empty() ? 2.0 : 3.0) * par.sleep_speed) wake(sleeper);
+      if (sp > (!pc[q].empty() ? 2.0 : 3.0) * sleep_speed_) wake(sleeper);
     }
   }
 }
@@ -658,6 +658,7 @@ void RigidWorld::sleep_update(f64 dt) {
   const f64 rest = std::pow(1.0 - par.rest_damping, k);
   const f64 keep = std::pow(0.8, k);
   const i32 steps = std::max<i32>(1, static_cast<i32>(std::lround(k)));
+  const f64 sleep_speed = sleep_speed_;
   std::vector<u8> touching(bodies.size(), 0);
   for (const Contact& c : contacts_) {
     touching[size_t(c.a)] = 1;
@@ -674,8 +675,8 @@ void RigidWorld::sleep_update(f64 dt) {
     }
     // (a smoothed speed: a settling piece's last jitter does not restart its count; real motion does)
     b.sleep_ema = keep * b.sleep_ema + (1.0 - keep) * sp;
-    if (sp > 3.0 * par.sleep_speed || !touching[i]) b.still = 0;
-    else if (b.sleep_ema < par.sleep_speed) b.still += steps;
+    if (sp > 3.0 * sleep_speed || !touching[i]) b.still = 0;
+    else if (b.sleep_ema < sleep_speed) b.still += steps;
     else b.still = std::max(0, b.still - 2 * steps);
     if (b.still >= par.sleep_substeps) {
       b.asleep = true;
@@ -683,6 +684,12 @@ void RigidWorld::sleep_update(f64 dt) {
       b.w = V3{};
     }
   }
+}
+
+void RigidWorld::set_step(f64 dt) {
+  // (a resting piece's leftover speed after the contact solve scales with what gravity adds in a
+  // substep: the sleep and wake thresholds do too)
+  sleep_speed_ = std::max(par.sleep_speed, 1.2 * par.gravity * dt);
 }
 
 bool RigidWorld::busy() const {
@@ -695,6 +702,7 @@ bool RigidWorld::busy() const {
 
 void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<bool(f64)>& fracture) {
   busy_ = busy();
+  set_step(dt);
   using Clock = std::chrono::steady_clock;
   auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
   const auto t0 = Clock::now();

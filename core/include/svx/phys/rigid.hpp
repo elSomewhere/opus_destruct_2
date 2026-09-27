@@ -126,7 +126,7 @@ struct RigidParams {
   int busy_bodies = 150;
   f64 busy_speed = 2.0;              // m/s
   int busy_iterations = 6;
-  size_t busy_contacts = 6000;       // also beyond this many contacts (a large pile settling): those iterations
+  size_t busy_contacts = 6000;       // also beyond this many contacts (a large pile settling): busy
   f64 restitution = 0.1;             // for impacts faster than bounce_speed
   f64 bounce_speed = 2.0;
   f64 friction = 0.65;
@@ -198,6 +198,8 @@ class RigidWorld {
   void refresh_boxes();
   std::vector<Contact> contacts_;
   bool busy_ = false;
+  f64 sleep_speed_ = 0.15;  // (the sleep / wake threshold of the current substep length)
+  void set_step(f64 dt);
   std::unordered_map<u64, std::array<f64, 3>> warm_;  // contact key -> (ln, l1, l2)
   std::vector<i32> island_;  // (scratch)
   std::vector<V3> pseudo_v_, pseudo_w_;  // split-impulse pseudo velocities of the last solve
