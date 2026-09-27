@@ -74,6 +74,10 @@ export interface ActorSettings {
   retroVoxel: number;
   /** Bodies kept before the oldest fade away. */
   maxCorpses: number;
+  /** Radius (m) of the voxel sphere a soldier's round carves out of the world. */
+  roundCarve: number;
+  /** Sector light the characters are drawn with (0..1; Doom maps are darker than 1). */
+  light: number;
   /** Rounds from soldiers hurt the player. */
   playerDamage: boolean;
 }
@@ -113,7 +117,7 @@ interface GibUser {
   skin: Float32Array;
 }
 
-const DEFAULT_SETTINGS: ActorSettings = { ai: true, retro: false, retroVoxel: 1 / 32, maxCorpses: 40, playerDamage: true };
+const DEFAULT_SETTINGS: ActorSettings = { ai: true, retro: false, retroVoxel: 1 / 32, maxCorpses: 40, playerDamage: true, roundCarve: 0.08, light: 1 };
 const RIFLE_DAMAGE = 34;
 const BLOOD: [number, number, number] = [0.3, 0.012, 0.01];
 /** Retro stepping: Doom's 35 Hz tics, 4 per step. */
@@ -280,7 +284,7 @@ export class ActorWorld {
     this.shotsFired++;
     this.hooks.muzzleFlash(a.char.muzzle(), dir);
     this.noise({ pos: origin, radius: 45, kind: 'shot', source: a });
-    const end = this.resolveShot(origin, dir, 180, a, RIFLE_DAMAGE, 0.1);
+    const end = this.resolveShot(origin, dir, 180, a, RIFLE_DAMAGE, this.settings.roundCarve);
     this.hooks.tracer(origin, end);
     return true;
   }
@@ -448,7 +452,8 @@ export class ActorWorld {
       if (!a.char.alive && a.char.ragdoll?.asleep && a.char.deadTime > 3) {
         // settled bodies cost nothing
       } else a.char.update(dt);
-      if (!this.settings.retro || a.char.alive || retroTick) a.drawSkin.set(a.char.skin);
+      // retro: whatever is not drawn from baked frames moves in Doom-tic steps
+      if (!this.settings.retro || a.char.retroFrame || retroTick) a.drawSkin.set(a.char.skin);
     }
     this.cast.pump();
     this.gibs.update(dt);
@@ -628,12 +633,12 @@ export class ActorWorld {
       if (ch.retroFrame && ch.alive) {
         const skin = a.propSkin;
         ch.writeRetroSkin(skin);
-        cc.add(this.cast.mesh(ch.retroFrame), skin, 1, a.look.paletteId, { center: b.center, radius: 1.3, tint, opacity: a.opacity });
+        cc.add(this.cast.mesh(ch.retroFrame), skin, 1, a.look.paletteId, { center: b.center, radius: 1.3, tint, opacity: a.opacity, light: this.settings.light });
       } else {
-        cc.add(this.meshOf(a), a.drawSkin, ch.model.skeleton.count, a.look.paletteId, { center: b.center, radius: b.radius + 0.3, tint, opacity: a.opacity });
+        cc.add(this.meshOf(a), a.drawSkin, ch.model.skeleton.count, a.look.paletteId, { center: b.center, radius: b.radius + 0.3, tint, opacity: a.opacity, light: this.settings.light });
         if (ch.weapon && ch.alive) {
           ch.animator.writePropSkin(a.propSkin);
-          cc.add(this.cast.rifleMesh, a.propSkin, 1, a.look.paletteId, { center: ch.animator.weaponPos, radius: 0.7, opacity: a.opacity });
+          cc.add(this.cast.rifleMesh, a.propSkin, 1, a.look.paletteId, { center: ch.animator.weaponPos, radius: 0.7, opacity: a.opacity, light: this.settings.light });
         }
       }
       if (ch.alive) cc.decal([a.pos[0], a.pos[1], a.pos[2] + 0.004], [0, 0, 1], 0.4, [0, 0, 0, 0.5 * a.opacity], 0);
@@ -647,9 +652,9 @@ export class ActorWorld {
     }
     for (const g of this.gibUsers) {
       const u = g.user as GibUser;
-      cc.add(u.mesh, u.skin, 1, u.paletteId, { center: g.pos, radius: g.radius + 0.05 });
+      cc.add(u.mesh, u.skin, 1, u.paletteId, { center: g.pos, radius: g.radius + 0.05, light: this.settings.light });
     }
-    this.gibs.forEachDrop((p, size, c) => cc.bit(p, size, [0, 0, 0, 1], c));
+    this.gibs.forEachDrop((p, size, c) => cc.bit(p, size, [0, 0, 0, 1], c, this.settings.light));
     this.gibs.forEachStain((p, n, size, age, c) => cc.decal(p, n, Math.max(0.045, size * 2.4), [c[0] * 0.8, c[1] * 0.8, c[2] * 0.8, Math.min(0.92, 0.5 + age)], 1));
   }
 

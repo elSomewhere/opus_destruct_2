@@ -49,6 +49,30 @@ in dev and preview, so `crossOriginIsolated === true` and `SharedArrayBuffer` (W
 work. Production hosting must send the same headers. With `?engine=wasm` the app warns if the
 page is not isolated.
 
+## Characters
+
+Soldiers and civilians are svx_anim characters (`../anim`, [docs/ANIM.md](../docs/ANIM.md)).
+`src/actors/` runs them in the game:
+
+- `actors.ts`: ActorWorld handles population, movement on the engine's occupancy, combat
+  (hitscan rounds that hit characters voxel-exact, the player, or the world, where they carve
+  it), wounds, severed limbs, gibs, blood, crushing by debris, and drawing (smooth or retro).
+- `brain.ts`: soldier and civilian behaviour.
+- `nav.ts`: A* on standable cells found from the occupancy.
+- `cast.ts`: models, palettes, meshes and retro frame sets.
+- `env.ts`: the CollisionWorld over the occupancy.
+
+`src/render/characters.ts` draws the svx_anim meshes (rigid skinning from a storage buffer of
+bone matrices), plus decals (blob shadows, blood) and instanced voxel bits.
+
+- URL parameters: `?civilians=N&soldiers=M`, `?actors=0`, `?god=1`,
+  `?anim=smooth|retro|retro-chunky`.
+- The settings panel has a Characters section.
+- `window.__structvox` adds `spawn`, `spawnAt`, `actors`, `characters` and `actorWorld`.
+- `lab.html` (`src/lab/`) is the animation lab: a test course with a scripted cast. Click to
+  shoot, shift-click for a rocket; there's a smooth / retro switch and time scale.
+- `scripts/smoke-actors.mjs` is the characters' browser smoke test.
+
 ## Architecture
 
 ```

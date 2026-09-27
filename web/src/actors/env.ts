@@ -65,10 +65,13 @@ export class WorldAccess implements CollisionWorld {
     return { move: [move[0], move[1], z - min[2]], onGround: z <= ground + 1e-6, stepped: 0 };
   }
 
-  /** Whether a standing box of this size fits with its feet at p. */
-  fits(p: Readonly<V3>, radius: number, height: number): boolean {
+  /**
+   * Whether a standing box of this size fits with its feet at p. Things lower than `from`
+   * above the feet do not count (steps: the move climbs them).
+   */
+  fits(p: Readonly<V3>, radius: number, height: number, from = 0.02): boolean {
     if (!this.occupancy.ready) return true;
-    return !this.occupancy.overlaps([p[0] - radius, p[1] - radius, p[2] + 0.02], [p[0] + radius, p[1] + radius, p[2] + height]);
+    return !this.occupancy.overlaps([p[0] - radius, p[1] - radius, p[2] + from], [p[0] + radius, p[1] + radius, p[2] + height]);
   }
 
   /**
@@ -79,6 +82,6 @@ export class WorldAccess implements CollisionWorld {
     const g = this.groundHeight(x, y, z + rise, z - drop);
     if (g === null) return null;
     const p: V3 = [x, y, g];
-    return this.fits(p, radius, height) ? p : null;
+    return this.fits(p, radius, height, 0.3) ? p : null;
   }
 }

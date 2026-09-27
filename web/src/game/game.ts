@@ -250,6 +250,8 @@ export class Game {
     e.on('ready', (msg) => {
       this.info = msg.info;
       this.worldKind = msg.info.textures ? 'wad' : this.world.kind;
+      // Doom sectors are darker than the procedural worlds' daylight
+      this.actors.settings.light = this.worldKind === 'wad' ? 0.8 : 1;
       this.playerHealth = PLAYER_HEALTH;
       this.populateAt = performance.now() / 1000 + 1.0;
       this.player.spawn(msg.info.spawn.pos, msg.info.spawn.dir);

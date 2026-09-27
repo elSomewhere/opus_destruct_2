@@ -117,7 +117,7 @@ export function bakePose(model: VoxelModel, world: WorldPose, opts: BakeOptions 
   const shade = new Uint8Array(n);
   // coarser targets: n^3 sub-samples per cell, solid when enough of them hit
   const sub = Math.max(1, Math.min(3, Math.round(st / model.voxelSize)));
-  const need = sub === 1 ? 1 : Math.max(1, Math.ceil(sub * sub * sub * 0.4));
+  const need = sub === 1 ? 1 : Math.max(1, Math.ceil(sub * sub * sub * 0.25)); // (thin limbs survive coarse frames)
   // which sub-samples hit (a bit each: overlapping parts at joints never count twice)
   const hits = sub === 1 ? null : new Uint32Array(n);
   const best = sub === 1 ? null : new Uint8Array(n); // best slot seen (surface slots win)

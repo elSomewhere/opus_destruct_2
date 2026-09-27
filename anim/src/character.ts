@@ -151,8 +151,10 @@ export class Character {
 
   private updateRetro(dt: number): void {
     const a = this.animator;
-    if (!this.alive) {
-      this.retroFrame = null; // the host draws the (stepped) ragdoll
+    if (!this.alive || this.ownsModel) {
+      // dead (the ragdoll) or wounded (the baked frames show no wounds): the host draws the
+      // model itself, posed in retro steps
+      this.retroFrame = null;
       return;
     }
     this.retroPlayer ??= new RetroPlayer(this.retro!);

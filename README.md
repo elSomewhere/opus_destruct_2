@@ -25,6 +25,13 @@ wall panels and blocks that settles and sleeps.
   - Falling pieces are rigid bodies that keep their bonds and break on impact, progressively,
     part by part.
 - **Game ↔ front-end contract:** [`docs/API.md`](docs/API.md).
+- **Characters:** [`docs/ANIM.md`](docs/ANIM.md). svx_anim (`anim/`) is a voxel character
+  animation engine, as decoupled as the physics core. It covers procedural locomotion with
+  planted feet, IK weapon handling, soldiers and civilians sculpted from voxels, voxel-exact
+  wounds and severed limbs, ragdolls, gibs, blood, and a retro (Voxel Doom style) presentation.
+  The game populates its worlds with soldiers who fight the player and civilians who flee; the
+  rounds carve the world, so the battle destroys the level. The animation lab (`/lab.html`)
+  runs the characters without the physics engine.
 - **v1** (the bubble/lattice engine this version replaces): [`docs/v1/`](docs/v1) (plan, status,
   phase reports).
 
@@ -58,6 +65,10 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
 
 - **Worlds:** `?world=rooms|city|tower&seed=N` (`city` is a streamed 1 km² city), or a Freedoom
   WAD via the panel (doors, lifts, floors, platforms, crushers and stairs work).
+- **Characters:** soldiers and civilians are placed when a world loads
+  (`?civilians=N&soldiers=M`, `?actors=0` for none, `?god=1`, `?anim=smooth|retro|retro-chunky`);
+  the settings panel adds more and switches the animation style. `open http://localhost:5190/lab.html`
+  shows the animation lab.
 - **Controls:** WASD move, mouse look, Space jump, Shift run; 1/2/3 or the wheel select pistol,
   shotgun, rocket launcher, click fires; E uses, V toggles noclip, R respawns; G cycles debug
   views (bond utilization, fragments); H toggles the HUD and its tick timeline; Esc opens the
@@ -67,6 +78,9 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
   - `node scripts/smoke-wasm.mjs http://localhost:5190/`: the browser smoke test.
   - `node scripts/tower-wasm.mjs http://localhost:5190/ OUT 25`: blasts the tower's ground
     columns in the browser and records screenshots and engine stats.
+  - `node scripts/smoke-actors.mjs http://localhost:5190/`: the characters in the browser
+    (population, fighting, kills, gibs, retro, a Freedoom map, the lab).
+  - `cd anim && npm install && npm test`: svx_anim's unit tests.
 
 ## Tools (`build/native-release/tools/`)
 
@@ -104,6 +118,8 @@ game/      svx_game: the prototype game harness
 examples/  minimal hosts of the core (C++, C)
 tools/     command-line tools (game level runs, replays, map checks, benches), WASM modules
 tests/     core/ (links svx_core only) and game/ doctest suites
-web/       TypeScript + Vite front end: worker host, WebGPU renderer, FPS sandbox
+anim/      svx_anim: voxel character animation (docs/ANIM.md). TypeScript, no dependencies.
+web/       TypeScript + Vite front end: worker host, WebGPU renderer, FPS sandbox, actors
+           (soldiers and civilians on svx_anim), the animation lab
 docs/      the core guide, design, game API, v1 history
 ```
