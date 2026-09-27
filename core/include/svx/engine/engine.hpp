@@ -302,7 +302,7 @@ class Engine {
   i64 owner_of(const FragKey& f) const;      // structure id holding it (0: none)
   void voxels_of(const FragKey& f, std::vector<IVec3>& out);
   u8 frag_class(const FragKey& f);           // weakest design class of its voxels
-  void mark_owners_stale(u64 chunk_key);
+  void mark_owners_stale(u64 chunk_key, u64 changed = ~0ull);  // owners of chunk_key: stale, `changed` (default: chunk_key) to patch
 
   // ---- structures (engine.cpp)
   Structure* structure(i64 id);
@@ -314,6 +314,13 @@ class Engine {
   // new Structure, or nullptr after detaching it (it reaches no support).
   // detach_free false (bake): a piece reaching no support is removed from the source world.
   Structure* extract(const FragKey& f, i32 max_nodes = 0, f64 max_radius = 0.0, bool detach_free = true);
+  // Streamed worlds are designed on first touch: a structure reaching chunks generated since
+  // (not yet designed) is solved under its own weight and its overloaded members strengthened
+  // before anything happens to it (an event designs what it will hit before it hits).
+  void design_structure(Structure& s, bool dry = false);  // dry: only report
+  bool touches_undesigned(const Structure& s) const;
+  bool pristine(const Structure& s) const;  // no broken bond, no changed chunk
+  void design_near(const V3& c, f64 r);
   void refresh_structures();                 // seeds and stale structures -> (re)extracted
   void step_structures();                    // solves within the work budget, judging
   void judge(Structure& s);
@@ -440,6 +447,8 @@ class Engine {
   std::vector<i64> pending_retire_;
   i32 crack_budget_ = 0;
   i32 impact_budget_ = 0;
+  std::unordered_set<u64> undesigned_;  // streamed chunks generated and not designed yet
+  i32 ensuring_ = 0;  // (nesting of first-touch chunk generation)
   i64 impact_count_tick_ = 0;
 
   RigidWorld rigid_;

@@ -405,9 +405,22 @@ void Engine::body_stress_run(Body& b, const std::vector<PointForce>& forces, boo
   std::vector<std::pair<f64, i32>> over;
   std::vector<FailMode> modes(G.P.bonds.size(), FailMode::None);
   std::vector<i32> comp;
+  bool rebuilt = false;
   for (i32 round = 0; round < rounds; ++round) {
-    const PcgResult r = G.P.solve(f, G.u, cfg_.body_stress_rtol, cfg_.body_stress_maxit, true);
+    PcgResult r = G.P.solve(f, G.u, cfg_.body_stress_rtol, cfg_.body_stress_maxit, true);
+    if (!r.converged && (r.breakdown || r.rel_res > 5.0 * cfg_.body_stress_rtol) && round > 0 && !rebuilt) {
+      // (the multigrid of the intact piece is stale after the breaks and the chips' retirement:
+      // rebuilt once for the damaged piece)
+      rebuilt = true;
+      G.P.invalidate();
+      StressOptions so;
+      so.rtol = cfg_.body_stress_rtol;
+      so.amg_min_nodes = 0;
+      if (G.P.assemble(so)) r = G.P.solve(f, G.u, cfg_.body_stress_rtol, cfg_.body_stress_maxit, true);
+    }
     if (!r.converged && (r.breakdown || r.rel_res > 5.0 * cfg_.body_stress_rtol)) {
+      if (dbg && b.shape.count > 5000)
+        std::printf("    [round %d] solve failed: pcg %d rel %.1e breakdown %d\n", round, r.iters, r.rel_res, r.breakdown ? 1 : 0);
       G.P.invalidate();  // (no reliable answer: nothing more breaks; the next check starts afresh)
       std::fill(G.u.begin(), G.u.end(), 0.0);
       break;
@@ -471,7 +484,10 @@ void Engine::body_stress_run(Body& b, const std::vector<PointForce>& forces, boo
       ++o.modes[static_cast<int>(modes[size_t(k)])];
       o.cracks.push_back({b.to_world(B.p), rotate(b.q, B.n)});
     }
-    if (poor || out.size() == before || round + 1 == rounds) break;
+    if (poor || out.size() == before || round + 1 == rounds) {
+      if (dbg && b.shape.count > 5000) std::printf("    [round %d] stop: poor %d, none %d, last %d\n", round, poor ? 1 : 0, out.size() == before ? 1 : 0, round + 1 == rounds ? 1 : 0);
+      break;
+    }
     // Come apart? A part of some size (freed, or on supports of its own) goes its own way: the
     // rounds end and the parts separate. Chips crushed off where the piece struck still pass the
     // load on (crushed material in between transmits it): their loads move to the piece through
@@ -490,6 +506,11 @@ void Engine::body_stress_run(Body& b, const std::vector<PointForce>& forces, boo
     bool apart = false;
     for (i32 c = 1; c < nc; ++c)
       if (cmass[size_t(c)] > cfg_.impact_chip_fraction * b.mass) apart = true;
+    if (dbg && b.shape.count > 5000) {
+      std::printf("    [round %d] %d components:", round, nc);
+      for (i32 c = 0; c < std::min(nc, 8); ++c) std::printf(" %.1f%%", 100.0 * cmass[size_t(c)] / b.mass);
+      std::printf("%s, %zu broken so far\n", apart ? " -> apart" : "", out.size());
+    }
     if (apart) break;
     // chips: each passes its net load on to the piece it broke from, shared by the nodes it was
     // bonded to (force equally, the moment about their centre as nodal moments), else to the

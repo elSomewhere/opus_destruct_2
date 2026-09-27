@@ -5,6 +5,7 @@
 #include "svx/base/parallel.hpp"
 #include "svx/engine/engine.hpp"
 #include "svx/world/procgen.hpp"
+#include "svx/world/streaming.hpp"
 
 using namespace svx;
 
@@ -106,4 +107,48 @@ TEST_CASE("collapse: the tower losing its two west rows of columns comes down (a
   CHECK(s1.detached_voxels > 20000);  // far more than the blasts removed: the structure failed
   CHECK(s1.bonds_broken > 100);
   CHECK(h1 == h4);
+}
+
+TEST_CASE("collapse: a streamed city's buildings stand when touched (designed on first touch), and fall when their ground floor goes") {
+  const f64 h = 0.125;
+  auto city = [&](Engine& eng) {
+    auto src = make_city_source(1, 1000.0, h);
+    const auto sp = src->spawn_pos();
+    VoxelGrid g;
+    g.h = h;
+    eng.load(std::move(g), sp, src->spawn_dir());
+    StreamConfig sc;
+    eng.enable_streaming(std::move(src), sc);
+    eng.set_viewer(sp);
+    return sp;
+  };
+  {
+    // tiny carves on the first-floor slabs of the 3 x 3 blocks around the spawn, while the city is
+    // still streaming in around them: nothing breaks
+    Engine eng;
+    const auto sp = city(eng);
+    const f64 ox = sp[0] + h * 48.0, oy = sp[1] - h * 72.0;  // the central block's corner
+    for (int t = 0; t < 18; ++t) run(eng, 1);
+    for (int i = -1; i <= 1; ++i)
+      for (int j = -1; j <= 1; ++j) eng.carve({ox + 24.0 * i + 9.0625, oy + 24.0 * j + 9.0625, 3.1}, 0.06);
+    run(eng, 60 * 3);
+    const EngineStats s = eng.stats();
+    MESSAGE("city pokes: " << s.bonds_broken << " bonds broken, " << s.strengthened_voxels << " voxels strengthened");
+    CHECK(s.bonds_broken == 0);
+    CHECK(s.detached_voxels < 100);
+  }
+  {
+    // the central building's ground floor blown out: it comes down, its neighbours stand
+    Engine eng;
+    const auto sp = city(eng);
+    const f64 ox = sp[0] + h * 48.0, oy = sp[1] - h * 72.0;
+    run(eng, 18);
+    for (int i = 0; i <= 6; ++i)
+      for (int j = 0; j <= 6; ++j) eng.blast({ox + 0.2 + 3.0 * i, oy + 0.2 + 3.0 * j, 1.0}, 1.0, 1e6);
+    run(eng, 60 * 4);
+    const EngineStats s = eng.stats();
+    MESSAGE("city demolition: " << s.detached_voxels << " voxels detached, " << s.bodies << " pieces");
+    CHECK(s.detached_voxels > 100000);
+    CHECK(s.detached_voxels < 450000);  // (one building, ~300k voxels: its neighbours stand)
+  }
 }

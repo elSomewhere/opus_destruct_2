@@ -249,6 +249,27 @@ int main(int argc, char** argv) {
     }
     if (!cam_set) cam = V3{11.0, -16.0, 8.0};
     if (!look_set) look = V3{11.0, 4.0, 3.0};
+  } else if (world == "city") {
+    // the building on the central block (next to the spawn): its ground floor blown out along
+    // one side (scenario "side") or everywhere ("demolish")
+    const auto sp = eng.spawn_pos();
+    const f64 ox = sp[0] + h * 48.0, oy = sp[1] - h * 72.0;  // the block's corner (from the spawn in the street)
+    if (scenario == "side" || scenario == "pillars") {
+      for (int k = 0; k <= 6; ++k) shots.push_back({0.3 + 0.1 * k, true, V3{ox + 0.2, oy + 0.2 + 3.0 * k, 1.0}, 1.0, 1e6});
+    } else if (scenario == "poke1") {
+      shots.push_back({0.3, false, V3{ox + 9.0, oy + 9.0, 3.1}, 0.06, 0.0});
+    } else if (scenario == "stability") {
+      // tiny carves on the first-floor slab of the 3 x 3 blocks around: each building is solved
+      // under its own weight (does it stand?)
+      for (int i = -1; i <= 1; ++i)
+        for (int j = -1; j <= 1; ++j) shots.push_back({0.3, false, V3{ox + 24.0 * i + 9.0625, oy + 24.0 * j + 9.0625, 3.1}, std::getenv("SVX_POKE_R") ? std::atof(std::getenv("SVX_POKE_R")) : 0.06, 0.0});
+    } else if (scenario == "demolish") {
+      for (int i = 0; i <= 6; ++i)
+        for (int j = 0; j <= 6; ++j) shots.push_back({0.3 + 0.02 * (i * 7 + j), true, V3{ox + 0.2 + 3.0 * i, oy + 0.2 + 3.0 * j, 1.0}, 1.0, 1e6});
+    }
+    // from the street crossing south-west of the block
+    if (!cam_set) cam = V3{ox - 3.0, oy - 3.0, 14.0};
+    if (!look_set) look = V3{ox + 9.0, oy + 9.0, 5.0};
   } else if (world == "rooms") {
     if (scenario != "none") {
       shots.push_back({0.3, true, V3{h * 51, h * 23, 1.5}, 1.0, 1e6});
@@ -283,6 +304,7 @@ int main(int argc, char** argv) {
       if (s.blast) eng.blast(to_arr(s.pos), s.radius, s.energy);
       else eng.carve(to_arr(s.pos), s.radius);
     }
+    if (world == "city") eng.set_viewer(to_arr(look));
     eng.tick();
     (void)eng.take_events();
     if (const char* wv = std::getenv("SVX_WATCH")) {

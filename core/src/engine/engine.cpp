@@ -89,14 +89,16 @@ void Engine::load(VoxelGrid&& g, const std::array<f64, 3>& spawn_pos, const std:
 // ---------------------------------------------------------------------------------------------
 // Fragments
 
-void Engine::mark_owners_stale(u64 key) {
+void Engine::mark_owners_stale(u64 key, u64 changed) {
+  // the structures owning fragments of chunk `key`: stale, with `changed` (default: key) to patch
+  if (changed == ~0ull) changed = key;
   const auto ot = owner_.find(key);
   if (ot == owner_.end()) return;
   for (i64 id : ot->second)
     if (id)
       if (Structure* s = structure(id)) {
         s->stale = true;
-        if (std::find(s->changed.begin(), s->changed.end(), key) == s->changed.end()) s->changed.push_back(key);
+        if (std::find(s->changed.begin(), s->changed.end(), changed) == s->changed.end()) s->changed.push_back(changed);
       }
 }
 
@@ -227,6 +229,7 @@ Engine::Structure* Engine::extract(const FragKey& seed, i32 max_nodes, f64 max_r
     return A;
   };
   bool any_support = false;
+  bool touched_unloaded = false;  // (held by chunks not generated yet)
   constexpr int kStride[3] = {kChunk * kChunk, kChunk, 1};
   for (size_t qi = 0; qi < members.size(); ++qi) {
     const FragKey F = members[qi];
@@ -253,7 +256,9 @@ Engine::Structure* Engine::extract(const FragKey& seed, i32 max_nodes, f64 max_r
           const bool face_broken = sg > 0 ? ((brk_p >> a) & 1) != 0 : grid_.broken(q, a);
           if (face_broken) continue;
           const IVec3 lower = sg > 0 ? p : q;
-          if (vox_anchored(vq) || (!inside && !chunk_resident(chunk_of(q)))) {
+          const bool unloaded = !inside && !chunk_resident(chunk_of(q));
+          if (unloaded) touched_unloaded = true;
+          if (vox_anchored(vq) || unloaded) {
             SecAcc& A = acc_for(nF, -1, a, sg);
             A.mb = vox_mat(vq);
             A.add(lower, a);
@@ -321,7 +326,55 @@ Engine::Structure* Engine::extract(const FragKey& seed, i32 max_nodes, f64 max_r
   structures_.erase(std::remove_if(structures_.begin(), structures_.end(), [](const std::unique_ptr<Structure>& x) { return x->dead; }),
                     structures_.end());
   structures_.push_back(std::move(s));  // (ids ascend: the list stays sorted)
-  return structures_.back().get();
+  Structure* out = structures_.back().get();
+  if (detach_free && touches_undesigned(*out)) {
+    // A streamed structure touched for the first time. It is designed whole: first the chunks
+    // around it are generated (it must not stand on chunks that are not there yet); then, if it
+    // is still intact, it is solved under its own weight and its overloaded members strengthened,
+    // and extracted again with their new strengths. (A structure damaged before it was designed
+    // is left as it is.)
+    const i64 id = out->id;
+    static const bool dbgd = std::getenv("SVX_DEBUG_DESIGN") != nullptr;
+    if (dbgd)
+      std::printf("  [first touch] s%lld: %zu nodes, unloaded %d, ensuring %d, pristine %d\n", static_cast<long long>(id), out->P.nodes.size(),
+                  touched_unloaded ? 1 : 0, ensuring_, pristine(*out) ? 1 : 0);
+    if (touched_unloaded && ensuring_ < 8) {
+      IVec3 lo{INT32_MAX, INT32_MAX, INT32_MAX}, hi{INT32_MIN, INT32_MIN, INT32_MIN};
+      for (const FragKey& f : out->frags) {
+        if (f.idx < 0) continue;
+        const IVec3 cc = unkey3(f.chunk);
+        for (int a = 0; a < 3; ++a) {
+          lo[a] = std::min(lo[a], (cc[a] - 1) * kChunk);
+          hi[a] = std::max(hi[a], (cc[a] + 2) * kChunk - 1);
+        }
+      }
+      drop_structure(id);
+      ++ensuring_;
+      ensure_chunks(lo, hi);
+      Structure* again = extract(seed, max_nodes, max_radius, detach_free);
+      --ensuring_;
+      return again;
+    }
+    if (pristine(*out)) {
+      design_structure(*out);
+      drop_structure(id);
+      Structure* again = extract(seed, max_nodes, max_radius, detach_free);
+      static const bool dbg = std::getenv("SVX_DEBUG_DESIGN") != nullptr;
+      if (dbg && again) design_structure(*again, true);
+      return again;
+    }
+    for (const FragKey& f : out->frags)
+      if (f.idx >= 0) undesigned_.erase(f.chunk);
+  }
+  return out;
+}
+
+bool Engine::pristine(const Structure& s) const {
+  for (const SBond& B : s.P.bonds)
+    if (B.broken) return false;
+  for (const FragKey& f : s.frags)
+    if (f.idx >= 0 && grid_.is_modified(f.chunk)) return false;
+  return true;
 }
 
 i32 Engine::cluster_cell(i64 fragments) const {
@@ -457,6 +510,19 @@ void Engine::refresh_structures() {
       const auto tpt = Clock::now();
       const size_t nch = s->changed.size();
       if (patch_structure(*s)) {
+        if (touches_undesigned(*s)) {
+          static const bool dbgd = std::getenv("SVX_DEBUG_DESIGN") != nullptr;
+          if (dbgd) std::printf("  [patch touch] s%lld: pristine %d\n", static_cast<long long>(id), pristine(*s) ? 1 : 0);
+          // (new chunks streamed in under it: designed with them if still intact, else as is)
+          if (pristine(*s)) {
+            design_structure(*s);
+            reseed(*s);
+            drop_structure(id);
+            continue;
+          }
+          for (const FragKey& f : s->frags)
+            if (f.idx >= 0) undesigned_.erase(f.chunk);
+        }
         if (prof)
           std::printf("  [prof] patch s%lld: %zu changed chunks, %zu nodes (%d gone): %.1f ms\n", static_cast<long long>(id), nch,
                       s->P.nodes.size(), s->gone, ms_since(tpt));
@@ -601,12 +667,20 @@ void Engine::judge(Structure& s) {
   std::vector<std::pair<f64, i32>> over;
   f64 maxphi = 0.0;
   const i32 nb = static_cast<i32>(s.P.bonds.size());
+  static const bool dbgj = std::getenv("SVX_DEBUG_JUDGE") != nullptr;
   for (i32 b = 0; b < nb; ++b) {
     const SBond& B = s.P.bonds[size_t(b)];
     if (B.broken) continue;
     const BondLoad L = s.P.bond_load(b, s.u);
     BondLoad Le = L;
     auto it = judged_.find(s.bid[size_t(b)]);
+    if (dbgj && s.rounds == 0 && bond_utilization(B, L, par_.fragility) < 1.0 && it != judged_.end() && s.shock && dif != 1.0 &&
+        bond_utilization(B, lerp_load(it->second, L, dif), par_.fragility) >= 1.0)
+      std::printf("      (dif) bond %d: static phi %.2f, old N %.0f M %.0f %.0f V %.0f %.0f, new N %.0f M %.0f %.0f V %.0f %.0f\n", b,
+                  bond_utilization(B, L, par_.fragility), it->second.N, it->second.M1, it->second.M2, it->second.V1, it->second.V2, L.N, L.M1, L.M2,
+                  L.V1, L.V2);
+    if (dbgj && s.rounds == 0 && it == judged_.end() && bond_utilization(B, L, par_.fragility) >= 1.0)
+      std::printf("      (no baseline) bond %d: static phi %.2f\n", b, bond_utilization(B, L, par_.fragility));
     if (s.shock && dif != 1.0 && it != judged_.end()) Le = lerp_load(it->second, L, dif);
     const f64 phi = bond_utilization(B, Le, par_.fragility);
     if (it != judged_.end()) {
@@ -642,6 +716,15 @@ void Engine::judge(Structure& s) {
   const f64 thr = std::max(1.0, cfg_.break_band * over.front().first);
   static const bool dbg = std::getenv("SVX_DEBUG_JUDGE") != nullptr;
   if (dbg) {
+    {
+      f64 W = 0.0, E = 0.0;
+      for (size_t i = 0; i < s.P.nodes.size(); ++i) {
+        W += s.weight[i];
+        E += s.ext_solved[6 * i + 2];
+      }
+      std::printf("  [judge state s%lld] nodes %zu (gone %d), weight %.4g N, ext z %.4g N, bonds %zu\n", static_cast<long long>(s.id),
+                  s.P.nodes.size(), s.gone, W, E, s.P.bonds.size());
+    }
     std::printf("  [judge t%lld s%lld] round %d: %zu over 1 (of %d), max %.2f, thr %.2f, shock %d\n", static_cast<long long>(st_.ticks),
                 static_cast<long long>(s.id), s.rounds, over.size(), nb, over.front().first, thr, s.shock ? 1 : 0);
     for (size_t k = 0; k < std::min<size_t>(4, over.size()); ++k) {
@@ -846,6 +929,7 @@ bool Engine::patch_structure(Structure& s) {
   std::vector<FragKey> stack;
   for (u64 k : changed) {
     FragChunk* fc = frag_chunk_if(k);
+    if (!fc) continue;  // (an empty or evicted chunk)
     for (i32 f = 0; f < static_cast<i32>(fc->frags.size()); ++f) {
       if (fc->frags[size_t(f)].count <= 0 || owner_of({k, f})) continue;
       if (member_of[k][size_t(f)] >= 0 || !touches({k, f})) continue;
@@ -1161,6 +1245,7 @@ void Engine::seed_near(const std::vector<IVec3>& removed) {
 
 void Engine::process(const PendingEvent& e) {
   ++st_.events;
+  design_near(e.pos, (e.blast ? cfg_.blast_reach : 1.0) * e.radius + 1.0);
   std::vector<IVec3> removed;
   carve_world(e.pos, e.radius, &removed);
   carve_bodies(e.pos, e.radius);

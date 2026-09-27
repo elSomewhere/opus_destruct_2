@@ -267,6 +267,11 @@ void Engine::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
     grid_.apply_record(*ait->second);
     archive_.erase(ait);
     changed = true;
+  } else if (any) {
+    // (fresh from the generator: designed when first touched; an archived chunk was designed
+    // before it was changed)
+    const Chunk* ch = grid_.chunk(cc);
+    if (ch && ch->free_count() > 0) undesigned_.insert(key);
   }
   if (!changed) return;
   grid_.mark_dirty(cc);
@@ -276,17 +281,19 @@ void Engine::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
       q[d] += s;
       grid_.mark_dirty(q);
     }
-  // structures that held this chunk as a frontier see its fragments now
+  // structures that held this chunk as a frontier see its fragments now: they reach into it
+  // (it is their changed chunk; their nodes in the neighbouring chunks stay as they are)
   for (int d = 0; d < 3; ++d)
     for (int s = -1; s <= 1; s += 2) {
       IVec3 q = cc;
       q[d] += s;
-      mark_owners_stale(key3(q[0], q[1], q[2]));
+      mark_owners_stale(key3(q[0], q[1], q[2]), key);
     }
 }
 
 void Engine::evict_chunk(u64 k) {
   const IVec3 cc = unkey3(k);
+  undesigned_.erase(k);
   if (grid_.is_modified(k)) archive_[k] = std::make_shared<const std::vector<u8>>(grid_.chunk_record(k));
   const bool resident = grid_.chunk(cc) != nullptr;
   mark_owners_stale(k);
@@ -853,6 +860,89 @@ void Engine::debug_voxel(const std::array<i32, 3>& pa) {
       std::printf(" %c%c:%s%s", sg > 0 ? '+' : '-', "xyz"[a], vox_solid(grid_.get(q)) ? "solid" : "air", br ? "(broken)" : "");
     }
   std::printf("\n");
+}
+
+bool Engine::touches_undesigned(const Structure& s) const {
+  if (undesigned_.empty()) return false;
+  for (const FragKey& f : s.frags)
+    if (f.idx >= 0 && undesigned_.count(f.chunk)) return true;
+  return false;
+}
+
+void Engine::design_structure(Structure& s, bool dry) {
+  // self-weight only (the design state), to a tight tolerance
+  if (!s.P.assembled()) {
+    StressOptions so;
+    so.rtol = 1e-5;
+    if (!s.P.assemble(so)) return;
+  }
+  const size_t n = s.P.nodes.size();
+  std::vector<f64> F(6 * n, 0.0);
+  for (size_t i = 0; i < n; ++i) F[6 * i + 2] = -s.weight[i];
+  std::vector<f64> u(6 * n, 0.0);
+  const PcgResult r = s.P.solve(F, u, 1e-5, 2000, false);
+  const f64 target = cfg_.design_utilization;
+  static const bool dbg = std::getenv("SVX_DEBUG_DESIGN") != nullptr;
+  f64 maxphi = 0.0;
+  i32 over = 0;
+  for (i32 b = 0; b < static_cast<i32>(s.P.bonds.size()); ++b) {
+    const SBond& B = s.P.bonds[size_t(b)];
+    if (B.broken) continue;
+    const BondLoad L = s.P.bond_load(b, u);
+    if (!dry) judged_[s.bid[size_t(b)]] = L;  // (the reference state of sudden changes, as the bake's)
+    const f64 phi = bond_utilization(B, L, 1.0);
+    maxphi = std::max(maxphi, phi);
+    if (phi <= target) continue;
+    ++over;
+    if (dry) continue;
+    const u8 cls = class_for(B.strength * phi / target);
+    for (int side = 0; side < 2; ++side) {
+      const i32 nd = side == 0 ? B.a : B.b;
+      if (nd < 0) continue;
+      std::vector<IVec3> vox;
+      for (i32 k = s.fstart[size_t(nd)]; k < s.fstart[size_t(nd) + 1]; ++k)
+        if (s.frags[size_t(k)].idx >= 0) voxels_of(s.frags[size_t(k)], vox);
+      for (const IVec3& p : vox)
+        if (grid_.strength(p) < cls) {
+          grid_.set_strength(p, cls);
+          ++st_.strengthened_voxels;
+        }
+    }
+  }
+  if (dbg) {
+    f64 W = 0.0;
+    for (size_t i = 0; i < n; ++i) W += s.weight[i];
+    std::printf("  [design state s%lld] weight %.4g N, bonds %zu\n", static_cast<long long>(s.id), W, s.P.bonds.size());
+  }
+  if (dbg)
+    std::printf("  [design%s] s%lld: %zu nodes (%d truncated), pcg %d rel %.1e conv %d, max phi %.2f, %d bonds over target\n", dry ? " check" : "",
+                static_cast<long long>(s.id), n, s.truncated ? 1 : 0, r.iters, r.rel_res, r.converged ? 1 : 0, maxphi, over);
+  if (dry) return;
+  for (size_t i = 0; i < n; ++i) {
+    std::array<f32, 6> w;
+    for (int q = 0; q < 6; ++q) w[size_t(q)] = static_cast<f32>(u[6 * i + size_t(q)]);
+    warm_u_[s.ident[i]] = w;
+  }
+  for (const FragKey& f : s.frags)
+    if (f.idx >= 0) undesigned_.erase(f.chunk);
+}
+
+void Engine::design_near(const V3& c, f64 r) {
+  // structures around an event, designed before it happens (streamed worlds)
+  if (undesigned_.empty()) return;
+  const f64 h = grid_.h;
+  const IVec3 lo = voxel_of(c - V3{r, r, r}, h), hi = voxel_of(c + V3{r, r, r}, h);
+  const i32 step = std::max<i32>(1, static_cast<i32>(r / (4.0 * h)));
+  for (i32 x = lo[0]; x <= hi[0]; x += step)
+    for (i32 y = lo[1]; y <= hi[1]; y += step)
+      for (i32 z = lo[2]; z <= hi[2]; z += step) {
+        const IVec3 p{x, y, z};
+        if (!undesigned_.count(key3(p[0] >> kChunkBits, p[1] >> kChunkBits, p[2] >> kChunkBits))) continue;
+        if (!vox_free(grid_.get(p))) continue;
+        FragKey f;
+        if (!frag_at(p, &f) || owner_of(f) != 0) continue;
+        extract(f);  // (designs it)
+      }
 }
 
 }  // namespace svx
