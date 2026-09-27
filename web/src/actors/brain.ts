@@ -10,8 +10,8 @@
  * and hunt the last known position when they lose sight.
  *
  * Civilians live their day: they stroll at their own pace, some jog, they wait about (the
- * animator's idle postures and fidgets), pair up and talk, sit on benches or on the ground, and
- * look at people and at what happens. Fear builds from gunfire, impacts, explosions, screams
+ * animator's idle postures and fidgets), pair up and talk, sit on benches, at café tables or on
+ * the ground, and look at people and at what happens. Fear builds from gunfire, impacts, explosions, screams
  * and bodies: they run (panicking when very scared), cower when it is right on them, put
  * their hands up when the player aims at them close by; the armed ones shoot back. Now and
  * then a conversation turns into a fist fight (or a knife fight); bystanders stop and watch.
@@ -462,7 +462,11 @@ export class CivilianBrain implements Brain {
             a.face = [a.pos[0] + Math.cos(s.yaw), a.pos[1] + Math.sin(s.yaw), a.pos[2] + 1.5];
             if (Math.abs(Math.atan2(Math.sin(s.yaw - a.yaw), Math.cos(s.yaw - a.yaw))) < 0.25) {
               a.stance = 'sit';
-              a.seat = { pos: s.seat, backrest: true, variant: (['upright', 'leanBack', 'crossLegs', 'elbowsOnKnees'] as const)[a.id % 4]! };
+              // at a table: working at it; on a bench: sitting in one's own way
+              a.seat =
+                s.desk !== null
+                  ? { pos: s.seat, backrest: true, deskHeight: s.desk, variant: 'desk' }
+                  : { pos: s.seat, backrest: true, variant: (['upright', 'leanBack', 'crossLegs', 'elbowsOnKnees'] as const)[a.id % 4]! };
               a.face = null;
             }
           } else if (a.stuck > 2) this.choose(a, w);

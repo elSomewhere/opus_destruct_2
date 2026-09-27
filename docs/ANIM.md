@@ -26,7 +26,7 @@ anim/                 svx_anim (TypeScript, zero dependencies, runs in node, bro
   physics/            CollisionWorld (the only view of the world), particle ragdoll, gibs and blood
   retro/              re-voxelized frames of poses, Doom-style state sequences and playback
   characters/         procedural soldiers and civilians (many looks per geometry), weapons,
-                      furniture (benches, chairs, desks)
+                      furniture (benches, chairs, desks, café tables)
   character.ts        Character: model + animator + ragdoll + wounds + retro, what hosts drive
 web/src/render/characters.ts + shaders/character.wgsl   WebGPU drawing of svx_anim meshes
 web/src/actors/       the game's actors: AI, navigation, combat, gore, crowds (the harness side)
@@ -249,7 +249,7 @@ The retro look is a function of the modern animation, not separate content (`ret
 `ActorWorld` runs soldiers and civilians in the engine's worlds.
 
 - **Population.** When a world loads, characters are placed on standable ground around the
-  player, with benches for the civilians:
+  player, with benches and café tables (a chair, a laptop, a cup) for the civilians:
   - city: 18 civilians, 8 soldiers;
   - tower: 12 civilians, 6 soldiers;
   - rooms: 5 civilians, 3 soldiers;
@@ -273,8 +273,8 @@ The retro look is a function of the modern animation, not separate content (`ret
   - they walk up to each other and talk, taking turns speaking and listening, facing each
     other at conversational distance; now and then a conversation turns into a fist fight (or
     a knife fight);
-  - they sit on benches (walk up, turn, sit down, sit in their own way, get up and leave) and
-    on the ground;
+  - they sit on benches (walk up, turn, sit down, sit in their own way, get up and leave), at
+    café tables working on a laptop, and on the ground;
   - a fight draws a crowd: passers-by stop and watch, sitters and talkers look over; the winner
     walks off, the loser gets away once back on their feet, and a killer runs;
   - fear builds from gunfire, impacts, screams and bodies; frightened, they run, panicking and
@@ -410,8 +410,8 @@ Measured on an M5 Pro:
 - **Sector light.** Characters use one light level per world, not the sector light of where they
   stand (Doom maps are drawn at 0.8).
 - **Movement.** Actors move on one level. They do not climb between floors without walkable
-  connections, and nav paths do not use doors or lifts. Benches are placed on open ground; the
-  city generator doesn't place furniture or desks indoors yet.
+  connections, and nav paths do not use doors or lifts. Benches and café tables are placed on
+  open ground; the city generator doesn't furnish interiors (offices with desks) yet.
 - **Fights.** Brawls are one on one; a third person doesn't join in. Soldiers fight hand to hand
   only with the rifle butt.
 - **Hits.** Rounds hit the static world via occupancy, not the rigid debris pieces. Characters

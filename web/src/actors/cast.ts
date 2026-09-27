@@ -1,7 +1,8 @@
 /**
  * The character assets of the game: voxel models (a few geometries per faction, many looks
  * through palettes), movement styles, loadouts (rifles, SMGs, machine guns, pistols, knives;
- * some civilians carry a pistol or a knife), furniture to sit on, their GPU meshes, and retro
+ * some civilians carry a pistol or a knife), furniture to sit on (benches, café tables), their
+ * GPU meshes, and retro
  * frame sets (baked on demand, one per frame of the game loop so switching to retro never
  * stalls).
  */
@@ -9,6 +10,7 @@ import {
   bakeRetroSet,
   civilianPalette,
   makeBench,
+  makeCafeTable,
   makeCivilian,
   makeKnife,
   makeLmg,
@@ -71,6 +73,8 @@ export class Cast {
   private readonly retroQueue: { key: string; model: VoxelModel; weapon: Prop | null; voxelSize: number }[] = [];
   private readonly mesher = new ModelMesher();
   readonly bench: Furniture;
+  /** A café table with its chair and a laptop (sitting at a desk). */
+  readonly table: Furniture;
   /** Squad camouflage scheme (all soldiers of a game share it). */
   scheme = 0;
 
@@ -78,6 +82,7 @@ export class Cast {
     this.renderer = renderer;
     this.props = { rifle: makeRifle(), smg: makeSmg(), lmg: makeLmg(), pistol: makePistol(), knife: makeKnife() };
     this.bench = makeBench();
+    this.table = makeCafeTable();
   }
 
   /** A look for a new character (geometry built on first use). */

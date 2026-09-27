@@ -10,14 +10,15 @@
  *  - animation: svx_anim Characters (procedural locomotion with personal styles, stances,
  *    actions, weapon handling, hit reactions by location), ragdolls when they die, gibs and
  *    blood (GibSystem);
- *  - the city: benches placed around (seats taken and freed), conversations (pairs), brawls
+ *  - the city: benches and café tables placed around (seats taken and freed), conversations
+ *    (pairs), brawls
  *    (Brawler: fists, kicks, knives) that bystanders stop to watch;
  *  - combat: hitscan rounds from each character's weapon (rifle, SMG, machine gun, pistol:
  *    damage, rate, spread, magazines and reloads) that hit the first thing on their line: a
  *    character (voxel-exact wounds), the player, or the world, where they carve the engine's
  *    voxels (the battle destroys the level); melee blows; player rounds and rockets come in
  *    through raycast / wound / blast; falling debris crushes characters;
- *  - rendering: characters (their own meshes once wounded), held weapons, benches, gibs,
+ *  - rendering: characters (their own meshes once wounded), held weapons, furniture, gibs,
  *    blood drops and stains, blob shadows; the retro presentation.
  */
 import {
@@ -35,6 +36,7 @@ import {
   vsub,
   type Carry,
   type CharacterHit,
+  type Furniture,
   type Gib,
   type GibSpec,
   type GroundVariant,
@@ -98,10 +100,14 @@ export interface Seat {
   /** Where to stand before sitting down (the root stays there). */
   front: V3;
   yaw: number;
+  /** Height of the table in front of it (sitting at a desk), or null. */
+  desk: number | null;
   occupant: Actor | null;
 }
 
-interface Bench {
+/** A bench or a table placed in the world. */
+interface Placed {
+  furniture: Furniture;
   pos: V3;
   yaw: number;
   skin: Float32Array;
@@ -183,7 +189,7 @@ export class ActorWorld {
   private readonly islands: IslandRenderer | null;
   private readonly islandPrev = new Map<number, { pos: V3; t: number }>();
   private readonly gibUsers = new Set<Gib>();
-  private readonly benches: Bench[] = [];
+  private readonly furniture: Placed[] = [];
   private readonly fights: { a: Actor; b: Actor; downFor: number }[] = [];
   private retroClock = 0;
   private pathCursor = 0;
@@ -259,12 +265,15 @@ export class ActorWorld {
 
   /**
    * Scatters `civilians` and `soldiers` on standable ground between rMin and rMax of `center`
-   * (soldiers in a group further out), with benches for the civilians. Returns how many were
+   * (soldiers in a group further out), with benches and café tables for the civilians. Returns how many were
    * placed.
    */
   populate(center: V3, civilians: number, soldiers: number, rMin = 6, rMax = 35): number {
     let placed = 0;
-    if (civilians > 0) this.placeBenches(center, Math.max(2, Math.round(civilians / 4)), rMin, rMax);
+    if (civilians > 0) {
+      this.placeFurniture(this.cast.bench, center, Math.max(2, Math.round(civilians / 4)), rMin, rMax);
+      this.placeFurniture(this.cast.table, center, Math.max(1, Math.round(civilians / 6)), rMin, rMax);
+    }
     for (let i = 0; i < civilians; i++) {
       const p = this.nav.randomPoint(center, rMin, rMax, undefined, 30);
       if (!p) continue;
@@ -284,31 +293,36 @@ export class ActorWorld {
     return placed;
   }
 
-  /** Benches on flat open ground around a point. */
-  placeBenches(center: V3, n: number, rMin: number, rMax: number): void {
+  /** Benches or tables on flat open ground around a point (their footprint and a place to stand free). */
+  placeFurniture(f: Furniture, center: V3, n: number, rMin: number, rMax: number): void {
+    // footprint in the prop's frame (+y: where the sitter faces)
+    const table = f.deskHeight !== undefined;
+    const foot: [number, number][] = table
+      ? [[-0.3, -0.3], [0.3, -0.3], [-0.4, 1.0], [0.4, 1.0], [0, 0.35], [-0.6, 0], [0.6, 0]]
+      : [[-0.8, 0], [0.8, 0], [-0.8, 0.7], [0.8, 0.7], [0, 1.1]];
     for (let k = 0; k < n; k++) {
       for (let tries = 0; tries < 20; tries++) {
         const p = this.nav.randomPoint(center, rMin, rMax, undefined, 1);
         if (!p) continue;
-        // flat and free under the whole bench, and room to stand in front of it
         const yaw = Math.round(Math.random() * 4) * (Math.PI / 2);
         const q = qz(yaw - Math.PI / 2);
-        const ok = [[-0.8, 0], [0.8, 0], [-0.8, 0.7], [0.8, 0.7], [0, 1.1]].every(([x, y]) => {
-          const o = qrotate(q, [x!, y!, 0]);
+        const ok = foot.every(([x, y]) => {
+          const o = qrotate(q, [x, y, 0]);
           const g = this.env.groundHeight(p[0] + o[0], p[1] + o[1], p[2] + 0.3, p[2] - 0.3);
           return g !== null && Math.abs(g - p[2]) < 0.07 && this.env.fits([p[0] + o[0], p[1] + o[1], g], 0.3, 1.2);
         });
-        if (!ok || this.benches.some((b) => vdist(b.pos, p) < 3)) continue;
+        if (!ok || this.furniture.some((b) => vdist(b.pos, p) < 3)) continue;
         const c = Math.cos(yaw - Math.PI / 2), s = Math.sin(yaw - Math.PI / 2);
         const skin = new Float32Array([c, s, 0, 0, -s, c, 0, 0, 0, 0, 1, 0, p[0], p[1], p[2], 1]);
-        const b: Bench = { pos: p, yaw, skin, seats: [] };
-        const f = this.cast.bench;
-        for (const along of [-0.45, 0.45]) {
+        const b: Placed = { furniture: f, pos: p, yaw, skin, seats: [] };
+        const approach = f.approach ?? 0.38;
+        for (const along of f.kind === 'bench' ? [-0.45, 0.45] : [0]) {
           const o = qrotate(q, [f.seat[0] + along, f.seat[1], f.seat[2]]);
           const seat: V3 = [p[0] + o[0], p[1] + o[1], p[2] + o[2]];
-          b.seats.push({ seat, front: [seat[0] + Math.cos(yaw) * 0.38, seat[1] + Math.sin(yaw) * 0.38, p[2]], yaw, occupant: null });
+          const front: V3 = [seat[0] + Math.cos(yaw) * approach, seat[1] + Math.sin(yaw) * approach, p[2]];
+          b.seats.push({ seat, front, yaw, desk: f.deskHeight ?? null, occupant: null });
         }
-        this.benches.push(b);
+        this.furniture.push(b);
         break;
       }
     }
@@ -321,7 +335,7 @@ export class ActorWorld {
     this.gibs.clear();
     this.gibUsers.clear();
     this.islandPrev.clear();
-    this.benches.length = 0;
+    this.furniture.length = 0;
     this.fights.length = 0;
   }
 
@@ -434,7 +448,7 @@ export class ActorWorld {
   freeSeat(p: V3, r: number): Seat | null {
     let best: Seat | null = null;
     let bd = r;
-    for (const b of this.benches)
+    for (const b of this.furniture)
       for (const s of b.seats) {
         if (s.occupant) continue;
         const d = vdist(p, s.front);
@@ -959,9 +973,8 @@ export class ActorWorld {
     const cc = this.renderer;
     cc.begin();
     const light = this.settings.light;
-    const benchMesh = this.benches.length > 0 ? this.cast.mesh(this.cast.bench.model) : null;
-    const benchPal = cc.palette(FURNITURE_PALETTE);
-    for (const b of this.benches) cc.add(benchMesh!, b.skin, 1, benchPal, { center: [b.pos[0], b.pos[1], b.pos[2] + 0.5], radius: 1.1, light });
+    const furniturePalette = cc.palette(FURNITURE_PALETTE);
+    for (const b of this.furniture) cc.add(this.cast.mesh(b.furniture.model), b.skin, 1, furniturePalette, { center: [b.pos[0], b.pos[1], b.pos[2] + 0.5], radius: 1.2, light });
     for (const a of this.actors) {
       if (a.opacity <= 0) continue;
       const ch = a.char;

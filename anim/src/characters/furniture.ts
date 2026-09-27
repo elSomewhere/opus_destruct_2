@@ -20,6 +20,11 @@ export interface Furniture {
   /** A backrest to lean on. */
   backrest: boolean;
   kind: 'bench' | 'chair' | 'desk';
+  /**
+   * Where a sitter stands before sitting down: this far (m) in front of the seat, along +y
+   * (default 0.38; closer at a table, so the body stays clear of the table top).
+   */
+  approach?: number;
 }
 
 export const FURNITURE_PALETTE: Palette = makePalette({
@@ -79,4 +84,28 @@ export function makeDesk(voxelSize = DEFAULT_VOXEL_SIZE): Furniture {
   sc.add(box([0, 0, 0.455], [0.22, 0.21, 0.025], 0.01), 0, Slot.Accent, o);
   sc.add(box([0, -0.2, 0.72], [0.21, 0.02, 0.17], 0.02), 0, Slot.Accent, o);
   return { model: sc.finish({ name: 'desk' }), palette: FURNITURE_PALETTE, seat: [0, 0.02, 0.48], deskHeight: 0.745, backrest: true, kind: 'desk' };
+}
+
+/**
+ * A café table (0.74 m) with a chair and an open laptop: the sitter faces +y across the table
+ * and works at it (the 'desk' sitting variant). Its edge is 0.4 m in front of the seat, so a
+ * sitter can step in between chair and table before sitting down.
+ */
+export function makeCafeTable(voxelSize = DEFAULT_VOXEL_SIZE): Furniture {
+  const sc = new Sculptor(propSkeleton(), voxelSize, [-0.5, -0.35, 0], [0.5, 1.05, 1.0], 67);
+  const o = { organic: false } as const;
+  // round-ish top on one pedestal
+  sc.add(box([0, 0.7, 0.725], [0.36, 0.3, 0.02], 0.08), 0, Slot.Furniture, { ...o, jitter: 0.05 });
+  sc.add(box([0, 0.7, 0.36], [0.03, 0.03, 0.35]), 0, Slot.Metal, o);
+  sc.add(box([0, 0.7, 0.02], [0.2, 0.2, 0.02], 0.02), 0, Slot.Metal, o);
+  // an open laptop and a cup
+  sc.add(box([0.02, 0.55, 0.755], [0.15, 0.1, 0.008]), 0, Slot.GearDark, o);
+  sc.add(box([0.02, 0.66, 0.85], [0.15, 0.012, 0.1]), 0, Slot.GearDark, o);
+  sc.add(box([0.02, 0.648, 0.85], [0.13, 0.004, 0.085]), 0, Slot.Detail, { ...o, shade: 1.3 });
+  sc.add(box([-0.26, 0.62, 0.785], [0.035, 0.035, 0.045], 0.01), 0, Slot.Bone, o);
+  // the chair
+  for (const x of [-0.19, 0.19]) for (const y of [-0.18, 0.18]) sc.add(box([x, y, 0.22], [0.02, 0.02, 0.22]), 0, Slot.Metal, o);
+  sc.add(box([0, 0, 0.455], [0.22, 0.21, 0.025], 0.01), 0, Slot.Accent, o);
+  sc.add(box([0, -0.2, 0.72], [0.21, 0.02, 0.17], 0.02), 0, Slot.Accent, o);
+  return { model: sc.finish({ name: 'cafe table' }), palette: FURNITURE_PALETTE, seat: [0, 0.02, 0.48], deskHeight: 0.745, backrest: true, kind: 'desk', approach: 0.2 };
 }
