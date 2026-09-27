@@ -63,6 +63,9 @@ import {
 import { NEUTRAL_STYLE, type GaitStyle } from './style.ts';
 
 export type Carry = 'relaxed' | 'ready' | 'aim' | 'hip';
+
+/** Where a knee points in the rest pose (the legs twist with their knees). */
+const KNEE_REST: V3 = [0, 1, 0];
 export type Mood = 'normal' | 'panic' | 'cower' | 'surrender';
 
 /** A seat to sit on (world). The character's root stays where it stood, in front of it. */
@@ -205,23 +208,25 @@ export class HumanoidAnimator {
   private yawRate = 0;
   private readonly visZ = new Spring(16, 1);
   private readonly crouchS = new Spring(7, 1);
-  private readonly lowerYaw = new Spring(7, 1);
+  private readonly lowerYaw = new Spring(5, 1);
+  /** Where the hips point relative to the facing (with the planted feet when standing). */
+  private readonly hipsYaw = new Spring(6, 1);
   private readonly pelvisZ = new Spring(26, 1);
   private readonly impact = new Spring(15, 0.45);
   private readonly trunkLean = new Spring(6, 0.55);
   private readonly bank = new Spring(6, 0.8);
   private readonly swingAmp = new Spring(5, 1);
-  private readonly aimW = new Spring(11, 1);
-  private readonly readyW = new Spring(8, 1);
+  private readonly aimW = new Spring(8, 1);
+  private readonly readyW = new Spring(6.5, 1);
   private readonly sprintW = new Spring(6, 1);
   private readonly hipW = new Spring(9, 1);
   private readonly moodW = new Spring(6, 1);
   private readonly airW = new Spring(8, 1);
   private readonly leanS = new Spring(7, 1);
-  private readonly aimYaw = new Spring(14, 1);
-  private readonly aimPitch = new Spring(14, 1);
-  private readonly headYaw = new Spring(7, 0.9);
-  private readonly headPitch = new Spring(7, 0.9);
+  private readonly aimYaw = new Spring(8, 1);
+  private readonly aimPitch = new Spring(9, 1);
+  private readonly headYaw = new Spring(5.5, 0.9);
+  private readonly headPitch = new Spring(5.5, 0.9);
   private readonly kickBack = new Spring(32, 0.55);
   private readonly kickPitch = new Spring(26, 0.5);
   private readonly sway = new Spring3(7, 0.7);
@@ -694,10 +699,11 @@ export class HumanoidAnimator {
           const nom = this.nominalFoot(f, this.rootPos, bodyYaw, [0, 0, 0]);
           const err = Math.hypot(nom[0] - f.pos[0], nom[1] - f.pos[1]);
           const yawErr = Math.abs(wrapAngle(bodyYaw - f.side * st.toeOut - f.yaw));
-          if (err > 0.16 * k || yawErr > 0.6 || (this.stepping && err > 0.07 * k)) need = true;
+          if (err > 0.16 * k || yawErr > 0.42 || (this.stepping && err > 0.07 * k)) need = true;
         }
       }
-      if (need) this.phase = fract(this.phase + 1.5 * dt);
+      // (turning on the spot and settling: unhurried steps)
+      if (need) this.phase = fract(this.phase + 1.15 * dt);
       else this.stepping = false;
     }
     if (standW >= 0.999) this.updateFeet(dt, g, prevPhase, moving, speed, bodyYaw, vel);
@@ -730,7 +736,22 @@ export class HumanoidAnimator {
     // limp: the pelvis dips over the wounded leg while it bears weight
     const limpDip = moving ? (fract(ph) < D ? limpL : 0) * 0.05 * k + (fract(ph + 0.5) < D ? limpR : 0) * 0.05 * k : 0;
     let pz = this.restPelvisZ - g.sink - crouchDrop + walkBob - 0.012 * k * idle - limpDip;
-    const pelvisYaw = this.lowerYaw.x + hipYawOsc;
+    // the hips: standing, they stay with the planted feet (the trunk and the head turn first,
+    // the feet follow with steps); walking, they turn towards the motion
+    let hipsWant = this.lowerYaw.x;
+    // (a stepping foot's yaw turns through its step, so the hips turn with the steps)
+    const onFeet = !this.feet[0].held && !this.feet[1].held;
+    if (!moving && onFeet && !inp.airborne && standW > 0.99) {
+      let sx = 0, cy = 0;
+      for (const f of this.feet) {
+        const rel = f.yaw + f.side * st.toeOut - this.rootYaw;
+        sx += Math.sin(rel);
+        cy += Math.cos(rel);
+      }
+      hipsWant = lerp(clamp(Math.atan2(sx, cy), -1.2, 1.2), this.lowerYaw.x, 0.3);
+    }
+    this.hipsYaw.update(hipsWant, dt);
+    const pelvisYaw = this.hipsYaw.x + hipYawOsc;
     // banking into the turns of the path (its lateral acceleration, not the body's yaw: a
     // soldier walking straight while turning to a target does not bank) and a spring-loaded
     // lean into (de)acceleration
@@ -859,7 +880,9 @@ export class HumanoidAnimator {
     // reaches the handguard)
     const blade = aw * (rifle ? (inp.carry === 'aim' ? 0.3 : inp.carry === 'hip' ? 0.5 : 0) : 0);
     const turn = S.turn;
-    const trunkYaw = ((aiming || (tgt && inp.carry !== 'relaxed')) && tgt ? this.aimYaw.x - pelvisYaw * standW - blade : 0) * turn;
+    // the trunk turns from the hips to the target (or to the facing), as far as a spine twists
+    const toward = (aiming || (tgt && inp.carry !== 'relaxed')) && tgt ? this.aimYaw.x - blade : 0;
+    const trunkYaw = clamp(toward - this.hipsYaw.x * standW, -0.95, 0.95) * turn;
     const trunkPitch = (tgt && (aiming || inp.carry !== 'relaxed') ? this.aimPitch.x * lerp(0.55, 0.75, aw) : 0) * turn;
     // peeking: the trunk leans out sideways (the head stays upright)
     const peek = this.leanS.x * 0.3;
@@ -889,7 +912,7 @@ export class HumanoidAnimator {
     if (this.moodKind === 'cower') lookPitch = lerp(lookPitch, -0.7, this.moodW.x);
     // saccades: the head turns fast to a new target, then settles
     const far = Math.abs(lookYaw - this.headYaw.x) > 0.5;
-    this.headYaw.omega = far ? 10 : 6;
+    this.headYaw.omega = far ? 8 : 5;
     this.headYaw.update(lookYaw, dt);
     this.headPitch.update(lookPitch, dt);
     const chestQ = this.fk.q[H.chest]!;
@@ -932,7 +955,7 @@ export class HumanoidAnimator {
         pole = vlerp(pole, [0.1 * f.side, 1, 0.4], fw);
         rot = qnlerp(rot, kickRot, fw);
       }
-      solveTwoBone(pose, this.fk, f.thigh, f.shin, f.foot, target, pole, 0.02);
+      solveTwoBone(pose, this.fk, f.thigh, f.shin, f.foot, target, pole, 0.02, KNEE_REST);
       setModelRotation(pose, this.fk, f.foot, rot);
       pose.r[f.toe] = qx(fp.toe);
       this.fk.updateBone(pose, f.toe);
@@ -1063,7 +1086,15 @@ export class HumanoidAnimator {
         tgt[1] += hy;
         tgt[2] = this.ground(tgt[0], tgt[1], this.rootPos[2], this.rootPos[2]);
         vcopy(tgt, f.target);
-        f.targetYaw = bodyYaw - f.side * st.toeOut;
+        // turning on the spot: a step opens the foot at most ~43 degrees past the other one
+        // (a big turn takes a few steps, the legs never scissor)
+        let heading = bodyYaw;
+        if (!moving) {
+          const o = this.feet[f === this.feet[0] ? 1 : 0]!;
+          const oh = o.yaw + o.side * st.toeOut;
+          heading = oh + clamp(wrapAngle(bodyYaw - oh), -0.75, 0.75);
+        }
+        f.targetYaw = heading - f.side * st.toeOut;
         if (f.swing >= 1) {
           f.planted = true;
           vcopy(f.target, f.pos);
@@ -1583,8 +1614,8 @@ export class HumanoidAnimator {
   }
 
   /** The feet (world), for debugging and tests. */
-  footState(): { planted: boolean; pos: V3; ankle: V3 }[] {
-    return this.feet.map((f) => ({ planted: f.planted, pos: [...f.pos] as V3, ankle: [...f.ankle] as V3 }));
+  footState(): { planted: boolean; pos: V3; ankle: V3; yaw: number }[] {
+    return this.feet.map((f) => ({ planted: f.planted, pos: [...f.pos] as V3, ankle: [...f.ankle] as V3, yaw: f.yaw }));
   }
 
   /** World position between the eyes (line of sight, muzzle-less aiming). */

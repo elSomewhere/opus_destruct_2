@@ -46,6 +46,7 @@ import type { GpuCharacterMesh } from '../render/characters.ts';
 import { cross, normalize } from '../render/math.ts';
 import { Renderer } from '../render/renderer.ts';
 import { buildLabLevel, LAB_H } from './level.ts';
+import { steer, steerOptions, turn } from '../actors/steer.ts';
 
 type Group = 'city' | 'soldiers' | 'fights' | 'reactions';
 
@@ -59,6 +60,9 @@ interface Actor {
   script: (a: Actor, t: number, dt: number) => void;
   pos: V3;
   yaw: number;
+  /** Horizontal velocity and facing turn rate (weighted steering). */
+  vel: [number, number];
+  yawRate: number;
   /** Seconds to the next shot (shooters). */
   cool: number;
   brawler: Brawler | null;
@@ -157,7 +161,7 @@ async function main(): Promise<void> {
     char.animator.style = randomStyle(index * 17 + 3, variant.spec.name.startsWith('soldier') ? 'soldier' : variant.spec.female ? 'civilianFemale' : 'civilian');
     const pos: V3 = [s.pos[0], s.pos[1], groundAt(s.pos[0], s.pos[1], 1)];
     char.place(pos, s.yaw);
-    const a: Actor = { name: s.name, group: s.group, variant, prop: s.prop, char, palette: cc.palette(variant.palette), script: s.script, pos, yaw: s.yaw, cool: 0, brawler: null, own: null, propSkin: new Float32Array(16), stepSkin: new Float32Array(char.skin.length) };
+    const a: Actor = { name: s.name, group: s.group, variant, prop: s.prop, char, palette: cc.palette(variant.palette), script: s.script, pos, yaw: s.yaw, vel: [0, 0], yawRate: 0, cool: 0, brawler: null, own: null, propSkin: new Float32Array(16), stepSkin: new Float32Array(char.skin.length) };
     a.char.retro = retroFor(a);
     s.init?.(a);
     return a;
@@ -167,16 +171,23 @@ async function main(): Promise<void> {
   };
 
   // movement helpers
-  const moveTo = (a: Actor, x: number, y: number, speed: number, dt: number, face = true): boolean => {
+  // (the same weighted steering as the game: momentum, a limited turn rate, rounded corners)
+  const moveTo = (a: Actor, x: number, y: number, speed: number, dt: number, face = true, stop = false): boolean => {
     const dx = x - a.pos[0], dy = y - a.pos[1];
     const d = Math.hypot(dx, dy);
-    if (d < 0.05) return true;
-    const step = Math.min(d, speed * dt);
-    a.pos[0] += (dx / d) * step;
-    a.pos[1] += (dy / d) * step;
+    if (d < (stop ? 0.08 : 0.35)) return true;
+    const want = stop ? Math.min(speed, Math.sqrt(2 * 3.6 * 0.8 * Math.max(0, d - 0.05)) + 0.1) : speed;
+    a.vel = steer(a.vel, [dx / d, dy / d], want, dt, steerOptions(speed));
+    a.pos[0] += a.vel[0] * dt;
+    a.pos[1] += a.vel[1] * dt;
     a.pos[2] = groundAt(a.pos[0], a.pos[1], a.pos[2]);
-    if (face) a.yaw = turnTowards(a.yaw, Math.atan2(dy, dx), 6 * dt);
+    if (face && Math.hypot(a.vel[0], a.vel[1]) > 0.2) turnTo(a, Math.atan2(a.vel[1], a.vel[0]), dt, 3.2);
     return false;
+  };
+  const turnTo = (a: Actor, yaw: number, dt: number, maxRate = 2.6): void => {
+    const t = turn(a.yaw, a.yawRate, yaw, dt, maxRate, 9);
+    a.yaw = t.yaw;
+    a.yawRate = t.rate;
   };
   const circle = (cx: number, cy: number, r: number, speed: number, dir = 1) => (a: Actor, t: number): void => {
     const th = (speed / r) * dir * t;
@@ -194,8 +205,8 @@ async function main(): Promise<void> {
     };
   };
   const inp = (a: Actor) => a.char.animator.input;
-  const face = (a: Actor, p: V3, dt: number, rate = 5): void => {
-    a.yaw = turnTowards(a.yaw, Math.atan2(p[1] - a.pos[1], p[0] - a.pos[0]), rate * dt);
+  const face = (a: Actor, p: V3, dt: number, rate = 2.6): void => {
+    turnTo(a, Math.atan2(p[1] - a.pos[1], p[0] - a.pos[0]), dt, rate);
   };
   const shoot = (a: Actor, dt: number, every: number, burst: boolean, t: number): void => {
     a.cool -= dt;

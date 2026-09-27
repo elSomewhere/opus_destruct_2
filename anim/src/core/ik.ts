@@ -110,6 +110,12 @@ export function solveTwoBone(
   target: Readonly<V3>,
   pole: Readonly<V3>,
   soft = 0.03,
+  /**
+   * The direction (model space) the joint points in the rest pose (a knee: forward). With it the
+   * whole limb twists towards the pole (the leg turns with its knee); without, the pole serves
+   * as its own rest reference and the limb keeps the model frame's twist.
+   */
+  restPole: Readonly<V3> | null = null,
 ): TwoBoneResult {
   const sk = pose.skeleton;
   const a = vlen(vsub(sk.restHead[lower]!, sk.restHead[upper]!));
@@ -138,10 +144,11 @@ export function solveTwoBone(
   const restLo = vsub(sk.restHead[end]!, sk.restHead[lower]!);
   // rest bend plane normal: derived from the rest limb (nearly straight: use the pole's
   // rest-space equivalent, the model forward/backward axis the solver bends towards)
-  const qUp = frameRotation(restUp, restPoleFor(restUp, pole), vsub(mid, root), w);
+  const ref = restPole ?? pole;
+  const qUp = frameRotation(restUp, restPoleFor(restUp, ref), vsub(mid, root), w);
   setModelRotation(pose, fk, upper, qUp);
   fk.updateBone(pose, lower);
-  const qLo = frameRotation(restLo, restPoleFor(restLo, pole), vsub(endP, mid), w);
+  const qLo = frameRotation(restLo, restPoleFor(restLo, ref), vsub(endP, mid), w);
   setModelRotation(pose, fk, lower, qLo);
   fk.updateBone(pose, end);
   return { mid, end: endP, reach };

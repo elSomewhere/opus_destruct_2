@@ -125,8 +125,14 @@ done).
   once. A runner's swing foot leaves the ground moving with the body and rises behind when it
   would be out of reach (the heel kick).
 - **Foot roll.** Heel strike and toe-off roll the foot about the heel and the ball.
-- **Standing.** Standing characters take corrective steps when they turn or drift. A foot left
-  behind by a sudden start or a shove takes a quick catch-up step.
+- **Standing and turning.** Standing, the hips stay with the planted feet: when the body turns,
+  the head and eyes lead, the trunk follows as far as a spine twists (about 45 degrees from the
+  hips), and the feet come round in unhurried steps of at most about 43 degrees each (a big turn
+  takes a few). The legs twist with their knees and feet, never with the torso. Standing
+  characters also take corrective steps when they drift, and a foot left behind by a sudden
+  start or a shove takes a quick catch-up step.
+- **Deliberate aim.** Aim, head and weapon-raise springs are unhurried: a body looks, then
+  turns, then brings the weapon up.
 - **Legs.** Two-bone IK to the ankles, with the knees towards the feet. The pelvis sinks just
   enough for the planted feet to be reached.
 
@@ -292,6 +298,15 @@ The retro look is a function of the modern animation, not separate content (`ret
   within a step, room above), with string-pulled paths. A straight walkable line needs no
   search. Ground queries are cached across searches and forgotten per chunk column when the
   world changes; searches are budgeted per frame.
+- **Movement with weight** (`steer.ts`): bodies follow a point a little ahead on their path (the
+  corners are rounded, not turned on the spot), speed up in about a second and brake into their
+  goal, change heading at a limited rate (a walker turns within half a metre, a runner takes
+  metres) and slow down for sharp turns; setting off away from where they face, they turn
+  first. The facing turns with angular momentum (speeding up and braking into the new
+  direction). Standing and aiming, the trunk takes small corrections and the body turns only
+  for larger ones. Everyone walks at a personal pace. Runners face where they run and keep the
+  target with their head; soldiers change positions every few seconds, not constantly, and
+  scan with their eyes and trunk before turning the body.
 - **Civilians** (`brain.ts`) live a day in the city:
   - they stroll at their own pace, wait around (idle poses, fidgets, a glance at the phone),
     jog now and then, and look at what catches the eye while walking (people passing, the
@@ -396,7 +411,7 @@ the blows that landed.
 ## 9. Tests and checks
 
 ```bash
-cd anim && npm install && npm test          # 61 unit tests: models, animator, IK, gait, stances, actions,
+cd anim && npm install && npm test          # 62 unit tests: models, animator, IK, gait, stances, actions,
                                             # reactions, weapons, strikes, brawls, ragdolls, damage, gibs, retro
 cd web && npm run typecheck && npm test     # includes typechecking anim/
 node scripts/smoke-actors.mjs http://localhost:5190/   # browser: population, fighting, kills, gibs, retro,
@@ -410,7 +425,9 @@ shot; an aimed pistol points within 8° with both hands on the grip; the machine
 hand is on the handguard; a jab steps in to reach a head 0.95 m away and a push kick a belly
 1.1 m away, without the support foot sliding; reloads end with their event; two walkers differ;
 a fist fight lands blows on both; the feet stay half a cycle apart walking and running; walking
-keeps the trunk upright. `anim/test/ragdoll-quality.test.ts` checks deaths (front, back,
+keeps the trunk upright; turning on the spot, the legs point with their feet, the trunk leads
+within its twist and the feet follow. `web/test/steer.test.ts` checks acceleration, braking,
+turn rates and path look-ahead. `anim/test/ragdoll-quality.test.ts` checks deaths (front, back,
 running, head shot, blast): no bone rolls more than 60° in a frame, bodies never bounce back up,
 they sleep on the ground, a body shot crumples over a good half second (never faster than a
 fall), bodies fall the way they were shot, and heads rest within the neck's range.

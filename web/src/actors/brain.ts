@@ -164,11 +164,17 @@ export class SoldierBrain implements Brain {
         a.stance = 'stand';
         this.alertTime += dt;
         if (w.arrived(a)) {
+          // scanning: the eyes and the trunk sweep round, the body turns now and then
           this.lookTimer -= dt;
           if (this.lookTimer <= 0) {
-            const ang = a.yaw + rnd(-2, 2);
-            a.face = [a.pos[0] + Math.cos(ang) * 5, a.pos[1] + Math.sin(ang) * 5, a.pos[2] + 1.5];
-            this.lookTimer = rnd(1, 2.2);
+            const ang = a.yaw + rnd(-1.3, 1.3);
+            const p: V3 = [a.pos[0] + Math.cos(ang) * 6, a.pos[1] + Math.sin(ang) * 6, a.pos[2] + 1.5];
+            if (chance(0.3)) {
+              const turnTo = a.yaw + rnd(-2.2, 2.2);
+              a.face = [a.pos[0] + Math.cos(turnTo) * 5, a.pos[1] + Math.sin(turnTo) * 5, a.pos[2] + 1.5];
+            }
+            a.lookAt = p;
+            this.lookTimer = rnd(1.8, 3.4);
           }
         } else a.face = null;
         if (this.alertTime > 14) {
@@ -178,7 +184,10 @@ export class SoldierBrain implements Brain {
         break;
       }
       case 'combat': {
-        a.face = this.lastSeen ? [this.lastSeen[0], this.lastSeen[1], this.lastSeen[2] + 1.3] : null;
+        // running, the body faces its way and the head keeps the target; otherwise it faces it
+        const running = !w.arrived(a) && a.speed > 2.6;
+        a.face = this.lastSeen && !running ? [this.lastSeen[0], this.lastSeen[1], this.lastSeen[2] + 1.3] : null;
+        a.lookAt = running && alive ? chest : null;
         a.aimTarget = alive ? chest : null;
         if (!alive) {
           this.state = 'alert';
@@ -189,7 +198,7 @@ export class SoldierBrain implements Brain {
         if (w.time - this.seenAt > 2.5) {
           this.state = 'search';
           a.stance = 'stand';
-          if (this.lastSeen) w.goTo(a, this.lastSeen, rnd(3, 4));
+          if (this.lastSeen) w.goTo(a, this.lastSeen, rnd(2.4, 3.2));
           break;
         }
         // close in for a blow
@@ -201,17 +210,17 @@ export class SoldierBrain implements Brain {
         }
         this.reposition -= dt;
         if (this.reposition <= 0 || (w.arrived(a) && a.speed > 0 && chance(0.3))) {
-          this.reposition = rnd(2.2, 5);
+          this.reposition = rnd(3.5, 7);
           const far = this.aggressive ? 14 : 22;
           this.popUp = false;
           if (dist > far) {
             // close in (run when far; aimed walk otherwise)
             const p = w.nav.randomPoint(feet, far * 0.55, far * 0.8) ?? feet;
-            w.goTo(a, p, dist > 32 ? rnd(3.8, 4.6) : rnd(1.6, 2.2));
+            w.goTo(a, p, dist > 32 ? rnd(3.4, 4.2) : rnd(1.3, 1.7));
             this.hold = 'stand';
           } else if (dist < 5) {
             const p = w.nav.randomPoint(a.pos, 5, 9, feet);
-            if (p) w.goTo(a, p, 2);
+            if (p) w.goTo(a, p, 1.6);
             this.hold = 'stand';
           } else if (chance(0.55)) {
             w.stop(a);
@@ -220,7 +229,7 @@ export class SoldierBrain implements Brain {
             this.hold = longGun && dist > 16 && r < 0.3 ? 'prone' : longGun && r < 0.6 ? 'kneel' : this.crouchy && r < 0.8 ? 'crouch' : 'stand';
           } else {
             const p = w.nav.randomPoint(a.pos, 2, 5);
-            if (p) w.goTo(a, p, rnd(1.2, 1.8));
+            if (p) w.goTo(a, p, rnd(1.0, 1.4));
             this.hold = this.crouchy && chance(0.35) ? 'crouch' : 'stand';
           }
         }
@@ -229,7 +238,7 @@ export class SoldierBrain implements Brain {
         a.stance = moving || up ? 'stand' : this.hold === 'kneel' ? 'kneel' : this.hold === 'prone' ? 'prone' : 'stand';
         a.crouch = !up && this.hold === 'crouch' ? 1 : moving && this.hold === 'crouch' ? 0.7 : 0;
         // aim while holding or walking; lower the weapon to run; machine guns fire from the hip on the move
-        a.carry = a.speed > 3 ? 'ready' : a.weapon?.kind === 'lmg' && moving ? 'hip' : 'aim';
+        a.carry = running ? 'ready' : a.weapon?.kind === 'lmg' && moving ? 'hip' : 'aim';
         if (this.popUp && this.burst <= 0 && this.pause > 0.3) this.popUp = false;
         break;
       }

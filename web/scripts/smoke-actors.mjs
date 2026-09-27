@@ -105,10 +105,18 @@ try {
     const sv = window.__structvox;
     sv.characters({ ai: false });
     sv.noclip(true);
-    const a = sv.actorWorld().actors.find((x) => x.faction === 'soldier' && x.char.alive);
-    const dx = a.pos[0] - sv.state().player[0], dy = a.pos[1] - sv.state().player[1];
-    const l = Math.hypot(dx, dy) || 1;
-    sv.teleport(a.pos[0] - (dx / l) * 5, a.pos[1] - (dy / l) * 5, a.pos[2] + 0.1);
+    const w = sv.actorWorld();
+    const a = w.actors.find((x) => x.faction === 'soldier' && x.char.alive);
+    // a spot 5 m away with a clear line to the soldier's chest
+    const chest = a.char.pose.p[3];
+    let spot = null;
+    for (let k = 0; k < 16 && !spot; k++) {
+      const ang = (k / 16) * Math.PI * 2;
+      const p = [a.pos[0] + Math.cos(ang) * 5, a.pos[1] + Math.sin(ang) * 5, a.pos[2] + 0.1];
+      if (w.env.lineOfSight([p[0], p[1], p[2] + 1.6], chest)) spot = p;
+    }
+    spot ??= [a.pos[0] - 5, a.pos[1], a.pos[2] + 0.1];
+    sv.teleport(spot[0], spot[1], spot[2]);
     window.__victim = a.id;
   });
   await sleep(400);

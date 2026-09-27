@@ -53,6 +53,7 @@ import { CivilianBrain, SoldierBrain, type Brain, type Target } from './brain.ts
 import { Cast, WEAPON_STATS, type Faction, type Look } from './cast.ts';
 import type { WorldAccess } from './env.ts';
 import { Navigator } from './nav.ts';
+import { pursue, steer, steerOptions, turn, wrap } from './steer.ts';
 
 export interface Noise {
   pos: V3;
@@ -146,6 +147,11 @@ export interface Actor {
   groundVariant: GroundVariant;
   talk: 'speak' | 'listen' | null;
   lean: number;
+  /** Angular velocity of the facing (rad/s) and whether a standing body is turning to its target. */
+  yawRate: number;
+  turning: boolean;
+  /** Personal pace factor (people walk at their own speed). */
+  pace: number;
   brawler: Brawler | null;
   /** Fired at soldiers: they may target it. */
   hostile: boolean;
@@ -248,6 +254,9 @@ export class ActorWorld {
       groundVariant: 'kneesUp',
       talk: null,
       lean: 0,
+      yawRate: 0,
+      turning: false,
+      pace: 0.93 + Math.random() * 0.14,
       brawler: null,
       hostile: false,
       meleeTarget: null,
@@ -826,44 +835,56 @@ export class ActorWorld {
     const settled = an.stance;
     // the body cannot walk while sitting, kneeling, down or getting up; prone crawls
     const locked = an.transitioning || an.knockedDown || settled === 'sit' || settled === 'ground' || settled === 'kneel' || settled === 'down' || a.stance !== 'stand' && a.stance !== 'prone';
-    let dx = 0, dy = 0;
+    // where to go and how fast: along the path, aiming a little ahead (corners are cut, not
+    // turned on the spot), braking into the goal; a fighter's footwork from the Brawler
+    let wantDir: [number, number] | null = null;
+    let wantSpeed = 0;
+    const hs = Math.hypot(a.vel[0], a.vel[1]);
     if (a.brawler && !locked) {
-      dx = a.brawler.move[0];
-      dy = a.brawler.move[1];
-    } else if (a.goal && !locked) {
-      let next = a.path[0] ?? a.goal;
-      let d = Math.hypot(next[0] - a.pos[0], next[1] - a.pos[1]);
-      while (d < 0.35 && a.path.length > 0) {
-        a.path.shift();
-        next = a.path[0] ?? a.goal;
-        d = Math.hypot(next[0] - a.pos[0], next[1] - a.pos[1]);
+      const m = a.brawler.move;
+      const l = Math.hypot(m[0], m[1]);
+      if (l > 1e-3) {
+        wantDir = [m[0] / l, m[1] / l];
+        wantSpeed = l;
       }
-      if (a.path.length === 0 && d < 0.4) a.goal = null;
+    } else if (a.goal && !locked) {
+      while (a.path.length > 0 && Math.hypot(a.path[0]![0] - a.pos[0], a.path[0]![1] - a.pos[1]) < 0.45) a.path.shift();
+      const { point, remaining } = pursue(a.pos, a.path, a.goal, 0.6 + 0.3 * hs);
+      const d = Math.hypot(point[0] - a.pos[0], point[1] - a.pos[1]);
+      if (remaining < 0.3) a.goal = null;
       else if (d > 1e-3) {
         const limp = Math.max(an.reactions.limp[0], an.reactions.limp[1]);
-        let s = a.path.length > 0 ? a.speed : Math.min(a.speed, 0.6 + d * 1.5);
-        s *= (1 - 0.45 * limp) * (1 - 0.3 * an.reactions.pain);
+        let s = a.speed * (1 - 0.45 * limp) * (1 - 0.3 * an.reactions.pain) * a.pace;
         if (settled === 'prone') s = Math.min(s, 0.45);
-        dx = ((next[0] - a.pos[0]) / d) * s;
-        dy = ((next[1] - a.pos[1]) / d) * s;
+        // arriving: slow down to stop on the spot
+        s = Math.min(s, Math.sqrt(2 * 3.6 * 0.8 * Math.max(0, remaining - 0.2)) + 0.15);
+        wantDir = [(point[0] - a.pos[0]) / d, (point[1] - a.pos[1]) / d];
+        // setting off away from where the body faces: it turns first, then walks
+        if (!a.face && hs < 0.6 && Math.abs(wrap(Math.atan2(wantDir[1], wantDir[0]) - a.yaw)) > 1.1) s = Math.min(s, 0.3);
+        wantSpeed = s;
       }
     }
     // keep apart (not the two in a fight)
+    let sepX = 0, sepY = 0;
     for (const b of this.actors) {
-      if (b === a || !b.char.alive) continue;
+      if (b === a || !b.char.alive || locked) continue;
       if (a.brawler && a.brawler.opponent === b.char) continue;
       const ox = a.pos[0] - b.pos[0], oy = a.pos[1] - b.pos[1];
       const d2 = ox * ox + oy * oy;
       if (d2 > 0.5 || d2 < 1e-6 || Math.abs(a.pos[2] - b.pos[2]) > 1) continue;
-      if (locked) continue;
       const d = Math.sqrt(d2);
       const push = (0.7 - d) * 3;
-      dx += (ox / d) * push;
-      dy += (oy / d) * push;
+      sepX += (ox / d) * push;
+      sepY += (oy / d) * push;
     }
-    const k = 1 - Math.exp(-(a.onGround ? 9 : 1.5) * dt);
-    a.vel[0] += (dx - a.vel[0]) * k;
-    a.vel[1] += (dy - a.vel[1]) * k;
+    if (a.onGround) {
+      // the body's own momentum: it speeds up, brakes and changes heading within limits
+      const v = steer([a.vel[0], a.vel[1]], wantDir ?? [Math.cos(a.yaw), Math.sin(a.yaw)], wantDir ? wantSpeed : 0, dt, steerOptions(a.brawler ? 3 : wantSpeed || a.speed));
+      const k = 1 - Math.exp(-6 * dt);
+      a.vel[0] = v[0] + sepX * k;
+      a.vel[1] = v[1] + sepY * k;
+    }
+    const dx = wantDir ? wantDir[0] * wantSpeed : 0, dy = wantDir ? wantDir[1] * wantSpeed : 0;
     a.vel[2] = Math.max(-40, a.vel[2] - 20 * dt);
     const height = settled === 'prone' || settled === 'ground' || settled === 'down' ? 0.5 : a.crouch > 0.5 || settled === 'kneel' || settled === 'sit' ? 1.2 : 1.72;
     const r = 0.24;
@@ -902,18 +923,31 @@ export class ActorWorld {
       a.needPath = true;
       if (a.stuck > 2.5) this.stop(a);
     }
-    // facing
-    let want2: number | null = null;
-    if (a.brawler) want2 = a.brawler.yaw;
-    else if (a.face) want2 = Math.atan2(a.face[1] - a.pos[1], a.face[0] - a.pos[0]);
-    else if (Math.hypot(a.vel[0], a.vel[1]) > 0.3 && !locked) want2 = Math.atan2(a.vel[1], a.vel[0]);
-    if (want2 !== null && !(locked && settled !== 'kneel' && settled !== 'prone')) {
-      let d = want2 - a.yaw;
-      while (d > Math.PI) d -= 2 * Math.PI;
-      while (d < -Math.PI) d += 2 * Math.PI;
-      const rate = (a.face || a.brawler ? 6 : 8) * dt * (settled === 'prone' ? 0.3 : 1);
-      a.yaw += Math.max(-rate, Math.min(rate, d));
-    }
+    // facing: the body turns with angular momentum (speeding up and braking into the new
+    // direction); standing and aiming, the trunk takes the small corrections and the body only
+    // turns for large ones
+    let wantYaw: number | null = null;
+    let maxRate = 3.2;
+    let accel = 9;
+    const hsNow = Math.hypot(a.vel[0], a.vel[1]);
+    if (a.brawler) {
+      wantYaw = a.brawler.yaw;
+      maxRate = 5;
+      accel = 18;
+    } else if (a.face) {
+      wantYaw = Math.atan2(a.face[1] - a.pos[1], a.face[0] - a.pos[0]);
+      maxRate = hsNow > 2.5 ? 1.8 : 2.6;
+      if (hsNow < 0.3 && (a.carry === 'aim' || a.carry === 'hip')) {
+        const off = Math.abs(wrap(wantYaw - a.yaw));
+        if (!a.turning && off < 0.35) wantYaw = null;
+        a.turning = off > 0.05 && (a.turning || off >= 0.35);
+      } else a.turning = false;
+    } else if (hsNow > 0.3 && !locked) wantYaw = Math.atan2(a.vel[1], a.vel[0]);
+    if (wantYaw !== null && !(locked && settled !== 'kneel' && settled !== 'prone')) {
+      const t = turn(a.yaw, a.yawRate, wantYaw, dt, maxRate * (settled === 'prone' ? 0.3 : 1), accel);
+      a.yaw = t.yaw;
+      a.yawRate = t.rate;
+    } else a.yawRate *= Math.exp(-12 * dt);
     if (a.pos[2] < -60) {
       a.char.die();
       a.opacity = 0;

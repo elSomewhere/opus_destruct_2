@@ -548,6 +548,37 @@ test('gait: walking keeps the trunk upright (a peek lean, a body turning to its 
   }
 });
 
+test('turning on the spot: the legs point with their feet, the trunk leads within its twist, the feet follow', () => {
+  const yawOf = (q: readonly number[]): number => {
+    const f = qrotate(q as [number, number, number, number], [0, 1, 0]);
+    return Math.atan2(f[1], f[0]);
+  };
+  const wrap = (x: number): number => Math.atan2(Math.sin(x), Math.cos(x));
+  const a = standing(0);
+  a.style = randomStyle(3, 'soldier');
+  a.weapon = makeRifle();
+  a.input.carry = 'aim';
+  a.input.aimAt = [20, 0, 1.4];
+  run(a, 1.5);
+  a.input.aimAt = [0, 20, 1.4];
+  let yaw = 0, legWorst = 0, trunkWorst = 0;
+  for (let i = 0; i < 60 * 3; i++) {
+    yaw = Math.min(Math.PI / 2, yaw + 2.5 * DT);
+    a.setRoot([0, 0, 0], yaw);
+    a.update(DT);
+    const fs = a.footState();
+    for (const [k, thigh] of [[0, H.thighL], [1, H.thighR]] as const) {
+      const f = fs[k]!;
+      if (f.planted) legWorst = Math.max(legWorst, Math.abs(wrap(yawOf(a.world.q[thigh]!) - f.yaw)));
+    }
+    trunkWorst = Math.max(trunkWorst, Math.abs(wrap(yawOf(a.world.q[H.chest]!) - yawOf(a.world.q[H.pelvis]!))));
+  }
+  assert.ok(legWorst < 0.45, `a planted leg points ${((legWorst * 180) / Math.PI).toFixed(0)} deg off its foot`);
+  assert.ok(trunkWorst < 0.9, `the chest turns ${((trunkWorst * 180) / Math.PI).toFixed(0)} deg off the hips`);
+  // the feet came round to the new facing (bladed: a little to the right of it)
+  for (const f of a.footState()) assert.ok(Math.abs(wrap(f.yaw - (Math.PI / 2 - 0.42))) < 0.55, `a foot ends at ${((f.yaw * 180) / Math.PI).toFixed(0)} deg`);
+});
+
 // ---- 8. styles ---------------------------------------------------------------------------------
 
 test('styles: characters walk differently; soldiers are heavy', () => {
