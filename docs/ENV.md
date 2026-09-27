@@ -307,3 +307,10 @@ reports each system's memory (`MemoryReport::systems`).
   three up). Embers are visual only.
 - The systems' per-voxel steps are single-threaded. They are bounded by `max_hot`,
   `max_blocks` and `max_active`.
+- Water a host writes into the `water` layer directly (`World::set_layer`) is not woken; use
+  `pour` / `drain`, or a level's layer (at rest from the load).
+- Heat tops out at 1020 °C (a byte of 4 °C): materials' `gone_c` above that (concrete, stone)
+  set how fast they weaken, not a temperature they reach.
+- Burnt-out voxels leave a piece in batches (`piece_batch_steps`); each batch announces the
+  piece's parts again with new ids (the core's `remove_piece_voxels`).
+- The far render tier shows no water: distant ponds look like dry pits.

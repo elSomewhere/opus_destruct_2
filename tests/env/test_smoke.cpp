@@ -144,3 +144,36 @@ TEST_CASE("smoke: settings are brought into range; emits are bounded") {
   CHECK(s.env.smoke()->stats().blocks <= 4);
   CHECK(s.env.smoke()->density(s.w, {1e300, 0, 0}) == 0.0);
 }
+
+TEST_CASE("env: every setting by name reads back what was set, within its range; unknown names are refused") {
+  World w;
+  Environment env;
+  env.attach(w);
+  REQUIRE(env_param_count() > 30);
+  for (i32 i = 0; i < env_param_count(); ++i) {
+    const EnvParamInfo* p = env_param(i);
+    REQUIRE(p);
+    CHECK(env_param_index(p->name) == i);
+    const f64 before = env.get(i);
+    CHECK(std::isfinite(before));
+    // (the middle of its range reads back, for integers rounded)
+    const f64 mid = 0.5 * (p->min + p->max);
+    CHECK(env.set(i, mid));
+    CHECK(std::abs(env.get(i) - mid) <= 0.5 + 0.01 * std::abs(mid));  // (integers and switches: rounded)
+    // (beyond its range: brought in)
+    CHECK(env.set(i, p->max * 10.0 + 1e6));
+    CHECK(env.get(i) <= p->max + 1e-9);
+    CHECK(env.set(i, before));
+  }
+  CHECK_FALSE(env.set("no.such.setting", 1.0));
+  CHECK(std::isnan(env.get("no.such.setting")));
+  CHECK_FALSE(env.set("fire.flame_reach", std::nan("")));
+  // (a system that is not there)
+  World w2;
+  Environment e2;
+  EnvConfig c;
+  c.water = false;
+  e2.attach(w2, c);
+  CHECK_FALSE(e2.set("water.loads", 0.0));
+  CHECK(e2.set("fire.enabled", 0.0));
+}
