@@ -81,6 +81,13 @@ linear-elastic equilibrium on the fragment graph:
   piece, with its bonds (unbroken faces), at rest or with a blast's impulse.
 - **Design pass** (bake): every structure is solved under its own weight, and members above a
   utilization of 0.45 are strengthened, so what stands at load time stands at rest.
+- **Streamed worlds are designed on first touch.** Chunks fresh from the generator are
+  undesigned. The first time a structure reaching them is extracted (a shot, a blast, a piece
+  landing on it), the chunks around it are generated first (it must not stand on chunks that are
+  not there yet); then, if it is intact, it is designed like the bake does it, and that state is
+  the reference of later sudden changes. Events design what they will hit before they hit. An
+  untouched chunk that is evicted and generated again is designed again when touched (the
+  result is the same).
 
 ## 4. Rigid pieces
 
