@@ -9,6 +9,9 @@ comes loose keeps breaking: a tower that loses its ground columns fails at its b
 storey by storey, breaks up in the air and where it lands, and ends as a pile of slab plates,
 wall panels and blocks that settles and sleeps.
 
+- **Video:** [`docs/media/tower_collapse.mp4`](docs/media/tower_collapse.mp4): the tower losing its
+  two west rows of ground columns (`svx_engine_demo --world tower --scenario pillars`, CPU
+  renderer).
 - **Method:** [`docs/V2_DESIGN.md`](docs/V2_DESIGN.md). In short:
   - Voxels form pre-scored rubble **fragments**, joined by **bonds**.
   - Every standing structure and every falling piece gets its stress from the same elastic
