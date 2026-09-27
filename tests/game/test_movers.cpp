@@ -39,7 +39,7 @@ Game door_world(i32* door) {
     for (i32 y = 0; y < 8; ++y) d.cols.push_back({x, y});
   d.z0 = 0;
   d.z1 = 16;
-  d.vox = make_vox(MaterialId::Steel, true);
+  d.vox = make_vox(MaterialId::Wood, true);
   d.speed = 2.0;
   d.wait = 1.0;
   *door = eng.add_mover(d);

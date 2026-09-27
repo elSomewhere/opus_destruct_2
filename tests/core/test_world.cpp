@@ -133,15 +133,19 @@ TEST_CASE("world: the material registry") {
   CHECK(ok);
   material_from_name("unobtainium", &ok);
   CHECK_FALSE(ok);
-  Material glass;
-  glass.name = "glass";
-  glass.ft = glass.fb = 0.05e6;
-  glass.indestructible = true;
+  CHECK(material_from_name("wood") == MaterialId::Wood);
+  CHECK(material(MaterialId::Rebar).ductile);
+  CHECK(material(MaterialId::Steel).ductile);
+  CHECK_FALSE(material(MaterialId::Concrete).ductile);
+  Material adamant;
+  adamant.name = "adamant";
+  adamant.ft = adamant.fb = 0.05e6;
+  adamant.indestructible = true;
   MaterialId id;
-  REQUIRE(register_material(glass, &id));
+  REQUIRE(register_material(adamant, &id));
   CHECK(static_cast<int>(id) >= kStandardMaterials);
-  CHECK(material(id).name == "glass");
-  CHECK(material_from_name("glass") == id);
+  CHECK(material(id).name == "adamant");
+  CHECK(material_from_name("adamant") == id);
   // carves leave indestructible materials
   World w;
   VoxelGrid g = table_world();
@@ -610,4 +614,65 @@ TEST_CASE("world: a later extraction takes a registered structure over whole (no
     MESSAGE("extractions: " << settled - e0 << " for six carves, then " << w->stats().extractions - settled << " in 2 s");
     CHECK(w->stats().extractions - settled <= 2);
   }
+}
+
+// ---- materials
+
+namespace {
+
+// A concrete cantilever 3 x 3 voxels, `len` voxels long, out of an anchored rock wall; if
+// reinforced, bars along its top (tension) face, anchored half a metre into the wall.
+VoxelGrid cantilever_world(i32 len, bool reinforced) {
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-8, -8, -4}, {len + 16, 16, 0}, kRock);
+  box(g, {-8, -8, 0}, {0, 16, 40}, kRock);
+  const Vox conc = make_vox(MaterialId::Concrete, false);
+  box(g, {0, 0, 24}, {len, 3, 27}, conc);
+  if (reinforced) box(g, {-4, 0, 26}, {len, 3, 27}, make_vox(MaterialId::Rebar, false));
+  g.compact();
+  return g;
+}
+
+}  // namespace
+
+TEST_CASE("materials: bars in the tension face carry a cantilever that plain concrete does not") {
+  auto stands = [](bool reinforced) {
+    World w;
+    w.load(cantilever_world(20, reinforced));  // (2.5 m; no design pass: as built)
+    REQUIRE(w.probe_utilization({10, 1, 25}) >= 0.0);
+    for (int t = 0; t < 240; ++t) w.tick();
+    return vox_solid(w.grid().get(18, 1, 25));
+  };
+  CHECK_FALSE(stands(false));
+  CHECK(stands(true));
+}
+
+TEST_CASE("materials: a blast strips concrete off its bars, and ductile bars never turn to dust") {
+  VoxelGrid g = table_world();
+  // a 3 m x 3 m reinforced wall 3 voxels thick under the table, bars every 4 voxels
+  box(g, {4, 34, 0}, {28, 37, 24}, kConcrete);
+  const Vox bar = make_vox(MaterialId::Rebar, false);
+  for (i32 z = 1; z < 24; z += 4) box(g, {4, 35, z}, {28, 36, z + 1}, bar);
+  for (i32 x = 5; x < 28; x += 4) box(g, {x, 35, 0}, {x + 1, 36, 24}, bar);
+  World w;
+  w.load(std::move(g));
+  w.bake();
+  auto count = [&](Vox v) {
+    i64 n = 0;
+    for (i32 x = 4; x < 28; ++x)
+      for (i32 z = 0; z < 24; ++z)
+        for (i32 y = 34; y < 37; ++y) n += w.grid().get(x, y, z) == v;
+    for (const PieceState& p : w.pieces())
+      for (Vox s : w.piece(p.id)->shape.vox) n += s == v;
+    return n;
+  };
+  const i64 bars0 = count(bar), conc0 = count(kConcrete);
+  REQUIRE(bars0 > 100);
+  w.blast({2.0, 4.2, 1.5}, 0.6, 1e6);
+  for (int t = 0; t < 180; ++t) w.tick();
+  const f64 bars = static_cast<f64>(count(bar)) / static_cast<f64>(bars0);
+  const f64 conc = static_cast<f64>(count(kConcrete)) / static_cast<f64>(conc0);
+  MESSAGE("left after the blast: bars " << 100 * bars << "%, concrete " << 100 * conc << "%");
+  CHECK(bars > conc);
 }

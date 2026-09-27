@@ -147,7 +147,7 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
   }
   if (!textured) {
     // 0xFFFF = default colour; 0xFF00 + material = that material's colour.
-    let slot = select(7u, min(i.tex & 0xffu, 7u), i.tex != 0xffffu);
+    let slot = select(15u, min(i.tex & 0xffu, 15u), i.tex != 0xffffu);
     base = frame.palette[slot].rgb;
     // Faint per-voxel variation keeps the voxel scale readable on flat colours.
     let cell = floor((i.world - n * 0.01) / frame.zenith.w);

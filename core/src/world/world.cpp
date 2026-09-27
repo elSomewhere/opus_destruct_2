@@ -175,6 +175,10 @@ bool World::frag_at(const IVec3& p, FragKey* out) {
   return true;
 }
 
+VoxelAt World::voxel_at(const IVec3& p) const { return {grid_.get(p), 0}; }
+
+VoxelAt World::piece_voxel_at(const Body& b, const IVec3& p) const { return {b.shape.get(p), 0}; }
+
 i64 World::owner_of(const FragKey& f) const {
   const auto it = owner_.find(f.chunk);
   return (it != owner_.end() && f.idx >= 0 && f.idx < static_cast<i32>(it->second.size())) ? it->second[size_t(f.idx)] : 0;
@@ -512,6 +516,7 @@ void World::append_nodes(Structure& s, const std::vector<FragKey>& frags, const 
     }
     const V3* cb = ib >= 0 ? &s.P.nodes[size_t(ib)].c : nullptr;
     SBond B = A.finish(h, s.P.nodes[size_t(ia)].c, cb, s.nmat[size_t(ia)], s.nstrength[size_t(ia)]);
+    section_strengths(A.faces.data(), A.fax.data(), A.faces.size(), [&](const IVec3& p) { return voxel_at(p); }, B);
     B.tag = static_cast<i32>(s.P.bonds.size());
     s.P.bonds.push_back(B);
     for (size_t k = 0; k < A.faces.size(); ++k) {
@@ -1270,11 +1275,20 @@ f64 World::probe_utilization(const IVec3& voxel, i32* over) {
   s->P.solve(F, s->u, 1e-8, 5000, true);
   f64 mx = 0.0;
   i32 cnt = 0;
+  i32 worst = -1;
   for (i32 b = 0; b < static_cast<i32>(s->P.bonds.size()); ++b) {
     if (s->P.bonds[size_t(b)].broken) continue;
     const f64 phi = bond_utilization(s->P.bonds[size_t(b)], s->P.bond_load(b, s->u), par_.fragility);
+    if (phi > mx) worst = b;
     mx = std::max(mx, phi);
     cnt += phi >= 1.0 ? 1 : 0;
+  }
+  if (worst >= 0 && diag("SVX_DEBUG_PROBE")) {
+    const SBond& B = s->P.bonds[size_t(worst)];
+    FailMode mode;
+    bond_utilization(B, s->P.bond_load(worst, s->u), par_.fragility, &mode);
+    std::printf("  [probe] worst bond at (%.2f %.2f %.2f) n (%.1f %.1f %.1f) mode %d faces %d support %d sectioned %d ft %.2g fb %.2g\n", B.p.x,
+                B.p.y, B.p.z, B.n.x, B.n.y, B.n.z, static_cast<int>(mode), B.faces, B.b < 0 ? 1 : 0, B.sectioned ? 1 : 0, B.ft, B.fb);
   }
   if (over) *over = cnt;
   return mx;
@@ -1403,7 +1417,8 @@ void World::carve_world(const V3& c, f64 r, std::vector<IVec3>* removed) {
         const IVec3 q{x, y, z};
         const Vox v = grid_.get(q);
         if (!vox_solid(v)) continue;
-        if (material(vox_mat(v)).indestructible) continue;
+        const Material& M = material(vox_mat(v));
+        if (M.indestructible || M.ductile) continue;  // (bullets and craters bend steel and bars; they do not remove it)
         if (vox_anchored(v)) support_changed(q, &supports);
         grid_.set(q, kAir);
         removed->push_back(q);

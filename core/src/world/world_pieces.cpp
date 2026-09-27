@@ -251,6 +251,7 @@ void World::rebuild_body_graph(Body& b) {
     A.mb = nmat[size_t(A.b)];
     A.strength_b = nstr[size_t(A.b)];
     SBond B = A.finish(h, G.P.nodes[size_t(A.a)].c, &G.P.nodes[size_t(A.b)].c, nmat[size_t(A.a)], nstr[size_t(A.a)]);
+    section_strengths(A.faces.data(), A.fax.data(), A.faces.size(), [&](const IVec3& p) { return piece_voxel_at(b, p); }, B);
     B.tag = static_cast<i32>(G.P.bonds.size());
     G.P.bonds.push_back(B);
     for (size_t k = 0; k < A.faces.size(); ++k) {
@@ -611,6 +612,9 @@ bool World::pulverize(Body& b, const std::vector<i32>& crushed) {
     if (!vox_solid(S.vox[size_t(i)])) continue;
     const i32 f = static_cast<i32>(S.frag[size_t(i)]) - 1;
     if (f < 0 || !kill[size_t(f)]) continue;
+    // (ductile material yields where brittle material crushes: the bars of a crushed concrete
+    // fragment stay, the concrete around them falls away as dust)
+    if (material(vox_mat(S.vox[size_t(i)])).ductile) continue;
     const IVec3 p = S.voxel(i);
     at[size_t(f)] += V3{h * p[0], h * p[1], h * p[2]};
     ++cnt[size_t(f)];
@@ -1015,6 +1019,7 @@ void World::carve_bodies(const V3& c, f64 r) {
           const i32 i = b.shape.index(p);
           if (i < 0 || !vox_solid(b.shape.vox[size_t(i)])) continue;
           if (norm(V3{h * x, h * y, h * z} - s) > r) continue;
+          if (material(vox_mat(b.shape.vox[size_t(i)])).ductile) continue;  // (as in the world)
           b.shape.vox[size_t(i)] = kAir;
           b.shape.frag[size_t(i)] = 0;
           ++removed;

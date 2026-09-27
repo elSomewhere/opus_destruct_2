@@ -369,5 +369,7 @@ export function generateWorld(kind: ProceduralKind, seed: number, voxelSize: num
       return city(seed, voxelSize);
     case 'tower':
       return tower(seed, voxelSize);
+    case 'yard':
+      return rooms(seed, voxelSize); // (the mock has no yard: the real engine builds it)
   }
 }

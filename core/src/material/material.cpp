@@ -14,7 +14,7 @@ namespace {
 // them at run time. Fracture energies are those of the whole crack (the reinforcement's pull-out
 // included for RC).
 Material preset(const char* name, f64 E, f64 G, f64 rho, f64 ft, f64 fb, f64 fc, f64 coh, f64 mu, f64 Gf, f64 fx, f64 fy,
-                f64 fz, f64 noise, bool indestructible = false) {
+                f64 fz, f64 noise, bool indestructible = false, bool ductile = false) {
   Material m;
   m.name = name;
   m.E = E;
@@ -31,6 +31,7 @@ Material preset(const char* name, f64 E, f64 G, f64 rho, f64 ft, f64 fb, f64 fc,
   m.frag_z = fz;
   m.frag_noise = noise;
   m.indestructible = indestructible;
+  m.ductile = ductile;
   return m;
 }
 
@@ -51,6 +52,20 @@ struct Registry {
     m[4] = preset("soil",     0.1e9, 0.04e9, 1700, 0.01e6, 0.01e6, 0.4e6, 0.03e6, 0.55, 20,   2.5, 2.5, 2.5, 0.5);
     m[5] = preset("rock",     40e9,  16e9,   2600, 2.5e6,  3.0e6,  80e6,  4e6,    0.8,  600,  4.0, 4.0, 4.0, 0.5);
     m[6] = preset("bedrock",  60e9,  25e9,   2800, 10e6,   10e6,   200e6, 15e6,   0.8,  2000, 5.0, 5.0, 5.0, 0.5, true);
+    // Timber: joints and splits along the grain are its weak planes; bending it is strong, and
+    // it is tough (splintering absorbs a lot): pieces break into long splinters, rarely to dust.
+    m[7] = preset("wood",     11e9,  0.7e9,  550,  1.2e6,  8e6,    20e6,  2e6,    0.5,  6000, 5.0, 5.0, 5.0, 0.5);
+    // Cut stone in lime mortar: blocks that come apart at the joints (regular, little noise).
+    m[8] = preset("stone",    30e9,  12e9,   2600, 0.25e6, 0.4e6,  40e6,  0.5e6,  0.7,  120,  4.0, 4.0, 3.0, 0.15);
+    // Glass: very brittle (it pays almost nothing for cracks) and shatters into small shards.
+    m[9] = preset("glass",    70e9,  29e9,   2500, 3e6,    4e6,    100e6, 3e6,    0.4,  4,    2.0, 2.0, 2.0, 0.6);
+    // Concrete around a reinforcing bar, per 12.5 cm cell (about 2% steel): stiff and heavy as
+    // concrete, strong in tension as its bar (3 cm^2 at 500 MPa over the cell's face), tough
+    // (the bar yields), ductile. Concrete bonds to it no more strongly than to itself, so
+    // concrete comes off the bars and they stay: the exposed reinforcement of a broken member.
+    m[10] = preset("rebar",   34e9,  13e9,   2550, 9e6,    10e6,   35e6,  4e6,    0.7,  50000, 8.0, 8.0, 8.0, 0.0, false, true);
+    m[2].ductile = true;  // (structural steel)
+    m[10].reinforcement = true;
     for (int i = 0; i < kStandardMaterials; ++i) used[size_t(i)] = true;
   }
 };

@@ -172,6 +172,44 @@ struct SecAcc {
   }
 };
 
+// A voxel as the section of a bond sees it: its value and its damage (the core's condition
+// layer: 0 intact .. 255 no strength left).
+struct VoxelAt {
+  Vox v = kAir;
+  u8 damage = 0;
+};
+
+// Section strengths of a bond from its faces (lower voxel faces[k], axis axes[k]): each face as
+// strong as the weaker material of the two voxels it joins, times the condition of the more
+// damaged one; the section's strengths are the faces' mean. at(p) -> VoxelAt.
+template <class At>
+void section_strengths(const IVec3* faces, const u8* axes, size_t n, At&& at, SBond& B) {
+  f64 ft = 0, fb = 0, fc = 0, coh = 0, mu = 0;
+  for (size_t k = 0; k < n; ++k) {
+    IVec3 q = faces[k];
+    const VoxelAt a = at(q);
+    q[axes[k]] += 1;
+    const VoxelAt b = at(q);
+    // (a side that is air - an unloaded neighbour, a support face - is as the other side)
+    const Material& A = material(vox_solid(a.v) ? vox_mat(a.v) : vox_mat(b.v));
+    const Material& M = material(vox_solid(b.v) ? vox_mat(b.v) : vox_mat(a.v));
+    const f64 cond = 1.0 - static_cast<f64>(std::max(a.damage, b.damage)) / 255.0;
+    ft += cond * std::min(A.ft, M.ft);
+    fb += cond * std::min(A.fb, M.fb);
+    fc += cond * std::min(A.fc, M.fc);
+    coh += cond * std::min(A.cohesion, M.cohesion);
+    mu += std::min(A.friction, M.friction);
+  }
+  if (n == 0) return;
+  const f64 w = 1.0 / static_cast<f64>(n);
+  B.sectioned = true;
+  B.ft = static_cast<f32>(ft * w);
+  B.fb = static_cast<f32>(fb * w);
+  B.fc = static_cast<f32>(fc * w);
+  B.coh = static_cast<f32>(coh * w);
+  B.mu = static_cast<f32>(mu * w);
+}
+
 // Pair bonds: one per unordered node pair; supports: one per (node, axis, side).
 inline u64 acc_key(i32 a, i32 b, int axis, int sign) {
   if (b >= 0) return (static_cast<u64>(std::min(a, b)) << 32) | (static_cast<u64>(std::max(a, b)) << 1) | 1u;

@@ -36,6 +36,10 @@ export const Material = {
   Soil: 4,
   Rock: 5,
   Bedrock: 6,
+  Wood: 7,
+  Stone: 8,
+  Glass: 9,
+  Rebar: 10,
 } as const;
 export type MaterialId = number;
 
@@ -47,6 +51,10 @@ export const MATERIAL_NAMES: readonly string[] = [
   'soil',
   'rock',
   'bedrock',
+  'wood',
+  'stone',
+  'glass',
+  'rebar',
 ];
 
 export function materialName(id: MaterialId): string {
@@ -74,8 +82,8 @@ export const DEBUG_VIEW_NAMES: Readonly<Record<DebugView, string>> = {
   [DebugView.Fragments]: 'fragments',
 };
 
-export type ProceduralKind = 'city' | 'rooms' | 'tower';
-export const PROCEDURAL_KINDS: readonly ProceduralKind[] = ['rooms', 'city', 'tower'];
+export type ProceduralKind = 'city' | 'rooms' | 'tower' | 'yard';
+export const PROCEDURAL_KINDS: readonly ProceduralKind[] = ['rooms', 'city', 'tower', 'yard'];
 
 // ---------------------------------------------------------------------------------------
 // Chunk mesh vertex format (28 bytes, interleaved, little-endian)

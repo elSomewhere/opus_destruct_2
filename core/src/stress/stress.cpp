@@ -12,9 +12,10 @@
 namespace svx {
 
 BondStrength bond_strength(const SBond& b, f64 fragility) {
+  const f64 s = b.strength / std::max(1e-6, fragility);
+  if (b.sectioned) return {s * b.ft, s * b.fb, s * b.fc, s * b.coh, static_cast<f64>(b.mu)};
   const Material& A = material(b.ma);
   const Material& B = material(b.mb);
-  const f64 s = b.strength / std::max(1e-6, fragility);
   return {s * std::min(A.ft, B.ft), s * std::min(A.fb, B.fb), s * std::min(A.fc, B.fc), s * std::min(A.cohesion, B.cohesion),
           std::min(A.friction, B.friction)};
 }

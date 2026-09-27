@@ -18,7 +18,8 @@ struct ProcWorld {
   V3 spawn_dir{1, 0, 0};
 };
 
-// kind: "rooms", "city" or "tower". Unknown kinds fall back to "rooms".
+// kind: "rooms", "city", "tower", "yard" (wood, stone, glass, steel, reinforced concrete) and the
+// physics tests "slab", "chimney", "bridge". Unknown kinds fall back to "rooms".
 ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h = 0.125);
 
 }  // namespace svx

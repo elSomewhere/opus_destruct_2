@@ -90,15 +90,30 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
   auto broken_at = [&](int i) -> u8 { return ch->broken.empty() ? u8(0) : ch->broken[static_cast<size_t>(i)]; };
   constexpr int S = kChunk;
 
-  // 1. Voronoi label per free voxel: (material, seed cell) packed into a u64.
+  // 1. Voronoi label per free voxel: (material, seed cell) packed into a u64. A reinforcement
+  // voxel takes the label its host material (the first free non-reinforcement neighbour's, in
+  // the chunk) has at its place: bars belong to the fragments of the concrete around them.
   std::vector<u64> label(kChunkVox, 0);
+  constexpr int kStride[3] = {S * S, S, 1};
+  auto host_of = [&](int i, int x, int y, int z) -> MaterialId {
+    const MaterialId own = vox_mat(vox_at(i));
+    if (!material(own).reinforcement) return own;
+    const int c[3] = {x, y, z};
+    for (int a = 0; a < 3; ++a)
+      for (int sg = -1; sg <= 1; sg += 2) {
+        if (c[a] + sg < 0 || c[a] + sg >= S) continue;
+        const Vox n = vox_at(i + sg * kStride[a]);
+        if (vox_free(n) && !material(vox_mat(n)).reinforcement) return vox_mat(n);
+      }
+    return own;
+  };
   for (int x = 0; x < S; ++x)
     for (int y = 0; y < S; ++y)
       for (int z = 0; z < S; ++z) {
         const int i = (x * S + y) * S + z;
         const Vox v = vox_at(i);
         if (!vox_free(v)) continue;
-        const MaterialId mid = vox_mat(v);
+        const MaterialId mid = host_of(i, x, y, z);
         const Material& M = material(mid);
         const i64 gx = base[0] + x, gy = base[1] + y, gz = base[2] + z;
         const f64 sp[3] = {M.frag_x, M.frag_y, M.frag_z};  // (the registry keeps them >= 1)
@@ -179,7 +194,8 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
         const i32 cj = comp[static_cast<size_t>(j)];
         if (cj < 0 || cj == ci) continue;
         if ((broken_at(i) >> a) & 1) continue;
-        if (vox_mat(vox_at(i)) != vox_mat(vox_at(j))) continue;
+        const MaterialId mi = vox_mat(vox_at(i)), mj = vox_mat(vox_at(j));
+        if (mi != mj && !material(mi).reinforcement && !material(mj).reinforcement) continue;
         if (comp_count[static_cast<size_t>(ci)] < par.min_voxels) nb[static_cast<size_t>(ci)].push_back({cj, 1});
         if (comp_count[static_cast<size_t>(cj)] < par.min_voxels) nb[static_cast<size_t>(cj)].push_back({ci, 1});
       }
@@ -242,6 +258,15 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
     const f64 m = material(vox_mat(vox_at(i))).rho * vol;
     // accumulate relative to the chunk origin (small numbers), shifted to world below
     accumulate_voxel(m, V3{h * kc[0], h * kc[1], h * kc[2]}, h, sums[static_cast<size_t>(f)].data());
+  }
+  // (a fragment's material: its first voxel's that is not reinforcement, if any)
+  for (int i = 0; i < kChunkVox; ++i) {
+    const u16 id = out.id[static_cast<size_t>(i)];
+    if (!id) continue;
+    FragInfo& fi = out.frags[static_cast<size_t>(id - 1)];
+    if (!material(fi.mat).reinforcement) continue;
+    const MaterialId m = vox_mat(vox_at(i));
+    if (!material(m).reinforcement) fi.mat = m;
   }
   // voxel lists per fragment (counting sort by fragment, scan order within)
   out.vox_start.assign(out.frags.size() + 1, 0);

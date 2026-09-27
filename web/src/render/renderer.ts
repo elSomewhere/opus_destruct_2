@@ -24,7 +24,7 @@ import worldWgsl from './shaders/world.wgsl?raw';
 const SAMPLES = 4;
 const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
 /** Floats in the Frame uniform (see shaders/frame.wgsl). */
-const FRAME_FLOATS = 16 + 8 * 4 + 8 * 4;
+const FRAME_FLOATS = 16 + 8 * 4 + 16 * 4;
 const OBJECT_BYTES = 80; // mat4 + vec4
 /** Detached pieces drawn at once (the engine keeps up to ~3000 rigid pieces plus fading ones). */
 const MAX_ISLANDS = 4096;
@@ -61,9 +61,9 @@ export interface RenderStats {
   height: number;
 }
 
-/** Linear-space material colours (vec4 each), indexed by material id; [7] = untextured default. */
+/** Linear-space material colours (vec4 each), indexed by material id; [15] = untextured default. */
 const PALETTE: Float32Array = (() => {
-  const p = new Float32Array(8 * 4).fill(1);
+  const p = new Float32Array(16 * 4).fill(1);
   const set = (i: number, r: number, g: number, b: number): void => p.set([r, g, b, 1], i * 4);
   set(Material.Rc, 0.3, 0.31, 0.33);
   set(Material.Concrete, 0.36, 0.35, 0.33);
@@ -72,7 +72,12 @@ const PALETTE: Float32Array = (() => {
   set(Material.Soil, 0.24, 0.15, 0.08);
   set(Material.Rock, 0.2, 0.18, 0.16);
   set(Material.Bedrock, 0.07, 0.065, 0.06);
-  set(7, 0.3, 0.3, 0.3);
+  set(Material.Wood, 0.34, 0.2, 0.09);
+  set(Material.Stone, 0.4, 0.38, 0.33);
+  set(Material.Glass, 0.55, 0.7, 0.72);
+  set(Material.Rebar, 0.16, 0.13, 0.11);
+  for (let i = 11; i < 15; i++) set(i, 0.3, 0.3, 0.3);
+  set(15, 0.3, 0.3, 0.3);
   return p;
 })();
 

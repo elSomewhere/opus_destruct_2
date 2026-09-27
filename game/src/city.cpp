@@ -119,6 +119,7 @@ class CitySource final : public GameSource {
     };
     if (next(0, 9) == 0) return;  // an empty lot now and then
     const Vox rc = make_vox(MaterialId::Rc, false);
+    const Vox bar = make_vox(MaterialId::Rebar, false);
     const Vox masonry = make_vox(MaterialId::Masonry, false);
     const i32 ox = bx * kPitch + kStreet / 2, oy = by * kPitch + kStreet / 2;
     const i32 foot = kPitch - kStreet;          // 144 voxels = 18 m
@@ -134,6 +135,10 @@ class CitySource final : public GameSource {
         for (i32 iy = 0; iy <= bays; ++iy)
           fill({{ox + ix * bay, oy + iy * bay, z0}, {ox + ix * bay + col, oy + iy * bay + col, z0 + kStorey}}, rc);
       fill({{ox, oy, z0 + kStorey}, {ox + X, oy + X, z0 + kStorey + kSlab}}, rc);
+      // a bar down the middle of each column, on through the slab it carries
+      for (i32 ix = 0; ix <= bays; ++ix)
+        for (i32 iy = 0; iy <= bays; ++iy)
+          fill({{ox + ix * bay + 1, oy + iy * bay + 1, z0}, {ox + ix * bay + 2, oy + iy * bay + 2, z0 + kStorey + kSlab}}, bar);
       // perimeter walls with a window band (masonry infill), two opposite sides
       for (int side = 0; side < 2; ++side) {
         const i32 yw = side == 0 ? oy : oy + X - 2;

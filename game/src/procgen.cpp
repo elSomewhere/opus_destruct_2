@@ -2,6 +2,8 @@
 
 #include <algorithm>
 
+#include "svx/game/reinforce.hpp"
+
 namespace svx {
 
 namespace {
@@ -36,8 +38,10 @@ void building(VoxelGrid& g, Rng& rng, int ox, int oy, int bays_x, int bays_y, in
   for (int s = 0; s < storeys; ++s) {
     const int z0 = s * (storey_h + slab);
     for (int ix = 0; ix <= bays_x; ++ix)
-      for (int iy = 0; iy <= bays_y; ++iy)
+      for (int iy = 0; iy <= bays_y; ++iy) {
         box(g, ox + ix * bay, ox + ix * bay + col, oy + iy * bay, oy + iy * bay + col, z0, z0 + storey_h, rc);
+        reinforce(g, {ox + ix * bay, oy + iy * bay, z0}, {ox + ix * bay + col, oy + iy * bay + col, z0 + storey_h});
+      }
     box(g, ox, ox + X, oy, oy + Y, z0 + storey_h, z0 + storey_h + slab, rc);
     // two perimeter walls with windows
     const int wall_t = 2;
@@ -52,6 +56,82 @@ void building(VoxelGrid& g, Rng& rng, int ox, int oy, int bays_x, int bays_y, in
         }
     }
   }
+}
+
+// The yard: one of each kind of construction, to be shot at, blown up and set on fire.
+void yard(VoxelGrid& g) {
+  const Vox wood = make_vox(MaterialId::Wood, false), stone = make_vox(MaterialId::Stone, false);
+  const Vox glass = make_vox(MaterialId::Glass, false), steel = make_vox(MaterialId::Steel, false);
+  const Vox rc = make_vox(MaterialId::Rc, false), concrete = make_vox(MaterialId::Concrete, false);
+  // A timber house (8 x 6 m): posts, plank walls with a door and windows, a floor of boards on
+  // joists, a pitched roof of boards on rafters.
+  {
+    const int x0 = 24, x1 = 88, y0 = 24, y1 = 72, H = 24;
+    for (int x = x0; x <= x1 - 3; x += 15)
+      for (int y : {y0, y1 - 3}) box(g, x, x + 3, y, y + 3, 0, H, wood);
+    for (int y = y0; y <= y1 - 3; y += 16)
+      for (int x : {x0, x1 - 3}) box(g, x, x + 3, y, y + 3, 0, H, wood);
+    box(g, x0, x1, y0 + 1, y0 + 2, 1, H, wood);  // plank walls
+    box(g, x0, x1, y1 - 2, y1 - 1, 1, H, wood);
+    box(g, x0 + 1, x0 + 2, y0, y1, 1, H, wood);
+    box(g, x1 - 2, x1 - 1, y0, y1, 1, H, wood);
+    box(g, x0 + 26, x0 + 34, y0, y0 + 3, 1, 17, kAir);  // door
+    for (int wx : {x0 + 8, x0 + 44}) box(g, wx, wx + 10, y0, y0 + 3, 9, 17, kAir);
+    for (int wy : {y0 + 12, y0 + 30}) box(g, x1 - 3, x1, wy, wy + 8, 9, 17, kAir);
+    for (int y = y0 + 3; y < y1 - 3; y += 8) box(g, x0 + 3, x1 - 3, y, y + 2, 0, 1, wood);  // joists
+    box(g, x0 + 2, x1 - 2, y0 + 2, y1 - 2, 1, 2, wood);                                   // floor boards
+    for (int x = x0; x < x1; x += 8) box(g, x, x + 2, y0, y1, H, H + 1, wood);          // tie beams
+    for (int k = 0; k < 12; ++k) {                                                          // rafters and boards
+      const int z = H + 1 + k;
+      box(g, x0 - 2, x1 + 2, y0 - 2 + 2 * k, y0 + 2 * k, z, z + 1, wood);
+      box(g, x0 - 2, x1 + 2, y1 - 2 * k, y1 + 2 - 2 * k, z, z + 1, wood);
+    }
+  }
+  // A stone tower (5 m square, walls 0.5 m, 11 m high) with windows and a door.
+  {
+    const int x0 = 150, x1 = 190, y0 = 30, y1 = 70, H = 88;
+    box(g, x0, x1, y0, y1, 0, H, stone);
+    box(g, x0 + 4, x1 - 4, y0 + 4, y1 - 4, 0, H, kAir);
+    box(g, x0 + 16, x0 + 24, y0, y0 + 4, 0, 18, kAir);
+    for (int z = 24; z < H - 12; z += 20)
+      for (int side = 0; side < 4; ++side) {
+        const int c = side < 2 ? x0 + 18 : y0 + 18;
+        if (side == 0) box(g, c, c + 4, y0, y0 + 4, z, z + 8, kAir);
+        if (side == 1) box(g, c, c + 4, y1 - 4, y1, z, z + 8, kAir);
+        if (side == 2) box(g, x0, x0 + 4, c, c + 4, z, z + 8, kAir);
+        if (side == 3) box(g, x1 - 4, x1, c, c + 4, z, z + 8, kAir);
+      }
+    for (int x = x0; x < x1; x += 8) box(g, x, x + 4, y0, y1, H, H + 4, stone);  // crenellations
+    box(g, x0 + 4, x1 - 4, y0 + 4, y1 - 4, H, H + 4, kAir);
+    box(g, x0 + 4, x1 - 4, y0 + 4, y1 - 4, 48, 50, wood);                            // a timber floor
+  }
+  // A greenhouse: a steel frame glazed on its sides and roof.
+  {
+    const int x0 = 36, x1 = 100, y0 = 140, y1 = 196, H = 28;
+    for (int x = x0; x <= x1 - 2; x += 16)
+      for (int y = y0; y <= y1 - 2; y += 14) box(g, x, x + 2, y, y + 2, 0, H, steel);
+    for (int x = x0; x <= x1 - 2; x += 16) box(g, x, x + 2, y0, y1, H, H + 2, steel);
+    for (int y = y0; y <= y1 - 2; y += 14) box(g, x0, x1, y, y + 2, H, H + 2, steel);
+    box(g, x0, x1, y0, y0 + 1, 1, H, glass);
+    box(g, x0, x1, y1 - 1, y1, 1, H, glass);
+    box(g, x0, x0 + 1, y0, y1, 1, H, glass);
+    box(g, x1 - 1, x1, y0, y1, 1, H, glass);
+    box(g, x0 + 1, x1 - 1, y0 + 1, y1 - 1, H + 1, H + 2, glass);
+    box(g, x0, x1, y0, y1, 0, 1, concrete);  // (a concrete kerb)
+    box(g, x0 + 30, x0 + 38, y0, y0 + 1, 1, 17, kAir);
+  }
+  // A steel shed: portal frames (columns and roof beams) carrying a thin concrete roof.
+  {
+    const int x0 = 150, x1 = 214, y0 = 140, y1 = 196, H = 40;
+    for (int x = x0; x <= x1 - 2; x += 16) {
+      for (int y : {y0, y1 - 2}) box(g, x, x + 2, y, y + 2, 0, H, steel);
+      box(g, x, x + 2, y0, y1, H, H + 3, steel);
+    }
+    box(g, x0, x1, y0, y1, H + 3, H + 5, concrete);
+  }
+  // A reinforced concrete wall (7.5 m x 3 m, 0.375 m thick) with its bars.
+  box(g, 240, 300, 40, 43, 0, 24, rc);
+  reinforce(g, {240, 40, 0}, {300, 43, 24});
 }
 
 }  // namespace
@@ -79,12 +159,22 @@ ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h) {
     g.hi = {extent, extent, 5 * 24 + 8};
     w.spawn_pos = {h * street / 2.0, h * street / 2.0, -0.5 * h + 0.02};
     w.spawn_dir = {1, 1, 0};
+  } else if (kind == "yard") {
+    ground(g, 0, 320, 0, 240, 4);
+    yard(g);
+    g.lo = {0, 0, -4};
+    g.hi = {320, 240, 112};
+    w.spawn_pos = {h * 120, h * 110, -0.5 * h + 0.02};
+    w.spawn_dir = {0, -1, 0.1};
   } else if (kind == "slab") {
     // physics test: a 6 x 6 m RC slab (0.25 m) on four 2 x 2 voxel columns, 8 m up
     ground(g, 0, 96, 0, 96, 4);
     const int x0 = 24, x1 = 72, z0 = 64;
     for (int cx : {x0, x1 - 3})
-      for (int cy : {x0, x1 - 3}) box(g, cx, cx + 3, cy, cy + 3, 0, z0, rc);
+      for (int cy : {x0, x1 - 3}) {
+        box(g, cx, cx + 3, cy, cy + 3, 0, z0, rc);
+        reinforce(g, {cx, cy, 0}, {cx + 3, cy + 3, z0});
+      }
     box(g, x0, x1, x0, x1, z0, z0 + 2, rc);
     g.lo = {0, 0, -4};
     g.hi = {96, 96, z0 + 8};
@@ -103,8 +193,12 @@ ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h) {
   } else if (kind == "bridge") {
     // physics test: a 16 m RC deck (0.5 m, 3 m wide) on two piers, 6 m up
     ground(g, 0, 176, 0, 64, 4);
-    for (int px : {16, 144}) box(g, px, px + 16, 20, 44, 0, 48, rc);
+    for (int px : {16, 144}) {
+      box(g, px, px + 16, 20, 44, 0, 48, rc);
+      reinforce(g, {px, 20, 0}, {px + 16, 44, 48});
+    }
     box(g, 8, 168, 20, 44, 48, 52, rc);
+    reinforce(g, {8, 20, 48}, {168, 44, 52});
     g.lo = {0, 0, -4};
     g.hi = {176, 64, 60};
     w.spawn_pos = {h * 88, h * 4, -0.5 * h + 0.02};
@@ -123,6 +217,8 @@ ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h) {
     ground(g, -8, X + 8, -8, Y + 8, 4);
     for (int i = 0; i <= nx; ++i) box(g, i * (rx + wall), i * (rx + wall) + wall, 0, Y, 0, height, rc);
     for (int j = 0; j <= ny; ++j) box(g, 0, X, j * (ry + wall), j * (ry + wall) + wall, 0, height, rc);
+    for (int i = 0; i <= nx; ++i) reinforce(g, {i * (rx + wall), 0, 0}, {i * (rx + wall) + wall, Y, height});
+    for (int j = 0; j <= ny; ++j) reinforce(g, {0, j * (ry + wall), 0}, {X, j * (ry + wall) + wall, height});
     // doors
     for (int i = 1; i < nx; ++i)
       for (int j = 0; j < ny; ++j) {
@@ -136,6 +232,7 @@ ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h) {
       }
     // ceiling slab, and a masonry partition with a lintel in the middle room
     box(g, 0, X, 0, Y, height, height + slab, rc);
+    reinforce(g, {0, 0, height}, {X, Y, height + slab});
     const int px = 1 * (rx + wall) + wall + rx / 2;
     box(g, px, px + 2, wall, wall + ry, 0, height, masonry);
     box(g, px, px + 2, wall + 14, wall + 26, 0, 16, kAir);

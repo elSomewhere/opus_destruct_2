@@ -10,7 +10,7 @@ struct Frame {
   zenith: vec4f,   // rgb zenith colour, w = voxel size (m)
   sun: vec4f,      // xyz unit direction towards the sun, w = texture count
   flash: vec4f,    // xyz flash light position, w = intensity
-  palette: array<vec4f, 8>, // material colours by material id; [7] = untextured default
+  palette: array<vec4f, 16>, // material colours by material id; [15] = untextured default
 };
 
 @group(0) @binding(0) var<uniform> frame: Frame;

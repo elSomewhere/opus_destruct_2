@@ -48,6 +48,7 @@ namespace svx {
 
 namespace world_detail {
 struct SecAcc;
+struct VoxelAt;
 class ChangeArchive;
 }
 
@@ -359,6 +360,8 @@ class World {
   FragChunk* frag_chunk_if(u64 key);         // current or nullptr (no rebuild)
   bool frag_at(const IVec3& p, FragKey* out); // the free fragment holding voxel p
   i64 owner_of(const FragKey& f) const;      // structure id holding it (0: none)
+  world_detail::VoxelAt voxel_at(const IVec3& p) const;                 // (sections: the grid's voxel)
+  world_detail::VoxelAt piece_voxel_at(const Body& b, const IVec3& p) const;  // (a piece's shape voxel)
   void voxels_of(const FragKey& f, std::vector<IVec3>& out);
   u8 frag_class(const FragKey& f);           // weakest design class of its voxels
   void mark_owners_stale(u64 chunk_key, u64 changed = ~0ull);  // owners of chunk_key: stale, `changed` (default: chunk_key) to patch

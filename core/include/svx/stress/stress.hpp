@@ -40,6 +40,12 @@ struct SBond {
   f64 rmax = 0.0;         // largest distance of the section from p (torsion)
   f64 la = 0.0, lb = 0.0; // lengths of the two sides along n (node to section, section to node)
   f64 strength = 1.0;     // design strength multiplier
+  // Section strengths (Pa) from the section's faces: each face as strong as the weaker material
+  // of the two voxels it joins, times their condition; the mean over the faces (a concrete
+  // section with a reinforcing bar in it is stronger in tension by the bar's share). Not
+  // sectioned: the weaker of ma and mb.
+  bool sectioned = false;
+  f32 ft = 0, fb = 0, fc = 0, coh = 0, mu = 0;
   i32 faces = 0;          // voxel faces in the section
   i32 tag = -1;           // owner's id (e.g. its face list)
 };

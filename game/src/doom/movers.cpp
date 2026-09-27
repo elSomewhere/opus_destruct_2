@@ -66,7 +66,7 @@ int attach_doom_movers(Game& eng, const DoomWorld& w) {
     d.z0 = mi.z0;
     d.z1 = mi.z1;
     d.rows = mi.rows;
-    d.vox = make_vox(mi.kind == MoverInfo::Kind::Door ? MaterialId::Steel : MaterialId::Concrete, true);
+    d.vox = make_vox(mi.kind == MoverInfo::Kind::Door ? MaterialId::Wood : MaterialId::Concrete, true);  // (doors: wood: shot up, burnt)
     // a door opens on use when a manual door line opens it (tagged doors: from their switch);
     // lifts on use of the lift itself
     d.usable = mi.kind == MoverInfo::Kind::Lift || (mi.kind == MoverInfo::Kind::Door && mi.manual);

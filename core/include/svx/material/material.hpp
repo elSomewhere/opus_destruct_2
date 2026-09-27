@@ -20,15 +20,19 @@ namespace svx {
 // A material id. The named values are the standard presets; any value 0..kMaxMaterials-1 is an
 // id (a registered material, or the fallback properties of id 0).
 enum class MaterialId : u8 {
-  Rc = 0,     // reinforced concrete
+  Rc = 0,     // reinforced concrete (reinforcement smeared: a flexural reserve)
   Concrete,
-  Steel,
-  Masonry,
+  Steel,      // structural steel (ductile)
+  Masonry,    // brick
   Soil,
   Rock,
   Bedrock,    // indestructible
+  Wood,       // structural timber
+  Stone,      // cut natural stone in mortar (blocks)
+  Glass,
+  Rebar,      // concrete around a reinforcing bar (ductile): explicit reinforcement in thick members
 };
-constexpr int kStandardMaterials = 7;
+constexpr int kStandardMaterials = 11;
 constexpr int kMaxMaterials = 127;
 
 struct Material {
@@ -47,7 +51,18 @@ struct Material {
   f64 frag_x = 4.0, frag_y = 4.0, frag_z = 4.0;
   f64 frag_noise = 0.4;
   bool indestructible = false;  // carves and blasts leave it (e.g. bedrock)
+  // Ductile (metals, reinforcing bars): it yields and bends where brittle material crushes, so
+  // crushing never turns it to dust (pieces keep it; concrete crushed around a bar falls away
+  // and leaves the bar).
+  bool ductile = false;
+  // Reinforcement (bars in concrete): its voxels belong to the fragments of the material around
+  // them, so every interface across a member has the bars in its section (a composite section:
+  // the bars carry its tension). Bars with nothing around them form fragments of their own.
+  bool reinforcement = false;
 };
+
+// Other modules keep their own per-material properties (the fire module: combustion and heat;
+// renderers: colours), keyed by the same ids and names.
 
 // The properties of id (the fallback, id 0's, for ids never registered).
 const Material& material(MaterialId id);

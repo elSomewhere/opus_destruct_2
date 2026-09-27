@@ -56,8 +56,9 @@ void render(const Game& e, const V3& cam, const V3& look, int W, int H, const st
   const f64 fov = 0.9;
   std::vector<u8> img(size_t(W) * size_t(H) * 3);
   const V3 sun = normalized(V3{-0.45, -0.3, 0.84});
-  static const f64 mat_col[7][3] = {{0.78, 0.74, 0.66}, {0.72, 0.7, 0.66}, {0.55, 0.57, 0.62}, {0.72, 0.45, 0.34},
-                                    {0.45, 0.36, 0.25}, {0.5, 0.48, 0.45}, {0.35, 0.33, 0.3}};
+  static const f64 mat_col[11][3] = {{0.78, 0.74, 0.66}, {0.72, 0.7, 0.66}, {0.55, 0.57, 0.62}, {0.72, 0.45, 0.34},
+                                    {0.45, 0.36, 0.25}, {0.5, 0.48, 0.45}, {0.35, 0.33, 0.3}, {0.62, 0.42, 0.22},
+                                    {0.68, 0.66, 0.6},  {0.7, 0.85, 0.9},  {0.3, 0.26, 0.22}};
   parallel_for(H, 4, [&](i64 y0, i64 y1) {
     for (i64 y = y0; y < y1; ++y)
       for (int x = 0; x < W; ++x) {
@@ -72,7 +73,7 @@ void render(const Game& e, const V3& cam, const V3& look, int W, int H, const st
           c[2] = 0.86 * s + 0.12;
         } else {
           const V3 n = hit.normal;
-          const int m = std::clamp(hit.material, 0, 6);
+          const int m = std::clamp(hit.material, 0, 10);
           f64 base[3] = {mat_col[m][0], mat_col[m][1], mat_col[m][2]};
           if (hit.piece) {
             const u64 hsh = static_cast<u64>(hit.piece) * 0x9E3779B97F4A7C15ull;
@@ -291,6 +292,18 @@ int main(int argc, char** argv) {
     // from the street crossing south-west of the block
     if (!cam_set) cam = V3{ox - 3.0, oy - 3.0, 14.0};
     if (!look_set) look = V3{ox + 9.0, oy + 9.0, 5.0};
+  } else if (world == "yard") {
+    // a blast at each construction: a house post, the tower's foot, the greenhouse, a shed
+    // column, the reinforced wall
+    if (scenario != "none") {
+      shots.push_back({0.3, true, V3{h * 26, h * 26, 0.6}, 0.8, 5e5});
+      shots.push_back({0.6, true, V3{h * 150, h * 40, 0.8}, 1.0, 1e6});
+      shots.push_back({0.9, true, V3{h * 68, h * 139, 1.0}, 0.6, 3e5});
+      shots.push_back({1.2, true, V3{h * 151, h * 141, 1.0}, 0.8, 1e6});
+      shots.push_back({1.5, true, V3{h * 270, h * 39, 1.2}, 0.7, 1e6});
+    }
+    if (!cam_set) cam = V3{20.0, -12.0, 16.0};
+    if (!look_set) look = V3{20.0, 12.0, 2.0};
   } else if (world == "rooms") {
     if (scenario != "none") {
       shots.push_back({0.3, true, V3{h * 51, h * 23, 1.5}, 1.0, 1e6});
