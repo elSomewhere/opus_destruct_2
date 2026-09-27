@@ -122,6 +122,9 @@ export class Game {
       get alive() {
         return player.active && self.playerHealth > 0;
       },
+      get threat() {
+        return !player.noclip;
+      },
       eye: () => player.eye(),
       chest: () => {
         const e = player.eye();
@@ -133,6 +136,12 @@ export class Game {
       carve: (pos, r) => this.engine.carve(pos, r),
       impact: (pos, normal) => this.effects.bulletImpact({ pos, normal, distance: 0, material: Material.Concrete }),
       hurtPlayer: (d) => this.hurtPlayer(d),
+      pushPlayer: (v) => {
+        if (!player.active || player.noclip) return;
+        player.vel[0] += v[0];
+        player.vel[1] += v[1];
+        player.vel[2] += v[2];
+      },
       muzzleFlash: (pos, dir) => {
         this.effects.light(pos, 1.1);
         for (let k = 0; k < 4; k++) {
@@ -478,6 +487,13 @@ export class Game {
         this.applyCharState();
       },
       actorWorld: () => this.actors,
+      brawl: (a, b) => {
+        const x = this.actors.actors.find((t) => t.id === a);
+        const y = this.actors.actors.find((t) => t.id === b);
+        if (!x || !y || !x.char.alive || !y.char.alive) return false;
+        this.actors.startBrawl(x, y);
+        return true;
+      },
       state: () => ({
         ready: this.info !== null,
         player: [...this.player.pos],
@@ -511,6 +527,8 @@ export interface StructvoxDebugApi {
   /** Character settings: AI, god mode, animation style. */
   characters(st: Partial<CharacterPanelState>): void;
   actorWorld(): ActorWorld;
+  /** Starts a fist (or knife) fight between two characters by id. */
+  brawl(a: number, b: number): boolean;
   state(): {
     ready: boolean;
     player: number[];

@@ -430,8 +430,11 @@ export class HumanoidAnimator {
       const local = qrotate(qconj(q), vsub(info.point, this.world.p[bone]!));
       c.rest = vadd(this.skeleton.restHead[bone]!, local);
     }
-    // a strong hit interrupts what the body was doing
+    // a hit interrupts what the body was doing (idle postures at once, actions if it is hard)
     if (info.force > 0.8 && this.act && !this.act.def.name.startsWith('block')) this.act.stop();
+    if (this.poseAct && this.poseAct.def.name !== 'guard') this.poseAct.stop();
+    this.idleTime = 0;
+    this.nextIdlePose = 4 + this.rng.next() * 4;
     if (this.reactions.down && this.stanceTo !== 'down') {
       this.downBack = this.reactions.down.back;
       this.reactions.down = null;
@@ -447,13 +450,16 @@ export class HumanoidAnimator {
     this.hitAt({ point: [p[0], p[1], p[2]], dir: [dir[0], dir[1], dir[2]], force: strength, kind: 'bullet', bone });
   }
 
-  /** Knocked down: falls (backwards or forwards) and gets up after a while. */
-  knockDown(back: boolean): void {
+  /**
+   * Knocked down: falls (backwards or forwards) and gets up after a while (`seconds` on the
+   * ground: longer for a knockout).
+   */
+  knockDown(back: boolean, seconds = 1.4 + this.rng.next() * 1.4): void {
     this.downBack = back;
     this.stanceQueue.length = 0;
     this.act?.stop();
     this.beginTransition('down');
-    this.downTimer = 1.4 + this.rng.next() * 1.4;
+    this.downTimer = seconds;
     this.downState = true;
   }
 
@@ -796,7 +802,33 @@ export class HumanoidAnimator {
     pose.reset();
     const shiftR = R.shift.x;
     const impactZ = this.impact.x;
-    vcopy([S.pelvisPos[0] + add('pelvis', 0) * k + shiftR[0], S.pelvisPos[1] + add('pelvis', 1) * k + shiftR[1], S.pelvisPos[2] + add('pelvis', 2) * k + shiftR[2] + impactZ], pose.t[H.pelvis]);
+    // a strike at a target out of reach steps into it: the pelvis drives forward with the blow
+    // (a punch also leans the trunk in, a kick thrusts the hips)
+    let lunge = 0;
+    let lungeLean = 0;
+    const lungeDir: V3 = [0, 0, 0];
+    const act = this.act;
+    if (chA && act?.target && act.def.reach) {
+      const tm = toModel(act.target);
+      const h = Math.hypot(tm[0], tm[1]);
+      if (h > 1e-3) {
+        const kick = chA.strikeFootR !== undefined || chA.strikeFootL !== undefined;
+        const s = clamp(Math.max(chA.strikeR?.[0] ?? 0, chA.strikeL?.[0] ?? 0, chA.strikeFootR?.[0] ?? 0, chA.strikeFootL?.[0] ?? 0), 0, 1);
+        const need = clamp(h - act.def.reach * k, 0, 0.36 * k) * s * wA;
+        lunge = need * (kick ? 1 : 0.75);
+        lungeLean = kick ? 0 : need * 1.4;
+        lungeDir[0] = tm[0] / h;
+        lungeDir[1] = tm[1] / h;
+      }
+    }
+    vcopy(
+      [
+        S.pelvisPos[0] + add('pelvis', 0) * k + shiftR[0] + lungeDir[0] * lunge,
+        S.pelvisPos[1] + add('pelvis', 1) * k + shiftR[1] + lungeDir[1] * lunge,
+        S.pelvisPos[2] + add('pelvis', 2) * k + shiftR[2] + impactZ - lunge * 0.15,
+      ],
+      pose.t[H.pelvis],
+    );
     const pr: V3 = [add('pelvisRot', 0), add('pelvisRot', 1), add('pelvisRot', 2)];
     pose.r[H.pelvis] = qmul(S.pelvisRot, qeuler(pr[0] * DEG, pr[1] * DEG, pr[2] * DEG));
 
@@ -817,17 +849,19 @@ export class HumanoidAnimator {
     this.leanS.update(clamp(inp.lean, -1, 1), dt);
     const aw = this.aimW.x;
     const rifle = this.weapon !== null && this.weapon.kind !== 'pistol' && this.weapon.kind !== 'knife';
-    const blade = aw * (rifle && inp.carry === 'aim' ? 0.3 : 0);
+    // a long gun bladed: the trunk turns off the target (from the hip more, so the support hand
+    // reaches the handguard)
+    const blade = aw * (rifle ? (inp.carry === 'aim' ? 0.3 : inp.carry === 'hip' ? 0.5 : 0) : 0);
     const turn = S.turn;
     const trunkYaw = ((aiming || (tgt && inp.carry !== 'relaxed')) && tgt ? this.aimYaw.x - pelvisYaw * standW - blade : 0) * turn;
     const trunkPitch = (tgt && (aiming || inp.carry !== 'relaxed') ? this.aimPitch.x * lerp(0.55, 0.75, aw) : 0) * turn;
     // peeking: the trunk leans out sideways (the head stays upright)
     const peek = this.leanS.x * 0.3;
-    const fold = R.fold.x * 0.55;
+    const fold = R.fold.x * 0.8;
     const sp: V3 = [add('spine', 0) * DEG, add('spine', 1) * DEG, add('spine', 2) * DEG];
     const ch: V3 = [add('chest', 0) * DEG, add('chest', 1) * DEG, add('chest', 2) * DEG];
-    pose.r[H.spine] = qmul(qmul(qeuler(trunkPitch * 0.3 - fold * 0.55, peek * 0.55, trunkYaw * 0.35), S.spine), qeuler(sp[0], sp[1], sp[2]));
-    pose.r[H.chest] = qmul(qmul(qeuler(trunkPitch * 0.45 - fold * 0.45, peek * 0.45, trunkYaw * 0.45), S.chest), qeuler(ch[0], ch[1], ch[2]));
+    pose.r[H.spine] = qmul(qmul(qeuler(trunkPitch * 0.3 - fold * 0.55 - lungeLean * 0.5 * lungeDir[1], peek * 0.55 + lungeLean * 0.5 * lungeDir[0], trunkYaw * 0.35), S.spine), qeuler(sp[0], sp[1], sp[2]));
+    pose.r[H.chest] = qmul(qmul(qeuler(trunkPitch * 0.45 - fold * 0.45 - lungeLean * 0.5 * lungeDir[1], peek * 0.45 + lungeLean * 0.5 * lungeDir[0], trunkYaw * 0.45), S.chest), qeuler(ch[0], ch[1], ch[2]));
     if (inp.lean !== 0 || Math.abs(this.leanS.x) > 0.01) pose.t[H.pelvis]![0] += this.leanS.x * 0.07 * k;
     this.fk.update(pose, 0);
     // hit reactions of the trunk (model-space springs)
@@ -881,10 +915,16 @@ export class HumanoidAnimator {
         let a = tuple(chA[`foot${side}` as 'footR'], target);
         a = [a[0] * k, a[1] * k, a[2] * k];
         const s = chA[`strikeFoot${side}` as 'strikeFootR']?.[0] ?? 0;
-        if (s > 0 && this.act?.target) a = vlerp(a, toModel(this.act.target), clamp(s, 0, 1.2));
+        // the foot's pitch in the air: pointed, or toes up for a push kick at the strike
+        const kickRot = qx(lerp(-0.6, this.act?.def.kickPitch ?? -0.6, clamp(s, 0, 1)));
+        if (s > 0 && this.act?.target) {
+          // the striking part of the foot (the toes' end) meets the target
+          const toeOff = qrotate(kickRot, vsub(this.skeleton.restTail[f.toe]!, this.skeleton.restHead[f.foot]!));
+          a = vlerp(a, vsub(toModel(this.act.target), toeOff), clamp(s, 0, 1.2));
+        }
         target = vlerp(target, a, fw);
         pole = vlerp(pole, [0.1 * f.side, 1, 0.4], fw);
-        rot = qnlerp(rot, qx(-0.6), fw);
+        rot = qnlerp(rot, kickRot, fw);
       }
       solveTwoBone(pose, this.fk, f.thigh, f.shin, f.foot, target, pole, 0.02);
       setModelRotation(pose, this.fk, f.foot, rot);
@@ -1415,13 +1455,15 @@ export class HumanoidAnimator {
     } else {
       const relaxedRot = qmul(chestYawQ, qeuler(-0.95, 0.15, 0.55));
       const relaxedGrip = vadd(chestP, qrotate(chestYawQ, [0.13 * k, 0.2 * k, -0.2 * k]));
-      const readyRot = qmul(aimRot, qeuler(-0.5, 0, 0.3));
-      const readyStock = vadd(pocket, qrotate(chestQ, [0.01 * k, 0.0, -0.05 * k]));
+      // (a heavy machine gun is carried across the body, lower)
+      const heavy = prop.kind === 'lmg';
+      const readyRot = qmul(aimRot, qeuler(heavy ? -0.32 : -0.5, 0, heavy ? 0.45 : 0.3));
+      const readyStock = vadd(pocket, qrotate(chestQ, heavy ? [0.01 * k, -0.12 * k, -0.1 * k] : [0.01 * k, 0.0, -0.05 * k]));
       const readyGrip = vsub(readyStock, qrotate(readyRot, prop.stock));
       const aimGrip = vsub(pocket, qrotate(aimRot, prop.stock));
       // hip fire: stock under the arm, level at the target (machine guns on the move)
       const hipRot = qnlerp(aimRot, frameRotation([0, 1, 0], [0, 0, 1], vnorm([aimDir[0], aimDir[1], aimDir[2] * 0.5]), [0, 0, 1]), 0.5);
-      const hipGrip = vadd(chestP, qrotate(chestYawQ, [0.15 * k, 0.26 * k, -0.2 * k]));
+      const hipGrip = vadd(chestP, qrotate(chestYawQ, [0.13 * k, 0.2 * k, -0.2 * k]));
       const portRot = qmul(chestYawQ, frameRotation([0, 1, 0], [0, 0, 1], vnorm([-0.55, 0.3, 0.78]), vnorm([0.1, 1, 0.1])));
       const portGrip = vadd(chestP, qrotate(chestYawQ, [0.12 * k, 0.2 * k, -0.08 * k]));
       rot = qnlerp(relaxedRot, readyRot, rw);

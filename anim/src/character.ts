@@ -87,6 +87,8 @@ export class Character {
   readonly skin: Float32Array;
   /** Hit flash 0..1 (the host tints the character). */
   flash = 0;
+  /** Beaten unconscious (a melee knockout): down until the animator gets it back up. */
+  knockedOut = false;
   /** Seconds since death. */
   deadTime = 0;
   retro: RetroSet | null;
@@ -144,9 +146,13 @@ export class Character {
     if (this.ragdoll) {
       this.deadTime += dt;
       this.ragdoll.update(dt);
-    } else this.animator.update(dt);
+    } else {
+      this.animator.update(dt);
+      if (this.knockedOut && !this.animator.knockedDown) this.knockedOut = false;
+    }
     this.pose.writeSkin(this.skin);
     if (this.retro) this.updateRetro(dt);
+    else this.retroFrame = null;
   }
 
   private updateRetro(dt: number): void {
@@ -157,15 +163,27 @@ export class Character {
       this.retroFrame = null;
       return;
     }
-    this.retroPlayer ??= new RetroPlayer(this.retro!);
+    // (a new set when the character changes what it holds)
+    if (this.retroPlayer?.set !== this.retro) this.retroPlayer = new RetroPlayer(this.retro!);
     const speed = Math.hypot(a.velocity[0], a.velocity[1]);
+    const inp = a.input;
     const state = retroStateOf({
       speed,
-      crouch: a.input.crouch,
-      aiming: a.weapon !== null && a.input.carry === 'aim' && a.input.aimAt !== null,
+      crouch: inp.crouch,
+      aiming: a.weapon !== null && (inp.carry === 'aim' || inp.carry === 'hip') && inp.aimAt !== null,
       firing: this.firing > 0,
-      mood: a.input.mood,
+      mood: inp.mood,
       pain: this.pain > 0,
+      stance: a.stance,
+      talk: inp.talk,
+      guard: inp.guard,
+      action: a.actionName,
+      weapon: a.weapon?.kind ?? null,
+      carry: inp.carry,
+      lean: inp.lean,
+      knockedDown: a.knockedDown,
+      transitioning: a.transitioning,
+      desk: inp.seat?.deskHeight !== undefined,
     });
     const seq = this.retroPlayer.sequence(state);
     const rate = seq.speed > 0 ? Math.max(0.3, speed / seq.speed) : 1;
@@ -243,7 +261,7 @@ export class Character {
     }
     const bone = this.animator.nearestBone(point);
     const mult = kind === 'blade' ? (ZONE[bone] ?? 0.6) * 1.2 : bone === H.head || bone === H.neck ? 1.6 : bone === H.spine ? 1.2 : 0.8;
-    res.damage = (kind === 'blade' ? 30 : 11) * force * mult;
+    res.damage = (kind === 'blade' ? 22 : 6) * force * mult;
     res.headshot = bone === H.head || bone === H.neck;
     if (kind === 'blade') {
       // a cut: a thin slice of the body opens
@@ -257,9 +275,17 @@ export class Character {
       res.gibs.push(...this.severAfterDamage(bone, dir));
     }
     this.flash = kind === 'blade' ? 1 : 0.6;
-    this.health -= res.damage;
+    // fists and feet knock people out rather than kill them: a beaten body stays down a while
+    const knockout = kind === 'blunt' && (this.health - res.damage <= 0 || (this.health - res.damage < this.maxHealth * 0.3 && res.headshot && force >= 1.2));
+    this.health = kind === 'blunt' ? Math.max(1, this.health - res.damage) : this.health - res.damage;
     res.zone = this.animator.hitAt({ point: [point[0], point[1], point[2]], dir: [dir[0], dir[1], dir[2]], force: kind === 'blade' ? force * 0.8 : force, kind, bone });
     this.pain = 0.3;
+    if (knockout) {
+      this.knockedOut = true;
+      const d = vnorm(dir);
+      const yaw = this.animator.rootYaw;
+      this.animator.knockDown(d[0] * Math.cos(yaw) + d[1] * Math.sin(yaw) < 0.3, 6 + Math.random() * 5);
+    }
     if (this.health <= 0) {
       this.die(point, vscale(vnorm(dir), 1.5 * force));
       res.killed = true;
@@ -335,10 +361,12 @@ export class Character {
     if (!prop) return null;
     this.weapon = null;
     this.animator.weapon = null;
+    const part = prop.model.parts[0];
+    if (!part || part.count === 0) return null;
     const a = this.animator;
     const v = vsub(a.world.p[H.chest]!, a.prevWorld.p[H.chest]!);
     return {
-      part: prop.model.parts[0]!,
+      part,
       voxelSize: prop.model.voxelSize,
       bonePos: vcopy(a.weaponPos),
       boneRot: [...a.weaponRot] as Quat,

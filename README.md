@@ -27,11 +27,16 @@ wall panels and blocks that settles and sleeps.
 - **Game ↔ front-end contract:** [`docs/API.md`](docs/API.md).
 - **Characters:** [`docs/ANIM.md`](docs/ANIM.md). svx_anim (`anim/`) is a voxel character
   animation engine, as decoupled as the physics core. It covers procedural locomotion with
-  planted feet, IK weapon handling, soldiers and civilians sculpted from voxels, voxel-exact
-  wounds and severed limbs, ragdolls, gibs, blood, and a retro (Voxel Doom style) presentation.
-  The game populates its worlds with soldiers who fight the player and civilians who flee; the
-  rounds carve the world, so the battle destroys the level. The animation lab (`/lab.html`)
-  runs the characters without the physics engine.
+  planted feet and personal gait styles, stances (kneeling, prone, sitting, on the ground,
+  knocked down), keyframed actions steering IK (punches, kicks, knife attacks, reloads,
+  gestures, idle poses), weapon handling (rifles, SMGs, machine guns, pistols, knives), hit
+  reactions by where a blow lands, fight choreography, soldiers and civilians sculpted from
+  voxels, voxel-exact wounds and severed limbs, ragdolls, gibs, blood, and a retro (Voxel Doom
+  style) presentation baked from the smooth animation. In the game, civilians live a day in the
+  city (strolling, talking, sitting on benches, the occasional brawl) and flee the fighting;
+  soldiers fight the player from cover, kneeling or prone; the rounds carve the world, so the
+  battle destroys the level. The animation lab (`/lab.html`) runs the characters without the
+  physics engine.
 - **v1** (the bubble/lattice engine this version replaces): [`docs/v1/`](docs/v1) (plan, status,
   phase reports).
 

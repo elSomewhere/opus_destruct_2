@@ -55,6 +55,14 @@ export interface ActionDef {
   layer?: 'pose' | 'act';
   /** Aimed at a target point (strikes). */
   targeted?: boolean;
+  /**
+   * How far (m, horizontally from the root, at body scale 1) the strike lands without moving
+   * in: a target further away makes the body step into it (the pelvis drives forward with the
+   * strike; punches also lean the trunk in).
+   */
+  reach?: number;
+  /** Kicks: the foot's pitch (rad) at the strike (-0.6 pointed, >0 toes up: a push kick). */
+  kickPitch?: number;
   /** Needs a prop in the right hand ('knife'). */
   prop?: 'knife';
 }
@@ -204,6 +212,7 @@ const A: ActionDef[] = [
     // lead-hand jab: fast out, fast back
     name: 'jab',
     targeted: true,
+    reach: 0.7,
     duration: 0.42,
     fadeIn: 0.04,
     fadeOut: 0.12,
@@ -222,6 +231,7 @@ const A: ActionDef[] = [
     // rear-hand cross: the hip turns it over
     name: 'cross',
     targeted: true,
+    reach: 0.68,
     duration: 0.55,
     fadeIn: 0.05,
     fadeOut: 0.15,
@@ -241,6 +251,7 @@ const A: ActionDef[] = [
     // lead hook: elbow up, fist sweeps round from the side
     name: 'hook',
     targeted: true,
+    reach: 0.58,
     duration: 0.6,
     fadeIn: 0.05,
     fadeOut: 0.15,
@@ -260,6 +271,7 @@ const A: ActionDef[] = [
     // rear uppercut: dip, then drive up through the target
     name: 'uppercut',
     targeted: true,
+    reach: 0.58,
     duration: 0.65,
     fadeIn: 0.05,
     fadeOut: 0.15,
@@ -279,6 +291,8 @@ const A: ActionDef[] = [
     // rear-leg front (push) kick: chamber, extend, retract, plant
     name: 'frontKick',
     targeted: true,
+    reach: 0.8,
+    kickPitch: 0.35,
     duration: 0.85,
     fadeIn: 0.08,
     fadeOut: 0.15,
@@ -298,6 +312,8 @@ const A: ActionDef[] = [
     // rear-leg roundhouse: the hip turns over, the shin sweeps round
     name: 'roundhouse',
     targeted: true,
+    reach: 0.78,
+    kickPitch: -0.9,
     duration: 0.95,
     fadeIn: 0.08,
     fadeOut: 0.15,
@@ -318,6 +334,7 @@ const A: ActionDef[] = [
     // knife thrust
     name: 'stab',
     targeted: true,
+    reach: 0.66,
     prop: 'knife',
     duration: 0.62,
     fadeIn: 0.06,
@@ -340,6 +357,7 @@ const A: ActionDef[] = [
     // knife slash: a backhand arc across the target
     name: 'slash',
     targeted: true,
+    reach: 0.62,
     prop: 'knife',
     duration: 0.62,
     fadeIn: 0.06,
@@ -359,6 +377,7 @@ const A: ActionDef[] = [
     // shove / rifle jab: both hands (or the weapon) driven forward
     name: 'riflePush',
     targeted: true,
+    reach: 0.7,
     duration: 0.55,
     fadeIn: 0.05,
     fadeOut: 0.15,

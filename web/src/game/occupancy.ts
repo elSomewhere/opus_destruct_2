@@ -22,6 +22,12 @@ interface ChunkOcc {
 export class OccupancyStore {
   private readonly chunks = new Map<number, ChunkOcc>();
   private h = 0.125;
+  /** Bumped whenever the occupancy changes (caches built on it compare it). */
+  version = 0;
+  /** Recent changes: chunk columns (x, y) by version, oldest first (see changedSince). */
+  private readonly log: { version: number; cx: number; cy: number }[] = [];
+  /** Changes before this version are no longer in the log. */
+  private logFrom = 0;
 
   /** True once the engine has sent occupancy for the current world. */
   get ready(): boolean {
@@ -34,10 +40,31 @@ export class OccupancyStore {
 
   clear(): void {
     this.chunks.clear();
+    this.version++;
+    this.log.length = 0;
+    this.logFrom = this.version;
+  }
+
+  /**
+   * The chunk columns (x, y chunk coordinates) changed after `version`, or null when that is
+   * too long ago to tell (then everything may have changed).
+   */
+  changedSince(version: number): { cx: number; cy: number }[] | null {
+    if (version < this.logFrom) return null;
+    const out: { cx: number; cy: number }[] = [];
+    for (let i = this.log.length - 1; i >= 0 && this.log[i]!.version > version; i--) out.push(this.log[i]!);
+    return out;
   }
 
   apply(msg: OccupancyMessage): void {
     this.h = msg.voxelSize;
+    if (msg.chunks.length > 0) this.version++;
+    for (const c of msg.chunks) this.log.push({ version: this.version, cx: c.chunk[0], cy: c.chunk[1] });
+    if (this.log.length > 8192) {
+      const drop = this.log.length - 4096;
+      this.logFrom = this.log[drop - 1]!.version;
+      this.log.splice(0, drop);
+    }
     for (const c of msg.chunks) {
       const key = chunkKey(c.chunk[0], c.chunk[1], c.chunk[2]);
       if (c.state === 0) this.chunks.delete(key);

@@ -33,17 +33,17 @@ export interface HitInfo {
 
 /** Spring frequency and damping per bone: heavy segments answer slower. */
 const TUNING: Partial<Record<number, [number, number]>> = {
-  [H.pelvis]: [10, 0.5],
-  [H.spine]: [11, 0.45],
-  [H.chest]: [12, 0.42],
-  [H.neck]: [15, 0.38],
-  [H.head]: [17, 0.36],
-  [H.clavicleL]: [15, 0.5],
-  [H.clavicleR]: [15, 0.5],
-  [H.upperarmL]: [12, 0.38],
-  [H.upperarmR]: [12, 0.38],
-  [H.forearmL]: [14, 0.36],
-  [H.forearmR]: [14, 0.36],
+  [H.pelvis]: [7.5, 0.55],
+  [H.spine]: [8, 0.5],
+  [H.chest]: [8.5, 0.48],
+  [H.neck]: [10, 0.45],
+  [H.head]: [11.5, 0.42],
+  [H.clavicleL]: [11, 0.5],
+  [H.clavicleR]: [11, 0.5],
+  [H.upperarmL]: [8.5, 0.42],
+  [H.upperarmR]: [8.5, 0.42],
+  [H.forearmL]: [10, 0.4],
+  [H.forearmR]: [10, 0.4],
 };
 
 /** Bones whose offsets are applied, top-down. */
@@ -106,60 +106,63 @@ export class Reactions {
       const s = this.springs.get(b);
       if (s) s.kick(axis, speed);
     };
-    // angular impulse about the struck bone's joint: r x dir
-    const r = vsub(point, joint(bone));
-    let axis = vcross(r, d);
-    if (vlen(axis) < 1e-3) axis = vcross([0, 0, 1], d);
-    const lever = clamp(vlen(r) * 4, 0.3, 1.5);
-    axis = vnorm(axis);
+    // angular impulse about the struck bone's joint: the torque r x dir (a blow through the
+    // joint turns nothing; the further off it lands, the more it turns the bone)
+    const torque = vcross(vsub(point, joint(bone)), d);
+    const lever = clamp(vlen(torque) * 4, 0, 1.5);
+    const axis = vnorm(torque, [1, 0, 0]);
     // the trunk is always pushed the way the blow travels (about its base)
     const tilt = vnorm(vcross([0, 0, 1], d), [1, 0, 0]);
-    const kindGain = kind === 'blunt' ? 1.25 : kind === 'blade' ? 0.6 : kind === 'blast' ? 1.4 : 1;
+    const kindGain = kind === 'blunt' ? 1.15 : kind === 'blade' ? 0.6 : kind === 'blast' ? 1.4 : 1;
     const g = f * kindGain;
     // propagate up the chain: the struck bone fully, parents less
     let b = bone;
     let w = 1;
     for (let k = 0; k < 5 && b >= 0; k++) {
-      if (this.springs.has(b)) kick(b, axis, 3.2 * g * lever * w);
+      if (this.springs.has(b)) kick(b, axis, 3.5 * g * lever * w);
       b = sk.parents[b]!;
       w *= 0.5;
     }
-    let kb = kind === 'bullet' ? 0.35 : kind === 'blunt' ? 0.8 : kind === 'blade' ? 0.2 : 2.2;
+    let kb = kind === 'bullet' ? 1.0 : kind === 'blunt' ? 1.2 : kind === 'blade' ? 0.35 : 2.6;
     switch (zone) {
       case 'head':
-        kick(H.head, tilt, 9 * g);
-        kick(H.neck, tilt, 5 * g);
+        kick(H.head, tilt, 6 * g);
+        kick(H.neck, tilt, 2.2 * g);
         kick(H.chest, tilt, 1.2 * g);
+        kick(H.spine, tilt, 0.5 * g);
         kb *= 0.8;
         break;
       case 'chest':
-        kick(H.chest, tilt, 4.5 * g);
-        kick(H.spine, tilt, 2.5 * g);
-        kick(H.pelvis, tilt, 0.8 * g);
+        kick(H.chest, tilt, 2 * g);
+        kick(H.spine, tilt, 1.2 * g);
+        kick(H.pelvis, tilt, 0.4 * g);
         // whiplash: the head lags
-        kick(H.neck, tilt, -1.8 * g);
-        kick(H.head, tilt, -1.4 * g);
+        kick(H.neck, tilt, -1.2 * g);
+        kick(H.head, tilt, -1 * g);
         break;
       case 'gut':
         // the body folds over the blow, whatever its direction
-        this.fold.kick(3.5 * g);
-        kick(H.spine, tilt, 2 * g);
+        this.fold.kick(11 * g);
+        kick(H.spine, tilt, 1.5 * g);
         kick(H.head, tilt, -1.5 * g);
         this.pain = Math.min(1, this.pain + 0.25 * g);
         break;
       case 'pelvis':
-        kick(H.pelvis, tilt, 3 * g);
-        kick(H.spine, tilt, -1.2 * g);
+        kick(H.pelvis, tilt, 2.5 * g);
+        kick(H.spine, tilt, -1 * g);
         break;
       case 'armL':
       case 'armR': {
         const side = zone === 'armL' ? 'L' : 'R';
         const ua = side === 'L' ? H.upperarmL : H.upperarmR;
         const fa = side === 'L' ? H.forearmL : H.forearmR;
-        kick(ua, axis, 6 * g);
-        kick(fa, axis, 7 * g);
-        kick(H.chest, vnorm(vcross([0, 0, 1], d)), 1.5 * g);
-        if (side === 'R') this.aimOff.kick(4 * g);
+        kick(ua, axis, 11 * g);
+        kick(fa, axis, 12 * g);
+        // the shoulder is spun back by the round
+        kick(side === 'L' ? H.clavicleL : H.clavicleR, axis, 8 * g);
+        kick(H.chest, [0, 0, side === 'L' ? -1 : 1], 4.5 * g * (d[1] < 0 ? 1 : -1));
+        kick(H.spine, [0, 0, side === 'L' ? -1 : 1], 2 * g * (d[1] < 0 ? 1 : -1));
+        if (side === 'R') this.aimOff.kick(6 * g);
         kb *= 0.6;
         break;
       }
@@ -167,9 +170,10 @@ export class Reactions {
       case 'legR': {
         const leg = zone === 'legL' ? 0 : 1;
         // the leg gives way: the pelvis drops over the buckling knee, rolling to that side
-        this.shift.kick([0, 0, -1.2 * g]);
-        kick(H.pelvis, [0, leg === 0 ? -1 : 1, 0], 2.5 * g);
-        kick(H.spine, [0, leg === 0 ? 1 : -1, 0], 1.2 * g);
+        this.shift.kick([0, 0, -2 * g]);
+        kick(H.pelvis, [0, leg === 0 ? -1 : 1, 0], 4 * g);
+        kick(H.spine, [0, leg === 0 ? 1 : -1, 0], 2 * g);
+        kick(H.chest, tilt, -1.5 * g);
         this.limp[leg] = Math.min(1, this.limp[leg] + (kind === 'blunt' ? 0.1 : 0.35) * f);
         kb *= 0.5;
         break;
@@ -201,7 +205,7 @@ export class Reactions {
     this.shift.update([0, 0, 0], dt);
     this.fold.update(this.pain * 0.5, dt);
     this.aimOff.update(0, dt);
-    const decay = Math.exp(-dt * 5);
+    const decay = Math.exp(-dt * 3.5);
     this.knockback[0] *= decay;
     this.knockback[1] *= decay;
     this.pain = Math.max(0, this.pain - dt * 0.06);

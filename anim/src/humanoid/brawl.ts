@@ -96,7 +96,7 @@ export class Brawler {
     a.input.guard = !oDown || d < 2.5;
     a.input.lookAt = o.animator.eyes();
     if (a.knockedDown) return;
-    const want = oDown ? 1.7 : this.knife ? 0.85 : this.lastStrike === 'frontKick' || this.lastStrike === 'roundhouse' ? 1.15 : 0.98;
+    const want = oDown ? 1.7 : this.knife ? 0.82 : this.lastStrike === 'frontKick' || this.lastStrike === 'roundhouse' ? 1.08 : 0.92;
     // close or open the distance, circle to the side
     this.circleT -= dt;
     if (this.circleT <= 0) {

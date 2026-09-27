@@ -57,9 +57,14 @@ Soldiers and civilians are svx_anim characters (`../anim`, [docs/ANIM.md](../doc
 - `actors.ts`: ActorWorld handles population, movement on the engine's occupancy, combat
   (hitscan rounds that hit characters voxel-exact, the player, or the world, where they carve
   it), wounds, severed limbs, gibs, blood, crushing by debris, and drawing (smooth or retro).
-- `brain.ts`: soldier and civilian behaviour.
-- `nav.ts`: A* on standable cells found from the occupancy.
-- `cast.ts`: models, palettes, meshes and retro frame sets.
+- `brain.ts`: soldier behaviour (patrol, alert, combat from cover, kneeling or prone, corner
+  peeks, reloads, melee) and civilian life (strolling, waiting, conversations, benches,
+  sitting on the ground, jogging, watching fights, brawls, fleeing, cowering, surrendering,
+  armed civilians shooting back).
+- `nav.ts`: A* on standable cells found from the occupancy (straight lines without search,
+  ground queries cached per chunk column).
+- `cast.ts`: models, palettes, gait styles, loadouts and weapon stats, benches, meshes and
+  retro frame sets.
 - `env.ts`: the CollisionWorld over the occupancy.
 
 `src/render/characters.ts` draws the svx_anim meshes (rigid skinning from a storage buffer of
@@ -68,9 +73,13 @@ bone matrices), plus decals (blob shadows, blood) and instanced voxel bits.
 - URL parameters: `?civilians=N&soldiers=M`, `?actors=0`, `?god=1`,
   `?anim=smooth|retro|retro-chunky`.
 - The settings panel has a Characters section.
-- `window.__structvox` adds `spawn`, `spawnAt`, `actors`, `characters` and `actorWorld`.
-- `lab.html` (`src/lab/`) is the animation lab: a test course with a scripted cast. Click to
-  shoot, shift-click for a rocket; there's a smooth / retro switch and time scale.
+- `window.__structvox` adds `spawn`, `spawnAt`, `actors`, `characters`, `actorWorld` and
+  `brawl(idA, idB)`.
+- `lab.html` (`src/lab/`) is the animation lab: a test course with a scripted cast in groups
+  (city life, soldiers, fights, reactions) and camera bookmarks. Click to shoot, shift-click
+  for a rocket; there's a smooth / retro switch, time scale and follow.
+- `scripts/shot.mjs` takes scripted screenshots (`SHOT_READY` for pages other than the game,
+  such as the lab).
 - `scripts/smoke-actors.mjs` is the characters' browser smoke test.
 
 ## Architecture

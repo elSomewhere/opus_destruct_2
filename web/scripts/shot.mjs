@@ -4,6 +4,7 @@
  * optional script (steps separated by ';;', each evaluated in the page, with waits `wait:MS`)
  * and saves screenshots (`shot:NAME`). Prints console errors.
  * Usage: node scripts/shot.mjs URL OUTDIR "step;;wait:500;;shot:a;;..."
+ * SHOT_READY=EXPR waits for another condition (e.g. the lab: "window.__lab?.actors.length > 0").
  */
 import { execFileSync } from 'node:child_process';
 import { mkdirSync } from 'node:fs';
@@ -39,10 +40,13 @@ try {
   const t0 = Date.now();
   for (;;) {
     const ok = await page
-      .evaluate(() => {
-        const s = window.__structvox?.state();
-        return !!s && s.ready && s.render !== null && s.render.chunksDrawn > 0;
-      })
+      .evaluate(
+        process.env.SHOT_READY ??
+          (() => {
+            const s = window.__structvox?.state();
+            return !!s && s.ready && s.render !== null && s.render.chunksDrawn > 0;
+          }),
+      )
       .catch(() => false);
     if (ok) break;
     if (Date.now() - t0 > 90000) throw new Error('timed out waiting for the world');

@@ -104,24 +104,69 @@ class Heap {
   }
 }
 
+function columnKey(cx: number, cy: number): number {
+  return (cx + 32768) * 65536 + (cy + 32768);
+}
+
 export class Navigator {
   readonly world: WorldAccess;
   readonly opts: NavOptions;
   /** Searches run and nodes expanded (for the HUD). */
   searches = 0;
   expanded = 0;
+  /** Searches answered by a straight walkable line. */
+  straight = 0;
 
   constructor(world: WorldAccess, opts: Partial<NavOptions> = {}) {
     this.world = world;
     this.opts = { ...DEFAULTS, ...opts };
   }
 
-  /** Ground height of cell (ix, iy) reachable from height z, or null. */
+  /**
+   * Ground height of cell (ix, iy) reachable from height z, or null. Answers are kept across
+   * searches until the world's occupancy changes (each costs a few hundred voxel lookups).
+   */
   private stand(ix: number, iy: number, z: number, height: number): number | null {
+    const occ = this.world.occupancy;
+    if (occ.version !== this.cacheVersion) {
+      // forget the answers around what changed (a column and its neighbours: bodies are wide)
+      const changed = this.cacheVersion < 0 ? null : occ.changedSince(this.cacheVersion);
+      if (!changed || this.cachedCells > 600_000) {
+        this.cache.clear();
+        this.cachedCells = 0;
+      } else
+        for (const { cx, cy } of changed)
+          for (let dy = -1; dy <= 1; dy++)
+            for (let dx = -1; dx <= 1; dx++) {
+              const col = this.cache.get(columnKey(cx + dx, cy + dy));
+              if (!col) continue;
+              this.cachedCells -= col.size;
+              this.cache.delete(columnKey(cx + dx, cy + dy));
+            }
+      this.cacheVersion = occ.version;
+    }
     const c = this.opts.cell;
-    const p = this.world.standAt((ix + 0.5) * c, (iy + 0.5) * c, z, this.opts.step, this.opts.drop, this.opts.radius, height);
-    return p ? p[2] : null;
+    const x = (ix + 0.5) * c, y = (iy + 0.5) * c;
+    const chunk = this.world.h * 32;
+    const ck = columnKey(Math.floor(x / chunk), Math.floor(y / chunk));
+    let col = this.cache.get(ck);
+    if (!col) {
+      col = new Map();
+      this.cache.set(ck, col);
+    }
+    const k = ((ix + 32768) * 65536 + (iy + 32768)) * 1024 + ((Math.round(z / 0.125) + 256) & 511) * 2 + (height > 1.5 ? 1 : 0);
+    const have = col.get(k);
+    if (have !== undefined) return have;
+    const p = this.world.standAt(x, y, z, this.opts.step, this.opts.drop, this.opts.radius, height);
+    const v = p ? p[2] : null;
+    col.set(k, v);
+    this.cachedCells++;
+    return v;
   }
+  /** Answers of `stand` by chunk column. */
+  private readonly cache = new Map<number, Map<number, number | null>>();
+  private cachedCells = 0;
+  private cacheVersion = -1;
 
   findPath(from: Readonly<V3>, to: Readonly<V3>, maxNodes = this.opts.maxNodes, height = this.opts.height): NavPath | null {
     this.searches++;
@@ -131,6 +176,11 @@ export class Navigator {
     const nodes = new Map<number, Node>();
     const key = (ix: number, iy: number, z: number): number => ((ix + 32768) * 65536 + (iy + 32768)) * 512 + ((Math.round(z / 0.125) + 256) & 511);
     const z0 = this.stand(sx, sy, from[2] + 0.3, height) ?? from[2];
+    // open ground (most of a city's streets and squares): the straight line, no search
+    if (Math.hypot(to[0] - from[0], to[1] - from[1]) < 40 && this.walkable([from[0], from[1], z0], to, height)) {
+      this.straight++;
+      return { points: [[to[0], to[1], to[2]]], partial: false };
+    }
     const start: Node = { ix: sx, iy: sy, z: z0, g: 0, f: 0, parent: null, closed: false, heap: -1 };
     const hdist = (n: { ix: number; iy: number; z: number }): number => Math.hypot(n.ix - gx, n.iy - gy) * c + Math.abs(n.z - to[2]) * 0.5;
     start.f = hdist(start);

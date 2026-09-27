@@ -4,9 +4,12 @@ The voxel character animation engine of structvox, documented in [../docs/ANIM.m
 
 It covers:
 
-- skeletons, IK and springs;
-- procedural locomotion with planted feet;
-- weapon handling, moods and reactions;
+- skeletons, IK, springs and keyframe curves;
+- procedural locomotion with planted feet and personal gait styles;
+- stances (kneeling, prone, sitting, on the ground, knocked down) and their transitions;
+- actions: strikes, knife attacks, blocks, reloads, gestures, idle poses and fidgets;
+- weapon handling (rifles, SMGs, machine guns, pistols, knives) and moods;
+- hit reactions by where and how hard a blow lands, and fight choreography;
 - procedural voxel soldiers and civilians;
 - voxel-exact wounds and severing;
 - ragdolls, gibs and blood;
