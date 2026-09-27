@@ -29,7 +29,12 @@ namespace {
 // A streamed world's generator: the host's callback.
 class CallbackSource final : public ChunkSource {
  public:
-  CallbackSource(svxc_generate_fn fn, void* user, const IVec3& lo, const IVec3& hi) : fn_(fn), user_(user), lo_(lo), hi_(hi) {}
+  CallbackSource(svxc_generate_fn fn, void* user, const IVec3& lo, const IVec3& hi, i32 region)
+      : fn_(fn), user_(user), lo_(lo), hi_(hi), region_(std::max(1, region)) {}
+  u64 region(const IVec3& c) const override {
+    auto fdiv = [&](i32 a) { return a >= 0 ? a / region_ : -((-a + region_ - 1) / region_); };
+    return key3(fdiv(c[0]), fdiv(c[1]), 0);
+  }
   bool generate(const IVec3& c, std::vector<Vox>& out) const override {
     out.assign(kChunkVox, kAir);
     return fn_ && fn_(user_, c[0], c[1], c[2], out.data()) != 0;
@@ -41,6 +46,7 @@ class CallbackSource final : public ChunkSource {
   svxc_generate_fn fn_;
   void* user_;
   IVec3 lo_, hi_;
+  i32 region_;
 };
 
 // Tunables by name: a field of WorldConfig (config) or WorldParams (params).
@@ -128,6 +134,11 @@ const Field kFields[] = {
     SVXC_INT("rigid.manifold", rigid.manifold),
     SVXC_F64("rigid.manifold_per_m", rigid.manifold_per_m),
     SVXC_F64("rigid.kill_depth", rigid.kill_depth),
+    SVXC_F64("memory.fragment_cache_mb", memory.fragment_cache_mb),
+    SVXC_F64("memory.structure_mb", memory.structure_mb),
+    SVXC_F64("memory.piece_mb", memory.piece_mb),
+    SVXC_F64("memory.cache_mb", memory.cache_mb),
+    SVXC_I32("memory.max_events", memory.max_events),
 };
 #undef SVXC_F64
 #undef SVXC_I32
@@ -312,18 +323,34 @@ void svxc_load_box(svxc_world* w, const uint8_t* vox, int nx, int ny, int nz, in
 
 int svxc_bake(svxc_world* w) { return w && w->w.bake() ? 1 : 0; }
 
-void svxc_enable_streaming(svxc_world* w, svxc_generate_fn fn, void* user, const int lo[3], const int hi[3], double load_radius,
-                           double evict_radius, int chunks_per_tick, double max_resident_mb) {
+svxc_stream svxc_stream_defaults(void) {
+  const StreamConfig d;
+  svxc_stream c;
+  c.load_radius = d.load_radius;
+  c.evict_radius = d.evict_radius;
+  c.chunks_per_tick = d.chunks_per_tick;
+  c.max_resident_mb = d.max_resident_mb;
+  c.archive_mb = d.archive_mb;
+  c.forget_after_s = d.forget_after_s;
+  c.region_chunks = 8;
+  return c;
+}
+
+void svxc_enable_streaming(svxc_world* w, svxc_generate_fn fn, void* user, const int lo[3], const int hi[3], const svxc_stream* cfg) {
   if (!w || !fn || !lo || !hi) return;
+  const svxc_stream c = cfg ? *cfg : svxc_stream_defaults();
   VoxelGrid g;
   g.h = w->h;
   w->w.load(std::move(g));
   StreamConfig sc;
-  sc.load_radius = load_radius;
-  sc.evict_radius = evict_radius;
-  sc.chunks_per_tick = chunks_per_tick;
-  sc.max_resident_mb = std::isfinite(max_resident_mb) ? std::max(0.0, max_resident_mb) : 0.0;
-  w->w.enable_streaming(std::make_shared<CallbackSource>(fn, user, IVec3{lo[0], lo[1], lo[2]}, IVec3{hi[0], hi[1], hi[2]}), sc);
+  sc.load_radius = c.load_radius;
+  sc.evict_radius = c.evict_radius;
+  sc.chunks_per_tick = c.chunks_per_tick;
+  sc.max_resident_mb = std::isfinite(c.max_resident_mb) ? std::max(0.0, c.max_resident_mb) : 0.0;
+  sc.archive_mb = c.archive_mb;
+  sc.forget_after_s = c.forget_after_s;
+  w->w.enable_streaming(
+      std::make_shared<CallbackSource>(fn, user, IVec3{lo[0], lo[1], lo[2]}, IVec3{hi[0], hi[1], hi[2]}, c.region_chunks), sc);
 }
 
 void svxc_set_focus(svxc_world* w, const double* xyz, int count) {
@@ -517,6 +544,28 @@ void svxc_get_stats(svxc_world* w, svxc_stats* out) {
   out->detached_pieces = s.detached_pieces;
   out->pulverized_voxels = s.pulverized_voxels;
   out->resident_chunks = s.resident_chunks;
+  out->archived_chunks = s.archived_chunks;
+  out->forgotten_regions = s.forgotten_regions;
+  out->forgotten_chunks = s.forgotten_chunks;
+  out->culled_pieces = s.culled_pieces;
+  out->dropped_events = s.dropped_events;
+  out->archive_used_mb = s.archive_used_mb;
+  out->archive_capacity_mb = s.archive_capacity_mb;
+}
+
+void svxc_get_memory(svxc_world* w, svxc_memory* out) {
+  if (!out) return;
+  *out = svxc_memory{};
+  if (!w) return;
+  const MemoryReport m = w->w.memory();
+  out->grid = m.grid;
+  out->fragments = m.fragments;
+  out->structures = m.structures;
+  out->pieces = m.pieces;
+  out->archive = m.archive;
+  out->caches = m.caches;
+  out->queues = m.queues;
+  out->total = m.total();
 }
 
 uint64_t svxc_state_hash(svxc_world* w) { return w ? w->w.state_hash() : 0; }

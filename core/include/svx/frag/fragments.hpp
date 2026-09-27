@@ -29,12 +29,17 @@ struct FragInfo {
 
 struct FragChunk {
   u32 vox_version = 0;             // the grid chunk's vox_version it was built from
+  mutable i64 used = 0;            // (its owner's bookkeeping: the tick it was last used)
   std::vector<u16> id;             // kChunkVox entries (index (x*32+y)*32+z): 0 = none, else fragment + 1
   std::vector<FragInfo> frags;
   std::vector<u16> vox;            // chunk-local voxel indices, grouped by fragment ...
   std::vector<i32> vox_start;      // ... fragment f: vox[vox_start[f] .. vox_start[f + 1])
   bool empty() const { return frags.empty(); }
   i32 at(int local_index) const { return id.empty() ? -1 : static_cast<i32>(id[local_index]) - 1; }
+  i64 memory_bytes() const {
+    return static_cast<i64>(sizeof(FragChunk) + id.capacity() * 2 + frags.capacity() * sizeof(FragInfo) + vox.capacity() * 2 +
+                            vox_start.capacity() * 4);
+  }
 };
 
 struct FragParams {

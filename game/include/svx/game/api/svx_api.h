@@ -120,7 +120,9 @@ void svx_set_debris(svx_engine* e, int enabled);
  * voxels, 18 detached pieces, 19 max utilization (last judge), 20 pieces, 21 awake pieces,
  * 22 contacts, 23 piece stress checks, 24 piece splits, 25 impact load cases, 26 resident
  * chunks, 27 archived chunks, 28 stream ms, 29 evicted chunks, 30 movers, 31 design max
- * utilization, 32 strengthened voxels, 33 floating voxels removed, 34 bake ms. */
+ * utilization, 32 strengthened voxels, 33 floating voxels removed, 34 bake ms, 35 world memory
+ * MB (all kinds), 36 fragment caches MB, 37 structures MB, 38 pieces MB, 39 archive used MB,
+ * 40 archive capacity MB, 41 forgotten regions, 42 culled pieces (43 doubles). */
 void svx_stats(svx_engine* e, double* out);
 /* Deterministic digest of the session (voxels, bonds, damage, debris poses), split in two
  * 32-bit halves (JS numbers). */

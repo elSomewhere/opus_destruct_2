@@ -92,7 +92,7 @@ const STATS_MS = 250;
 let timeline: number[] = [];
 const AUTOSAVE_MS = 5000;
 /** svx_stats fills out[0..34]. */
-const STATS_COUNT = 35;
+const STATS_COUNT = 43;
 
 let mod: SvxModule | null = null;
 let eng = 0;
@@ -451,6 +451,14 @@ function sendStats(now: number): void {
     strengthenedVoxels: f64(32),
     floatingVoxelsRemoved: f64(33),
     bakeMs: Math.round(f64(34)),
+    worldMemoryMB: r2(35),
+    fragmentCacheMB: r2(36),
+    structureMemoryMB: r2(37),
+    pieceMemoryMB: r2(38),
+    archiveMB: r2(39),
+    archiveCapacityMB: r2(40),
+    forgottenRegions: f64(41),
+    culledPieces: f64(42),
   };
   eventsSinceStats = 0;
   lastStats = now;

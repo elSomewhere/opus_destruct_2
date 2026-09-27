@@ -388,6 +388,8 @@ void svx_set_debris(svx_engine* e, int enabled) {
 void svx_stats(svx_engine* e, double* out) {
   const GameStats gs = e->eng.stats();
   const WorldStats& s = gs;
+  const MemoryReport mem = e->eng.world().memory();
+  auto mbytes = [](i64 b) { return static_cast<double>(b) / 1048576.0; };
   const double v[] = {
       s.tick_ms,                                       // 0
       s.structural_ms,                                 // 1
@@ -424,6 +426,14 @@ void svx_stats(svx_engine* e, double* out) {
       static_cast<double>(s.strengthened_voxels),      // 32
       static_cast<double>(s.floating_voxels),          // 33
       s.bake_ms,                                       // 34
+      mbytes(mem.total()),                             // 35 world memory (all kinds)
+      mbytes(mem.fragments),                           // 36
+      mbytes(mem.structures),                          // 37
+      mbytes(mem.pieces),                              // 38
+      s.archive_used_mb,                               // 39
+      s.archive_capacity_mb,                           // 40
+      static_cast<double>(s.forgotten_regions),        // 41
+      static_cast<double>(s.culled_pieces),            // 42
   };
   for (size_t k = 0; k < sizeof(v) / sizeof(v[0]); ++k) out[k] = v[k];
 }

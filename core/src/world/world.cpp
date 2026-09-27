@@ -3,6 +3,7 @@
 #include "svx/world/world.hpp"
 
 #include <algorithm>
+#include <tuple>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -10,7 +11,9 @@
 #include <cstring>
 
 #include "svx/base/diag.hpp"
+#include "svx/base/mem.hpp"
 #include "svx/base/parallel.hpp"
+#include "archive.hpp"
 #include "world_internal.hpp"
 
 namespace svx {
@@ -22,7 +25,7 @@ using Clock = std::chrono::steady_clock;
 inline f64 ms_since(Clock::time_point t0) { return std::chrono::duration<f64, std::milli>(Clock::now() - t0).count(); }
 }  // namespace
 
-World::World() = default;
+World::World() : archive_(std::make_unique<ChangeArchive>()) {}
 World::~World() = default;
 World::World(World&&) noexcept = default;
 World& World::operator=(World&&) noexcept = default;
@@ -83,7 +86,8 @@ void World::load(VoxelGrid&& g) {
   source_.reset();
   generated_.clear();
   column_count_.clear();
-  archive_.clear();
+  region_resident_.clear();
+  archive_->reset(0);
   focus_.clear();
   focus_set_ = false;
   const std::vector<WorldEvent> keep = std::move(events_);
@@ -129,7 +133,10 @@ FragChunk& World::frag_chunk(const IVec3& cc) {
     return empty_frags_;
   }
   auto it = frags_.find(key);
-  if (it != frags_.end() && it->second.vox_version == ch->vox_version) return it->second;
+  if (it != frags_.end() && it->second.vox_version == ch->vox_version) {
+    it->second.used = st_.ticks;
+    return it->second;
+  }
   FragChunk nf = fragment_chunk(grid_, cc, cfg_.frag);
   if (it != frags_.end()) {
     const FragChunk& of = it->second;
@@ -145,12 +152,15 @@ FragChunk& World::frag_chunk(const IVec3& cc) {
   owner_[key].assign(nf.frags.size(), 0);
   FragChunk& slot = frags_[key];
   slot = std::move(nf);
+  slot.used = st_.ticks;
   return slot;
 }
 
 FragChunk* World::frag_chunk_if(u64 key) {
   const auto it = frags_.find(key);
-  return it == frags_.end() ? nullptr : &it->second;
+  if (it == frags_.end()) return nullptr;
+  it->second.used = st_.ticks;
+  return &it->second;
 }
 
 bool World::frag_at(const IVec3& p, FragKey* out) {
@@ -291,13 +301,17 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
           if (slot == -1) {
             FragChunk* gfc = frag_chunk_if(G.chunk);
             const V3 gc = gfc->frags[size_t(G.idx)].com;
-            // (a fragment of another registered structure is part of its frontier: structures
-            // never overlap. Taking it over would leave the rest of that structure to be
-            // extracted again, which in a world too large for one extraction takes over this
-            // one in turn: extractions chasing each other every tick.)
+            // Another registered structure's fragment: the extraction takes that structure over
+            // whole (past the radius, which would cut it in two: frontiers next to what happens
+            // are artificial supports), up to the node limit. What it cannot take is extracted
+            // again (append_nodes: superseded) - but a structure made in this refresh is a
+            // frontier: in a world too large for one extraction, the two would otherwise take
+            // each other over in turn, every tick.
             const i64 other = owner_of(G);
             const bool owned = other != 0 && other != s->id && structure(other) != nullptr;
-            if (!owned && static_cast<i32>(members.size()) < max_nodes && norm(gc - seed_pos) <= max_radius) {
+            const bool fresh = owned && other >= fresh_from_;
+            const bool room = static_cast<i32>(members.size()) < max_nodes;
+            if (!fresh && room && (owned || norm(gc - seed_pos) <= max_radius)) {
               slot = static_cast<i32>(members.size());
               members.push_back(G);
             } else {
@@ -467,7 +481,7 @@ void World::append_nodes(Structure& s, const std::vector<FragKey>& frags, const 
     s.nstrength.push_back(strength);
     std::array<f32, 6> w{0, 0, 0, 0, 0, 0};
     const auto it = warm_u_.find(s.ident.back());
-    if (it != warm_u_.end()) w = it->second;
+    if (it != warm_u_.end()) w = it->second.u;
     for (int q = 0; q < 6; ++q) {
       s.u.push_back(w[size_t(q)]);
       s.ext.push_back(0.0);
@@ -525,6 +539,11 @@ void World::drop_structure(i64 id) {
 }
 
 void World::refresh_structures() {
+  struct FreshScope {  // (outside a refresh, no structure counts as fresh)
+    i64& f;
+    ~FreshScope() { f = INT64_MAX; }
+  } fresh_scope{fresh_from_};
+  fresh_from_ = next_id_;  // (structures made from here on are this refresh's: extract())
   static const bool prof = diag("SVX_PROFILE");
   for (int round = 0; round < 3; ++round) {
     std::vector<i64> stale;
@@ -561,7 +580,6 @@ void World::refresh_structures() {
       drop_structure(id);
     }
     if (seeds_.empty()) break;
-    const i64 fresh_from = next_id_;
     std::vector<IVec3> seeds;
     seeds.swap(seeds_);
     for (const IVec3& p : seeds) {
@@ -569,7 +587,6 @@ void World::refresh_structures() {
       if (!frag_at(p, &f)) continue;
       // owned: its structure is current (stale ones were patched above) or was extracted just now
       if (owner_of(f) != 0) continue;
-      (void)fresh_from;
       const auto tx = Clock::now();
       const i64 prev_owner = owner_of(f);
       Structure* xs = extract(f);
@@ -688,27 +705,36 @@ void World::step_structures() {
     if (!loaded) drop.push_back(s->id);
   }
   for (i64 id : drop) drop_structure(id);
-  prune_caches();
+}
+
+u64 World::node_chunk(const Structure& s, i32 node) const {
+  const IVec3 cc = chunk_of(s.vox0[size_t(node)]);
+  return key3(cc[0], cc[1], cc[2]);
 }
 
 void World::prune_caches() {
   // The reference loads of judged bonds and the warm starts of fragments outlive their
-  // structures (a structure extracted again starts from them), but not forever: beyond a bound
-  // only the registered structures' entries are kept (a long session in a streamed world).
-  if (judged_.size() > kMaxJudged) {
-    std::unordered_map<u64, BondLoad> keep;
-    for (const auto& s : structures_)
-      for (u64 b : s->bid)
-        if (const auto it = judged_.find(b); it != judged_.end()) keep.emplace(b, it->second);
-    judged_.swap(keep);
+  // structures (a structure extracted again starts from them). Those of chunks no longer
+  // resident go; beyond the budget, only the registered structures' are kept.
+  if (source_) {
+    for (auto it = judged_.begin(); it != judged_.end();)
+      it = generated_.count(it->second.chunk) ? std::next(it) : judged_.erase(it);
+    for (auto it = warm_u_.begin(); it != warm_u_.end();)
+      it = generated_.count(it->second.chunk) ? std::next(it) : warm_u_.erase(it);
   }
-  if (warm_u_.size() > kMaxWarm) {
-    std::unordered_map<u64, std::array<f32, 6>> keep;
-    for (const auto& s : structures_)
-      for (u64 id : s->ident)
-        if (const auto it = warm_u_.find(id); it != warm_u_.end()) keep.emplace(id, it->second);
-    warm_u_.swap(keep);
+  const i64 budget = static_cast<i64>(cfg_.memory.cache_mb * 1048576.0);
+  if (hash_bytes(judged_) + hash_bytes(warm_u_) <= budget) return;
+  std::unordered_map<u64, Judged> keep_j;
+  std::unordered_map<u64, WarmStart> keep_w;
+  for (const auto& s : structures_) {
+    for (u64 b : s->bid)
+      if (const auto it = judged_.find(b); it != judged_.end()) keep_j.emplace(b, it->second);
+    for (u64 id : s->ident)
+      if (const auto it = warm_u_.find(id); it != warm_u_.end()) keep_w.emplace(id, it->second);
   }
+  judged_.swap(keep_j);
+  warm_u_.swap(keep_w);
+  if (hash_bytes(judged_) + hash_bytes(warm_u_) > budget) std::unordered_map<u64, WarmStart>().swap(warm_u_);  // (only a speed-up)
 }
 
 void World::judge(Structure& s) {
@@ -724,18 +750,18 @@ void World::judge(Structure& s) {
     BondLoad Le = L;
     auto it = judged_.find(s.bid[size_t(b)]);
     if (dbgj && s.rounds == 0 && bond_utilization(B, L, par_.fragility) < 1.0 && it != judged_.end() && s.shock && dif != 1.0 &&
-        bond_utilization(B, lerp_load(it->second, L, dif), par_.fragility) >= 1.0)
+        bond_utilization(B, lerp_load(it->second.load, L, dif), par_.fragility) >= 1.0)
       std::printf("      (dif) bond %d: static phi %.2f, old N %.0f M %.0f %.0f V %.0f %.0f, new N %.0f M %.0f %.0f V %.0f %.0f\n", b,
-                  bond_utilization(B, L, par_.fragility), it->second.N, it->second.M1, it->second.M2, it->second.V1, it->second.V2, L.N, L.M1, L.M2,
-                  L.V1, L.V2);
+                  bond_utilization(B, L, par_.fragility), it->second.load.N, it->second.load.M1, it->second.load.M2, it->second.load.V1,
+                  it->second.load.V2, L.N, L.M1, L.M2, L.V1, L.V2);
     if (dbgj && s.rounds == 0 && it == judged_.end() && bond_utilization(B, L, par_.fragility) >= 1.0)
       std::printf("      (no baseline) bond %d: static phi %.2f\n", b, bond_utilization(B, L, par_.fragility));
-    if (s.shock && dif != 1.0 && it != judged_.end()) Le = lerp_load(it->second, L, dif);
+    if (s.shock && dif != 1.0 && it != judged_.end()) Le = lerp_load(it->second.load, L, dif);
     const f64 phi = bond_utilization(B, Le, par_.fragility);
     if (it != judged_.end()) {
-      it->second = L;
+      it->second.load = L;
     } else {
-      judged_.emplace(s.bid[size_t(b)], L);
+      judged_.emplace(s.bid[size_t(b)], Judged{node_chunk(s, B.a), L});
     }
     s.phi[size_t(b)] = static_cast<f32>(phi);
     maxphi = std::max(maxphi, phi);
@@ -747,7 +773,7 @@ void World::judge(Structure& s) {
     if (s.P.nodes[i].gone) continue;
     std::array<f32, 6> w;
     for (int q = 0; q < 6; ++q) w[size_t(q)] = static_cast<f32>(s.u[6 * i + q]);
-    warm_u_[s.ident[i]] = w;
+    warm_u_[s.ident[i]] = {node_chunk(s, static_cast<i32>(i)), w};
   }
   s.ext_solved = s.pending_impact ? s.pending : s.ext;
   const bool more = s.pending_impact || s.reload;
@@ -1508,6 +1534,98 @@ void World::apply_blast_loads() {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Memory budgets
+
+void World::enforce_budgets() {
+  trim_output();  // (every tick: cheap unless over)
+  if (st_.ticks % 30 != 0) return;
+  trim_fragment_caches();
+  trim_structures();
+  prune_caches();
+}
+
+void World::trim_fragment_caches() {
+  // Fragment caches are derived from the grid: those of chunks no structure holds are dropped,
+  // least recently used first, beyond the budget (rebuilt, identical, when needed again).
+  const i64 budget = static_cast<i64>(cfg_.memory.fragment_cache_mb * 1048576.0);
+  i64 bytes = 0;
+  for (const auto& [k, fc] : frags_) bytes += fc.memory_bytes();
+  if (bytes <= budget) return;
+  std::vector<std::pair<i64, u64>> cand;  // (last use, chunk)
+  for (const auto& [k, fc] : frags_) {
+    const auto ot = owner_.find(k);
+    bool held = false;
+    if (ot != owner_.end())
+      for (i64 id : ot->second) held = held || id != 0;
+    if (!held) cand.push_back({fc.used, k});
+  }
+  std::sort(cand.begin(), cand.end());
+  for (const auto& [used, k] : cand) {
+    if (bytes <= budget) break;
+    const auto it = frags_.find(k);
+    bytes -= it->second.memory_bytes();
+    frags_.erase(it);
+    owner_.erase(k);
+    ++st_.dropped_fragment_caches;
+  }
+}
+
+i64 World::structure_bytes(const Structure& s) const {
+  i64 b = sizeof(Structure) + s.P.memory_bytes() + vec_bytes(s.fstart) + vec_bytes(s.frags) + vec_bytes(s.ident) + vec_bytes(s.nmat) +
+          vec_bytes(s.nstrength) + vec_bytes(s.vox0) + vec_bytes(s.weight) + vec_bytes(s.face_start) + vec_bytes(s.face_p) +
+          vec_bytes(s.face_axis) + vec_bytes(s.bid) + vec_bytes(s.phi) + vec_bytes(s.u) + vec_bytes(s.ext) + vec_bytes(s.ext_solved) +
+          vec_bytes(s.acc) + vec_bytes(s.peak) + vec_bytes(s.pending) + vec_bytes(s.peak_mag) + vec_bytes(s.changed) +
+          hash_bytes(s.nodemap);
+  for (const auto& [k, v] : s.nodemap) b += vec_bytes(v);
+  return b;
+}
+
+void World::trim_structures() {
+  // Registered structures are extracted again when something happens to them: beyond the
+  // budget the idle ones go, the longest idle first (never one being solved).
+  const i64 budget = static_cast<i64>(cfg_.memory.structure_mb * 1048576.0);
+  i64 bytes = 0;
+  std::vector<std::tuple<i32, i64, i64>> cand;  // (-idle, id, bytes)
+  for (const auto& sp : structures_) {
+    const i64 b = structure_bytes(*sp);
+    bytes += b;
+    if (!sp->solving && !sp->stale) cand.push_back({-sp->idle, sp->id, b});
+  }
+  if (bytes <= budget) return;
+  std::sort(cand.begin(), cand.end());
+  for (const auto& [nidle, id, b] : cand) {
+    if (bytes <= budget) break;
+    drop_structure(id);
+    bytes -= b;
+    ++st_.dropped_structures;
+  }
+}
+
+void World::trim_output() {
+  // Output the host does not take is bounded: beyond max_events the oldest cosmetic events go
+  // (then the oldest of any kind); evicted chunk keys beyond as many are dropped oldest first.
+  const size_t cap = static_cast<size_t>(std::max(64, cfg_.memory.max_events));
+  if (events_.size() > cap) {
+    const size_t excess = events_.size() - cap;
+    size_t cosmetic = 0;
+    std::vector<WorldEvent> kept;
+    kept.reserve(cap);
+    for (WorldEvent& e : events_) {
+      const bool cos = e.kind == WorldEvent::Kind::Crack || e.kind == WorldEvent::Kind::Dust || e.kind == WorldEvent::Kind::Impact;
+      if (cos && cosmetic < excess) {
+        ++cosmetic;
+        continue;
+      }
+      kept.push_back(std::move(e));
+    }
+    if (kept.size() > cap) kept.erase(kept.begin(), kept.begin() + static_cast<long>(kept.size() - cap));
+    st_.dropped_events += static_cast<i64>(events_.size() - kept.size());
+    events_.swap(kept);
+  }
+  if (evicted_chunks_.size() > cap) evicted_chunks_.erase(evicted_chunks_.begin(), evicted_chunks_.begin() + static_cast<long>(evicted_chunks_.size() - cap / 2));
+}
+
+// ---------------------------------------------------------------------------------------------
 // Tick
 
 void World::tick() {
@@ -1560,6 +1678,8 @@ void World::tick() {
   }
   if (!out.empty()) remove_bodies(out, PieceEnd::OutOfWorld);
   limit_bodies();
+  grid_.compact_changed();
+  enforce_budgets();
   announce_bodies();
   st_.tick_ms = ms_since(t0);
 }

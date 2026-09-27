@@ -1,6 +1,7 @@
 #include "svx/stress/stress.hpp"
 
 #include "svx/base/diag.hpp"
+#include "svx/base/mem.hpp"
 #include "svx/base/parallel.hpp"
 
 #include <algorithm>
@@ -303,6 +304,11 @@ void StressProblem::precondition(const f64* r, f64* z) const {
   }
   for (i32 i = pc_n_; i < nfree_; ++i)
     blk6::mv6(&jinv_[36 * size_t(i - pc_n_)], r + 6 * size_t(i), z + 6 * size_t(i));
+}
+
+i64 StressProblem::memory_bytes() const {
+  return vec_bytes(nodes) + vec_bytes(bonds) + K_.memory_bytes() + amg_.memory_bytes() + amg2_.memory_bytes() + vec_bytes(jinv_) +
+         vec_bytes(dof_) + vec_bytes(run_.x) + vec_bytes(run_.r) + vec_bytes(run_.z) + vec_bytes(run_.p) + vec_bytes(run_.q);
 }
 
 PcgResult StressProblem::solve(const std::vector<f64>& f, std::vector<f64>& u, f64 rtol, int maxit, bool warm) {

@@ -1,6 +1,7 @@
 // structvox — the world's design pass (bake), persistence, streaming, output, queries, stats and
 // hashes.
 #include <algorithm>
+#include <functional>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -10,6 +11,8 @@
 #include <unordered_set>
 
 #include "svx/base/diag.hpp"
+#include "svx/base/mem.hpp"
+#include "archive.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/world/world.hpp"
 #include "world_internal.hpp"
@@ -123,7 +126,7 @@ bool World::bake(f64* ms) {
       for (i32 b = 0; b < static_cast<i32>(s->P.bonds.size()); ++b) {
         const SBond& B = s->P.bonds[size_t(b)];
         const BondLoad L = s->P.bond_load(b, s->u);
-        judged_[s->bid[size_t(b)]] = L;
+        judged_[s->bid[size_t(b)]] = {node_chunk(*s, B.a), L};
         const f64 phi = bond_utilization(B, L, 1.0);
         design_.max_utilization = std::max(design_.max_utilization, phi);
         if (phi <= target) continue;
@@ -144,7 +147,7 @@ bool World::bake(f64* ms) {
       for (size_t i = 0; i < s->P.nodes.size(); ++i) {
         std::array<f32, 6> w;
         for (int q = 0; q < 6; ++q) w[size_t(q)] = static_cast<f32>(s->u[6 * i + q]);
-        warm_u_[s->ident[i]] = w;
+        warm_u_[s->ident[i]] = {node_chunk(*s, static_cast<i32>(i)), w};
       }
       drop_structure(s->id);
     }
@@ -166,14 +169,12 @@ bool World::bake(f64* ms) {
 std::vector<u8> World::save_delta() const {
   if (!source_) return grid_.save_delta();
   std::vector<u64> keys = grid_.modified_chunks();
-  for (const auto& [k, r] : archive_) keys.push_back(k);
+  const std::vector<u64> archived = archive_->keys();
+  keys.insert(keys.end(), archived.begin(), archived.end());
   std::sort(keys.begin(), keys.end());
   keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
   std::vector<std::vector<u8>> recs;
-  for (u64 k : keys) {
-    const auto it = archive_.find(k);
-    recs.push_back(it != archive_.end() && !grid_.is_modified(k) ? *it->second : grid_.chunk_record(k));
-  }
+  for (u64 k : keys) recs.push_back(!grid_.is_modified(k) && archive_->has(k) ? archive_->get(k) : grid_.chunk_record(k));
   return VoxelGrid::pack_delta(recs);
 }
 
@@ -190,7 +191,7 @@ bool World::load_delta(const std::vector<u8>& bytes) {
         if (!grid_.apply_record(r, &key)) return false;
         touched.push_back(key);
       } else {
-        archive_[k] = std::make_shared<const std::vector<u8>>(std::move(r));
+        archive_record(k, r);  // (as if seen now; a bounded archive may forget the oldest to take it)
       }
     }
   } else if (!grid_.load_delta(bytes, &touched)) {
@@ -221,9 +222,13 @@ void World::enable_streaming(std::shared_ptr<const ChunkSource> src, const Strea
   stream_.evict_radius = std::isfinite(stream_.evict_radius) ? std::clamp(stream_.evict_radius, stream_.load_radius, 1e5)
                                                              : stream_.load_radius + 32.0;
   stream_.chunks_per_tick = std::max(1, stream_.chunks_per_tick);
+  stream_.archive_mb = std::isfinite(stream_.archive_mb) ? std::clamp(stream_.archive_mb, 0.0, 1e6) : 64.0;
+  stream_.forget_after_s = std::isfinite(stream_.forget_after_s) ? std::max(0.0, stream_.forget_after_s) : 0.0;
   generated_.clear();
   column_count_.clear();
-  archive_.clear();
+  region_resident_.clear();
+  // (a bounded archive: its arena, once; an unbounded one grows)
+  archive_->reset(source_ ? static_cast<size_t>(stream_.archive_mb * 1048576.0) : 0);
   if (!source_) return;
   const IVec3 lo = source_->chunk_lo(), hi = source_->chunk_hi();
   grid_.lo = {lo[0] * kChunk, lo[1] * kChunk, lo[2] * kChunk};
@@ -271,17 +276,19 @@ void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
   const IVec3 cc = unkey3(key);
   generated_.insert(key);
   ++column_count_[key3(cc[0], cc[1], 0)];
+  ++region_resident_[region_of(key)];
   ++st_.generated_total;
   bool changed = false;
   if (any) {
     grid_.insert_chunk(cc, std::move(v));
     changed = true;
+  } else {
+    grid_.release_buffer(std::move(v));
   }
-  const auto ait = archive_.find(key);
-  if (ait != archive_.end()) {
+  if (archive_->has(key)) {
     grid_.track_changes(true);
-    changed = grid_.apply_record(*ait->second) || changed;  // (records were checked when archived or loaded)
-    archive_.erase(ait);
+    changed = grid_.apply_record(archive_->get(key)) || changed;  // (records were checked when archived or loaded)
+    archive_->erase(key);
   } else if (any) {
     // (fresh from the generator: designed when first touched; an archived chunk was designed
     // before it was changed)
@@ -319,7 +326,10 @@ void World::evict_chunk(u64 k) {
     for (i64 id : ids) drop_structure(id);
   }
   undesigned_.erase(k);
-  if (grid_.is_modified(k)) archive_[k] = std::make_shared<const std::vector<u8>>(grid_.chunk_record(k));
+  const u64 region = region_of(k);
+  if (grid_.is_modified(k)) archive_record(k, grid_.chunk_record(k));
+  archive_->seen(region, st_.ticks);
+  if (const auto rt = region_resident_.find(region); rt != region_resident_.end() && --rt->second <= 0) region_resident_.erase(rt);
   const bool resident = grid_.chunk(cc) != nullptr;
   mark_owners_stale(k);
   owner_.erase(k);
@@ -329,6 +339,72 @@ void World::evict_chunk(u64 k) {
   if (--column_count_[key3(cc[0], cc[1], 0)] <= 0) column_count_.erase(key3(cc[0], cc[1], 0));
   ++st_.evicted_total;
   if (resident) evicted_chunks_.push_back(k);
+}
+
+void World::unload_sleepers(const std::vector<u64>& chunks, const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of) {
+  if (chunks.empty()) return;
+  const std::unordered_set<u64> going(chunks.begin(), chunks.end());
+  std::vector<i64> ids;
+  for (const auto& bp : rigid_.bodies) {
+    if (!bp->asleep) continue;
+    bool hit = false;
+    chunks_of(*bp, [&](u64 k) { hit = hit || going.count(k) > 0; });
+    if (hit) ids.push_back(bp->id);
+  }
+  remove_bodies(std::move(ids), PieceEnd::Unloaded);
+}
+
+u64 World::region_of(u64 chunk_key) const { return source_ ? source_->region(unkey3(chunk_key)) : 0; }
+
+void World::archive_record(u64 key, const std::vector<u8>& rec) {
+  const u64 region = region_of(key);
+  if (!archive_->fits(rec.size())) forget_regions(rec.size(), region);
+  if (!archive_->put(key, region, rec, st_.ticks)) {
+    // (no region to forget but this chunk's own, which is partly resident: its changes go)
+    ++st_.forgotten_chunks;
+  }
+}
+
+bool World::forget_regions(size_t need, u64 keep) {
+  // the regions out of range, least recently seen first (ties: by key)
+  std::vector<std::pair<i64, u64>> cand;
+  for (const auto& [r, info] : archive_->regions())
+    if (r != keep && !region_resident_.count(r)) cand.push_back({info.seen, r});
+  std::sort(cand.begin(), cand.end());
+  for (const auto& [seen, r] : cand) {
+    if (archive_->fits(need)) break;
+    forget_region(r);
+  }
+  return archive_->fits(need);
+}
+
+void World::forget_region(u64 region) {
+  const std::vector<u64> keys = archive_->forget(region);
+  if (keys.empty()) return;
+  ++st_.forgotten_regions;
+  st_.forgotten_chunks += static_cast<i64>(keys.size());
+  // (the region's chunks come back from the source as generated, designed when first touched)
+  WorldEvent ev;
+  ev.kind = WorldEvent::Kind::Forgotten;
+  ev.id = static_cast<i64>(region);
+  V3 c;
+  for (u64 k : keys) {
+    const IVec3 cc = unkey3(k);
+    c += V3{(cc[0] + 0.5) * kChunk * grid_.h, (cc[1] + 0.5) * kChunk * grid_.h, (cc[2] + 0.5) * kChunk * grid_.h};
+  }
+  ev.pos = c * (1.0 / static_cast<f64>(keys.size()));
+  ev.voxels = static_cast<i32>(keys.size());
+  events_.push_back(ev);
+}
+
+void World::forget_stale_regions() {
+  if (stream_.forget_after_s <= 0.0) return;
+  const i64 ttl = static_cast<i64>(std::ceil(stream_.forget_after_s / cfg_.dt));
+  std::vector<u64> stale;
+  for (const auto& [r, info] : archive_->regions())
+    if (!region_resident_.count(r) && st_.ticks - info.seen > ttl) stale.push_back(r);
+  std::sort(stale.begin(), stale.end());
+  for (u64 r : stale) forget_region(r);
 }
 
 void World::ensure_chunks(const IVec3& vlo, const IVec3& vhi) {
@@ -388,7 +464,9 @@ int World::stream_update() {
   std::vector<u8> any;
   for (size_t i = 0; i < want.size() && budget > 0 && empty_budget > 0;) {
     const size_t n = std::min(want.size() - i, size_t(2 * budget + 8));
-    vox.assign(n, {});
+    vox.resize(n);
+    for (auto& v : vox)
+      if (v.capacity() < size_t(kChunkVox)) v = grid_.acquire_buffer(kAir);  // (recycled arrays)
     any.assign(n, 0);
     const ChunkSource* src = source_.get();
     parallel_for(static_cast<i64>(n), 1, [&](i64 b0, i64 e0) {
@@ -397,21 +475,28 @@ int World::stream_update() {
     for (size_t j = 0; j < n && budget > 0 && empty_budget > 0; ++j) {
       const u64 k = want[i + j].second;
       insert_generated(k, any[j] != 0, std::move(vox[j]));
+      vox[j] = {};
       ++generated;
       if (grid_.chunk(unkey3(k))) --budget;
       else --empty_budget;
     }
     i += n;
   }
+  for (auto& v : vox)
+    if (v.capacity() > 0) grid_.release_buffer(std::move(v));  // (generated beyond the budget: dropped)
   // evict far from the focus points (never under a piece, which would fall through, or a
   // structure being solved)
-  std::unordered_set<u64> busy;
-  for (const auto& bp : rigid_.bodies) {
-    const IVec3 a = voxel_of(bp->box_lo, grid_.h), b = voxel_of(bp->box_hi, grid_.h);
+  // (a moving piece keeps the chunks around it; sleeping rubble does not: it is unloaded with
+  // them, or it would keep regions it lies in resident, and their changes remembered, forever)
+  auto chunks_of_body = [&](const Body& bd, const std::function<void(u64)>& f) {
+    const IVec3 a = voxel_of(bd.box_lo, grid_.h), b = voxel_of(bd.box_hi, grid_.h);
     for (i32 x = (a[0] >> kChunkBits) - 1; x <= (b[0] >> kChunkBits) + 1; ++x)
       for (i32 y = (a[1] >> kChunkBits) - 1; y <= (b[1] >> kChunkBits) + 1; ++y)
-        for (i32 z = (a[2] >> kChunkBits) - 1; z <= (b[2] >> kChunkBits) + 1; ++z) busy.insert(key3(x, y, z));
-  }
+        for (i32 z = (a[2] >> kChunkBits) - 1; z <= (b[2] >> kChunkBits) + 1; ++z) f(key3(x, y, z));
+  };
+  std::unordered_set<u64> busy;
+  for (const auto& bp : rigid_.bodies)
+    if (!bp->asleep) chunks_of_body(*bp, [&](u64 k) { busy.insert(k); });
   for (const auto& s : structures_)
     if (s->solving)
       for (const FragKey& f : s->frags)
@@ -424,6 +509,7 @@ int World::stream_update() {
     if (hdist(cc) <= stream_.evict_radius || busy.count(k)) continue;
     out.push_back(k);
   }
+  unload_sleepers(out, chunks_of_body);
   for (u64 k : out) evict_chunk(k);
   if (stream_.max_resident_mb > 0.0 && st_.ticks % 30 == 0) {
     const i64 budget_b = static_cast<i64>(stream_.max_resident_mb * 1048576.0);
@@ -437,20 +523,26 @@ int World::stream_update() {
         if (d > stream_.load_radius && !busy.count(k)) far.push_back({-d, k});
       }
       std::sort(far.begin(), far.end());
+      std::vector<u64> go;
       for (const auto& [nd, k] : far) {
         if (bytes <= budget_b) break;
         const Chunk* ch = grid_.chunk(unkey3(k));
         bytes -= ch ? static_cast<i64>(sizeof(Chunk) + ch->v.size() + ch->broken.size() + ch->strength.size()) : 0;
+        go.push_back(k);
+      }
+      unload_sleepers(go, chunks_of_body);
+      for (u64 k : go) {
         evict_chunk(k);
         ++st_.budget_evicted;
       }
     }
   }
+  if (st_.ticks % 60 == 0) forget_stale_regions();
   st_.stream_ms = ms_since(t0);
   return generated;
 }
 
-bool World::modified() const { return !grid_.modified_chunks().empty() || !archive_.empty(); }
+bool World::modified() const { return !grid_.modified_chunks().empty() || archive_->size() > 0; }
 
 // ---------------------------------------------------------------------------------------------
 // Output
@@ -525,14 +617,41 @@ WorldStats World::stats() const {
   s.memory_mb = f64(grid_.memory_bytes()) / (1024.0 * 1024.0);
   s.structures = static_cast<i32>(structures_.size());
   s.resident_chunks = static_cast<i64>(generated_.size());
-  s.archived_chunks = static_cast<i64>(archive_.size());
+  s.archived_chunks = static_cast<i64>(archive_->size());
+  s.archive_used_mb = static_cast<f64>(archive_->used_bytes()) / 1048576.0;
+  s.archive_capacity_mb = static_cast<f64>(archive_->capacity()) / 1048576.0;
   s.bodies = static_cast<i32>(rigid_.bodies.size());
   s.awake = rigid_.awake_count();
   s.contacts = static_cast<i32>(rigid_.contacts().size());
   return s;
 }
 
+MemoryReport World::memory() const {
+  MemoryReport m;
+  m.grid = grid_.memory_bytes() + hash_bytes(grid_.chunks()) + grid_.bookkeeping_bytes();
+  m.chunks = static_cast<i32>(grid_.chunks().size());
+  for (const auto& [k, fc] : frags_) m.fragments += fc.memory_bytes();
+  m.fragments += hash_bytes(frags_);
+  for (const auto& [k, o] : owner_) m.fragments += vec_bytes(o);
+  m.fragments += hash_bytes(owner_);
+  m.fragment_chunks = static_cast<i32>(frags_.size());
+  for (const auto& sp : structures_) m.structures += structure_bytes(*sp);
+  m.structure_count = static_cast<i32>(structures_.size());
+  for (const auto& bp : rigid_.bodies) m.pieces += body_bytes(*bp);
+  m.pieces += vec_bytes(rigid_.contacts()) + static_cast<i64>(rigid_.bodies.capacity() * sizeof(void*));
+  m.piece_count = static_cast<i32>(rigid_.bodies.size());
+  m.archive = archive_->memory_bytes() + hash_bytes(region_resident_);
+  m.archived_chunks = static_cast<i32>(archive_->size());
+  m.caches = hash_bytes(warm_u_) + hash_bytes(judged_) + hash_bytes(dead_loads_);
+  for (const auto& [id, l] : dead_loads_) m.caches += vec_bytes(l);
+  m.caches += hash_bytes(generated_) + hash_bytes(column_count_) + hash_bytes(undesigned_);
+  m.queues = vec_bytes(events_) + vec_bytes(evicted_chunks_) + vec_bytes(queue_) + vec_bytes(seeds_) + grid_.dirty_bytes();
+  return m;
+}
+
 u64 World::state_hash() const {
+  // (the content, whatever its representation: a uniform chunk and a mixed one of equal voxels
+  // hash alike, an all-air chunk like no chunk at all)
   std::vector<u64> keys;
   for (const auto& [k, c] : grid_.chunks()) keys.push_back(k);
   std::sort(keys.begin(), keys.end());
@@ -540,13 +659,19 @@ u64 World::state_hash() const {
   auto mix = [&](u64 v) { hsh = (hsh ^ v) * 1099511628211ull; };
   for (u64 k : keys) {
     const Chunk& c = grid_.chunks().at(k);
+    bool uni = c.uniform;
+    Vox v0 = c.uniform ? c.value : (c.v.empty() ? kAir : c.v[0]);
+    if (!uni) uni = std::all_of(c.v.begin(), c.v.end(), [&](Vox v) { return v == v0; });
+    const bool any_broken = std::any_of(c.broken.begin(), c.broken.end(), [](u8 b) { return b != 0; });
+    if (uni && v0 == kAir && !any_broken) continue;
     mix(k);
-    if (c.uniform) {
-      mix(c.value);
+    if (uni) {
+      mix(v0);
     } else {
       for (Vox v : c.v) mix(v);
     }
-    for (u8 b : c.broken) mix(b);
+    if (any_broken)
+      for (u8 b : c.broken) mix(b);
   }
   return hsh;
 }
@@ -780,7 +905,7 @@ void World::design_structure(Structure& s, bool dry) {
     const SBond& B = s.P.bonds[size_t(b)];
     if (B.broken) continue;
     const BondLoad L = s.P.bond_load(b, u);
-    if (!dry) judged_[s.bid[size_t(b)]] = L;  // (the reference state of sudden changes, as the bake's)
+    if (!dry) judged_[s.bid[size_t(b)]] = {node_chunk(s, B.a), L};  // (the reference state of sudden changes, as the bake's)
     const f64 phi = bond_utilization(B, L, 1.0);
     maxphi = std::max(maxphi, phi);
     if (phi <= target) continue;
@@ -812,7 +937,7 @@ void World::design_structure(Structure& s, bool dry) {
   for (size_t i = 0; i < n; ++i) {
     std::array<f32, 6> w;
     for (int q = 0; q < 6; ++q) w[size_t(q)] = static_cast<f32>(u[6 * i + size_t(q)]);
-    warm_u_[s.ident[i]] = w;
+    warm_u_[s.ident[i]] = {node_chunk(s, static_cast<i32>(i)), w};
   }
   designed();
 }

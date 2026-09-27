@@ -77,6 +77,7 @@ class Game {
   void set_params(const GameParams& p);
   const GameParams& params() const { return par_; }
   f64 fade_time = 1.0;  // s: culled pieces fade out
+  i32 max_events = 4096;  // events (with piece meshes) not taken: beyond, the oldest go
 
   // Levels. load() replaces everything (movers too); load_streaming() then streams a level
   // from src around the viewer (the grid: empty, of the source's voxel size).

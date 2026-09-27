@@ -1,6 +1,7 @@
 // structvox — rigid pieces: creation from the world, stress under contact and inertia, fracture
 // and splitting, carving, blasts, lifecycle events (docs/V2_DESIGN.md §4).
 #include <algorithm>
+#include <tuple>
 #include <chrono>
 #include <climits>
 #include <cstdio>
@@ -8,6 +9,7 @@
 #include <cmath>
 
 #include "svx/base/diag.hpp"
+#include "svx/base/mem.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/world/world.hpp"
 #include "world_internal.hpp"
@@ -1065,6 +1067,18 @@ void World::blast_bodies(const PendingEvent& e) {
   flush_body_changes();
 }
 
+i64 World::body_bytes(const Body& b) {
+  const BodyShape& S = b.shape;
+  i64 n = sizeof(Body) + vec_bytes(S.vox) + vec_bytes(S.frag) + vec_bytes(S.brk) + vec_bytes(b.frags) + vec_bytes(b.pts) +
+          vec_bytes(b.pt_vox) + vec_bytes(b.wpts);
+  if (b.graph) {
+    const BodyGraph& G = *b.graph;
+    n += sizeof(BodyGraph) + G.P.memory_bytes() + vec_bytes(G.frag_node) + vec_bytes(G.node_com) + vec_bytes(G.node_mass) +
+         vec_bytes(G.node_inertia) + vec_bytes(G.face_start) + vec_bytes(G.face_p) + vec_bytes(G.face_axis) + vec_bytes(G.u);
+  }
+  return n;
+}
+
 void World::announce_bodies() {
   for (auto& bp : rigid_.bodies) {
     Body& b = *bp;
@@ -1110,15 +1124,25 @@ void World::remove_bodies(std::vector<i64> ids, PieceEnd end) {
 }
 
 void World::limit_bodies() {
-  const i32 excess = static_cast<i32>(rigid_.bodies.size()) - cfg_.max_bodies;
-  if (excess <= 0) return;
-  std::vector<std::pair<i32, i64>> cand;  // (voxels, id): the smallest sleeping pieces go first
-  for (const auto& bp : rigid_.bodies)
-    if (bp->asleep) cand.push_back({bp->shape.count, bp->id});
+  // Beyond max_bodies, or beyond the pieces' memory budget, the smallest pieces are culled:
+  // sleeping ones first (rubble at rest), then moving ones (the finest debris of a collapse).
+  const i64 budget = static_cast<i64>(cfg_.memory.piece_mb * 1048576.0);
+  i64 bytes = 0;
+  for (const auto& bp : rigid_.bodies) bytes += body_bytes(*bp);
+  i32 excess = static_cast<i32>(rigid_.bodies.size()) - cfg_.max_bodies;
+  if (excess <= 0 && bytes <= budget) return;
+  std::vector<std::tuple<int, i32, i64>> cand;  // (awake, voxels, id)
+  for (const auto& bp : rigid_.bodies) cand.push_back({bp->asleep ? 0 : 1, bp->shape.count, bp->id});
   std::sort(cand.begin(), cand.end());
-  const size_t k = std::min(cand.size(), static_cast<size_t>(excess));
   std::vector<i64> ids;
-  for (size_t i = 0; i < k; ++i) ids.push_back(cand[i].second);
+  for (const auto& [awake, voxels, id] : cand) {
+    if (excess <= 0 && bytes <= budget) break;
+    const Body* b = rigid_.find(id);
+    bytes -= body_bytes(*b);
+    --excess;
+    ids.push_back(id);
+  }
+  st_.culled_pieces += static_cast<i64>(ids.size());
   remove_bodies(std::move(ids), PieceEnd::Culled);
 }
 

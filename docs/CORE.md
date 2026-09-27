@@ -158,11 +158,20 @@ Then call `enable_streaming(source, StreamConfig)`. `set_focus(points)` tells th
 must be resident: one point per player, camera or AI of interest.
 
 - Chunks within `load_radius` are generated, a budgeted number per tick.
-- Chunks beyond `evict_radius` are evicted. Their changes are archived and come back with them.
-- Chunks are never evicted under a piece.
+- Chunks beyond `evict_radius` are evicted. Their changes go to the change archive and come
+  back with them. The archive is bounded; see §4 (Memory).
+- Chunks are never evicted under a moving piece. Sleeping rubble in chunks being evicted is
+  unloaded with them (`PieceRemoved`, `Unloaded`), so rubble never pins the world.
 - Structures reaching into chunks that are not resident are held there (the unknown world is a
   support).
 - A generated structure is designed the first time something touches it.
+- `ChunkSource::region(chunk)` names the unit a chunk's changes are remembered and forgotten
+  with. The default is 8 × 8 chunk columns; the city generator uses its blocks, so a building
+  never comes back in half.
+
+A bounded level too large to keep resident streams the same way, from a source that reads the
+level (a file, a compressed grid). It then usually keeps every change (`archive_mb = 0`), since
+the level bounds them.
 
 ### Persistence
 
@@ -198,10 +207,67 @@ Things that break it:
   energies, rays, sweeps, edits and parameters are refused or clamped. Carves and blasts are
   clamped to `max_event_radius`.
 - Work per tick is bounded by `stress_work` (structures) and the busy mode of the rigid solver
-  (violent collapses step once per tick with fewer iterations). Memory is bounded by
-  `max_bodies` and the streaming radii / `max_resident_mb`.
+  (violent collapses step once per tick with fewer iterations). Memory is bounded as in §4.
 
-## 4. The C API and WASM
+## 4. Memory: bounded by construction
+
+Every kind of state a world keeps has a bound, so a session never grows past a known size
+however long it runs, and nothing lives on after what it belongs to:
+
+| State | What bounds it | Beyond the bound |
+|---|---|---|
+| Resident voxels (the grid) | The level; for streamed worlds the radii and `max_resident_mb` | Chunks farthest from the focus are evicted |
+| **Change archive** (streamed chunks changed and out of range) | `StreamConfig::archive_mb`: one arena allocated once, pages of 1 KB | Whole regions are forgotten, least recently seen first; they come back as generated |
+| Fragment caches (derived from the grid) | `MemoryBudget::fragment_cache_mb` | Unheld ones dropped, least recently used first (rebuilt identically on demand) |
+| Registered structures (graphs, matrices, preconditioners) | `MemoryBudget::structure_mb` | Idle ones dropped, longest idle first (extracted again when touched) |
+| Rigid pieces | `max_bodies` and `MemoryBudget::piece_mb` | The smallest culled, sleeping first (`PieceRemoved`, `Culled`) |
+| Warm starts, reference loads | `MemoryBudget::cache_mb`; streamed: resident chunks only | Only the registered structures' kept |
+| Output the host does not take | `MemoryBudget::max_events`; changed chunks deduplicated | The oldest cosmetic events go |
+
+### The change archive: remembering and forgetting
+
+A streamed world is infinite, but the memory of what the player changed need not be.
+
+- Changes of chunks out of range live in a fixed arena of `archive_mb`. Records are
+  compressed per chunk and chained through 1 KB pages, so the arena neither grows nor
+  fragments, and its pages are committed only as they are used.
+- When the arena is full, the world forgets the region seen least recently, among those with no
+  resident chunk. The region comes back from the generator exactly as generated: the world
+  heals out of sight. Its structures are designed again when first touched.
+- With `forget_after_s`, regions out of range for that long are forgotten even if there is room
+  left.
+- Each forgotten region is a `Forgotten` event (its centre and chunk count). Stats count
+  forgotten regions and chunks, and report the arena's use.
+- `archive_mb = 0` keeps every change (the arena grows). This is for bounded levels streamed
+  from a file, whose changes their size bounds.
+
+`save_delta()` saves what is remembered: the resident changes and the archive.
+
+### Bounded levels (islands, Doom maps, Teardown-style scenes)
+
+A level loaded whole (`load` + `bake`) holds its grid, which the level bounds. Destruction
+does not grow it: emptied chunks are compacted, and chunk arrays are recycled through a bounded
+pool. Everything derived from the grid is under the budgets above, and changes stay (they are
+the level's state; `save_delta` persists them).
+
+### Determinism under budgets
+
+Budgets that bound derived data change no result: fragment caches and warm starts are rebuilt
+identically, and events are output only. A test checks that a session gives the same hash under
+tight and loose budgets. Culling pieces and forgetting regions do change the world. Both are
+deterministic functions of the configuration and the commands, so replays and lockstep stay
+exact as long as every peer uses the same configuration.
+
+### Watching it
+
+- `World::memory()` reports the bytes held by kind (grid, fragment caches, structures, pieces,
+  archive, caches, queues).
+- `stats()` counts what the budgets removed.
+- `svx_soak` runs long sessions (a streamed city crossed for minutes with continuous
+  destruction, or a bounded level) and prints both, together with the process's physical
+  footprint.
+
+## 5. The C API and WASM
 
 `svx/svx_core.h` wraps `World` for hosts in other languages (C, C#, Rust, Python, Zig, ...):
 
@@ -218,7 +284,7 @@ Things that break it:
 The `svx_core_web` target (WASM builds) packages the core alone as an ES module
 (`createSvxCore`) with the `svxc_*` functions exported, for JavaScript hosts.
 
-## 5. Writing a harness
+## 6. Writing a harness
 
 A harness turns a game's world into the core's terms and the core's output into the game's.
 `svx::Game` is a worked example:
@@ -238,12 +304,12 @@ Things a harness should not do:
 - write the grid other than through `set_voxels`;
 - keep `Body` pointers across ticks (use ids).
 
-## 6. Known limits
+## 7. Known limits
 
 - `collide` sweeps against the world's voxels only. Pieces are obstacles for rays, not for box
   sweeps.
 - Materials are process-wide, not per world.
-- Pieces are not persisted in deltas.
+- Pieces are not persisted in deltas, and sleeping rubble is unloaded with its chunks.
 - Structures larger than `structure_max_nodes` (60,000 fragments or clusters) or
   `structure_max_radius` (60 m) around the event are solved in part, with their frontier held
   fixed.

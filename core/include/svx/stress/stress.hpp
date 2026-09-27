@@ -95,6 +95,7 @@ class StressProblem {
   i32 appended() const { return nfree_ - pc_n_; }   // free nodes the preconditioner does not cover
   i32 free_nodes() const { return nfree_; }
   i64 matrix_blocks() const { return K_.blocks(); }
+  i64 memory_bytes() const;
   i64 work_per_iteration() const { return 2 * K_.blocks() + amg_.work_per_apply(); }
 
   // f, u: 6 per node (u: warm start in, solution out; fixed nodes stay 0). maxit < 0: no cap.

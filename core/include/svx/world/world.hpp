@@ -31,6 +31,7 @@
 #pragma once
 
 #include <array>
+#include <functional>
 #include <memory>
 #include <unordered_map>
 #include <unordered_set>
@@ -47,6 +48,7 @@ namespace svx {
 
 namespace world_detail {
 struct SecAcc;
+class ChangeArchive;
 }
 
 // Runtime knobs: may change between ticks.
@@ -56,6 +58,19 @@ struct WorldParams {
   f64 dif = 1.5;        // dynamic increase factor of sudden load changes (1 = static)
   bool paused = false;  // tick() streams only (no commands, no motion)
   bool debug_fields = false;  // judged structures report their chunks changed (debug_field views refresh)
+};
+
+// Memory budgets (MB) of what a world derives and keeps around; checked every half second.
+// What they bound is either rebuilt on demand (fragment caches, structures, warm starts) or
+// removed as the least important (the smallest pieces, sleeping first; cosmetic events), so a
+// session never grows past them, however long it runs. (The grid is bounded by the level, or by
+// the streaming radii; the change archive by StreamConfig::archive_mb.)
+struct MemoryBudget {
+  f64 fragment_cache_mb = 128.0;  // fragment caches of chunks no structure holds: least recently used dropped beyond
+  f64 structure_mb = 256.0;       // registered structures: idle ones dropped beyond, the longest idle first
+  f64 piece_mb = 256.0;           // rigid pieces: beyond (as beyond max_bodies) the smallest are culled, sleeping first
+  f64 cache_mb = 48.0;            // warm starts and reference loads (beyond: those of registered structures only)
+  i32 max_events = 65536;         // events not taken (beyond: the oldest cosmetic ones are dropped)
 };
 
 // Setup: set before load() (the rigid and budget knobs may also change between ticks).
@@ -114,6 +129,7 @@ struct WorldConfig {
   i32 crack_events_per_tick = 24;  // cracks and dust
   i32 impact_events_per_tick = 6;  // heavy landings
   f64 impact_event_energy = 2e4;   // J dissipated by a landing to report it
+  MemoryBudget memory{};
 };
 
 // Why a piece left the world (WorldEvent::PieceRemoved).
@@ -122,6 +138,7 @@ enum class PieceEnd : u8 {
   Culled,      // over max_bodies: the smallest sleeping pieces go first
   OutOfWorld,  // fell kill_depth below the world
   Removed,     // remove_piece(), load()
+  Unloaded,    // asleep in chunks that left the resident area (streaming): rubble is not kept out of range
 };
 
 struct WorldEvent {
@@ -131,6 +148,7 @@ struct WorldEvent {
     Crack,         // pos, normal, strength (the bond's utilization when it broke, >= 1)
     Impact,        // pos, radius, strength (energy, J): blasts and heavy landings
     Dust,          // pos, vel, radius, voxels; strength 1: material crushed, 0: a shard too small to be a piece
+    Forgotten,     // id: a region whose changes were forgotten (StreamConfig::archive_mb); pos: its centre; voxels: its chunks
   };
   Kind kind = Kind::Crack;
   PieceEnd end = PieceEnd::Split;
@@ -204,10 +222,27 @@ struct WorldStats {
   // streaming
   i64 resident_chunks = 0, archived_chunks = 0, generated_total = 0, evicted_total = 0, budget_evicted = 0;
   f64 stream_ms = 0.0;
+  f64 archive_used_mb = 0.0, archive_capacity_mb = 0.0;
+  i64 forgotten_regions = 0, forgotten_chunks = 0;  // changes forgotten (the archive full, or forget_after_s)
+  // memory budgets (MemoryBudget): what they removed
+  i64 culled_pieces = 0, dropped_structures = 0, dropped_fragment_caches = 0, dropped_events = 0;
   // design (bake)
   f64 design_max_utilization = 0.0;
   i64 strengthened_voxels = 0, floating_voxels = 0;
   f64 bake_ms = 0.0;
+};
+
+// Memory a world holds, by kind (bytes; container capacities and node overheads).
+struct MemoryReport {
+  i64 grid = 0;        // voxel chunks: voxels, broken faces, design classes
+  i64 fragments = 0;   // fragment caches of chunks (derived from the grid, rebuilt on demand)
+  i64 structures = 0;  // registered structures: graphs, matrices, preconditioners
+  i64 pieces = 0;      // rigid pieces: shapes, collision samples, bond graphs, contacts
+  i64 archive = 0;     // changes of chunks that are not resident (streaming)
+  i64 caches = 0;      // warm starts, reference loads, resting loads of sleeping pieces
+  i64 queues = 0;      // output the host has not taken yet (events, changed / evicted chunks)
+  i32 chunks = 0, fragment_chunks = 0, structure_count = 0, piece_count = 0, archived_chunks = 0;
+  i64 total() const { return grid + fragments + structures + pieces + archive + caches + queues; }
 };
 
 class World {
@@ -302,6 +337,7 @@ class World {
   void debug_voxel(const IVec3& p);  // prints a voxel's fragment, owner and neighbours (stdout)
 
   WorldStats stats() const;
+  MemoryReport memory() const;
   u64 state_hash() const;    // voxels and broken bonds
   u64 session_hash() const;  // + the pieces' poses
 
@@ -336,7 +372,6 @@ class World {
   void support_changed(const IVec3& p, std::vector<u64>* chunks);  // (before an anchored voxel goes / after one comes)
   bool in_range(const V3& p) const;  // finite and within the voxel key range (commands and queries elsewhere are refused)
   void prune_caches();
-  static constexpr size_t kMaxJudged = 400000, kMaxWarm = 600000;
   // Extracts the structure holding fragment f (bounded: max_nodes / max_radius, 0 = config): a
   // new Structure, or nullptr after detaching it (it reaches no support).
   // detach_free false (bake): a piece reaching no support is removed from the source world.
@@ -411,6 +446,7 @@ class World {
   void announce_bodies();                    // PieceAdded events for new pieces
   void remove_bodies(std::vector<i64> ids, PieceEnd end);  // PieceRemoved events (announced pieces)
   void limit_bodies();
+  static i64 body_bytes(const Body& b);
 
   // ---- streaming (world_io.cpp)
   int stream_update();
@@ -437,8 +473,19 @@ class World {
   std::unordered_map<u64, std::vector<i64>> owner_;  // chunk -> structure id per fragment (0 none)
   std::vector<std::unique_ptr<Structure>> structures_;  // ascending id
   std::vector<IVec3> seeds_;                 // voxels whose structures must be (re)extracted
-  std::unordered_map<u64, std::array<f32, 6>> warm_u_;  // fragment identity -> last displacement
-  std::unordered_map<u64, BondLoad> judged_;  // bond identity -> load at its last judged state
+  i64 fresh_from_ = INT64_MAX;               // (during a refresh: the first id made in it)
+  // (both keep the chunk of the node they belong to: dropped with it when it leaves)
+  struct WarmStart {
+    u64 chunk = 0;
+    std::array<f32, 6> u{};
+  };
+  struct Judged {
+    u64 chunk = 0;
+    BondLoad load;
+  };
+  std::unordered_map<u64, WarmStart> warm_u_;  // fragment identity -> last displacement
+  std::unordered_map<u64, Judged> judged_;     // bond identity -> load at its last judged state
+  u64 node_chunk(const Structure& s, i32 node) const;
   bool designed_all_ = false;
   struct DeadLoad {
     IVec3 vox;
@@ -467,7 +514,23 @@ class World {
   StreamConfig stream_{};
   std::unordered_set<u64> generated_;
   std::unordered_map<u64, i32> column_count_;
-  std::unordered_map<u64, std::shared_ptr<const std::vector<u8>>> archive_;
+  std::unique_ptr<world_detail::ChangeArchive> archive_;
+  std::unordered_map<u64, i32> region_resident_;  // region -> resident chunks
+  u64 region_of(u64 chunk_key) const;
+  void unload_sleepers(const std::vector<u64>& chunks,
+                       const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of);
+  // Keeps a chunk's changes (the archive; a full bounded archive forgets old regions first).
+  void archive_record(u64 key, const std::vector<u8>& rec);
+  bool forget_regions(size_t need, u64 keep);  // (need bytes free; `keep`: never this region)
+  void forget_region(u64 region);
+  void forget_stale_regions();
+
+  // memory budgets (MemoryBudget)
+  void enforce_budgets();
+  void trim_fragment_caches();
+  void trim_structures();
+  void trim_output();
+  i64 structure_bytes(const Structure& s) const;
 };
 
 }  // namespace svx

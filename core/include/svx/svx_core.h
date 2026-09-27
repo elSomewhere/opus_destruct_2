@@ -56,8 +56,10 @@ void svxc_set_threads(int threads);         /* the shared pool (1 = serial); res
 
 /* Tunables by name: the fields of svx::WorldConfig (e.g. "dt", "max_bodies", "stress_work",
  * "cluster_nodes", "rigid.gravity", "rigid.substeps", "rigid.friction", "blast_kinetic",
- * "design_utilization") and of svx::WorldParams ("fragility", "impact", "dif", "paused",
- * "debug_fields"). Returns 0, or -1 for an unknown name. */
+ * "design_utilization", the memory budgets "memory.fragment_cache_mb", "memory.structure_mb",
+ * "memory.piece_mb", "memory.cache_mb", "memory.max_events") and of svx::WorldParams
+ * ("fragility", "impact", "dif", "paused", "debug_fields"). Returns 0, or -1 for an unknown
+ * name. */
 int svxc_set(svxc_world* w, const char* name, double value);
 double svxc_get(svxc_world* w, const char* name); /* NaN for an unknown name */
 
@@ -72,10 +74,21 @@ int svxc_bake(svxc_world* w);
  * focus points. The generator is called from several threads at once and must be a pure
  * function of the chunk; it fills out[32768] and returns 1, or 0 for an all-air chunk.
  * lo / hi: the world's extent in chunks, [lo, hi). Call after svxc_create (the world is
- * emptied). */
+ * emptied). The changes of chunks out of range are kept in a fixed arena of archive_mb (0:
+ * unbounded); when it is full (or after forget_after_s out of range, if > 0) whole regions of
+ * region_chunks x region_chunks chunk columns are forgotten, least recently seen first, and come
+ * back from the generator as they were. */
 typedef int (*svxc_generate_fn)(void* user, int cx, int cy, int cz, uint8_t* out);
-void svxc_enable_streaming(svxc_world* w, svxc_generate_fn fn, void* user, const int lo[3], const int hi[3],
-                           double load_radius, double evict_radius, int chunks_per_tick, double max_resident_mb);
+typedef struct svxc_stream {
+  double load_radius, evict_radius; /* m; defaults 96, 128 */
+  int chunks_per_tick;              /* default 6 */
+  double max_resident_mb;           /* 0: the radii alone */
+  double archive_mb;                /* default 64; 0: keep every change */
+  double forget_after_s;            /* 0: only when the archive is full */
+  int region_chunks;                /* default 8 */
+} svxc_stream;
+svxc_stream svxc_stream_defaults(void);
+void svxc_enable_streaming(svxc_world* w, svxc_generate_fn fn, void* user, const int lo[3], const int hi[3], const svxc_stream* cfg);
 void svxc_set_focus(svxc_world* w, const double* xyz, int count); /* count points, xyz each */
 
 /* Persistence: the changes since load as a delta against the base world (valid until the next
@@ -98,13 +111,14 @@ void svxc_tick(svxc_world* w);
 
 /* ---- output */
 
-enum { SVXC_PIECE_ADDED = 0, SVXC_PIECE_REMOVED, SVXC_CRACK, SVXC_IMPACT, SVXC_DUST };
-enum { SVXC_END_SPLIT = 0, SVXC_END_CULLED, SVXC_END_OUT_OF_WORLD, SVXC_END_REMOVED };
+enum { SVXC_PIECE_ADDED = 0, SVXC_PIECE_REMOVED, SVXC_CRACK, SVXC_IMPACT, SVXC_DUST, SVXC_FORGOTTEN };
+enum { SVXC_END_SPLIT = 0, SVXC_END_CULLED, SVXC_END_OUT_OF_WORLD, SVXC_END_REMOVED, SVXC_END_UNLOADED };
 typedef struct svxc_event {
   int kind;       /* SVXC_PIECE_ADDED, ... */
   int end;        /* PIECE_REMOVED: SVXC_END_* */
   int64_t id;     /* the piece */
   int64_t parent; /* PIECE_ADDED: the piece it broke from (0: the static world) */
+                  /* FORGOTTEN: id is the region, pos its centre, voxels its chunks */
   double pos[3], vel[3], ang[3], normal[3];
   double rot[4];  /* x, y, z, w */
   double radius, strength; /* CRACK: utilization; IMPACT: energy (J); DUST: 1 crushed, 0 a shard */
@@ -153,8 +167,15 @@ typedef struct svxc_stats {
   double tick_ms, structural_ms, rigid_ms, stream_ms, memory_mb;
   int64_t ticks, voxels, structures, pieces, awake, contacts;
   int64_t bonds_broken, detached_pieces, pulverized_voxels, resident_chunks;
+  int64_t archived_chunks, forgotten_regions, forgotten_chunks, culled_pieces, dropped_events;
+  double archive_used_mb, archive_capacity_mb;
 } svxc_stats;
 void svxc_get_stats(svxc_world* w, svxc_stats* out);
+/* What the world holds, by kind (bytes): see svx::MemoryReport. */
+typedef struct svxc_memory {
+  int64_t grid, fragments, structures, pieces, archive, caches, queues, total;
+} svxc_memory;
+void svxc_get_memory(svxc_world* w, svxc_memory* out);
 uint64_t svxc_state_hash(svxc_world* w);   /* voxels and broken bonds */
 uint64_t svxc_session_hash(svxc_world* w); /* + the pieces' poses (determinism checks) */
 

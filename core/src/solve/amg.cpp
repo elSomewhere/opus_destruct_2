@@ -1,5 +1,6 @@
 #include "svx/solve/amg.hpp"
 
+#include "svx/base/mem.hpp"
 #include "svx/base/parallel.hpp"
 
 #include <algorithm>
@@ -518,138 +519,6 @@ void Amg::solve_coarsest(const f64* b, f64* x) const {
   }
 }
 
-void Amg::smooth(const Level& L, f64* x, const f64* b, bool zero) const {
-  const Bsr6& A = L.A;
-  const i32 n = A.n;
-  if (opt_.sgs) {
-    // pre-smoothing: forward Gauss-Seidel within fixed row blocks, the other blocks' values from
-    // before the sweep (hybrid Gauss-Seidel: parallel, and the same for any thread count); the
-    // post-smoothing sweeps backward, so the cycle stays symmetric
-    for (int sw = 0; sw < opt_.sweeps; ++sw) {
-      const bool fresh = zero && sw == 0;
-      if (!fresh) std::copy(x, x + 6 * size_t(n), L.xold.begin());
-      parallel_for(n, kRowGrain, [&](i64 r0, i64 r1) {
-        f64 s[6];
-        for (i64 i = r0; i < r1; ++i) {
-          for (int q = 0; q < 6; ++q) s[q] = b[6 * size_t(i) + q];
-          const i32 k1 = A.rowptr[size_t(i) + 1];
-          for (i32 k = A.rowptr[size_t(i)] + 1; k < k1; ++k) {
-            const i64 j = A.col[size_t(k)];
-            if (j >= r0 && j < r1) {
-              if (fresh && j > i) continue;  // (still zero)
-              blk6::mv6_sub(&A.val[36 * size_t(k)], x + 6 * size_t(j), s);
-            } else if (!fresh) {
-              blk6::mv6_sub(&A.val[36 * size_t(k)], L.xold.data() + 6 * size_t(j), s);
-            }
-          }
-          blk6::mv6(&L.Dinv[36 * size_t(i)], s, x + 6 * size_t(i));
-        }
-      });
-    }
-    return;
-  }
-  // block-Jacobi Chebyshev on [lmax / 30, lmax]
-  const size_t m = 6 * size_t(n);
-  const f64 lmax = L.lmax, lmin = L.lmax / 30.0;
-  const f64 theta = 0.5 * (lmax + lmin), delta = 0.5 * (lmax - lmin);
-  std::vector<f64>& r = L.r;
-  std::vector<f64>& d = L.t;
-  if (zero) std::fill(x, x + m, 0.0);
-  f64 sigma = theta / delta, rho = 1.0 / sigma;
-  // r = b - A x ; d = D^-1 r / theta
-  A.apply(x, r.data());
-  for (size_t k = 0; k < m; ++k) r[k] = b[k] - r[k];
-  for (i32 i = 0; i < n; ++i) {
-    f64 z[6];
-    blk6::mv6(&L.Dinv[36 * size_t(i)], &r[6 * size_t(i)], z);
-    for (int q = 0; q < 6; ++q) d[6 * size_t(i) + q] = z[q] / theta;
-  }
-  std::vector<f64> Ad(m);
-  for (int it = 0; it < opt_.cheb_degree; ++it) {
-    for (size_t k = 0; k < m; ++k) x[k] += d[k];
-    if (it + 1 == opt_.cheb_degree) break;
-    A.apply(d.data(), Ad.data());
-    for (size_t k = 0; k < m; ++k) r[k] -= Ad[k];
-    const f64 rho1 = 1.0 / (2.0 * sigma - rho);
-    for (i32 i = 0; i < n; ++i) {
-      f64 z[6];
-      blk6::mv6(&L.Dinv[36 * size_t(i)], &r[6 * size_t(i)], z);
-      for (int q = 0; q < 6; ++q) d[6 * size_t(i) + q] = rho1 * rho * d[6 * size_t(i) + q] + 2.0 * rho1 / delta * z[q];
-    }
-    rho = rho1;
-  }
-}
-
-void Amg::cycle(size_t l, const f64* b, f64* x) const {
-  const Level& L = lv_[l];
-  const size_t m = 6 * size_t(L.A.n);
-  if (l + 1 == lv_.size()) {
-    solve_coarsest(b, x);
-    return;
-  }
-  std::fill(x, x + m, 0.0);
-  smooth(L, x, b, true);
-  // residual, restricted: rc_I = sum P_i^T r_i
-  L.A.apply(x, L.r.data());
-  parallel_for(static_cast<i64>(m), 8 * kRowGrain, [&](i64 k0, i64 k1) {
-    for (i64 k = k0; k < k1; ++k) L.r[size_t(k)] = b[size_t(k)] - L.r[size_t(k)];
-  });
-  const Level& C = lv_[l + 1];
-  const size_t mc = 6 * size_t(C.A.n);
-  parallel_for(C.A.n, kRowGrain, [&](i64 a0, i64 a1) {
-    f64 t[6];
-    for (i64 a = a0; a < a1; ++a) {
-      f64* bc = &C.b[6 * size_t(a)];
-      for (int q = 0; q < 6; ++q) bc[q] = 0.0;
-      for (i32 e = L.Rrow[size_t(a)]; e < L.Rrow[size_t(a) + 1]; ++e) {
-        const auto& [i, pe] = L.Rent[size_t(e)];
-        blk6::mtv6(&L.Pval[36 * size_t(pe)], &L.r[6 * size_t(i)], t);
-        for (int q = 0; q < 6; ++q) bc[q] += t[q];
-      }
-    }
-  });
-  std::vector<f64>& xc = L.xc;
-  std::fill(xc.begin(), xc.end(), 0.0);
-  for (int g = 0; g < std::max(1, opt_.gamma); ++g) {
-    if (g == 0) {
-      cycle(l + 1, C.b.data(), xc.data());
-    } else {
-      std::vector<f64> rc(mc), dx(mc);
-      C.A.apply(xc.data(), rc.data());
-      for (size_t k = 0; k < mc; ++k) rc[k] = C.b[k] - rc[k];
-      cycle(l + 1, rc.data(), dx.data());
-      for (size_t k = 0; k < mc; ++k) xc[k] += dx[k];
-    }
-  }
-  parallel_for(L.A.n, kRowGrain, [&](i64 r0, i64 r1) {
-    for (i64 i = r0; i < r1; ++i)
-      for (i32 e = L.Prow[size_t(i)]; e < L.Prow[size_t(i) + 1]; ++e)
-        blk6::mv6_add(&L.Pval[36 * size_t(e)], &xc[6 * size_t(L.Pcol[size_t(e)])], x + 6 * size_t(i));
-  });
-  if (opt_.sgs) {
-    // post-smoothing: backward hybrid Gauss-Seidel sweeps (the adjoint of the pre-smoothing)
-    const Bsr6& A = L.A;
-    const i32 n = A.n;
-    for (int sw = 0; sw < opt_.sweeps; ++sw) {
-      std::copy(x, x + 6 * size_t(n), L.xold.begin());
-      parallel_for(n, kRowGrain, [&](i64 r0, i64 r1) {
-        f64 s[6];
-        for (i64 i = r1 - 1; i >= r0; --i) {
-          for (int q = 0; q < 6; ++q) s[q] = b[6 * size_t(i) + q];
-          for (i32 k = A.rowptr[size_t(i)] + 1; k < A.rowptr[size_t(i) + 1]; ++k) {
-            const i64 j = A.col[size_t(k)];
-            const f64* xj = (j >= r0 && j < r1) ? x + 6 * size_t(j) : L.xold.data() + 6 * size_t(j);
-            blk6::mv6_sub(&A.val[36 * size_t(k)], xj, s);
-          }
-          blk6::mv6(&L.Dinv[36 * size_t(i)], s, x + 6 * size_t(i));
-        }
-      });
-    }
-  } else {
-    smooth(L, x, b, false);
-  }
-}
-
 void Amg::make_fast() {
   for (size_t l = 0; l < lv_.size(); ++l) {
     Level& L = lv_[l];
@@ -674,6 +543,15 @@ void Amg::make_fast() {
     L.rf.assign(m, 0.0f);
     L.of.assign(m, 0.0f);
     L.cf.assign(m, 0.0f);
+    // the cycle runs on the single-precision copies and the pattern: the double-precision
+    // blocks and the build's work arrays go (level 0's matrix is the caller's K again)
+    std::vector<f64>().swap(L.A.val);
+    std::vector<f64>().swap(L.Dinv);
+    std::vector<f64>().swap(L.Pval);
+    std::vector<V3>().swap(L.pos);
+    std::vector<V3>().swap(L.off);
+    std::vector<i32>().swap(L.parent);
+    for (std::vector<f64>* v : {&L.x, &L.b, &L.r, &L.t, &L.xc, &L.xold}) std::vector<f64>().swap(*v);
   }
 }
 
@@ -778,6 +656,20 @@ void Amg::apply(const f64* r, f64* z) const {
   cycle_f(0, b, x);
   for (i32 i = 0; i < n; ++i)
     for (int q = 0; q < 6; ++q) z[6 * size_t(i) + q] = x[8 * size_t(i) + q];
+}
+
+i64 Bsr6::memory_bytes() const { return vec_bytes(rowptr) + vec_bytes(col) + vec_bytes(val); }
+
+i64 Amg::memory_bytes() const {
+  i64 b = vec_bytes(chol_) + static_cast<i64>(lv_.capacity() * sizeof(Level));
+  for (const Level& L : lv_) {
+    b += L.A.memory_bytes() + vec_bytes(L.Dinv) + vec_bytes(L.pos) + vec_bytes(L.parent) + vec_bytes(L.off);
+    b += vec_bytes(L.Prow) + vec_bytes(L.Pcol) + vec_bytes(L.Pval) + vec_bytes(L.Rrow) + vec_bytes(L.Rent);
+    b += vec_bytes(L.x) + vec_bytes(L.b) + vec_bytes(L.r) + vec_bytes(L.t) + vec_bytes(L.xc) + vec_bytes(L.xold);
+    b += vec_bytes(L.Af) + vec_bytes(L.Df) + vec_bytes(L.Pf) + vec_bytes(L.Rf);
+    b += vec_bytes(L.xf) + vec_bytes(L.bf) + vec_bytes(L.rf) + vec_bytes(L.of) + vec_bytes(L.cf);
+  }
+  return b;
 }
 
 std::vector<i64> Amg::level_blocks() const {

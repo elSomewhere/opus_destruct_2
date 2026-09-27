@@ -482,6 +482,19 @@ export interface EngineStats {
   strengthenedVoxels: number;
   floatingVoxelsRemoved: number;
   bakeMs: number;
+  /**
+   * Memory the world holds (MB): all of it, and its fragment caches, structures and pieces; the
+   * change archive of a streamed world (used / its fixed capacity) and what it forgot; pieces
+   * culled by the budgets.
+   */
+  worldMemoryMB: number;
+  fragmentCacheMB: number;
+  structureMemoryMB: number;
+  pieceMemoryMB: number;
+  archiveMB: number;
+  archiveCapacityMB: number;
+  forgottenRegions: number;
+  culledPieces: number;
   /** Engine-specific extras are shown generically by the HUD. */
   [extra: string]: number | string | boolean;
 }
@@ -524,6 +537,14 @@ export function emptyEngineStats(): EngineStats {
     strengthenedVoxels: 0,
     floatingVoxelsRemoved: 0,
     bakeMs: 0,
+    worldMemoryMB: 0,
+    fragmentCacheMB: 0,
+    structureMemoryMB: 0,
+    pieceMemoryMB: 0,
+    archiveMB: 0,
+    archiveCapacityMB: 0,
+    forgottenRegions: 0,
+    culledPieces: 0,
   };
 }
 

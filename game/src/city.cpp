@@ -87,6 +87,14 @@ class CitySource final : public GameSource {
 
   IVec3 chunk_lo() const override { return clo_; }
   IVec3 chunk_hi() const override { return chi_; }
+  // a city block (with its half of the streets): its buildings are forgotten whole
+  u64 region(const IVec3& c) const override {
+    auto block = [](i32 chunk) {
+      const i32 v = chunk * kChunk;
+      return v >= 0 ? v / kPitch : -((-v + kPitch - 1) / kPitch);
+    };
+    return key3(block(c[0]), block(c[1]), 0);
+  }
   V3 spawn_pos() const override {
     // in the street next to the central block
     const i32 mid = blocks_ / 2;

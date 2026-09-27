@@ -75,6 +75,7 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
 | `svx_engine_demo --world tower\|rooms\|slab\|chimney\|bridge\|city [--scenario S] [--seconds T] [--threads N] [--frames DIR --fps F --res WxH --cam x,y,z --look x,y,z]` | Headless scenario run with a CPU renderer for frames. Tower scenarios: `pillars` (both west rows of ground columns), `side`, `core`, `all`, `rockets`. Reports pieces, breaks, per-phase rigid costs, awake speeds, piece sizes and the session hash. |
 | `svx_replay record\|play --world W --seconds S [--out F \| --log F] [--threads T]` | Records and replays sessions from command logs; checkpoint hashes are the determinism check. |
 | `svx_map_check [--threads T] [--movers] WAD...` | Imports, bakes and design-checks every map, then runs it idle. |
+| `svx_soak [--world city\|tower\|rooms] [--wad F --map M] [--minutes M] [--archive-mb MB] [--forget-s S] [--no-shoot]` | Long sessions and their memory: a streamed city crossed for minutes with continuous destruction (or a bounded level shot at), printing the world's memory by kind, the change archive, forgotten regions and the process's physical footprint. |
 | `svx_stream_bench`, `svx_wad_textures` | Streaming cost of the city; WAD graphics. |
 
 Diagnostics of the core (printing only, never changing results; compiled out with

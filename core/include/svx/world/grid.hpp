@@ -86,11 +86,20 @@ class VoxelGrid {
   // chunk access
   const Chunk* chunk(const IVec3& c) const;
   const std::unordered_map<u64, Chunk>& chunks() const { return chunks_; }
-  std::vector<u64> take_dirty();  // keys of chunks whose voxels changed since the last call (sorted)
+  // Keys of chunks whose voxels changed since the last call (sorted, each once). Bounded: if far
+  // more piled up than there are chunks (nobody takes them), every chunk is reported instead.
+  std::vector<u64> take_dirty();
   void mark_dirty(const IVec3& chunk_coord);
+  // Chunks emptied since the last call become uniform air (their arrays are recycled).
+  void compact_changed();
+  // Recycled 32^3 arrays (a bounded pool: streaming and destruction do not churn the allocator).
+  std::vector<u8> acquire_buffer(u8 fill);
+  void release_buffer(std::vector<u8>&& b);
 
   i64 solid_count() const;
-  i64 memory_bytes() const;
+  i64 memory_bytes() const;                  // the chunks' voxel arrays
+  i64 bookkeeping_bytes() const;             // change tracking
+  i64 dirty_bytes() const;
 
   // Persistence: chunks changed since track_changes(true) was called, serialized as a binary
   // coordinate-keyed delta against the regenerable base world (voxels, broken bonds, strength
@@ -116,15 +125,22 @@ class VoxelGrid {
   Chunk& chunk_mut(const IVec3& c);
   std::unordered_map<u64, Chunk> chunks_;
   u32 vox_seq_ = 0;  // source of Chunk::vox_version (unique over the grid's life)
-  std::vector<u64> dirty_;
+  std::unordered_set<u64> dirty_;
+  u64 last_dirty_ = ~0ull;  // (the key added last: the common repeat is skipped cheaply)
+  bool dirty_all_ = false;  // (overflow: every chunk is reported)
+  void touch_dirty(u64 k);
+  std::vector<u64> compact_;              // chunks that may have been emptied
+  std::vector<std::vector<u8>> spare_;    // recycled kChunkVox arrays
+  static constexpr size_t kMaxSpare = 256;
   bool track_ = false;
-  std::unordered_map<u64, u8> modified_;
+  std::unordered_map<u64, u32> modified_;  // key -> index in modified_list_
   std::vector<u64> modified_list_;
   void note_modified(const IVec3& chunk_coord) {
     if (!track_) return;
     const u64 k = key3(chunk_coord[0], chunk_coord[1], chunk_coord[2]);
-    if (modified_.emplace(k, 1).second) modified_list_.push_back(k);
+    if (modified_.emplace(k, static_cast<u32>(modified_list_.size())).second) modified_list_.push_back(k);
   }
+  void forget_modified(u64 k);
 };
 
 inline IVec3 chunk_of(const IVec3& p) { return {p[0] >> kChunkBits, p[1] >> kChunkBits, p[2] >> kChunkBits}; }

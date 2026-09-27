@@ -427,3 +427,187 @@ TEST_CASE("world: extractions of a structure too large for one never chase each 
   CHECK(extractions <= 8);
   CHECK(w.stats().structures >= 2);
 }
+
+// ---- memory: a streamed world's changes, budgets
+
+namespace {
+
+// A trip along the pillar row at chunk row 8: pillar k (every 8 chunks = 32 m) is cut at 1 m.
+struct PillarTrip {
+  World w;
+  Run r;
+  explicit PillarTrip(f64 archive_mb, f64 forget_after_s = 0.0) {
+    VoxelGrid g;
+    g.h = kH;
+    w.load(std::move(g));
+    StreamConfig sc;
+    sc.load_radius = 20.0;
+    sc.evict_radius = 28.0;
+    sc.chunks_per_tick = 400;
+    sc.archive_mb = archive_mb;
+    sc.forget_after_s = forget_after_s;
+    w.enable_streaming(std::make_shared<PillarSource>(), sc);
+  }
+  static V3 at(int k) { return {kH * (8 * k * kChunk + 16), kH * (8 * kChunk + 16), 0.0}; }
+  static IVec3 voxel(int k, i32 z) { return {8 * k * kChunk + 16, 8 * kChunk + 16, z}; }
+  void go(int k, int ticks = 10) {
+    w.set_focus(at(k));
+    run(w, ticks, &r);
+  }
+  void cut(int k) {
+    go(k);
+    w.carve(at(k) + V3{0.06, 0.06, 1.0}, 0.3);
+    run(w, 90, &r);  // (the pillar falls and comes to rest)
+  }
+  int count(WorldEvent::Kind kind) const {
+    int n = 0;
+    for (const WorldEvent& e : r.events) n += e.kind == kind;
+    return n;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("memory: a bounded change archive forgets the regions seen least recently; they come back as generated") {
+  PillarTrip t(6.0 / 1024.0);  // (six pages of 1 KB)
+  for (int k = 1; k <= 10; ++k) t.cut(k);
+  t.go(11);
+  const WorldStats s = t.w.stats();
+  MESSAGE("archive " << s.archived_chunks << " chunks, " << s.archive_used_mb * 1024 << " of " << s.archive_capacity_mb * 1024
+                     << " KB; forgotten " << s.forgotten_regions << " regions, " << s.forgotten_chunks << " chunks");
+  CHECK(s.archive_used_mb <= s.archive_capacity_mb);
+  CHECK(s.forgotten_regions >= 3);
+  CHECK(t.count(WorldEvent::Kind::Forgotten) == s.forgotten_regions);
+  // the rubble of the pillars left behind was unloaded with its chunks (it pins nothing)
+  int unloaded = 0;
+  for (const WorldEvent& e : t.r.events) unloaded += e.kind == WorldEvent::Kind::PieceRemoved && e.end == PieceEnd::Unloaded;
+  CHECK(unloaded >= 5);
+  const i64 mem = t.w.memory().archive;
+  // back to the first pillar: forgotten, so it stands again as generated
+  t.go(1, 20);
+  CHECK(vox_solid(t.w.grid().get(PillarTrip::voxel(1, 10))));
+  CHECK(vox_solid(t.w.grid().get(PillarTrip::voxel(1, 8))));
+  // ... and the one cut last is still cut
+  t.go(10, 20);
+  CHECK_FALSE(vox_solid(t.w.grid().get(PillarTrip::voxel(10, 8))));
+  CHECK(t.w.memory().archive == mem);  // (the arena never grows)
+}
+
+TEST_CASE("memory: an unbounded change archive keeps every change (a bounded level streamed from a file)") {
+  PillarTrip t(0.0);
+  for (int k = 1; k <= 10; ++k) t.cut(k);
+  t.go(11);
+  CHECK(t.w.stats().forgotten_regions == 0);
+  CHECK(t.w.stats().archived_chunks >= 10);
+  t.go(1, 20);
+  CHECK_FALSE(vox_solid(t.w.grid().get(PillarTrip::voxel(1, 8))));
+}
+
+TEST_CASE("memory: regions out of range for forget_after_s heal, with room left") {
+  PillarTrip t(64.0, 2.0);
+  t.cut(1);
+  t.go(4, 30);
+  CHECK(t.w.stats().forgotten_regions == 0);
+  t.go(4, 150);  // (3 s out of range)
+  CHECK(t.w.stats().forgotten_regions >= 1);
+  t.go(1, 20);
+  CHECK(vox_solid(t.w.grid().get(PillarTrip::voxel(1, 8))));
+}
+
+TEST_CASE("memory: budgets bound what a bounded level keeps, however long it runs; results do not depend on them") {
+  auto session = [](bool tight, MemoryReport* peak, WorldStats* st) {
+    WorldConfig cfg;
+    if (tight) {
+      cfg.memory.fragment_cache_mb = 0.02;
+      cfg.memory.structure_mb = 64.0;
+      cfg.memory.cache_mb = 0.05;
+      cfg.memory.max_events = 64;
+    }
+    World w;
+    w.configure(cfg);
+    w.load(table_world());
+    w.bake();
+    for (i32 lx : {0, 30})
+      for (i32 ly : {0, 30}) w.carve(leg_centre(lx, ly, 1.5), 0.3);
+    for (int t = 0; t < 600; ++t) {
+      if (t % 60 == 30) w.blast({2.0 + 0.004 * t, 2.0, 0.6}, 0.5, 1e5);
+      w.tick();  // (events never taken)
+      const MemoryReport m = w.memory();
+      peak->queues = std::max(peak->queues, m.queues);
+      peak->caches = std::max(peak->caches, m.caches);
+    }
+    peak->fragments = w.memory().fragments;  // (at the end: the design pass builds them all first)
+    *st = w.stats();
+    return w.session_hash();
+  };
+  MemoryReport loose{}, tight{};
+  WorldStats sl, stt;
+  const u64 h_loose = session(false, &loose, &sl);
+  const u64 h_tight = session(true, &tight, &stt);
+  MESSAGE("fragment caches: " << loose.fragments / 1024 << " KB loose, " << tight.fragments / 1024 << " KB tight ("
+                                   << stt.dropped_fragment_caches << " dropped); events dropped " << stt.dropped_events);
+  CHECK(stt.dropped_fragment_caches > 0);
+  CHECK(tight.fragments < loose.fragments);
+  CHECK(stt.dropped_events > 0);
+  CHECK(tight.queues < 64 * 1024);
+  CHECK(h_tight == h_loose);  // (fragment caches and warm starts are rebuilt identically; events are output only)
+}
+
+TEST_CASE("memory: the pieces' budget culls the smallest pieces, sleeping ones first") {
+  WorldConfig cfg;
+  cfg.memory.piece_mb = 0.1;
+  World w;
+  w.configure(cfg);
+  w.load(table_world());
+  w.bake();
+  for (i32 lx : {0, 30})
+    for (i32 ly : {0, 30}) w.carve(leg_centre(lx, ly, 1.5), 0.3);
+  Run r;
+  i64 peak = 0;
+  for (int t = 0; t < 300; ++t) {
+    w.tick();
+    peak = std::max(peak, w.memory().pieces);
+  }
+  CHECK(w.stats().culled_pieces > 0);
+  MESSAGE("pieces: peak " << peak / 1024 << " KB, " << w.stats().culled_pieces << " culled");
+  CHECK(peak <= static_cast<i64>(0.1 * 1048576.0) + 64 * 1024);  // (checked every tick; contacts count too)
+}
+
+TEST_CASE("world: a later extraction takes a registered structure over whole (no frontier next to what happens)") {
+  auto wall = [](const WorldConfig& cfg) {
+    auto w = std::make_unique<World>();
+    w->configure(cfg);
+    VoxelGrid g;
+    g.h = kH;
+    box(g, {-8, -8, -4}, {336, 16, 0}, kRock);
+    box(g, {0, 0, 0}, {320, 2, 24}, kConcrete);
+    g.compact();
+    w->load(std::move(g));
+    w->bake();
+    return w;
+  };
+  WorldConfig cfg;
+  cfg.structure_max_radius = 6.0;
+  {
+    auto w = wall(cfg);
+    w->carve({15.0, 0.1, 2.5}, 0.15);
+    for (int t = 0; t < 10; ++t) w->tick();
+    w->carve({20.0, 0.1, 2.5}, 0.15);
+    for (int t = 0; t < 60; ++t) w->tick();
+    CHECK(w->stats().structures == 1);
+    CHECK(w->stats().bonds_broken == 0);  // (small carves in a designed wall)
+  }
+  {
+    cfg.structure_max_nodes = 150;  // (too small to take a structure over whole: partial takeovers)
+    auto w = wall(cfg);
+    const i64 e0 = w->stats().extractions;
+    for (int k = 0; k < 6; ++k) {
+      w->carve({10.0 + 2.0 * k, 0.1, 2.5}, 0.15);
+      for (int t = 0; t < 10; ++t) w->tick();
+    }
+    const i64 settled = w->stats().extractions;
+    for (int t = 0; t < 120; ++t) w->tick();
+    MESSAGE("extractions: " << settled - e0 << " for six carves, then " << w->stats().extractions - settled << " in 2 s");
+    CHECK(w->stats().extractions - settled <= 2);
+  }
+}

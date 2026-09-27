@@ -22,6 +22,7 @@ struct Bsr6 {
   std::vector<f64> val;  // 36 per block
   void apply(const f64* x, f64* y) const;  // (rows in parallel: deterministic)
   i64 blocks() const { return static_cast<i64>(col.size()); }
+  i64 memory_bytes() const;
 };
 
 // Rows per parallel chunk and Gauss-Seidel partition (fixed: results never depend on the thread
@@ -58,12 +59,12 @@ class Amg {
   // A: SPD (all rows free). pos: 3 per node (m). Returns false if a diagonal block is singular.
   bool build(const Bsr6& A, const std::vector<V3>& pos, const AmgOptions& opt = {});
   void apply(const f64* r, f64* z) const;  // z = M^{-1} r (one cycle from zero)
-  const Bsr6& matrix() const { return lv_.front().A; }
   i32 levels() const { return static_cast<i32>(lv_.size()); }
   std::vector<i32> level_sizes() const;
   std::vector<i64> level_blocks() const;  // matrix blocks per level, then prolongation blocks per level
   bool built() const { return !lv_.empty(); }
   i64 work_per_apply() const { return work_; }  // block operations per cycle (for budgets)
+  i64 memory_bytes() const;
 
  private:
   struct Level {
@@ -88,8 +89,6 @@ class Amg {
   bool finalize(Level& L);
   f64 estimate_lmax(const Level& L) const;
   bool coarsen(size_t l);
-  void smooth(const Level& L, f64* x, const f64* b, bool zero) const;
-  void cycle(size_t l, const f64* b, f64* x) const;
   void make_fast();
   void cycle_f(size_t l, const f32* b, f32* x) const;
   void smooth_f(const Level& L, f32* x, const f32* b, bool fresh, bool backward) const;

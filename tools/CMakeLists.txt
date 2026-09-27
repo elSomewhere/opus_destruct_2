@@ -49,6 +49,11 @@ if(SVX_WASM)
     RUNTIME_OUTPUT_DIRECTORY ${PROJECT_SOURCE_DIR}/web/src/wasm
     SUFFIX ".js")
 endif()
+
+# Long sessions and their memory: streamed city crossings, bounded levels (World::memory).
+add_executable(svx_soak soak/main.cpp)
+target_link_libraries(svx_soak PRIVATE svx_game)
+svx_wasm_exe_options(svx_soak)
 endif()  # SVX_BUILD_GAME
 
 # The physics core alone for JavaScript hosts (docs/CORE.md): the C API of svx/svx_core.h.

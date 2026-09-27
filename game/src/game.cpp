@@ -187,8 +187,17 @@ void Game::drain_world_events() {
       case WorldEvent::Kind::Dust:
         g.kind = GameEvent::Kind::Dust;
         break;
+      case WorldEvent::Kind::Forgotten:
+        continue;  // (out of range by construction: nothing on screen changes)
     }
     events_.push_back(std::move(g));
+  }
+  // (a front end that stops taking events does not make the harness grow)
+  const size_t cap = static_cast<size_t>(std::max(16, max_events));
+  if (events_.size() > cap) events_.erase(events_.begin(), events_.begin() + static_cast<long>(events_.size() - cap));
+  if (removed_chunks_.size() > 4 * cap) {
+    std::sort(removed_chunks_.begin(), removed_chunks_.end());
+    removed_chunks_.erase(std::unique(removed_chunks_.begin(), removed_chunks_.end()), removed_chunks_.end());
   }
 }
 

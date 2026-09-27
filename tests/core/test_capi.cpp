@@ -128,13 +128,25 @@ TEST_CASE("capi: materials and a streamed world from a C callback") {
 
   svxc_world* w = svxc_create(0.125);
   const int lo[3] = {-4, -4, -1}, hi[3] = {4, 4, 1};
-  svxc_enable_streaming(w, generate_flat, nullptr, lo, hi, 12.0, 16.0, 64, 0.0);
+  svxc_stream sc = svxc_stream_defaults();
+  sc.load_radius = 12.0;
+  sc.evict_radius = 16.0;
+  sc.chunks_per_tick = 64;
+  sc.archive_mb = 1.0;
+  svxc_enable_streaming(w, generate_flat, nullptr, lo, hi, &sc);
   const double f[3] = {0, 0, 1};
   svxc_set_focus(w, f, 1);
   for (int t = 0; t < 5; ++t) svxc_tick(w);
   svxc_stats s;
   svxc_get_stats(w, &s);
   CHECK(s.resident_chunks > 10);
+  CHECK(s.archive_capacity_mb == doctest::Approx(1.0));
+  svxc_memory mem;
+  svxc_get_memory(w, &mem);
+  CHECK(mem.archive < 1 << 20);  // (the arena is reserved once; its pages count as they are used)
+  CHECK(mem.total == mem.grid + mem.fragments + mem.structures + mem.pieces + mem.archive + mem.caches + mem.queues);
+  CHECK(svxc_set(w, "memory.piece_mb", 32.0) == 0);
+  CHECK(svxc_get(w, "memory.piece_mb") == 32.0);
   const double o[3] = {1, 1, 5}, dn[3] = {0, 0, -1};
   CHECK(svxc_raycast(w, o, dn, 20.0).hit == 1);
   svxc_destroy(w);
