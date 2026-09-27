@@ -326,10 +326,12 @@ const EDGES: Readonly<Record<Stance, readonly Stance[]>> = {
 export function transitionTime(from: Stance, to: Stance): number {
   const key = `${from}>${to}`;
   const t: Record<string, number> = {
-    'stand>kneel': 0.45, 'kneel>stand': 0.5, 'kneel>prone': 0.85, 'prone>kneel': 0.8, 'stand>sit': 1.1, 'sit>stand': 1.0,
-    'kneel>ground': 0.7, 'ground>kneel': 0.75, 'stand>down': 0.55, 'prone>down': 0.4, 'down>ground': 0.9, 'ground>down': 0.5,
+    // (a body has weight: dropping to a knee takes most of a second, getting up from the ground
+    // longer; only falling is quick)
+    'stand>kneel': 0.7, 'kneel>stand': 0.8, 'kneel>prone': 1.15, 'prone>kneel': 1.15, 'stand>sit': 1.45, 'sit>stand': 1.3,
+    'kneel>ground': 1.0, 'ground>kneel': 1.1, 'stand>down': 0.55, 'prone>down': 0.4, 'down>ground': 1.2, 'ground>down': 0.5,
   };
-  return t[key] ?? 0.6;
+  return t[key] ?? 0.8;
 }
 
 /** Intermediate stances from `from` to `to` (the path excludes `from`). */

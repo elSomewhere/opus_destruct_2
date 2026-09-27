@@ -85,7 +85,7 @@ from it (section 6), so every improvement here shows in both.
 | input | effect |
 |---|---|
 | `crouch` 0..1 | knees bend and the stance widens; crouch-walk takes short, careful strides |
-| `stance` | `stand`, `kneel`, `prone` (crawls when moving), `sit` (on `seat`), `ground` (`groundVariant`: cross-legged, knees up, legs out), `down` (knocked down); transitions route through a stance graph (prone goes via kneeling) and take real time |
+| `stance` | `stand`, `kneel`, `prone` (crawls when moving), `sit` (on `seat`), `ground` (`groundVariant`: cross-legged, knees up, legs out), `down` (knocked down); transitions route through a stance graph (prone goes via kneeling) and take real time (dropping to a knee 0.7 s, sitting down 1.45 s, getting up from prone over 2 s) |
 | `seat` | `{pos, backrest, deskHeight?, variant}`: upright, leaning back with an arm along the backrest, legs crossed, elbows on knees, or at a desk typing |
 | `carry` | relaxed / ready / aim / hip; long guns and pistols have their own holds (below) |
 | `aimAt` | the trunk turns and pitches to the target, spread over spine, chest and neck, bladed for long guns; the muzzle points exactly at it |
