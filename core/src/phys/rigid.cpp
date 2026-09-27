@@ -556,10 +556,11 @@ void RigidWorld::solve(f64 dt) {
     };
     for (int col = 0; col < kColors; ++col) {
       const std::vector<i32>& L = colour[size_t(col)];
-      if (L.size() < 32) {
+      // (a colour of few manifolds is cheaper on this thread than handing it to the pool)
+      if (L.size() < 128) {
         for (i32 gi : L) group(gi);
       } else {
-        parallel_for(static_cast<i64>(L.size()), 16, [&](i64 q0, i64 q1) {
+        parallel_for(static_cast<i64>(L.size()), 32, [&](i64 q0, i64 q1) {
           for (i64 q = q0; q < q1; ++q) group(L[size_t(q)]);
         });
       }
