@@ -57,6 +57,9 @@ bool Engine::bake(f64* ms) {
       const Chunk* ch0 = grid_.chunk(cc);
       const u32 ver = ch0 ? ch0->vox_version : 0;
       Structure* s = extract(f, 4000000, 1e9, false);
+      static const bool bdbg = std::getenv("SVX_DEBUG_BAKE") != nullptr;
+      if (bdbg && s && s->P.nodes.size() > 1000)
+        std::printf("  [bake] chunk (%d %d %d) fragment %d: structure of %zu nodes\n", cc[0], cc[1], cc[2], fi, s->P.nodes.size());
       if (!s) {
         // (a floating piece was removed: the chunk's fragments are renumbered, scan it again; the
         // ones seen are skipped by identity)

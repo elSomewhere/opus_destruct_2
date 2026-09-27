@@ -95,15 +95,21 @@ Each piece owns a voxel shape in its own grid-aligned frame, its fragments and i
 
 - **Contacts.** Surface samples (inset corners of exposed faces; more for larger pieces) are
   tested against the world grid and other pieces' shapes. Normals come from the face of least
-  penetration leading to air. A pair keeps a manifold of 16 contacts, more for large pieces (a
-  large piece rests on a bearing surface, not on a few points).
+  penetration leading to air. A pair keeps a manifold of 12 contacts, plus 8 per metre of a
+  piece's radius (a large piece rests on a bearing surface, not on a few points).
 - **Solver.** Sequential impulses (projected Gauss–Seidel): warm starting, Coulomb friction,
   restitution for fast impacts only, split-impulse position correction (the impulses stay true
   forces for the fracture layer). A squeeze guard keeps a light piece pinned between heavy ones
   from leaving faster than its partners.
-- **Sleep.** A piece touching something sleeps once its smoothed speed stayed low for 30
-  substeps; settling pieces lose their last jitter (rest damping). An awake piece moving near a
-  sleeping one wakes it, as do carves and blasts nearby.
+- **Substeps.** Two a tick (10 velocity, 4 position iterations). *Busy* (more than 150 pieces
+  faster than 2 m/s, the violent part of a collapse, or more than 6,000 contacts, a large pile
+  settling): one substep, 6 and 2 iterations. Both are functions of the state alone.
+- **Sleep.** A piece touching something sleeps once its smoothed speed stayed below the sleep
+  speed for 0.25 s (0.15 m/s, or 1.2 g dt if more: what gravity adds in a substep is what an
+  unconverged solve leaves). Rubble (pieces under 1.5 m) moving slower than 0.9 m/s loses 20 %
+  of its speed per 1/120 s: rubble is rough, and piles settle within seconds. A large piece
+  toppling slowly is not held. An awake piece moving near a sleeping one wakes it, as do carves
+  and blasts nearby.
 - **Coupling to structures.** Contact impulses on world voxels load the fragment they touch:
   impacts as sudden load cases (pancake collapse of floors), resting pieces as dead loads.
 - **Budget.** Beyond 3,000 pieces the smallest sleeping ones fade out. Pieces that fall off the
@@ -120,8 +126,10 @@ A piece is checked when something happens to it, after its contact solve in the 
     shifting under it).
   - *Spin*: centripetal load over 2 g at its rim.
 - **Loads.**
-  - A rigid contact stops a piece within one substep, but a real impact takes the time a stress
-    wave (slowed by crushing) needs to cross it. Contact impulses load a piece over
+  - A resting contact (closing no faster than gravity makes it within a substep or two) carries
+    a steady force, J / dt: the piece's weight and what rests on it, in full.
+  - An impact: a rigid contact stops a piece within one substep, but a real impact takes the time
+    a stress wave (slowed by crushing) needs to cross it. Impact impulses load a piece over
     τ = max(dt, 2r / 400 m/s): large pieces crush progressively from where they hit instead of
     feeling a uniform deceleration of tens of g.
   - The rigid solver's contact forces are one of many statically admissible answers and may put
@@ -130,13 +138,14 @@ A piece is checked when something happens to it, after its contact solve in the 
     (least squares, f_c = u + θ × r_c).
 - **Break rounds: a progressive failure within the substep** (steps of a sequentially linear
   analysis).
-  1. Solve, then break the worst bonds: those within 0.85 of φ_max and at least the worst 15 %
-     of the overloaded ones.
+  1. Solve, then break the worst bonds: those within 0.85 of φ_max and at least the worst
+     quarter of the overloaded ones.
   2. Chips crushed off where the piece struck (parts under 4 % of its mass) pass their load on to
      the piece through the crack (crushed material in between still transmits it). They leave
      the solve, and the loads redistribute.
-  3. Repeat, up to 12 rounds, until nothing is overloaded, the impact's energy is spent, or a
-     part of some size comes apart.
+  3. Repeat, up to 8 rounds, until nothing is overloaded, the impact's energy is spent, or a
+     part of some size comes apart. (Pieces of more than 800 fragments are solved on fragment
+     clusters, 1 m cells; they break finer once smaller.)
 - **Separation.** The parts of a piece broken in a collision do not touch each other for the rest
   of that substep: the failed interface carried its strength and then no more. The contact step
   is solved again with the new pieces (only they are collided afresh), so the part above a
@@ -166,8 +175,9 @@ and joins results in a fixed order:
 A session replays bit for bit on any thread count (tested on 1 and 4 threads).
 
 Tower collapse (the engine demo's "pillars" scenario: 920k voxels, 200k of them coming down,
-about 1,900 pieces at rest): peak ticks of about 35 ms natively on 8 threads, 50–75 ms in the
-browser (WASM, 8 threads). The browser shows the peak of the collapse in slow motion.
+about 1,600 pieces at rest, asleep by ~12 s): rigid work at the peak about 10–14 ms a tick
+natively on 8 threads; in the browser (WASM, 8 threads) the peak runs at 20–35 ticks a second
+on a busy machine, so its heaviest seconds play slower than real time.
 
 ## 7. What is kept from v1
 
