@@ -254,7 +254,7 @@ export class Behaviours {
     if (part > 0) this.stunPart(PARENT_OF[part]!, s * 0.5);
     // a blow to the head dazes (hard ones knock out)
     if (zone === 'head' && info.kind === 'blunt') this.daze = Math.max(this.daze, clamp(0.25 * f, 0, 0.9));
-    if (info.kind === 'blast') this.daze = Math.max(this.daze, clamp(0.2 * f, 0, 0.85));
+    if (info.kind === 'blast') this.daze = Math.max(this.daze, clamp(0.4 * f, 0, 0.85));
     // a wound to hold
     if (info.kind === 'bullet' || info.kind === 'blade') {
       const q = pose.q[BODY_BONE[part]!]!;
@@ -703,9 +703,11 @@ export class Behaviours {
         const beyond = tilt > 0.9 || (!this.airborne && this.balanceError > reach);
         this.lostFor = beyond ? this.lostFor + dt : 0;
         const gone = beyond && (this.lostFor > 0.14 || tilt > 1.3 || this.balanceError > 1.8 * reach);
-        const lost = gone || legs < 0.25 || this.steps > 12 || this.reactT > 6 || this.daze > 0.75 || !this.conscious;
+        // (thrown up off the feet: no step catches that)
+        const thrown = this.airborne && this.comVel[2] > 1.3;
+        const lost = gone || thrown || legs < 0.25 || this.steps > 12 || this.reactT > 6 || this.daze > 0.75 || !this.conscious;
         if (lost) {
-          this.lostWhy = tilt > 0.9 ? 'tilt' : this.balanceError > reach ? 'reach' : legs < 0.25 ? 'legs' : this.steps > 12 ? 'steps' : this.reactT > 6 ? 'time' : 'daze';
+          this.lostWhy = thrown ? 'thrown' : tilt > 0.9 ? 'tilt' : this.balanceError > reach ? 'reach' : legs < 0.25 ? 'legs' : this.steps > 12 ? 'steps' : this.reactT > 6 ? 'time' : 'daze';
           this.setMode('falling');
           break;
         }

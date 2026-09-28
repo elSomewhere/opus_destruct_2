@@ -739,7 +739,8 @@ export class Character {
       // thrown: a hit on the trunk, the whole body shoved away, dazed
       const ch = this.pose.p[H.chest]!;
       this.hitAt({ point: [ch[0], ch[1], ch[2]], dir: away, force: 2.5 * f * strength, kind: 'blast', bone: H.chest });
-      this.blastPush(center, reach, 5.5 * f * strength);
+      // (blastPush falls off with distance itself: near, thrown off the feet; at the edge, a stagger)
+      this.blastPush(center, reach, 7 * strength);
       this.pain = 0.3;
     }
     if (!wasAlive && !gibbed) this.blastPush(center, reach, 9 * f * strength);
