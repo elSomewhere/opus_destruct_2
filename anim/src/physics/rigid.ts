@@ -42,10 +42,12 @@ export class RigidBody {
   /** Velocities before the substep's constraints. */
   readonly v0: V3 = [0, 0, 0];
   readonly w0: V3 = [0, 0, 0];
-  readonly mass: number;
-  readonly invMass: number;
+  mass: number;
+  invMass: number;
   /** Principal inverse inertia in the body frame. */
   readonly invI: V3;
+  /** Gone (a limb shot off): it touches nothing and weighs next to nothing. */
+  gone = false;
   readonly spheres: Sphere[];
   /** External force and torque (world) applied every substep of the next step, then cleared. */
   readonly force: V3 = [0, 0, 0];
@@ -85,6 +87,19 @@ export class RigidBody {
     this.x = [x[0], x[1], x[2]];
     this.q = [q[0], q[1], q[2], q[3]];
     this.spheres = spheres;
+    this.updateInertia();
+  }
+
+  /** The body is gone (a severed limb, now a gib): it keeps a token mass and touches nothing. */
+  lose(): void {
+    if (this.gone) return;
+    this.gone = true;
+    const k = 0.05;
+    this.mass *= k;
+    this.invMass /= k;
+    this.invI[0] /= k;
+    this.invI[1] /= k;
+    this.invI[2] /= k;
     this.updateInertia();
   }
 
@@ -565,6 +580,7 @@ export class RigidSystem {
     const p = this.probe;
     const c: V3 = [0, 0, 0];
     for (const b of this.bodies) {
+      if (b.gone) continue;
       const speed = Math.hypot(b.v[0], b.v[1], b.v[2]);
       for (const s of b.spheres) {
         const reach = speed + Math.hypot(b.w[0], b.w[1], b.w[2]) * Math.hypot(s.c[0], s.c[1], s.c[2]);
@@ -586,7 +602,7 @@ export class RigidSystem {
     const c: V3 = [0, 0, 0];
     const n: V3 = [0, 0, 0];
     for (const b of this.bodies) {
-      if (b.ghost) continue;
+      if (b.ghost || b.gone) continue;
       const speed = Math.hypot(b.v[0], b.v[1], b.v[2]);
       for (const s of b.spheres) {
         b.point(s.c, c);
@@ -615,6 +631,7 @@ export class RigidSystem {
     if (!this.pairsEnabled) return;
     for (const p of this.pairs) {
       const A = p.a, B = p.b;
+      if (A.gone || B.gone) continue;
       const sa = A.spheres[p.sa]!, sb = B.spheres[p.sb]!;
       const ca = A.point(sa.c, J0);
       const cb = B.point(sb.c, J1);

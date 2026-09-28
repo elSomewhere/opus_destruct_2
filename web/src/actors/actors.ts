@@ -415,7 +415,7 @@ export class ActorWorld {
   markHostile(a: Actor): void {
     a.hostile = true;
     // draw the holstered gun
-    if (!a.char.weapon && a.weapon && a.weapon.kind !== 'knife') {
+    if (!a.char.weapon && a.weapon && a.weapon.kind !== 'knife' && !a.char.gunHandLost) {
       a.char.weapon = a.weapon;
       a.char.motion.weapon = a.weapon;
     }
@@ -438,7 +438,7 @@ export class ActorWorld {
 
   /** Takes the carried weapon in hand (a thug's knife, a civilian's pistol). */
   drawWeapon(a: Actor): void {
-    if (!a.char.weapon && a.weapon) {
+    if (!a.char.weapon && a.weapon && !a.char.gunHandLost) {
       a.char.weapon = a.weapon;
       a.char.motion.weapon = a.weapon;
     }
@@ -531,7 +531,7 @@ export class ActorWorld {
     ] as const) {
       x.brawler = new Brawler(x.char, { seed: x.id, aggression: 0.4 + Math.random() * 0.4, skill: 0.2 + Math.random() * 0.3 });
       x.brawler.opponent = y.char;
-      if (x.weapon?.kind === 'knife') {
+      if (x.weapon?.kind === 'knife' && !x.char.gunHandLost) {
         x.char.weapon = x.weapon;
         x.char.motion.weapon = x.weapon;
       }

@@ -697,7 +697,7 @@ export class HumanoidBody {
     const com: V3 = [0, 0, 0];
     for (let i = 0; i < BODY_COUNT; i++) {
       const b = this.parts[i]!;
-      if (b.ghost) continue;
+      if (b.ghost || b.gone) continue;
       let q: Readonly<Quat> = b.q;
       if (pose) {
         const bone = BODY_BONE[i]!;

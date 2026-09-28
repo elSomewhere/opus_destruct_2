@@ -432,3 +432,23 @@ test('bodies: a runner catches a foot on a body lying across the way', () => {
   }
   assert.ok(tripped > 0, 'nobody caught a foot on the body');
 });
+
+test('limbs: a leg shot off, the body goes down and does not stand again', () => {
+  const c = soldier();
+  host(c, 1);
+  const shoot = (bone: number, times: number): void => {
+    for (let k = 0; k < times; k++) {
+      const p = c.pose.p[bone]!, t = c.pose.tail(bone);
+      const mid: V3 = [(p[0] + t[0]) / 2, (p[1] + t[1]) / 2, (p[2] + t[2]) / 2];
+      const hit = c.raycast([mid[0] - 3, mid[1], mid[2]], [1, 0, 0], 6);
+      if (hit && hit.bone === bone) c.wound(hit, [1, 0, 0], 10, 0.07);
+      host(c, 0.1);
+    }
+  };
+  shoot(H.shinL, 3);
+  assert.ok(c.behaviours.legless, 'the leg is gone');
+  host(c, 12);
+  assert.ok(c.alive, 'alive');
+  assert.ok(c.pose.p[H.pelvis]![2] < 0.45, `down: pelvis at ${c.pose.p[H.pelvis]![2].toFixed(2)} m`);
+  assert.notEqual(c.behaviours.mode, 'animated', 'it does not stand again');
+});

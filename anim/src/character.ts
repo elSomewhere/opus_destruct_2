@@ -23,7 +23,7 @@
  */
 import type { Prop } from './characters/props.ts';
 import { WorldPose } from './core/skeleton.ts';
-import { B, BODY_COUNT, HumanoidBody } from './body/humanoid.ts';
+import { B, BODY_BONE, BODY_COUNT, HumanoidBody } from './body/humanoid.ts';
 import { Behaviours, type Perception } from './behaviour/controller.ts';
 import { zoneOfPart, type HitInfo, type Zone } from './behaviour/injuries.ts';
 import { MotionPlan, type AnimEvent } from './motion/plan.ts';
@@ -108,6 +108,8 @@ export class Character {
   ownsModel = false;
   /** Skin matrices of the current pose (16 floats per bone). */
   readonly skin: Float32Array;
+  /** Each model part's voxel count when whole (a limb mostly shot away is lost). */
+  private readonly partFull: number[];
   /** Hit flash 0..1 (the host tints the character). */
   flash = 0;
   /** Beaten unconscious (a melee knockout): down until it comes to. */
@@ -149,6 +151,7 @@ export class Character {
     this.maxHealth = this.health = o.health ?? 100;
     this.skin = new Float32Array(sk.count * 16);
     this.retro = o.retro ?? null;
+    this.partFull = this.model.parts.map((p) => p.count);
   }
 
   get alive(): boolean {
@@ -158,6 +161,11 @@ export class Character {
   /** The body leads (staggering, falling, down, getting up, dead): the host follows its root. */
   get controlled(): boolean {
     return this.behaviours.leading;
+  }
+
+  /** The right (gun) hand was shot off: it holds nothing any more. */
+  get gunHandLost(): boolean {
+    return this.behaviours.lost[B.handR]!;
   }
 
   /** Badly hurt, down and writhing on the ground. */
@@ -631,10 +639,18 @@ export class Character {
     }
     if (out.length > 0) {
       this.geometryVersion++;
-      // a limb that came off leaves its muscle behind
-      for (const g of out) {
-        const i = HumanoidBody.bodyOfBone(g.part.bone);
-        this.body.tone[i] = 0;
+      // a limb that came off (most of it gone): the body has no use of it, or of what hung on it;
+      // a gun hand gone lets go of the gun
+      for (const i of [B.upperarmL, B.forearmL, B.handL, B.upperarmR, B.forearmR, B.handR, B.thighL, B.shinL, B.footL, B.thighR, B.shinR, B.footR]) {
+        if (this.behaviours.lost[i]) continue;
+        const pi = m.partOfBone[BODY_BONE[i]!]!;
+        const full = pi >= 0 ? this.partFull[pi] ?? 0 : 0;
+        if (pi < 0 || full === 0 || m.parts[pi]!.count > 0.4 * full) continue;
+        this.behaviours.loseLimb(i);
+        if (i >= B.upperarmR && i <= B.handR && this.weapon) {
+          const w = this.dropWeapon();
+          if (w) out.push(w);
+        }
       }
     }
     return out;

@@ -378,6 +378,36 @@ export class Behaviours {
   /** Why the last reaction ended in a fall (debugging). */
   lostWhy = '';
 
+  /** Body parts shot off (a limb and all below it). */
+  readonly lost: boolean[] = new Array(BODY_COUNT).fill(false);
+  /** A leg is gone: the body will not stand again (it can still crawl). */
+  legless = false;
+
+  /**
+   * A limb shot off at `part` (it and everything below it): the body has no use of it. The
+   * parts stay in the simulation (the joints need them) but touch nothing and weigh next to
+   * nothing. A leg gone: the body goes down and does not stand again.
+   */
+  loseLimb(part: number): void {
+    const mark = (i: number): void => {
+      if (this.lost[i]) return;
+      this.lost[i] = true;
+      this.body.parts[i]!.lose();
+      for (let j = 1; j < BODY_COUNT; j++) if (PARENT_OF[j] === i) mark(j);
+    };
+    mark(part);
+    const leg = part >= B.thighL;
+    if (leg) {
+      this.legless = true;
+      if (part <= B.footL) this.injuries.legL = 1;
+      else this.injuries.legR = 1;
+      if (this.alive) {
+        this.writhing = false;
+        this.collapse(30);
+      }
+    }
+  }
+
   /**
    * Too badly hurt to stand: the legs give, the body goes down and writhes (clutching the
    * wound, curling up, rocking) for `seconds`, then struggles back up.
@@ -762,8 +792,9 @@ export class Behaviours {
         this.alignLying(pose, true);
         if (!this.conscious && this.time >= this.downUntil) this.conscious = true;
         // (face down and hurting, a host that wants it away has it crawl off: the struggle of it)
-        const crawl = this.writhing && !plan.lyingOnBack && plan.input.stance === 'prone' && this.modeTime > 1.5;
-        if (this.alive && this.conscious && this.modeTime > 0.8 && (this.time >= this.downUntil || crawl)) this.setMode('rising');
+        const crawl = (this.writhing || this.legless) && !plan.lyingOnBack && plan.input.stance === 'prone' && this.modeTime > 1.5;
+        // (on one leg it does not stand again: it crawls, or lies)
+        if (this.alive && this.conscious && this.modeTime > 0.8 && ((this.time >= this.downUntil && !this.legless) || crawl)) this.setMode('rising');
         break;
       }
       case 'rising': {
@@ -833,7 +864,7 @@ export class Behaviours {
     const inj = this.injuries;
     const legs = 1 - 0.5 * Math.max(inj.legL, inj.legR) - 0.2 * Math.min(inj.legL, inj.legR);
     const stun = Math.max(this.stun[B.thighL]!, this.stun[B.shinL]!, this.stun[B.thighR]!, this.stun[B.shinR]!);
-    return clamp(legs * (1 - 0.6 * stun) * (1 - this.daze), 0, 1);
+    return this.legless ? 0 : clamp(legs * (1 - 0.6 * stun) * (1 - this.daze), 0, 1);
   }
 
   /** How far the trunk leans from upright (rad). */
@@ -1490,7 +1521,7 @@ export class Behaviours {
       hv[0] += ((w[0] - wp[0]) * idt - hv[0]) * fv;
       hv[1] += ((w[1] - wp[1]) * idt - hv[1]) * fv;
       hv[2] += ((w[2] - wp[2]) * idt - hv[2]) * fv;
-      if (grip <= 0.01 || tone < 0.05) continue;
+      if (grip <= 0.01 || tone < 0.05 || this.lost[i === 0 ? B.handL : B.handR]) continue;
       att.target[0] = w[0];
       att.target[1] = w[1];
       att.target[2] = w[2];
