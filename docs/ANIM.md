@@ -1,14 +1,25 @@
 # svx_anim: voxel characters for structvox
 
 `anim/` holds **svx_anim**, an animation engine for voxel characters: soldiers and civilians
-built from voxels, animated procedurally, that bleed, lose limbs, turn into ragdolls and gibs.
-It has a smooth modern presentation and a retro one (Voxel Doom style frames stepped in Doom
-tics) that is computed from the modern animation.
+built from voxels that move as physical bodies. They keep their balance, stagger, trip, reach
+for walls, flinch, hold their wounds, fall, get up, fight, bleed, lose limbs and die. There is a
+smooth modern presentation and a retro one (Voxel Doom style frames stepped in Doom tics),
+computed from the modern animation.
+
+The approach follows NaturalMotion's Euphoria. The character is a simulated body of rigid
+parts driven by muscles, not a played animation. A **motion plan** says what the character
+means to do: walk there, aim at that, throw a jab, sit down. A **physical body** of 16 rigid
+parts with joints and muscles carries the plan out in a physics simulation. Between them sit
+the **behaviours**, the character's motor intelligence. They read the body's senses (balance,
+contacts, what hit it, what is within reach) and decide every frame how the muscles work: how
+tense each region is, where the feet step, where the hands go and where the head turns. A hit
+is not a canned reaction. It is an impulse on the body, and the body deals with it: it takes it
+in its stride, staggers, reaches out, or falls.
 
 Like the physics core (`svx_core`, [CORE.md](CORE.md)), it is a library with no knowledge of
 the game:
 
-- no physics engine;
+- no physics engine (it has its own small one for bodies, gibs and blood);
 - no renderer;
 - no engine protocol;
 - no DOM.
@@ -19,15 +30,21 @@ The game harness (`web/`) is one host of it. The two layers never meet inside sv
 anim/                 svx_anim (TypeScript, zero dependencies, runs in node, browsers, workers)
   math/               vectors, quaternions, matrices, seeded random and noise
   core/               Skeleton, Pose, WorldPose, two-bone IK, springs, keyframe curves
-  locomotion/         gait parameters (walk -> run by speed, crouch)
-  humanoid/           the humanoid rig, the HumanoidAnimator, gait styles, stances, actions,
-                      hit reactions, fight choreography (Brawler), the humanoid ragdoll layout
+  motion/             the motion plan: MotionPlan (what the character means to do), the foot
+                      planner, gait parameters and personal styles, stances, actions, arm rig
+                      and weapon holds
+  body/               HumanoidBody: 16 rigid parts, anatomical joints, muscles, assists
+  behaviour/          Behaviours (modes, balance, reflexes), senses (support polygon, walls
+                      within reach), injuries
+  physics/            CollisionWorld (the only view of the world), the rigid body solver
+                      (XPBD), gibs and blood
+  humanoid/           the humanoid rig (23 bones), fight choreography (Brawler)
   voxel/              VoxelModel, sculpting (SDF shapes), meshing, damage (hits, wounds, severing)
-  physics/            CollisionWorld (the only view of the world), particle ragdoll, gibs and blood
   retro/              re-voxelized frames of poses, Doom-style state sequences and playback
   characters/         procedural soldiers, civilians and thugs (many looks per geometry), weapons,
                       furniture (benches, chairs, desks, café tables)
-  character.ts        Character: model + animator + ragdoll + wounds + retro, what hosts drive
+  character.ts        Character: model + plan + body + behaviours + wounds + retro, what hosts
+                      drive; gatherObstacles (bodies among bodies)
 web/src/render/characters.ts + shaders/character.wgsl   WebGPU drawing of svx_anim meshes
 web/src/actors/       the game's actors: AI, navigation, combat, gore, crowds (the harness side)
 web/src/lab/          the animation lab (lab.html): svx_anim without the physics engine
@@ -66,7 +83,7 @@ svx_anim asks a host for three things (`physics/collision.ts`):
 ```ts
 interface CollisionWorld {
   groundHeight(x, y, zTop, zBottom): number | null;   // feet
-  sphere(center, r, out): boolean;                      // ragdolls, gibs, blood (push-out + normal)
+  sphere(center, r, out): boolean;                      // bodies, gibs, blood (push-out + normal)
   raycast(origin, dir, maxDist): number;                // blood drops, line of sight
 }
 ```
@@ -75,17 +92,32 @@ interface CollisionWorld {
 engine's streamed chunk occupancy, the same bits the player collides with, so characters walk on
 what the physics leaves standing. `FlatGround` is for tests and empty scenes.
 
-## 3. Animation
+## 3. Motion, body and behaviours
 
-`HumanoidAnimator` animates the 23-bone humanoid rig procedurally from a few inputs. The
-character itself is moved by the host, with its own collision, via `setRoot(pos, yaw)`; the
-animation follows. Everything below is the smooth baseline; the retro presentation is baked
-from it (section 6), so every improvement here shows in both.
+Every frame, `Character.update(dt)` runs three layers in turn:
+
+1. **Behaviours, sensing.** Read the body: its centre of mass and velocity, the support
+   polygon, the capture point, contacts, walls within reach. Pick the mode. Set the plan's
+   controls: pelvis overrides, a held stance, reflex targets for the head and hands.
+2. **The motion plan.** Compute the pose the character means to have this frame (a kinematic
+   pose of the 23-bone rig) and the events (strikes, reloads).
+3. **Behaviours, driving.** Turn that pose into muscle targets and tone per region, and set the
+   assists (support, steering, feet, hands). Then step the physics and read the drawn pose back
+   from the rigid bodies.
+
+The character is moved by the host, with its own collision, via `setRoot(pos, yaw)`, and the
+plan follows. When the body leads (staggering, falling, down, getting up, dying),
+`controlled` is true: the host stops moving the root and follows `takeRootMotion()`.
+
+### The motion plan (`motion/`)
+
+`MotionPlan` animates the rig procedurally from a few inputs (`motion.input`). It is what the
+character means to do. The body carries it out as well as it can.
 
 | input | effect |
 |---|---|
 | `crouch` 0..1 | knees bend and the stance widens; crouch-walk takes short, careful strides |
-| `stance` | `stand`, `kneel`, `prone` (crawls when moving), `sit` (on `seat`), `ground` (`groundVariant`: cross-legged, knees up, legs out), `down` (knocked down); transitions route through a stance graph (prone goes via kneeling) and take real time (dropping to a knee 0.7 s, sitting down 1.45 s, getting up from prone over 2 s) |
+| `stance` | `stand`, `kneel`, `prone` (crawls when moving), `sit` (on `seat`), `ground` (`groundVariant`: cross-legged, knees up, legs out); transitions route through a stance graph (prone goes via kneeling) and take real time (dropping to a knee 0.7 s, sitting down 1.45 s) |
 | `seat` | `{pos, backrest, deskHeight?, variant}`: upright, leaning back with an arm along the backrest, legs crossed, elbows on knees, or at a desk typing |
 | `carry` | relaxed / ready / aim / hip; long guns and pistols have their own holds (below) |
 | `aimAt` | the trunk turns and pitches to the target, spread over spine, chest and neck, bladed for long guns; the muzzle points exactly at it |
@@ -96,102 +128,151 @@ from it (section 6), so every improvement here shows in both.
 | `mood` | normal / panic (hands to the head while fleeing) / cower / surrender (hands up) |
 | `airborne`, `idle` | legs tuck, landing dip; idle poses and fidgets come by themselves when idle |
 
-Calls: `play(name, target?)` (one-shot actions), `fire()` (recoil), `hitAt({point, dir, force,
-kind, bone})` (a hit reaction, returns the zone), `knockDown(back, seconds?)`,
-`stumble(dir, strength)` (thrown off balance: pushed its way, arms out, the trunk rocking, the
-feet stumbling after it; felled when strong), `trip(fall)` (a foot caught: pitching forward and
-catching itself with quick steps, or going down on its front), `flinch()` (a round or a blast
-close by), `takeKnockback(dt)` (hosts move the root by it), `takeEvents()` (strikes landing,
-reloads done).
+Calls: `play(name, target?)` for one-shot actions, `fire()` for recoil, `takeEvents()` for
+strikes landing and reloads done.
 
-**Locomotion** is a foot planter driven by a gait clock (`locomotion/gait.ts`):
+**Locomotion** is a foot planner (`motion/feet.ts`) driven by a gait clock (`motion/gait.ts`):
 
 - **Walk to run.** The walk (an inverted pendulum with double support) blends into a run (a
   spring-mass gait with a flight phase) between 2 and 3 m/s. Cadence, stride, stance fraction,
   lift, bob, sway, hip yaw and roll, lean and arm swing follow normal-gait data.
-- **Personal style** (`humanoid/style.ts`, `GaitStyle`): stride, bounce, sway, arm swing, elbow
+- **Personal style** (`motion/style.ts`, `GaitStyle`): stride, bounce, sway, arm swing, elbow
   bend, posture (upright or slouched), stance width, toe-out, heaviness, head stillness and
   fidgeting, drawn per character from archetypes (`randomStyle(seed, 'soldier' | 'civilian' |
-  'civilianFemale')`), so a crowd doesn't walk in step.
-- **Weight.** Footfalls load the body (the pelvis dips and the head and neck lag on springs);
-  the trunk leans into acceleration with overshoot and banks into the turns of the path (its
-  lateral acceleration: a body turning to a target while walking straight does not bank);
-  soldiers aiming move in a rolling tactical walk; a wounded leg limps. Peeking round a corner
-  is done standing still: walking, the trunk stays upright.
-- **Planting.** A foot in stance stays where it landed in world space, so feet never slide at
-  any speed, direction or turn rate. A swinging foot lands where the hip will be at mid-stance
-  of the next step, on the ground found by `groundHeight`. That handles stairs, rubble and
-  craters.
-- **Alternation.** The feet stay half a cycle apart at every speed, from a standstill and
-  through turns: a foot left out of reach behind a long running stride pushes off early, but
-  every foot lands on the gait's beat, and a foot still down late in its swing phase goes at
-  once. A runner's swing foot leaves the ground moving with the body and rises behind when it
-  would be out of reach (the heel kick).
-- **Foot roll.** Heel strike and toe-off roll the foot about the heel and the ball.
-- **Standing and turning.** Standing, the hips stay with the planted feet: when the body turns,
-  the head and eyes lead, the trunk follows as far as a spine twists (about 45 degrees from the
-  hips), and the feet come round in unhurried steps of at most about 43 degrees each (a big turn
-  takes a few). The legs twist with their knees and feet, never with the torso. Standing
-  characters also take corrective steps when they drift, and a foot left behind by a sudden
-  start or a shove takes a quick catch-up step.
-- **Deliberate aim.** Aim, head and weapon-raise springs are unhurried: a body looks, then
-  turns, then brings the weapon up.
-- **Legs.** Two-bone IK to the ankles, with the knees towards the feet. The pelvis sinks just
-  enough for the planted feet to be reached.
+  'civilianFemale' | 'thug')`), so a crowd doesn't walk in step.
+- **Weight.** Footfalls load the body; the trunk leans into acceleration and banks into turns;
+  soldiers aiming move in a rolling tactical walk; a wounded leg limps.
+- **Planting.** A planted foot stays where it landed in world space. A swinging foot lands
+  where the hip will be at mid-stance of the next step, on the ground found by
+  `groundHeight`, and clears what is in the way on its path: steps, rubble, a body on the
+  ground. The feet stay half a cycle apart at every speed and through turns.
+- **Forced steps.** The behaviours can take a step anywhere at any time. A stagger is a run of
+  such steps, and a swing already under way is re-aimed.
+- **Standing and turning.** The head and eyes lead, the trunk follows within the spine's twist,
+  and the feet come round in unhurried steps.
+- **Legs and arms.** Two-bone IK to the ankles (knees towards the feet) and to the hands
+  (elbows hanging, as anatomy puts them).
 
-**Actions** (`humanoid/actions.ts`) are short keyframed clips of channels (`core/curve.ts`:
+**Actions** (`motion/actions.ts`) are short keyframed clips of channels (`core/curve.ts`:
 Hermite tracks with eases) that steer the IK rather than replace it: hand and foot targets,
 strike weights towards a target, elbow poles, trunk, head, pelvis, crouch, weapon offsets, and
 events. A pose layer holds postures (guard, talking, idle poses); the action layer plays
 one-shots on top and blends out. Mirrored versions (`.m`) are generated.
 
 - **Strikes:** jab, cross, hook, uppercut, front kick, roundhouse; with a knife a stab, a
-  backhand slash, a forehand slash and an underhand gut stab (a knife holder's guard holds the
-  blade low and forward, the free hand up); a rifle butt push. Targeted strikes step in to a target out of reach: the pelvis drives forward with
-  the blow, a punch leans the trunk into it, a kick thrusts the hips and meets the target with
-  the ball of the foot (push kick) or the instep (roundhouse).
+  backhand slash, a forehand slash and an underhand gut stab; a rifle butt push. A punch at a
+  target out of reach steps in: the lead foot goes forward and the shoulders lean into the
+  blow. A kick thrusts the hips and meets the target with the ball of the foot (push kick) or
+  the instep (roundhouse).
 - **Defence and weapons:** block, rifle and pistol reloads (with a `reloaded` event).
-- **Everyday:** idle poses (arms crossed, hands in pockets, on the hips, behind the back,
-  folded, looking at a phone), fidgets (checking the watch, scratching the head, stretching,
-  rubbing the neck), waves, conversation gestures (open hands, pointing, shrugging, hand on
-  the chest), nods, head shakes, laughing.
+- **Everyday:** idle poses, fidgets, waves, conversation gestures, nods, head shakes, laughing.
 - **A soldier's pauses:** catching a breath with the weapon lowered, a look round, setting the
-  helmet straight, wiping the brow, rolling the shoulders, checking the weapon; an armed body
-  standing easy (not aiming) picks these by itself now and then.
-- **Balance and reflexes:** flinch, stumble, trip.
+  helmet straight, wiping the brow, rolling the shoulders, checking the weapon.
 
 **Weapons** are separate one-bone prop models (`characters/props.ts`: rifle, SMG, light machine
-gun, pistol, knife; small props on a 1/64 m lattice) placed at the rig's `weapon` socket, with
-both hands put on them by IK:
+gun, pistol, knife) at the rig's `weapon` socket, with both hands put on them by IK
+(`motion/arms.ts`). Long guns: relaxed, low ready, shouldered on the aim line, from the hip,
+port arms when running; recoil kicks back and up. Pistols: lowered, low ready, two-handed at
+eye level, or one-handed. Knife: in the right hand, blade forward. In the body, a gripped prop
+is held by the physical hand: a hit that knocks the arm knocks the aim.
 
-- **Long guns:** relaxed (slung across the body), low ready, shouldered on the aim line (bladed
-  stance), from the hip (stock under the arm, the trunk turned off the target so the support
-  hand reaches the handguard; machine guns on the move), port arms when running. Recoil kicks
-  back and up; walking fire is less precise.
-- **Pistols:** lowered in the hand, low ready (two hands, muzzle down), two-handed at eye level
-  (isosceles), or one-handed with the arm out.
-- **Knife:** held in the right hand, blade forward; used by the stab and slash strikes.
+### The physical body (`body/humanoid.ts`, `physics/rigid.ts`)
 
-**Hit reactions** (`humanoid/reactions.ts`) follow where and how hard a blow lands (`hitAt`
-with a point, a direction, a force and a kind: bullet, blunt, blade, blast):
+`HumanoidBody` builds 16 rigid bodies from the rig: pelvis, spine, chest, head, and upper
+arm, forearm, hand, thigh, shin and foot on each side. They weigh 75 kg split by standard
+segment fractions. Each part collides as a few spheres. The drawn neck is interpolated
+between chest and head.
 
-- The impulse's torque about the struck bone's joint (r × dir) turns damped springs of that
-  bone and, weaker, the bones it hangs from, so the body answers the physics of the hit.
-- Reflexes by zone: a head hit snaps the head (a cross to the jaw about 40°); a chest round
-  rocks the trunk back about 20–25° with the head lagging; a gut hit doubles the body over and
-  the hands go to the wound; an arm hit spins the shoulder and knocks the aim off; a leg hit
-  drops the pelvis over the buckling knee and leaves a limp.
-- Knockback: the body is shoved along the blow (the host moves the root; the feet stumble
-  after it). Hard blows (a roundhouse to the head, blasts, heavy rounds in the legs) knock the
-  body down; it falls backwards or forwards, lies a moment, and gets up through kneeling.
-- Pain hunches the posture and slows the gait for a while.
+- **Joints** have anatomical limits: asymmetric elliptical swing cones (a hip swings 125°
+  forward and 40° back, a shoulder 160° forward), twist ranges about the bone (swing-twist
+  decomposition), and hinges for elbows and knees that bend one way.
+- **Muscles** are PD drives towards the plan's joint rotations. Stiffness comes from a natural
+  frequency per joint and the effective inertia it moves (the spine 15 rad/s, knees 18 rad/s),
+  damping from a damping ratio. They also track the plan's joint velocities and feed its
+  accelerations forward. **Tone** (per part, 0..1+) scales them: the behaviours make the body
+  tense, slack, or anywhere between.
+- **Gravity compensation** holds limbs up in proportion to tone, so an arm at ease hangs and
+  swings while a tensed one holds its place.
+- **Assists** ("hand of god" forces, as Euphoria has them, used sparingly): support holds the
+  pelvis up, steering moves it along the plan, an upright orienter keeps the trunk upright,
+  feet pins keep planted feet planted (stiff, not rigid), swing guides guide the feet, and hand
+  grips hold weapons, a wall or a wound. Each is scaled by mode. A falling body has none.
+
+`RigidSystem` is an XPBD solver (Müller et al. 2020): 1/480 s substeps, one pass per substep,
+velocities derived from positions. It has contacts against the CollisionWorld with friction,
+self-collision between non-adjacent parts, and limits corrected gradually and inelastically, so
+a body folded against itself never gains energy. It also bounds velocity changes per substep,
+damps twist on light limbs, and sleeps once nothing moved more than 2 cm for half a second.
+
+**Bodies among bodies.** Each frame `gatherObstacles(characters, reach, extra)` gives every
+body the collision spheres of the others nearby, plus debris. A body collides with them, and
+the push it takes is handed back to the body it came from, spread over that body. A shove
+into a bystander knocks the bystander, a runner's foot catches on a corpse, and steps clear
+what they see. A limb that strikes passes through the body it hits, because the host deals
+the blow.
+
+### The behaviours (`behaviour/`)
+
+`Behaviours` runs a mode machine:
+
+- **animated:** the body tracks the plan closely, with its own secondary motion (arms swing at
+  ease, the head lags). Blows it can take in its stride are absorbed. Knocked off the plan
+  beyond what the plan itself intends (a lunge into a punch does not count), it reacts.
+- **reacting:** balance takes over. The legs hold the body up but no longer steer it. The
+  ground pushes back through the feet's centre of pressure (an inverted pendulum), with a hip
+  strategy when that is not enough. When the capture point (ξ = c + v/ω₀) leaves the support
+  polygon, a foot steps where it will be: quicker the worse it gets, re-aimed while swinging,
+  on the side that suits. The arms go out to the shoulders. A wall within reach gets a hand on
+  it that takes weight, and a shoulder leaning on a wall counts as support. Balanced and still
+  again, it hands back to the plan. A fighter steady on its feet fights on.
+- **falling:** the balance is lost for good: beyond reach for a moment, the trunk tipped past
+  about 50°, thrown up off the feet, too many steps, legs that fail, a daze. The body goes
+  loose (legs bent, trunk curled), the hands go out to break the fall and lock where they land,
+  and the head is kept off the ground.
+- **lying:** limp but alive, for a while (longer the more it hurts). Knocked out, until it
+  comes to. Badly hurt, it writhes: knees drawn up, the trunk curling and twisting, clutching
+  the wound.
+- **rising:** gathers, then gets up through sitting or pushing up from the front, kneeling and
+  standing, with the legs taking the weight back. It is brisk unhurt (about 2 s) and slower
+  hurt.
+- **dying:** the muscles fade, the legs first. The knees buckle, a hand goes to the wound, a
+  last step or two, and the arms half catch the fall. Near a wall the body slumps against it.
+- **dead:** no muscle, extra tissue damping. The body settles and sleeps.
+
+Reflexes run on top of any mode:
+
+- **Flinching** from what lands close (`perceive`: impacts, rounds whizzing past, blasts, blows
+  coming): the head turns away and ducks, the shoulders come up, and a hand comes up between
+  the face and the danger. Nerves build up over time and make the next flinch bigger.
+- **Holding a wound:** a hand goes to it and stays for seconds (longer for the gut and chest).
+  The posture of injuries follows: a limp, a weak arm, a hunch.
+- **Stun and shock:** a struck part and its parent go slack for a moment, and the whole body
+  dips with the shock of a hit.
+- **Trips:** a swinging foot that is blocked stops there. The body pitches forward over it and
+  catches itself with quick steps, or goes down.
+
+**What a hit does** (`hitAt`, via `wound`, `melee`, `blast`): an impulse where it lands. A
+light part takes what it can and passes the rest up the limb. The struck part spins about its
+joint along the lever arm: a round high in the chest rocks the trunk back, a shoulder hit
+turns it, a fist on the jaw snaps the head round on the neck. A share goes to the whole body.
+Then the balance deals with the rest. The results are graded rather than scripted:
+
+- one rifle round in the chest rocks the trunk back 5–35° and does not fell;
+- a jab snaps the head;
+- a cross or an uppercut staggers the body a step or two;
+- a push kick to the belly drives it back several steps;
+- a gut wound folds the body over it;
+- a leg wound buckles the knee and leaves a limp;
+- a shove is taken in place when light, with steps when harder, and fells when hardest;
+- a rocket 1.8–2.2 m away throws the body off its feet, and 2.6–3 m away staggers it 4–6
+  steps;
+- badly hurt (health below 30%, or a leg shot through), the body collapses and writhes.
 
 **Fights** (`humanoid/brawl.ts`, `Brawler`) choreograph two characters: keeping range and
-circling, choosing strikes by distance, combinations (jab, cross), blocking or stepping back
-from what the opponent throws, backing off a downed opponent, and resolving each strike event
-into a hit where the fist, foot or blade met the body (`Character.melee`, with the damage and
-reaction by zone). Fists and feet knock people out rather than kill them (`knockedOut`: down
-for several seconds); knives cut the voxel body open and can kill.
+circling, choosing strikes by distance, combinations (jab, cross), blocking or stepping back,
+backing off a downed opponent, and resolving each strike event into a hit where the physical
+fist, foot or blade met the body (`Character.melee`). Fists and feet knock people down and
+out rather than kill them. Knives cut the voxel body open and can kill.
 
 ## 4. Voxel characters and gore
 
@@ -212,53 +293,39 @@ Damage (`voxel/damage.ts`, `character.ts`):
   - carves an entry and an exit hole, exposing flesh and bone;
   - applies damage with hit-zone multipliers (head ×4, neck ×3, chest, spine, pelvis, limbs
     ×0.6);
-  - makes the living react by where the round hit (section 3), or pushes the dead;
+  - hits the living body where the round hit (section 3), or pushes the dead;
   - severs limbs and heads whose part was shot through or lost about half its voxels. The parts
     below go with them, so a severed forearm takes the hand.
 - **Melee.** `melee(point, dir, 'blunt' | 'blade', force)`: punches and kicks hurt by zone
   (the head most) and knock out rather than kill; a knife cuts a slice of the voxel body open
   and can sever and kill.
-- **Blasts.** `blast(center, radius)` does distance-scaled damage. Close to the centre the body
-  is torn apart: every part becomes a gib.
+- **Blasts.** `blast(center, radius)` does distance-scaled damage and throws or staggers the
+  body. Close to the centre the body is torn apart: every part becomes a gib.
 - **Copy on write.** Models are shared between characters until the first wound, then copied.
   `geometryVersion` tells the host to re-mesh; only the parts that changed are re-meshed.
 
-## 5. Ragdolls, gibs, blood
+## 5. Dead bodies, gibs, blood
 
-- **`Ragdoll`** (`physics/ragdoll.ts`) is a position-based particle solver with Verlet
-  integration and fixed substeps. It has:
-  - distance, limit and hinge constraints (knees and elbows bend one way);
-  - sphere contacts against the CollisionWorld, with friction and a contact skin;
-  - sleep, triggered when nothing moved more than 1.5 cm for half a second.
-- **`HumanoidRagdoll`** maps the rig onto 22 particles (one in front of the face tells which way
-  the head turns):
-  - it starts from the animated pose and its velocity (over the real frame time), so a
-    character shot mid-stride keeps its momentum;
-  - a killing shot pushes the whole upper body its way: shot from the front a body goes down
-    backwards, from behind forwards;
-  - the legs give way: the knees buckle and a support under the hips sinks over about 0.6 s
-    (a crumple slower than a fall), quickly after a head shot, not at all in a blast;
-  - fading muscle tone keeps the trunk's shape for a moment (legs none, arms a little): shape
-    matching (the body's shape at death fitted to where it is, momentum taken out), so tone
-    never pushes the body anywhere;
-  - the body does not pass through itself (arms stay out of the torso, legs out of each
-    other); knees and elbows bend one way, judged against the body's side axis whatever the
-    limb's angle; a fully bent knee brings the heel to the buttock; the head turns on the neck
-    within about 75 degrees each way and never round to the back (face down it lies on a
-    cheek, face up it lolls to a side);
-  - every frame it rebuilds all bone frames from the particles. A straight limb has no bend
-    plane: its roll carries over and turns towards the joint's plane at a limited rate (limbs
-    never flip about their length); feet bend in their leg's plane within the ankle's range;
-    nearly at rest the shown rotations are smoothed, and no shown bone turns more than 30
-    degrees in a frame.
-- **Stability.** Contacts and the collapse support are inelastic (no bounce), and constraint
-  corrections beyond 1.5 m/s per substep move particles without launching them, so a folded
-  body whose constraints fight never blows up; what lies on the ground settles quickly and the
-  body sleeps once still. A falling ragdoll costs about 55 µs per frame.
+- **Dead bodies are the same physical body** with the muscles gone. Nothing is swapped at the
+  moment of death, so a character shot mid-stride keeps its momentum and its last step, and a
+  dying body keeps some tone for a moment. Death (`die(point, dv, collapse)`) starts the dying
+  mode: the killing impulse where it hit, then the muscles fade, legs first (`collapse` sets how
+  fast the knees give; a head shot drops the body at once). Shot from the front a body goes
+  down backwards, from behind forwards.
+- **Stability.** Limits are corrected gradually and inelastically, pair contacts inside a body
+  are speed-capped, velocity changes per substep are bounded, and dead bodies get extra tissue
+  damping and drag. A folded body whose constraints fight never blows up, and nothing bounces
+  back up. Limbs never flip about their length, and the head rests within the neck's range
+  (face down, on a cheek). Settled corpses stop colliding with themselves and sleep, and
+  sleeping bodies cost nothing.
+- **Level of detail.** Physics costs time, so a calm character can run on its plan alone
+  (`physics = false`, the host's choice, blended over a few frames). Anything that needs the
+  body (a hit, a push, a trip, a fall, death) wakes it where the plan has it.
 - **`GibSystem`** (`physics/debris.ts`) handles gibs, blood drops and stains:
   - **Gibs** (severed limbs, heads, torso chunks, dropped rifles) are rigid voxel bodies with box
     inertia. About 64 surface sample points collide as spheres, using sequential impulses with
-    restitution and friction, adaptive substeps and sleep.
+    restitution and friction, adaptive substeps and sleep. Hosts may pass small gibs to
+    `gatherObstacles` so feet catch on them.
   - **Blood drops** fly ballistically and become stains where they land, on floors and walls.
     Gibs bleed while they move.
 
@@ -266,7 +333,7 @@ Damage (`voxel/damage.ts`, `character.ts`):
 
 The retro look is a function of the modern animation, not separate content (`retro/`):
 
-- **Baking.** For each state, a HumanoidAnimator is driven on flat ground until steady and a
+- **Baking.** For each state, a MotionPlan is driven on flat ground until steady and a
   handful of poses are sampled; walk and run get four frames per cycle, Doom's A B C D. Each
   pose is re-voxelized into one whole-body voxel model by inverse mapping of every cell to its
   source part (no holes), with the held prop included. These are Voxel Doom's
@@ -281,8 +348,9 @@ The retro look is a function of the modern animation, not separate content (`ret
 - **Playback.** `retroStateOf` maps what the character does (stance, action, conversation,
   weapon, knockdown...) to a state; `RetroPlayer` steps frames in Doom tics (35 Hz, several
   tics per frame), scaled by speed for gait cycles. The facing snaps to 8 directions.
-- **Everything else.** Ragdolls, gibs and wounded characters (baked frames show no wounds) keep
-  their real geometry, but their poses advance in the same 4-tic steps.
+- **Everything else.** Physical bodies away from their plan (staggering, falling, dead), gibs
+  and wounded characters (baked frames show no wounds) keep their real geometry, but their
+  poses advance in the same 4-tic steps.
 
 ## 7. In the game (`web/src/actors`)
 
@@ -352,10 +420,14 @@ The retro look is a function of the modern animation, not separate content (`ret
   - between bursts now and then, or with the target out of sight, they lower the weapon a
     moment (a deep breath, a look round) and top up a half-empty magazine; standing easy they
     fidget (helmet, brow, shoulders, weapon).
-- **Bodies with balance:** a blast staggers everyone around it away from it (thrown down when
-  close, flinching further off); a round smacking in close by makes people flinch; now and
-  then a foot catches (more often running, most when panicking, rarely a soldier): the body
-  pitches forward and catches itself, or goes down and gets up.
+- **Bodies with balance:** the twelve living characters nearest the player within 32 m run as
+  physical bodies. The rest run on their plans until something happens to them. A round
+  smacking in within 3.5 m, or whizzing past within about a metre of the head, makes people
+  flinch. A blast throws those close off their feet, staggers those further out, and makes
+  everyone around flinch. Now and then a hurrying foot catches: more often running, most when
+  panicking, rarely a soldier. Characters collide with each other, with corpses and with small
+  debris. A body that leads (staggering, down, getting up) moves the actor, and AI waits for
+  it to be back on its feet.
 - **Combat.** A round (theirs or the player's) hits the first thing on its line:
   - a character, voxel-exact: a wound, and a reaction by where it hit;
   - the player's capsule (health, a red vignette, respawn after death);
@@ -383,8 +455,10 @@ Controls and parameters, in addition to the game's:
 | `window.__structvox` | `spawn('civilian' \| 'soldier' \| 'thug', n)`, `spawnAt(kind, x, y, z)`, `actors`, `characters({ai, god, style})`, `actorWorld()`, `brawl(idA, idB)` |
 
 **The lab** (`/lab.html`) runs svx_anim without the physics engine: a test course (stairs,
-ramp, rubble, a wall corner, benches, a desk) and a scripted cast in four groups, each with a
-camera bookmark:
+ramp, rubble, beams, walls, benches, a desk) and a scripted cast in four groups, each with a
+camera bookmark. The HUD shows the followed character's mode, balance and steps.
+`window.__lab` (`step`, `setTimeScale`, `shoot`, `rocket`, `byName`, `follow`, `cam`) drives it
+from scripts, frame by frame:
 
 - **city:** a three-way conversation, bench sitters in four styles, a desk worker, ground
   sitters, people waiting (idle poses, fidgets), a stroller, a commuter, a jogger, a runner,
@@ -394,8 +468,11 @@ camera bookmark:
 - **fights:** two brawlers, a knife against an unarmed fighter, a thug with a knife on a
   civilian, a thug with his fists on a rifleman (they reset after a while);
 - **reactions:** a line-up to shoot at, a stumbler (pushed by pretend blasts, felled every third
-  time), a tripper (walking to and fro, now and then falling), a soldier at ease (fidgets,
-  breathers, reloads, flinches).
+  time), a tripper (walking to and fro, now and then falling), beams and a kerb across a
+  running lane that catch feet, a wall bracer (shoved towards a wall: a hand takes the weight),
+  a wounded walker limping along a wall, a soldier shot dead against a wall (he slumps down
+  it), a lone subject to try things on, a soldier at ease (fidgets, breathers, reloads,
+  flinches).
 
 Click a character to shoot it, shift-click the ground to fire a rocket; switch smooth / retro
 / chunky, change time scale (slow motion) or follow a character.
@@ -403,7 +480,7 @@ Click a character to shoot it, shift-click the ground to fire a rocket; switch s
 ## 8. Using svx_anim in another host
 
 ```ts
-import { Character, VoxelCollision, makeSoldier, makeRifle, ModelMesher, GibSystem } from 'svx-anim';
+import { Character, VoxelCollision, gatherObstacles, makeSoldier, makeRifle, ModelMesher, GibSystem } from 'svx-anim';
 
 const world = new VoxelCollision(0.125, (i, j, k) => myVoxels.solid(i, j, k));
 const look = makeSoldier(7);                        // geometry + palette
@@ -412,65 +489,82 @@ soldier.place([x, y, z], yaw);
 const mesh = new ModelMesher().mesh(soldier.model); // upload once (20-byte vertices)
 
 // every frame
-soldier.setRoot(myController.feet, myController.yaw);   // the host moves it
-soldier.animator.input.carry = 'aim';
-soldier.animator.input.aimAt = target;
+gatherObstacles(allCharacters, 2.2, smallDebrisSpheres); // bodies among bodies
+const rm = soldier.takeRootMotion();
+if (soldier.controlled) myController.feet = vadd(myController.feet, rm); // the body leads
+else soldier.setRoot(myController.feet, myController.yaw);             // the host leads
+soldier.motion.input.carry = 'aim';
+soldier.motion.input.aimAt = target;
 soldier.update(dt);
 draw(mesh, soldier.skin /* 23 bone matrices */, look.palette);
 
-// a bullet: a wound and a reaction by where it hit; move the root by the knockback
+// a bullet: a wound, an impulse on the body where it hit; the behaviours do the rest
 const hit = soldier.raycast(origin, dir, 200);
 if (hit) for (const g of soldier.wound(hit, dir, 34).gibs) gibs.spawn(g.part, g.voxelSize, g.bonePos, g.boneRot, g.boneRestHead, g.vel, g.ang);
-myController.feet = vadd(myController.feet, soldier.animator.takeKnockback(dt));
 
-// a punch or a knife cut; strikes come from animator.play('jab', target) and its events
+// the world around it
+soldier.perceive({ point: impact, strength: 1, kind: 'impact' }); // a flinch
+soldier.push(awayFromBlast, 2.0);                                    // a shove (m/s)
+soldier.trip();                                                      // a foot catches
+soldier.physics = nearPlayer;                                        // level of detail
+
+// a punch or a knife cut; strikes come from motion.play('jab', target) and their events
 soldier.melee(point, dir, 'blunt', 1.2);
 
 // everyday life
-soldier.animator.input.stance = 'sit';
-soldier.animator.input.seat = { pos: benchSeat, backrest: true, variant: 'leanBack' };
-civilian.animator.input.talk = 'speak';
-civilian.animator.input.lookAt = otherPerson.animator.eyes();
+soldier.motion.input.stance = 'sit';
+soldier.motion.input.seat = { pos: benchSeat, backrest: true, variant: 'leanBack' };
+civilian.motion.input.talk = 'speak';
+civilian.motion.input.lookAt = otherPerson.eyes();
 ```
 
 Hand-to-hand fights: give each fighter a `Brawler` (`opponent`), call `update(dt)`, move the
-fighters by its `move` and `yaw`, and pass their animation events to `resolve`, which returns
-the blows that landed.
+fighters by its `move` and `yaw` (or by root motion while `controlled`), and pass their
+animation events to `resolve`, which returns the blows that landed.
+
+Other calls: `hitAt(info)` (a blow without a wound), `impulse(point, dv)`, `knockOut(s)`,
+`addInjury(bone, severity)`, `die(point, dv, collapse)`, `blast(center, radius)`, and
+`down`, `writhing`, `asleep`, `knockedOut` for the AI.
 
 ## 9. Tests and checks
 
 ```bash
-cd anim && npm install && npm test          # 72 unit tests: models, animator, IK, gait, stances, actions,
-                                            # reactions, weapons, strikes, brawls, ragdolls, damage, gibs, retro
+cd anim && npm install && npm test          # 79 unit tests: rigid joints, the body, tracking, hits,
+                                            # balance, trips, flinches, bracing, knockouts, dying,
+                                            # bodies among bodies, motion, strikes, brawls, damage,
+                                            # gibs, retro
 cd web && npm run typecheck && npm test     # includes typechecking anim/
 node scripts/smoke-actors.mjs http://localhost:5190/   # browser: population, fighting, kills, gibs, retro,
-                                            # city life (talking, benches), a brawl ending in a knockout,
-                                            # a thug going for a civilian, the player's knife, MAP01, lab
+                                            # city life (talking, benches), a brawl, a thug going
+                                            # for a civilian, the player's knife, MAP01, lab
 ```
 
-`anim/test/behaviour.test.ts` checks the behaviours measurably, for example: stances reach
-their heights and come back; a knockdown gets up; a chest round tips the trunk 10–35°; a gut
-hit folds it; a leg hit drops the pelvis and limps on that side only; knockback follows the
-shot; an aimed pistol points within 8° with both hands on the grip; the machine gun's support
-hand is on the handguard; a jab steps in to reach a head 0.95 m away and a push kick a belly
-1.1 m away, without the support foot sliding; reloads end with their event; two walkers differ;
-a fist fight lands blows on both; the feet stay half a cycle apart walking and running; walking
-keeps the trunk upright; turning on the spot, the legs point with their feet, the trunk leads
-within its twist and the feet follow. `web/test/steer.test.ts` checks acceleration, braking,
-turn rates and path look-ahead. `anim/test/melee-balance.test.ts` checks the knife guard, that
-every knife attack reaches a body, a thug's knife fight, stumbles (caught, or felled), trips,
-flinches, the soldier's pauses and the thugs' looks. `anim/test/ragdoll-quality.test.ts` checks deaths (front, back,
-running, head shot, blast): no bone rolls more than 60° in a frame, bodies never bounce back up,
-they sleep on the ground, a body shot crumples over a good half second (never faster than a
-fall), bodies fall the way they were shot, and heads rest within the neck's range.
+The tests measure behaviour. Some examples:
+
+- `anim/test/body.test.ts`: a joint holds its anchors while energy does not grow; a hinge
+  stays in its range; segments weigh what bodies weigh; a body without muscle collapses and
+  sleeps without sinking in; muscles and assists hold a standing pose.
+- `anim/test/behaviour.test.ts`: walking and running bodies follow their plans and stay up; a
+  calm body rests on its plan and a hit wakes it; a chest round rocks the trunk 5–35° without
+  felling it; a gut wound folds the body and a hand goes to it; a leg wound limps on that side;
+  a kick shoves the body and it steps and recovers; shoves are graded (in place, steps, a fall,
+  getting up); a caught foot pitches the body forward; running over a beam catches a foot; a
+  close round turns the head away with a hand up; shoved towards a wall a hand holds on; a
+  knockout stays down, then gets up; the dying go down and come to rest; a body shoved into a
+  bystander moves it and they stay apart; a runner trips over a body.
+- `anim/test/death.test.ts`: limbs never flip, bodies rest without bouncing, a shot body
+  crumples over half a second and a head shot drops it, bodies fall the way the shot pushes
+  them, heads rest within the neck's range.
+- `anim/test/motion.test.ts` and `plan.test.ts`: feet planted without sliding, the feet
+  alternating, stances, weapons on target, strikes reaching (a jab steps in to a head 0.95 m
+  away), turning on the spot.
 
 Measured on an M5 Pro:
 
-- **Browser (Chrome, WebGPU):** 70 characters in the streamed city in full combat run at
-  60 fps; the actors' update (brains, movement, paths, animation, reactions) averages about
-  3 ms per frame.
-- **Node:** a character's animation update costs about 20 µs per frame. A human model sculpts
-  in about 13 ms and meshes in about 8 ms (~10k triangles).
+- **Node:** a physical body costs about 90 µs per frame (plan, behaviours and 8 substeps of
+  16 rigid bodies), a character on its plan alone about 10 µs.
+- **Browser (Chrome, WebGPU):** 56 characters in the streamed city, about 20 of them physical,
+  in full combat: the actors' update averages 3.5–5.5 ms per frame at 60 fps.
 
 ## 10. Decoupling and merging
 
@@ -489,17 +583,17 @@ Measured on an M5 Pro:
 - **Sector light.** Characters use one light level per world, not the sector light of where they
   stand (Doom maps are drawn at 0.8).
 - **Movement.** Actors move on one level. They do not climb between floors without walkable
-  connections, and nav paths do not use doors or lifts. Benches and café tables are placed on
-  open ground; the city generator doesn't furnish interiors (offices with desks) yet.
+  connections, and nav paths do not use doors or lifts. The AI does not steer round each
+  other's bodies (they bump). The city generator doesn't furnish interiors yet.
 - **Fights.** Brawls are one on one; a third person doesn't join in. Soldiers fight hand to hand
-  only with the rifle butt.
-- **Hits.** Rounds hit the static world via occupancy, not the rigid debris pieces. Characters
-  are not obstacles for the engine's pieces. Debris crushes characters, but it doesn't bury
-  them.
-- **Ragdoll collisions.** Ragdolls collide with the world but not with each other.
-- **Retro.** Frames are baked per geometry and held item. Deaths in retro mode are stepped
-  ragdolls, not baked death sequences. A sprite-billboard mode, rendering the baked frames from 8
-  angles into sprites, would be the next step towards classic Doom.
+  only with the rifle butt. Fighters do not clinch or grab.
+- **Bodies.** Other bodies are obstacles pushed back one frame late, not bodies solved
+  together, so a pile of bodies is soft. Hands grip walls, weapons and wounds, not other
+  people. The badly wounded writhe but do not crawl away. Bodies do not collide with the
+  engine's rigid debris pieces (only with small gibs and the voxel world). Suppression
+  (nerves) makes people flinch harder but does not yet change what soldiers do.
+- **Retro.** Frames are baked per geometry and held item. Staggers and deaths in retro mode are
+  stepped physics, not baked sequences.
 - **More content** would come as more rigs (quadrupeds, Doom-like monsters) on the same core: the
-  foot planter, IK, actions, reactions, ragdoll and retro baking are rig-agnostic. Keyframed
-  clips such as mocap can be added as actions (channels) or layered through `Pose.blend`.
+  foot planner, IK, actions, the rigid body solver, the behaviours' balance and the retro
+  baking do not assume a humanoid beyond their rig tables.

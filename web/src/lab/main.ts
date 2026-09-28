@@ -584,12 +584,12 @@ async function main(): Promise<void> {
     group: 'reactions',
     variant: () => makeCivilian(85),
     prop: null,
-    pos: [-10.2, 7.25, 0],
+    pos: [-4.6, 7.25, 0],
     yaw: 0,
     script: (a, t, dt) => {
       const k = Math.floor(t / 5);
       if (Math.floor((t - dt) / 5) !== k && k > 0) a.char.push([0.25, 1, 0], k % 2 === 0 ? 1.4 : 2.0);
-      if (!a.char.motion.busy) moveTo(a, -10.2, 7.25, 0.7, dt, false, true);
+      if (!a.char.motion.busy) moveTo(a, -4.6, 7.25, 0.7, dt, false, true);
       turnTo(a, 0, dt);
     },
   });

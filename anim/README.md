@@ -5,14 +5,18 @@ The voxel character animation engine of structvox, documented in [../docs/ANIM.m
 It covers:
 
 - skeletons, IK, springs and keyframe curves;
-- procedural locomotion with planted feet and personal gait styles;
-- stances (kneeling, prone, sitting, on the ground, knocked down) and their transitions;
-- actions: strikes, knife attacks, blocks, reloads, gestures, idle poses and fidgets;
-- weapon handling (rifles, SMGs, machine guns, pistols, knives) and moods;
-- hit reactions by where and how hard a blow lands, and fight choreography;
-- procedural voxel soldiers and civilians;
+- a motion plan: procedural locomotion with planted feet and personal gait styles, stances and
+  their transitions, actions (strikes, knife attacks, blocks, reloads, gestures, idle poses,
+  fidgets), weapon handling and moods;
+- a physical body in the manner of NaturalMotion's Euphoria: 16 rigid parts with anatomical
+  joints and muscles (an XPBD solver), carrying the plan out;
+- behaviours between the two: balance (capture point, stepping, staggering), bracing on
+  walls, flinching, holding wounds, trips, falling and catching the fall, lying, writhing,
+  getting up, dying; hits as impulses on the body; bodies colliding with each other;
+- fight choreography;
+- procedural voxel soldiers, civilians and thugs;
 - voxel-exact wounds and severing;
-- ragdolls, gibs and blood;
+- gibs and blood;
 - retro (Voxel Doom style) frames baked from the smooth animation.
 
 It is TypeScript with no dependencies and doesn't depend on the physics engine or the
