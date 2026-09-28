@@ -77,6 +77,8 @@ export function setArmsAtEase(t: number): void {
 }
 const PARENT_OF: readonly number[] = [-1, B.pelvis, B.spine, B.chest, B.chest, B.upperarmL, B.forearmL, B.chest, B.upperarmR, B.forearmR, B.pelvis, B.thighL, B.shinL, B.pelvis, B.thighR, B.shinR];
 const REGIONS: readonly Region[] = ['trunk', 'neck', 'armL', 'armR', 'legL', 'legR'];
+/** How a shove along a round spreads over the body: the trunk and the arms most, the feet least. */
+const SHOVE_UPPER: readonly number[] = [0.9, 1.05, 1.15, 1.2, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 0.8, 0.55, 0.35, 0.8, 0.55, 0.35];
 
 export class Behaviours {
   readonly plan: MotionPlan;
@@ -246,6 +248,25 @@ export class Behaviours {
     const share = info.kind === 'bullet' ? 0.15 : info.kind === 'blast' ? 0.6 : 0.3;
     const dv = (J * share + Math.max(0, left)) / this.body.totalMass;
     this.body.shove(d[0] * dv, d[1] * dv, 0);
+    // no two rounds land alike: most are taken where the body stands, some knock it a step or
+    // two back along the round, now and then one drives it back hard (more often in the trunk,
+    // and the worse it is already hurt)
+    let hard = 0;
+    if (info.kind === 'bullet' && this.alive) {
+      const trunkZone = zone === 'chest' || zone === 'gut' || zone === 'pelvis';
+      const r = this.rng.next() - 0.25 * this.injuries.pain;
+      hard = trunkZone ? (r < 0.12 ? 2 : r < 0.38 ? 1 : 0) : zone === 'legL' || zone === 'legR' ? (r < 0.3 ? 1 : 0) : 0;
+      if (hard > 0) {
+        const h = hard === 2 ? 1.25 + 0.4 * this.rng.next() : 0.6 + 0.3 * this.rng.next();
+        const hl = Math.hypot(d[0], d[1]) || 1;
+        if (trunkZone) this.body.shove((d[0] / hl) * h, (d[1] / hl) * h, 0, SHOVE_UPPER);
+        else {
+          // a leg hit: the knee gives under it
+          const leg = zone === 'legL' ? [B.thighL, B.shinL] : [B.thighR, B.shinR];
+          for (const b of leg) this.stun[b] = Math.max(this.stun[b]!, 0.9);
+        }
+      }
+    }
     // the struck part and its neighbours go slack for a moment
     // (the trunk less: it carries the body)
     const trunkPart = part === B.pelvis || part === B.spine || part === B.chest;
@@ -280,7 +301,7 @@ export class Behaviours {
     // knocked off the plan: a blow that moves the whole body (a blow to the head mostly snaps
     // the head), a leg that gives, a daze
     const bodyDv = (J * (zone === 'head' ? 0.35 : 1) * (1 + share)) / this.body.totalMass;
-    if (bodyDv > 0.55 || ((zone === 'legL' || zone === 'legR') && f > 0.7 && info.kind !== 'blunt') || this.daze > 0.4) this.forceReact = true;
+    if (hard > 0 || bodyDv > 0.55 || ((zone === 'legL' || zone === 'legR') && f > 0.7 && info.kind !== 'blunt') || this.daze > 0.4) this.forceReact = true;
     return zone;
   }
 
