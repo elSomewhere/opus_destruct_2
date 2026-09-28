@@ -70,13 +70,14 @@ const MUSCLE: readonly [number, number][] = [
   [0, 0],
   [15, 0.95], // lower back
   [15, 0.95], // upper back
-  [13, 0.8], // neck
-  [12, 0.75], // shoulder
-  [13, 0.75], // elbow
-  [12, 0.8], // wrist
-  [12, 0.75],
-  [13, 0.75],
-  [12, 0.8],
+  [13, 1.0], // neck
+  // (arms critically damped: they settle, they do not ring with every footfall)
+  [12, 1.0], // shoulder
+  [13, 1.0], // elbow
+  [12, 1.3], // wrist
+  [12, 1.0],
+  [13, 1.0],
+  [12, 1.3],
   [17, 0.95], // hip
   [18, 0.95], // knee
   [16, 0.95], // ankle
@@ -387,15 +388,18 @@ export class HumanoidBody {
       const A = this.parts[a]!, Bb = this.parts[b]!;
       for (let sa = 0; sa < A.spheres.length; sa++) for (let sb = 0; sb < Bb.spheres.length; sb++) this.system.pairs.push({ a: A, sa, b: Bb, sb });
     };
-    for (const arm of [B.forearmL, B.handL, B.forearmR, B.handR, B.upperarmL, B.upperarmR]) {
+    // (not the hands, nor the forearms and the head: a hand goes to the face, over the head, to a
+    // wound, and pressing against its own body there would shove it about)
+    for (const arm of [B.forearmL, B.forearmR, B.upperarmL, B.upperarmR]) {
       for (const t of [B.pelvis, B.spine, B.chest, B.head]) {
         if ((arm === B.upperarmL || arm === B.upperarmR) && t === B.chest) continue;
+        if ((arm === B.forearmL || arm === B.forearmR) && t === B.head) continue;
         pair(arm, t);
       }
     }
-    for (const a of [B.forearmL, B.handL]) for (const b of [B.forearmR, B.handR]) pair(a, b);
+    pair(B.forearmL, B.forearmR);
     for (const a of [B.thighL, B.shinL, B.footL]) for (const b of [B.thighR, B.shinR, B.footR]) pair(a, b);
-    for (const a of [B.handL, B.handR, B.forearmL, B.forearmR]) for (const b of [B.thighL, B.thighR, B.shinL, B.shinR]) pair(a, b);
+    for (const a of [B.forearmL, B.forearmR]) for (const b of [B.thighL, B.thighR, B.shinL, B.shinR]) pair(a, b);
 
     // ---- assists ----
     const pel = this.parts[B.pelvis]!;
@@ -541,7 +545,9 @@ export class HumanoidBody {
       const t = Math.max(0, this.tone[i]!);
       j.stiffness = this.baseStiffness[i]! * t;
       // a limp joint keeps some damping (tissue), a tense one more
-      j.damping = this.baseDamping[i]! * (0.5 + 0.5 * Math.min(1.5, t));
+      // (a limp joint is heavily damped by its tissue: a dead limb swings and settles, it does
+      // not flap)
+      j.damping = this.baseDamping[i]! * (0.5 + 0.5 * Math.min(1.5, t) + 0.5 * Math.max(0, 1 - t));
     }
   }
 

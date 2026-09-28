@@ -389,6 +389,11 @@ export class RigidSystem {
   pairSpeed = 1.5;
   /** Parts of the same system keep apart (off: a body that has come to rest). */
   pairsEnabled = true;
+  /**
+   * The fastest any body may spin (rad/s): a limp body's parts turn no faster than a limb
+   * flung loose does (an impact on a light part does not set it whirling).
+   */
+  spinCap = MAX_SPIN;
   /** The most the constraints change a body's velocity in one substep (m/s, rad/s). */
   maxDv = 1.2;
   maxDw = 12;
@@ -710,6 +715,7 @@ export class RigidSystem {
       // contact found deep, is put right without the energy it would take to do it that fast)
       clampChange(b.v, b.v0, this.maxDv);
       clampChange(b.w, b.w0, this.maxDw);
+      if (this.spinCap < MAX_SPIN) clampLength(b.w, this.spinCap);
     }
     this.limitVelocity();
     for (const j of this.joints) if (j.damping > 0) this.dampJoint(j, h);

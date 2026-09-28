@@ -276,6 +276,11 @@ export class MotionPlan {
   private readonly nod = new Spring(11, 0.42);
   private readonly recoil = new Spring(14, 0.5);
   private readonly taskW: [Spring, Spring] = [new Spring(16, 1), new Spring(16, 1)];
+  /** Each hand's behaviour task as followed (smoothed; kept while it fades out). */
+  private readonly taskS: { on: boolean; pos: V3; vel: V3; rot: Quat | null; pole: V3 | null }[] = [
+    { on: false, pos: [0, 0, 0], vel: [0, 0, 0], rot: null, pole: null },
+    { on: false, pos: [0, 0, 0], vel: [0, 0, 0], rot: null, pole: null },
+  ];
   private moodKind: Mood = 'normal';
   private readonly seed: number;
   private readonly rng: Rng;
@@ -1059,16 +1064,42 @@ export class MotionPlan {
         this.fk.updateSubtree(pose, b);
       }
     }
-    // behaviour tasks on top (a hand to a wound, on a wall, out to break a fall)
+    // behaviour tasks on top (a hand to a wound, on a wall, out to break a fall); what a
+    // behaviour asks of a hand is followed smoothly (its target on a critically damped spring,
+    // its turn and its elbow eased), and when it stops asking the hand fades back from where
+    // the task had it, not in one frame
     for (let i = 0; i < 2; i++) {
       const task = ctl.arms[i];
       const w = this.taskW[i]!.x;
-      if (!task || w < 0.01) continue;
+      const ts = this.taskS[i]!;
+      if (task) {
+        if (!ts.on || w < 0.02) {
+          vcopy(task.target, ts.pos);
+          ts.vel[0] = ts.vel[1] = ts.vel[2] = 0;
+          ts.rot = task.rot ? [...task.rot] as Quat : null;
+          ts.pole = task.pole ? [...task.pole] as V3 : null;
+          ts.on = true;
+        } else {
+          const om = 14;
+          for (let c = 0; c < 3; c++) {
+            const a = om * om * (task.target[c]! - ts.pos[c]!) - 2 * om * ts.vel[c]!;
+            ts.vel[c]! += a * dt;
+            ts.pos[c]! += ts.vel[c]! * dt;
+          }
+          const f = 1 - Math.exp(-dt * 12);
+          ts.rot = task.rot ? (ts.rot ? qnlerp(ts.rot, task.rot, f) : ([...task.rot] as Quat)) : null;
+          ts.pole = task.pole ? (ts.pole ? vnorm(vlerp(ts.pole, task.pole, f)) : ([...task.pole] as V3)) : null;
+        }
+      }
+      if (!ts.on || w < 0.01) {
+        if (w < 0.01) ts.on = false;
+        continue;
+      }
       const side: Side = i === 0 ? 'L' : 'R';
       // (a right hand holding a long gun takes the gun with it: the gun is let go of meanwhile)
       const chestQn = this.fk.q[H.chest]!;
-      const pole = task.pole ? qrotate(inv, task.pole) : qrotate(chestQn, vnorm([side === 'R' ? 0.8 : -0.8, -0.35, -0.5]));
-      this.arms.handIK(side, toModel(task.target), task.rot ? qmul(inv, task.rot) : null, pole, clamp(w, 0, 1));
+      const pole = ts.pole ? qrotate(inv, ts.pole) : qrotate(chestQn, vnorm([side === 'R' ? 0.8 : -0.8, -0.35, -0.5]));
+      this.arms.handIK(side, toModel(ts.pos), ts.rot ? qmul(inv, ts.rot) : null, pole, clamp(w, 0, 1));
     }
     this.fk.update(pose, H.clavicleL);
 

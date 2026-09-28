@@ -363,6 +363,16 @@ export class Behaviours {
   }
 
   private forceReact = false;
+  /** The flinch as one smoothed response: how much, from where, which side, how long under fire. */
+  private flinchI = 0;
+  private flinchDir: V3 = [0, 1, 0];
+  private flinchSide = 1;
+  private underFire = 0;
+  /** The hands' planned velocities (smoothed), for their grips. */
+  private readonly handVel: [V3, V3] = [[0, 0, 0], [0, 0, 0]];
+  /** Arms out for balance (0..1, smoothed) and what the balance wants of them now. */
+  private flail = 0;
+  private flailWant = 0;
   /** How long each swinging foot has been caught on something (s). */
   private readonly blockedFor: [number, number] = [0, 0];
   /** Why the last reaction ended in a fall (debugging). */
@@ -625,7 +635,10 @@ export class Behaviours {
 
     // ---- reflexes and behaviours ----
     if (alive || this.mode === 'dying') {
+      this.flailWant = 0;
       if (this.mode === 'reacting') this.balance(dt);
+      this.flail += (this.flailWant - this.flail) * (1 - Math.exp(-dt * (this.flailWant > this.flail ? 9 : 2.2)));
+      if (this.flail > 0.02 && (this.mode === 'reacting' || this.mode === 'animated')) this.armsOut(this.flail, dt);
       if (this.mode === 'falling' || (this.mode === 'dying' && this.modeTime > this.dyingFor * 0.4)) this.catchFall(dt, pose);
       this.bracing(dt, pose);
       if (this.conscious) this.flinch(dt, pose);
@@ -836,7 +849,7 @@ export class Behaviours {
    * (the one it suits, on its own side of the other), quicker the worse it is; a step already
    * swinging is re-aimed where the capture point will be when it lands. Arms go out.
    */
-  private balance(dt: number): void {
+  private balance(_dt: number): void {
     const k = this.k;
     const plan = this.plan;
     const fp = plan.feetPlanner;
@@ -913,9 +926,8 @@ export class Behaviours {
         this.stepCooldown = 0.05;
       }
     }
-    // arms out for balance (a windmill when it is bad)
-    const flail = smoothstep(0.04 * k, 0.4 * k, err + (swinging >= 0 ? 0.08 * k : 0));
-    if (flail > 0.02) this.armsOut(flail, dt);
+    // arms out for balance (a windmill when it is bad): quick to go out, slow to come down
+    this.flailWant = smoothstep(0.04 * k, 0.4 * k, err + (swinging >= 0 ? 0.08 * k : 0));
   }
 
   private armsOut(w: number, _dt: number): void {
@@ -930,8 +942,8 @@ export class Behaviours {
       const side = i === 0 ? -1 : 1;
       const sh = wp.p[i === 0 ? H.upperarmL : H.upperarmR]!;
       // out to the side, a little forward, circling (no higher than the shoulder)
-      const ph = this.time * 7 + i * 1.7;
-      const circle: V3 = [0, Math.cos(ph) * 0.1 * k * w, Math.sin(ph) * 0.08 * k * w];
+      const ph = this.time * 4.5 + i * 1.7;
+      const circle: V3 = [0, Math.cos(ph) * 0.06 * k * w, Math.sin(ph) * 0.05 * k * w];
       const off = qrotate(chestQ, [side * 0.44 * k, 0.12 * k + circle[1], -0.08 * k + circle[2]]);
       this.plan.control.arms[i] = { target: vadd(sh, off), rot: qmul(chestQ, qeuler(0, side * 1.4, 0)), pole: qrotate(chestQ, [side * 0.3, -0.5, -0.8]), weight: w * 0.8 };
     }
@@ -1084,73 +1096,92 @@ export class Behaviours {
   // ---- flinching -----------------------------------------------------------------------------------
 
   private flinch(dt: number, pose: WorldPose): void {
-    if (this.threats.length === 0) {
-      this.tension = Math.max(0, this.tension - dt * 2);
-      return;
-    }
     const k = this.k;
     const plan = this.plan;
     const ctl = plan.control;
-    // the strongest current threat
-    let best: Threat | null = null;
-    let bw = 0;
+    const head = pose.p[H.head]!;
+    // what threatens now, pooled: how much, and from where (weighted by each one's envelope)
+    let sum = 0, peak = 0;
+    const dir: V3 = [0, 0, 0];
     for (const t of this.threats) {
       const env = t.age < 0 ? 0 : t.age < 0.07 ? t.age / 0.07 : t.age < 0.07 + t.hold ? 1 : Math.exp(-(t.age - 0.07 - t.hold) / 0.3);
       const w = env * t.amount;
-      if (w > bw) {
-        bw = w;
-        best = t;
-      }
+      if (w < 1e-3) continue;
+      const d = vnorm(vsub(t.point, head), [0, 0, 0], [0, 1, 0]);
+      dir[0] += d[0] * w;
+      dir[1] += d[1] * w;
+      dir[2] += d[2] * w;
+      sum += w;
+      peak = Math.max(peak, w);
     }
+    // the response is one smooth thing, not a jerk per round: quick to come, slow to go, and
+    // it turns towards where the danger is over a moment
+    const want = clamp(peak + 0.25 * (sum - peak), 0, 1.2);
+    this.flinchI += (want - this.flinchI) * (1 - Math.exp(-dt * (want > this.flinchI ? 22 : 3)));
+    if (sum > 1e-3) {
+      const d = vnorm(dir, [0, 0, 0], this.flinchDir);
+      const a = 1 - Math.exp(-dt * (this.flinchI < 0.05 ? 60 : 7));
+      this.flinchDir = vnorm(vadd(this.flinchDir, vscale(vsub(d, this.flinchDir), a)), [0, 0, 0], d);
+    }
+    // under fire for a while: into cover (ducked low, both arms over the head)
+    this.underFire = want > 0.25 ? Math.min(2, this.underFire + dt) : Math.max(0, this.underFire - dt * 0.7);
+    const cover = smoothstep(0.5, 1.4, this.underFire);
     // once the flinch has passed: a look back at what it was
     for (const t of this.threats) {
       const after = t.age - 0.07 - t.hold - 0.2;
       if (after <= 0 || after > 1.1 || t.amount < 0.2) continue;
-      if (!ctl.look || ctl.lookWeight < 0.3) {
+      if (this.flinchI < 0.3 && (!ctl.look || ctl.lookWeight < 0.3)) {
         ctl.look = t.point;
         ctl.lookWeight = 0.75 * smoothstep(0, 0.25, after) * (1 - smoothstep(0.7, 1.1, after));
       }
       break;
     }
-    if (!best || bw < 0.02) return;
-    const w = clamp(bw, 0, 1.2);
-    this.tension = Math.max(this.tension, w);
-    const head = pose.p[H.head]!;
-    const away = vnorm(vsub(head, best.point), [0, 0, 0], [0, 0, 1]);
-    // in the body's frame: where the danger is
+    const w = this.flinchI;
+    if (w < 0.02) {
+      this.tension = Math.max(0, this.tension - dt * 2);
+      return;
+    }
+    this.tension += (Math.max(this.tension, w) - this.tension) * (1 - Math.exp(-dt * 12));
+    const away = vscale(this.flinchDir, -1);
+    // in the body's frame: which side the danger is on (it changes sides only clearly)
     const inv = qconj(qz(plan.rootYaw - Math.PI / 2));
-    const lm = qrotate(inv, vscale(away, -1));
-    const sideOf = lm[0] >= 0 ? 1 : -1;
+    const lm = qrotate(inv, this.flinchDir);
+    if (Math.abs(lm[0]) > 0.3) this.flinchSide = lm[0] >= 0 ? 1 : -1;
+    const sideOf = this.flinchSide;
     // duck and turn away
-    ctl.look = vadd(head, vadd(vscale(away, 2), [0, 0, -1.2]));
+    ctl.look = vadd(head, vadd(vscale(away, 2), [0, 0, -1.2 - 0.8 * cover]));
     ctl.lookWeight = Math.max(ctl.lookWeight, 0.8 * clamp(w, 0, 1));
-    ctl.neck[0] += 0.35 * w;
-    ctl.head[1] += sideOf * 0.2 * w;
+    ctl.neck[0] += (0.35 + 0.2 * cover) * w;
+    ctl.head[1] += sideOf * 0.2 * w * (1 - 0.5 * cover);
     // (the face turns from it at once, before the eyes have found anything to look at)
-    ctl.neck[2] += sideOf * 0.35 * w;
-    ctl.head[2] += sideOf * 0.45 * w;
+    ctl.neck[2] += sideOf * 0.35 * w * (1 - 0.5 * cover);
+    ctl.head[2] += sideOf * 0.45 * w * (1 - 0.5 * cover);
     ctl.shrug = Math.max(ctl.shrug, clamp(w, 0, 1));
-    ctl.spine[0] -= 0.14 * w;
-    ctl.chest[0] -= 0.1 * w;
-    ctl.crouch += 0.3 * w;
-    // a hand up between the face and the danger (a two-handed gun: the body hunches over it)
+    ctl.spine[0] -= (0.14 + 0.12 * cover) * w;
+    ctl.chest[0] -= (0.1 + 0.1 * cover) * w;
+    ctl.crouch += (0.3 + 0.35 * cover) * w;
+    // a hand up between the face and the danger (a two-handed gun: the body hunches over it);
+    // under fire both arms cover the head
     const longGun = plan.weapon && plan.weapon.kind !== 'knife' && plan.weapon.kind !== 'pistol';
     if (!longGun || w > 0.9) {
       const hand = longGun ? 0 : sideOf > 0 ? 1 : 0;
       if (!ctl.arms[hand] || ctl.arms[hand]!.weight < 0.5) {
-        const shield = vadd(head, vadd(vscale(away, -0.16 * k), [0, 0, 0.02 * k]));
-        const rot = palmFrame(vscale(away, -1), [0, 0, 1]);
+        const shield = vadd(head, vadd(vscale(away, -0.16 * k * (1 - 0.4 * cover)), [0, 0, (0.02 + 0.08 * cover) * k]));
+        // (the palm to the danger; covering, over the head)
+        const rot = palmFrame(vnorm(vadd(vscale(away, -(1 - cover)), [0, 0, -cover]), [0, 0, 0], vscale(away, -1)), [0, 0, 1]);
         ctl.arms[hand] = { target: shield, rot, pole: [0, 0, -1], weight: clamp(w * 1.1, 0, 1) };
       }
-      if (w > 0.7 && !longGun) {
+      const both = Math.max(clamp((w - 0.7) * 3, 0, 1), cover * clamp(w * 2, 0, 1));
+      if (both > 0.02 && !longGun) {
         const other = 1 - hand;
         if (!ctl.arms[other]) {
-          const shield = vadd(head, vadd(vscale(away, -0.14 * k), [0, 0, -0.06 * k]));
-          ctl.arms[other] = { target: shield, rot: null, pole: [0, 0, -1], weight: clamp((w - 0.7) * 3, 0, 1) };
+          const shield = vadd(head, vadd(vscale(away, -0.14 * k * (1 - 0.4 * cover)), [0, 0, (-0.06 + 0.12 * cover) * k]));
+          ctl.arms[other] = { target: shield, rot: null, pole: [0, 0, -1], weight: both };
         }
       }
     }
   }
+
 
   // ---- holding a wound ------------------------------------------------------------------------------
 
@@ -1260,11 +1291,19 @@ export class Behaviours {
     }
     const dz = (1 - 0.85 * this.daze) * (1 - 0.6 * this.shock);
     const tense = 1 + 0.35 * this.tension;
+    // (at ease only while they hang: hands held up - on the head in a panic, raised to
+    // surrender, over the face - are held there firmly, not left to flap)
+    const armHeld = (i: number): number => {
+      if (mode !== 'animated') return 0;
+      const hz = target.p[i === 0 ? H.handL : H.handR]![2] - target.p[i === 0 ? H.upperarmL : H.upperarmR]![2];
+      return Math.max(smoothstep(-0.42 * k, -0.18 * k, hz), plan.input.mood === 'normal' ? 0 : 0.8);
+    };
+    const armBase = (i: number): number => lerp(arms, Math.max(arms, 1), armHeld(i));
     const regionT: Record<Region, number> = {
       trunk: base * trunk * dz * tense * (1 - 0.3 * inj.trunk),
       neck: base * neck * dz * tense * (1 - 0.3 * inj.head),
-      armL: base * arms * dz * (1 - 0.65 * inj.armL) * (1 + 0.8 * this.tension),
-      armR: base * arms * dz * (1 - 0.65 * inj.armR) * (1 + 0.8 * this.tension),
+      armL: base * armBase(0) * dz * (1 - 0.65 * inj.armL) * (1 + 0.8 * this.tension),
+      armR: base * armBase(1) * dz * (1 - 0.65 * inj.armR) * (1 + 0.8 * this.tension),
       legL: base * legs * dz * (1 - 0.45 * inj.legL),
       legR: base * legs * dz * (1 - 0.45 * inj.legR),
     };
@@ -1442,15 +1481,22 @@ export class Behaviours {
       if (onWeapon && tone > 0.3 && (mode === 'animated' || mode === 'reacting' || mode === 'rising')) grip = Math.max(grip, i === 1 ? 0.8 : 0.6);
       // (an action's hand: a fist thrown at a jaw, a hand on a magazine)
       if (mode === 'animated' && plan.effort[i]! > 0.05) grip = Math.max(grip, plan.effort[i]! * (plan.striking[i] ? 1 : 0.5));
-      if (grip <= 0.01 || tone < 0.05) continue;
+      // (hands held up - on the head, raised, over the face - are held where they are meant)
+      grip = Math.max(grip, 0.5 * armHeld(i));
       const w = target.p[handBone]!;
+      const wp = prevT.p[handBone]!;
+      // (the hand's planned velocity, smoothed: frame differences are noisy)
+      const hv = this.handVel[i]!, fv = 1 - Math.exp(-dt * 20);
+      hv[0] += ((w[0] - wp[0]) * idt - hv[0]) * fv;
+      hv[1] += ((w[1] - wp[1]) * idt - hv[1]) * fv;
+      hv[2] += ((w[2] - wp[2]) * idt - hv[2]) * fv;
+      if (grip <= 0.01 || tone < 0.05) continue;
       att.target[0] = w[0];
       att.target[1] = w[1];
       att.target[2] = w[2];
-      const wp = prevT.p[handBone]!;
-      att.targetVel[0] = (w[0] - wp[0]) * idt;
-      att.targetVel[1] = (w[1] - wp[1]) * idt;
-      att.targetVel[2] = (w[2] - wp[2]) * idt;
+      att.targetVel[0] = hv[0];
+      att.targetVel[1] = hv[1];
+      att.targetVel[2] = hv[2];
       const hq = target.q[handBone]!;
       for (let c = 0; c < 4; c++) turn.target[c] = hq[c]!;
       const hm = body.parts[i === 0 ? B.handL : B.handR]!.mass;
@@ -1491,6 +1537,8 @@ export class Behaviours {
       if (bdv > 0.22) this.forceReact = true;
     }
     this.detectTrips(out, dt);
+    // (a body gone limp is heavy: no part of it whirls about on an impact)
+    body.system.spinCap = mode === 'dead' || mode === 'dying' || mode === 'falling' ? 14 : 80;
     // the dead settle (a body at rest does not keep rocking on its contacts) and sleep
     if (mode === 'dead') {
       const slow = body.system.lastSpeed < 0.25 || this.modeTime > 2.5;

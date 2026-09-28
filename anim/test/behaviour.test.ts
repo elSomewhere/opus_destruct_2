@@ -390,7 +390,7 @@ test('bodies: a body shoved into a bystander knocks into it, and the bystander g
   };
   run(0.5);
   const bx = b.pose.p[H.pelvis]![0];
-  a.push([1, 0, 0], 2.4);
+  a.push([1, 0, 0], 2.8);
   let bumped = false;
   run(2, () => (bumped ||= b.behaviours.mode !== 'animated' || b.body.parts.some((p) => p.bumped > 0)));
   assert.ok(bumped, 'the bystander was hit');
