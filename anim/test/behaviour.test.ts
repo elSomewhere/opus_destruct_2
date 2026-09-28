@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { Character, FlatGround, H, VoxelCollision, makeCivilian, makeRifle, makeSoldier, qrotate, type CollisionWorld, type V3 } from '../src/index.ts';
+import { Character, FlatGround, H, VoxelCollision, gatherObstacles, makeCivilian, makeRifle, makeSoldier, qrotate, type CollisionWorld, type V3 } from '../src/index.ts';
 
 const DT = 1 / 60;
 
@@ -281,4 +281,53 @@ test('dying: the muscles fade, the body goes down within a couple of seconds and
   assert.equal(c.behaviours.mode, 'dead');
   host(c, 4);
   assert.ok(c.asleep, 'at rest');
+});
+
+// ---- bodies among bodies ---------------------------------------------------------------------------
+
+test('bodies: a body shoved into a bystander knocks into it, and the bystander gives way', () => {
+  const a = civilian(new FlatGround(0), 3, Math.PI / 2, [0, 0, 0]);
+  const b = civilian(new FlatGround(0), 5, Math.PI / 2, [0.7, 0, 0]);
+  const hosts = [a, b].map((c) => ({ pos: [...c.motion.rootPos] as V3, yaw: c.motion.rootYaw, v: 0 }));
+  const run = (seconds: number, each?: () => void): void => {
+    for (let i = 0; i < seconds * 60; i++) {
+      gatherObstacles([a, b]);
+      [a, b].forEach((c, k) => {
+        const h = hosts[k]!;
+        const rm = c.takeRootMotion();
+        if (c.controlled) {
+          h.pos[0] += rm[0];
+          h.pos[1] += rm[1];
+        }
+        c.setRoot(h.pos, h.yaw);
+        c.update(DT);
+      });
+      each?.();
+    }
+  };
+  run(0.5);
+  const bx = b.pose.p[H.pelvis]![0];
+  a.push([1, 0, 0], 2.4);
+  let bumped = false;
+  run(2, () => (bumped ||= b.behaviours.mode !== 'animated' || b.body.parts.some((p) => p.bumped > 0)));
+  assert.ok(bumped, 'the bystander was hit');
+  assert.ok(b.pose.p[H.pelvis]![0] - bx > 0.05, `the bystander was pushed ${(b.pose.p[H.pelvis]![0] - bx).toFixed(2)} m`);
+  // they never pass through each other
+  assert.ok(b.pose.p[H.pelvis]![0] - a.pose.p[H.pelvis]![0] > 0.2, 'they stay apart');
+});
+
+test('bodies: a runner catches a foot on a body lying across the way', () => {
+  let tripped = 0;
+  for (const seed of [1, 2, 3]) {
+    const dead = civilian(new FlatGround(0), 9, 0, [0.55, 2.5, 0]);
+    dead.die(null, null, 0.05);
+    for (let i = 0; i < 180; i++) dead.update(DT);
+    const c = civilian(new FlatGround(0), seed);
+    c.motion.input.mood = 'panic';
+    host(c, 2, 4.5, (x) => {
+      gatherObstacles([x, dead]);
+      if (x.behaviours.mode === 'reacting' || x.down) tripped++;
+    });
+  }
+  assert.ok(tripped > 0, 'nobody caught a foot on the body');
 });

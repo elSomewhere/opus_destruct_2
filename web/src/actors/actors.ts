@@ -28,6 +28,7 @@ import {
   Brawler,
   Character,
   FURNITURE_PALETTE,
+  gatherObstacles,
   GibSystem,
   ModelMesher,
   qrotate,
@@ -44,6 +45,7 @@ import {
   type GibSpec,
   type GroundVariant,
   type Mood,
+  type Obstacle,
   type Prop,
   type SeatInfo,
   type Stance,
@@ -771,6 +773,7 @@ export class ActorWorld {
 
   // ---- simulation ---------------------------------------------------------------------------
 
+  private readonly debrisSpheres: Obstacle[] = [];
   /** Time the last updates took (ms, smoothed), and how many bodies were simulated. */
   updateMs = 0;
   bodies = 0;
@@ -796,6 +799,10 @@ export class ActorWorld {
     this.crushByDebris(dt);
     this.updateFights(dt);
     this.assignPhysics();
+    // bodies bump into each other, feet catch on the dead and on loose pieces lying about
+    this.debrisSpheres.length = 0;
+    for (const g of this.gibs.gibs) if (g.radius < 0.35) this.debrisSpheres.push({ c: g.pos, r: g.radius * 0.7 });
+    gatherObstacles(this.actors.filter((a) => a.opacity >= 0.5).map((a) => a.char), 2.2, this.debrisSpheres);
     for (const a of this.actors) {
       const an = a.char.motion;
       if (a.char.alive) {

@@ -679,6 +679,31 @@ export class HumanoidBody {
     this.system.wake();
   }
 
+  /**
+   * The body's collision spheres in the world (appended to `out`), from the bodies or, when
+   * given, from a pose (a body resting on its plan): what others bump into and trip over.
+   */
+  spheresOf(pose: WorldPose | null, out: { c: V3; r: number; body?: RigidBody }[]): void {
+    const com: V3 = [0, 0, 0];
+    for (let i = 0; i < BODY_COUNT; i++) {
+      const b = this.parts[i]!;
+      let q: Readonly<Quat> = b.q;
+      if (pose) {
+        const bone = BODY_BONE[i]!;
+        q = pose.q[bone]!;
+        this.bodyAt(pose, i, com);
+      } else {
+        com[0] = b.x[0];
+        com[1] = b.x[1];
+        com[2] = b.x[2];
+      }
+      for (const s of b.spheres) {
+        const c = qrotate(q, s.c);
+        out.push({ c: [com[0] + c[0], com[1] + c[1], com[2] + c[2]], r: s.r, body: b });
+      }
+    }
+  }
+
   /** The body whose collision spheres are nearest to a world point. */
   nearestPart(p: Readonly<V3>): number {
     let best: number = B.chest, bd = Infinity;

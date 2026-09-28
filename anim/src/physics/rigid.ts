@@ -59,6 +59,8 @@ export class RigidBody {
   readonly contactPoint: V3 = [0, 0, 0];
   /** Largest contact impulse of the last step (N s): how hard it hit something. */
   impact = 0;
+  /** The same against obstacles (other bodies, debris). */
+  bumped = 0;
   /** Index in its system. */
   index = -1;
   /**
@@ -321,6 +323,26 @@ interface WorldContact {
   lambda: number;
   /** The contact point in the body's frame at the substep's start. */
   local: V3;
+  /** Against an obstacle (not the world). */
+  obstacle: boolean;
+  /** The obstacle's body (its reaction), and the momentum this contact took from us (N s). */
+  other: RigidBody | null;
+  took: number;
+}
+
+/** A sphere of something else the bodies collide with (another body, a piece of debris; world). */
+export interface Obstacle {
+  c: V3;
+  r: number;
+  /** The body it belongs to, if it can be pushed: it gets the reaction of what hits it. */
+  body?: RigidBody;
+}
+
+/** A push this system gave an obstacle's body (world impulse at a point), to hand on. */
+export interface Reaction {
+  body: RigidBody;
+  j: V3;
+  at: V3;
 }
 
 /** A pair of spheres of two bodies that must not overlap. */
@@ -348,6 +370,10 @@ export class RigidSystem {
   readonly pairs: SpherePair[] = [];
   private readonly nearPairs: SpherePair[] = [];
   collision: CollisionWorld | null;
+  /** Other things to collide with this step (spheres, world; the host fills it). */
+  obstacles: readonly Obstacle[] = [];
+  /** The pushes the last step gave obstacles that belong to bodies (to apply to them). */
+  readonly reactions: Reaction[] = [];
   gravity: number;
   maxSubstep: number;
   margin: number;
@@ -438,11 +464,22 @@ export class RigidSystem {
     }
     this.findContacts(dt);
     this.findPairs(dt);
-    for (const b of this.bodies) b.impact = 0;
+    for (const b of this.bodies) {
+      b.impact = 0;
+      b.bumped = 0;
+    }
     for (let s = 0; s < n; s++) this.substepOnce(h);
     for (const b of this.bodies) {
       b.force[0] = b.force[1] = b.force[2] = 0;
       b.torque[0] = b.torque[1] = b.torque[2] = 0;
+    }
+    // what the obstacles' bodies get back (equal and opposite, handed on by the host)
+    this.reactions.length = 0;
+    for (let i = 0; i < this.contactCount; i++) {
+      const k = this.contacts[i]!;
+      if (!k.other || k.took <= 0) continue;
+      const p = k.body.point(k.c);
+      this.reactions.push({ body: k.other, j: [-k.n[0] * k.took, -k.n[1] * k.took, -k.n[2] * k.took], at: [p[0] - k.n[0] * k.r, p[1] - k.n[1] * k.r, p[2] - k.n[2] * k.r] });
     }
     // still: nothing has gone further than `stillDistance` from where it was when the stillness
     // began (a body at rest may jitter on its contacts, but it goes nowhere)
@@ -488,6 +525,7 @@ export class RigidSystem {
     this.contactCount = 0;
     const world = this.collision;
     for (const b of this.bodies) b.contact = false;
+    if (this.obstacles.length > 0) this.findObstacles(dt);
     if (!world) return;
     const p = this.probe;
     const c: V3 = [0, 0, 0];
@@ -504,6 +542,33 @@ export class RigidSystem {
         const n0x = p.normal[0], n0y = p.normal[1], n0z = p.normal[2];
         if (world.sphere([c2x, c2y, c2z], s.r + m, p) && p.normal[0] * n0x + p.normal[1] * n0y + p.normal[2] * n0z < 0.8) {
           this.addContact(b, s, p.normal, c2x + p.push[0], c2y + p.push[1], c2z + p.push[2], s.r + m);
+        }
+      }
+    }
+  }
+
+  private findObstacles(dt: number): void {
+    const c: V3 = [0, 0, 0];
+    const n: V3 = [0, 0, 0];
+    for (const b of this.bodies) {
+      const speed = Math.hypot(b.v[0], b.v[1], b.v[2]);
+      for (const s of b.spheres) {
+        b.point(s.c, c);
+        const m = this.margin + speed * dt;
+        for (const o of this.obstacles) {
+          const dx = c[0] - o.c[0], dy = c[1] - o.c[1], dz = c[2] - o.c[2];
+          const rr = s.r + m + o.r;
+          if (dx * dx + dy * dy + dz * dz >= rr * rr) continue;
+          const d = Math.sqrt(dx * dx + dy * dy + dz * dz) || 1e-6;
+          n[0] = dx / d;
+          n[1] = dy / d;
+          n[2] = dz / d;
+          // the sphere freed: touching the obstacle's surface at s.r + margin
+          const f = o.r + s.r + m;
+          this.addContact(b, s, n, o.c[0] + n[0] * f, o.c[1] + n[1] * f, o.c[2] + n[2] * f, s.r + m);
+          const k = this.contacts[this.contactCount - 1]!;
+          k.obstacle = true;
+          k.other = o.body ?? null;
         }
       }
     }
@@ -526,7 +591,7 @@ export class RigidSystem {
   private addContact(b: RigidBody, s: Sphere, n: Readonly<V3>, cx: number, cy: number, cz: number, rr: number): void {
     let k = this.contacts[this.contactCount];
     if (!k) {
-      k = { body: b, c: [0, 0, 0], r: 0, n: [0, 0, 1], d: 0, lambda: 0, local: [0, 0, 0] };
+      k = { body: b, c: [0, 0, 0], r: 0, n: [0, 0, 1], d: 0, lambda: 0, local: [0, 0, 0], obstacle: false, other: null, took: 0 };
       this.contacts.push(k);
     }
     this.contactCount++;
@@ -541,6 +606,9 @@ export class RigidSystem {
     // the freed centre touches the surface at distance rr
     k.d = n[0] * cx + n[1] * cy + n[2] * cz - rr;
     k.lambda = 0;
+    k.obstacle = false;
+    k.other = null;
+    k.took = 0;
   }
 
   // ---- the substep -----------------------------------------------------------------------------
@@ -984,6 +1052,7 @@ export class RigidSystem {
     const l = pen / w;
     B.applyPos(l * n[0], l * n[1], l * n[2], rx, ry, rz);
     k.lambda = l;
+    if (k.other) k.took += l / this.substep;
     // static friction: the contact point does not slide within the friction cone
     const loc = rotInv(B.q, rx, ry, rz, J1);
     const p0 = rot(B.pq, loc[0], loc[1], loc[2], J2);
@@ -1031,6 +1100,8 @@ export class RigidSystem {
       const jn = -vn / wn;
       B.applyImpulse(jn * n[0], jn * n[1], jn * n[2], rx, ry, rz);
       if (jn > B.impact) B.impact = jn;
+      if (k.obstacle && jn > B.bumped) B.bumped = jn;
+      if (k.other) k.took += jn;
     }
   }
 }

@@ -86,6 +86,8 @@ export class FootPlanner {
   readonly feet: [Foot, Foot];
   readonly dims: FeetDims;
   collision: CollisionWorld;
+  /** Things lying about (spheres, world): a swing clears them too, as far as it sees them. */
+  obstacles: readonly { c: V3; r: number }[] = [];
   phase = 0;
   /** Standing still, correcting the feet (unhurried steps). */
   stepping = false;
@@ -230,6 +232,14 @@ export class FootPlanner {
       const x = a[0] + (b[0] - a[0]) * t, y = a[1] + (b[1] - a[1]) * t;
       const g = this.collision.groundHeight(x, y, top + 0.55 * this.dims.k, top - 0.3 * this.dims.k);
       if (g !== null && g > high) high = g;
+      // (a body, a piece of debris on the path)
+      for (const o of this.obstacles) {
+        const dx = x - o.c[0], dy = y - o.c[1];
+        const h2 = o.r * o.r - dx * dx - dy * dy;
+        if (h2 <= 0) continue;
+        const z = o.c[2] + Math.sqrt(h2);
+        if (z > high && z < top + 0.55 * this.dims.k) high = z;
+      }
     }
     if (high <= top + 0.02) return 0;
     // a careful foot clears an obstacle by a hand's width; a hurried one barely

@@ -17,6 +17,7 @@ import '../styles.css';
 import {
   bakeRetroSet,
   Brawler,
+  gatherObstacles,
   Character,
   GibSystem,
   makeBench,
@@ -861,6 +862,8 @@ async function main(): Promise<void> {
     retroClock += dt;
     const retroTick = retroClock >= 4 / 35;
     if (retroTick) retroClock %= 4 / 35;
+    // bodies bump into each other and trip over the dead
+    gatherObstacles(actors.map((a) => a.char));
     for (const a of actors) {
       if (a.char.alive) {
         // while the body leads (staggering, down, getting up) the character follows it

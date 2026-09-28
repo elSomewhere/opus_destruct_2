@@ -32,6 +32,7 @@ import { writeRigid } from './math/mat4.ts';
 import { qconj, qmul, qnlerp, qrotate, qz, type Quat } from './math/quat.ts';
 import { clamp, vadd, vcopy, vdist, vlerp, vnorm, vscale, vsub, type V3 } from './math/vec.ts';
 import type { CollisionWorld } from './physics/collision.ts';
+import type { Obstacle, RigidBody } from './physics/rigid.ts';
 import { RetroPlayer, retroStateOf, snapYaw8, type RetroSet } from './retro/sequences.ts';
 import { carveModel, detachSubtree, partIntegrity, raycastModel, severDisconnected, type CharacterHit, type RemovedVoxel } from './voxel/damage.ts';
 import type { Palette, VoxelModel, VoxelPart } from './voxel/model.ts';
@@ -397,6 +398,37 @@ export class Character {
     const zone = zoneOfPart(part);
     const s = clamp(severity, 0, 1);
     this.behaviours.injuries.add({ part, local: [0, 0.06 * this.motion.k, 0], normal: [0, 1, 0], zone, kind: 'bullet', severity: s, lasting: s, age: 30, holdUntil: 0 });
+  }
+
+  /**
+   * The body's collision spheres in the world (appended to `out`): what other bodies bump into
+   * and trip over (hand them to their setObstacles).
+   */
+  collisionSpheres(out: Obstacle[]): Obstacle[] {
+    this.body.spheresOf(this.behaviours.physical ? null : this.pose, out);
+    return out;
+  }
+
+  /**
+   * What is about this frame (spheres, world: the bodies of others near by, the dead, debris):
+   * the body collides with them (a stagger knocks into people, a foot catches on a corpse) and
+   * its steps clear what they see of them.
+   */
+  setObstacles(list: readonly Obstacle[]): void {
+    this.body.system.obstacles = list;
+    this.motion.feetPlanner.obstacles = list;
+  }
+
+  /** Another body's push on one of this body's parts (an impulse, N s, at a world point). */
+  pushedAt(part: RigidBody, j: Readonly<V3>, at: Readonly<V3>): void {
+    if (!this.behaviours.physical) {
+      // (a body at rest on its plan wakes where it is: the push goes to the bodies there)
+      this.wake();
+    }
+    this.body.system.wake();
+    part.updateInertia();
+    part.applyImpulse(j[0], j[1], j[2], at[0] - part.x[0], at[1] - part.x[1], at[2] - part.x[2]);
+    this.behaviours.bumped(Math.hypot(j[0], j[1], j[2]));
   }
 
   /** A push on the body at `point` (velocity change dv, m/s), alive or dead. */
@@ -787,4 +819,51 @@ function nearTail(p: VoxelPart, tail: Readonly<V3>, s: number): boolean {
         if (cx * cx + cy * cy + cz * cz < r2) return true;
       }
   return false;
+}
+
+const NO_OBSTACLES: readonly Obstacle[] = [];
+
+/**
+ * Lets characters collide with each other this frame: every simulated body gets the spheres of
+ * the bodies (alive or dead) within `reach` metres as obstacles, plus `extra` (debris) near it.
+ * Hosts call it once a frame before updating the characters.
+ */
+export function gatherObstacles(chars: readonly Character[], reach = 2.2, extra: readonly Obstacle[] = []): void {
+  const cache = new Map<Character, Obstacle[]>();
+  const spheres = (c: Character): Obstacle[] => {
+    let s = cache.get(c);
+    if (!s) {
+      s = c.collisionSpheres([]);
+      cache.set(c, s);
+    }
+    return s;
+  };
+  // what they did to each other last frame: every push handed on to the body it hit
+  const owner = new Map<RigidBody, Character>();
+  for (const c of chars) for (const r of c.body.system.reactions) {
+    if (owner.size === 0) for (const d of chars) for (const p of d.body.parts) owner.set(p, d);
+    const o = owner.get(r.body);
+    if (!o) continue;
+    o.pushedAt(r.body, r.j, r.at);
+  }
+  for (const a of chars) {
+    if (!a.behaviours.physical || a.asleep) {
+      a.setObstacles(NO_OBSTACLES);
+      continue;
+    }
+    const pa = a.pose.p[H.pelvis]!;
+    let list: Obstacle[] | null = null;
+    for (const b of chars) {
+      if (b === a) continue;
+      const pb = b.pose.p[H.pelvis]!;
+      if (Math.abs(pa[0] - pb[0]) > reach || Math.abs(pa[1] - pb[1]) > reach || Math.abs(pa[2] - pb[2]) > reach) continue;
+      list ??= [];
+      for (const s of spheres(b)) list.push(s);
+    }
+    for (const o of extra) {
+      if (Math.abs(pa[0] - o.c[0]) > reach || Math.abs(pa[1] - o.c[1]) > reach || Math.abs(pa[2] - o.c[2]) > reach) continue;
+      (list ??= []).push(o);
+    }
+    a.setObstacles(list ?? NO_OBSTACLES);
+  }
 }

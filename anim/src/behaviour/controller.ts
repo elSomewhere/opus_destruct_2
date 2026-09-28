@@ -264,6 +264,13 @@ export class Behaviours {
     return zone;
   }
 
+  /** Another body bumped into this one (N s): hard enough, the balance has to answer it. */
+  bumped(j: number): void {
+    if (!this.alive) return;
+    if (j > 4) this.upset = Math.max(this.upset, 0.3);
+    if (j / this.body.totalMass > 0.35) this.forceReact = true;
+  }
+
   /** Something close by: a flinch, stronger the closer and the bigger it is. */
   perceive(p: Perception): void {
     if (!this.alive || !this.conscious) return;
@@ -1342,6 +1349,10 @@ export class Behaviours {
     // ---- step ----
     body.system.step(dt);
     body.writePose(out);
+    // bumped into (by) someone, something: the balance has to answer it
+    let bump = 0;
+    for (const p of body.parts) if (p.bumped > bump) bump = p.bumped;
+    if (bump > 6 && this.alive && (mode === 'animated' || mode === 'reacting')) this.upset = Math.max(this.upset, 0.3);
     this.detectTrips(out);
     // the dead settle (a body at rest does not keep rocking on its contacts) and sleep
     if (mode === 'dead') {
