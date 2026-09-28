@@ -146,6 +146,11 @@ strikes landing and reloads done.
   where the hip will be at mid-stance of the next step, on the ground found by
   `groundHeight`, and clears what is in the way on its path: steps, rubble, a body on the
   ground. The feet stay half a cycle apart at every speed and through turns.
+- **Stairs and ledges.** A foot lands flat on one tread, a little short of the next riser,
+  never across an edge, and rises or drops at most about two stair steps per step (a shorter
+  stride otherwise). Stepping up, the toes lift and the foot rises before the edge; the sole
+  keeps above what is just ahead of it. A climb is leaned into on bent knees, and
+  `motion.slope` tells hosts to slow down (the game and the lab do).
 - **Forced steps.** The behaviours can take a step anywhere at any time. A stagger is a run of
   such steps, and a swing already under way is re-aimed.
 - **Standing and turning.** The head and eyes lead, the trunk follows within the spine's twist,
@@ -531,7 +536,7 @@ Other calls: `hitAt(info)` (a blow without a wound), `impulse(point, dv)`, `knoc
 ## 9. Tests and checks
 
 ```bash
-cd anim && npm install && npm test          # 80 unit tests: rigid joints, the body, tracking, hits,
+cd anim && npm install && npm test          # 81 unit tests: rigid joints, the body, tracking, hits,
                                             # balance, trips, flinches, bracing, knockouts, dying,
                                             # bodies among bodies, motion, strikes, brawls, damage,
                                             # gibs, retro
