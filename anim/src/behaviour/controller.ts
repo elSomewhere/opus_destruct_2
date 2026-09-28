@@ -729,8 +729,9 @@ export class Behaviours {
         const slow = Math.hypot(this.comVel[0], this.comVel[1]) < 0.3;
         const still = !plan.feetPlanner.feet[0].forced && !plan.feetPlanner.feet[1].forced;
         // (in balance, or at its edge and still: leaning on something)
-        const settled = this.balanceError < -0.01 * k || (this.balanceError < 0.05 * k && Math.hypot(this.comVel[0], this.comVel[1]) < 0.12);
-        this.balancedFor = settled && slow && still ? this.balancedFor + dt : 0;
+        // (a sway about the edge of the support, as a body collects itself, is settled too)
+        const settled = this.balanceError < 0.02 * k || (this.balanceError < 0.06 * k && Math.hypot(this.comVel[0], this.comVel[1]) < 0.2);
+        this.balancedFor = settled && slow && still ? this.balancedFor + dt : Math.max(0, this.balancedFor - 2 * dt);
         if (this.balancedFor > 0.3 && this.modeTime > 0.35) this.setMode('animated');
         break;
       }
