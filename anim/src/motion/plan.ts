@@ -727,7 +727,7 @@ export class MotionPlan {
     const bodyYaw = this.rootYaw + this.lowerYaw.x;
     let prevPhase = feet.phase;
     const hips: [V3, V3] = [this.world.p[H.thighL]!, this.world.p[H.thighR]!];
-    const fctx = { root: this.rootPos, bodyYaw, vel, speed, gait: g, moving, airborne: inp.airborne, crouch, style: st, hips, care: ctl.care, groundZ: this.rootPos[2] };
+    const fctx = { root: this.rootPos, bodyYaw, vel, speed, gait: g, moving, airborne: inp.airborne, crouch, style: st, hips, care: ctl.care, groundZ: this.rootPos[2], hold: ctl.holdFeet };
     if (standW < 0.999) {
       // another stance: the feet wait at the standing stance's spots
       feet.reset(this.rootPos, bodyYaw, crouch, st);

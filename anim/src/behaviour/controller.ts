@@ -847,7 +847,8 @@ export class Behaviours {
     const maxStep = 1.1 * plan.legLen * clamp(legs, 0.45, 1);
     // (a stride the gait had begun becomes the balance's step)
     const swinging: number = !feet[0].planted && !feet[0].held ? 0 : !feet[1].planted && !feet[1].held ? 1 : -1;
-    const margin = 0.02 * k;
+    // (just outside, a weight shift does it: no step)
+    const margin = 0.05 * k;
     const right: V3 = [Math.sin(plan.rootYaw), -Math.cos(plan.rootYaw), 0];
     const plannedStep = (i: number, T: number): V3 => {
       const stance = feet[1 - i]!;

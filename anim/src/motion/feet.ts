@@ -76,6 +76,8 @@ export interface FeetContext {
   style: GaitStyle;
   /** Hip joints (world) this frame (a foot stays within the leg's reach). */
   hips: [Readonly<V3>, Readonly<V3>];
+  /** The balance has the feet: the gait lifts none of them (only forced steps). */
+  hold?: boolean;
   /** 0..1: how much attention the steps get (clearance over obstacles). */
   care: number;
   /** Ground height of the character's root (reference for ground queries). */
@@ -386,7 +388,7 @@ export class FootPlanner {
       const p1 = fract(this.phase + f.offset);
       const advanced = this.phase !== prevPhase;
       if (c.airborne) f.planted = false;
-      else if (f.planted && !forcedAny) {
+      else if (f.planted && !forcedAny && !c.hold) {
         const wrapped = p1 < p0;
         const crossedLift = advanced && ((!wrapped && p0 < D && p1 >= D) || (wrapped && p0 < D));
         // a foot still down late in its swing phase (it landed late) goes now, so the feet keep
