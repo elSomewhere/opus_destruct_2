@@ -580,7 +580,7 @@ void WaterSystem::float_pieces(World& w) {
   std::unordered_map<i64, Samples> kept;
   for (const PieceState& ps : w.pieces()) {
     const Body* b = w.piece(ps.id);
-    if (!b || b->shape.count <= 0) continue;
+    if (!b || b->count <= 0) continue;
     // (no water near: nothing to do; a vast piece is looked at voxel by voxel)
     const V3 r{b->radius, b->radius, b->radius};
     if (!w.in_range(b->x - r) || !w.in_range(b->x + r)) continue;
@@ -597,30 +597,41 @@ void WaterSystem::float_pieces(World& w) {
       if (ps.asleep && wet_.count(ps.id)) w.wake_piece(ps.id);
       continue;
     }
-    const BodyShape& S = b->shape;
+    // its cells, all shapes one after the other (a piece of one shape: its shape's cells)
+    std::vector<size_t> off(b->shapes.size() + 1, 0);
+    for (size_t k = 0; k < b->shapes.size(); ++k) off[k + 1] = off[k] + b->shapes[k].vox.size();
+    auto solid_at = [&](size_t gi, size_t* k) {
+      while (gi >= off[*k + 1]) ++*k;
+      return vox_solid(b->shapes[*k].vox[gi - off[*k]]);
+    };
+    const i32 count = b->count;
     // its sample: cells picked by a hash of their index (no stripes of a shape's layout)
     Samples& smp = kept[ps.id];
-    if (const auto it = samples_.find(ps.id); it != samples_.end() && it->second.count == S.count) smp = std::move(it->second);
-    if (smp.count != S.count) {
-      smp.count = S.count;
+    if (const auto it = samples_.find(ps.id); it != samples_.end() && it->second.count == count) smp = std::move(it->second);
+    if (smp.count != count) {
+      smp.count = count;
       smp.cells.clear();
-      const u64 stride = static_cast<u64>(std::max<i32>(1, (S.count + cfg_.samples - 1) / cfg_.samples));
-      for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
-        if (!vox_solid(S.vox[size_t(i)])) continue;
+      const u64 stride = static_cast<u64>(std::max<i32>(1, (count + cfg_.samples - 1) / cfg_.samples));
+      size_t k = 0;
+      for (i32 i = 0; i < static_cast<i32>(off.back()); ++i) {
+        if (!solid_at(size_t(i), &k)) continue;
         u64 x = static_cast<u64>(i) * 0x9E3779B97F4A7C15ull;
         x ^= x >> 29;
         if (x % stride == 0) smp.cells.push_back(i);
       }
+      k = 0;
       if (smp.cells.empty())
-        for (i32 i = 0; i < static_cast<i32>(S.vox.size()) && smp.cells.empty(); ++i)
-          if (vox_solid(S.vox[size_t(i)])) smp.cells.push_back(i);
+        for (i32 i = 0; i < static_cast<i32>(off.back()) && smp.cells.empty(); ++i)
+          if (solid_at(size_t(i), &k)) smp.cells.push_back(i);
     }
-    const f64 each = vol * static_cast<f64>(S.count) / static_cast<f64>(smp.cells.size());  // (the volume a sample stands for)
+    const f64 each = vol * static_cast<f64>(count) / static_cast<f64>(smp.cells.size());  // (the volume a sample stands for)
     f64 lift = 0.0, msub = 0.0;
     std::vector<std::pair<V3, f64>> pts;
-    for (i32 i : smp.cells) {
-      const IVec3 sp = S.voxel(i);
-      const V3 X = b->to_world(V3{h * sp[0], h * sp[1], h * sp[2]});
+    for (i32 gi : smp.cells) {
+      size_t k = 0;
+      while (size_t(gi) >= off[k + 1]) ++k;
+      const IVec3 sp = b->shapes[k].voxel(static_cast<i32>(size_t(gi) - off[k]));
+      const V3 X = b->lattice_to_world(k, V3{h * sp[0], h * sp[1], h * sp[2]});
       const u8 a = w.layer(water_, voxel_at(X, h));
       if (!a) continue;
       const f64 m = rho * each * (a / 255.0);  // (the water it displaces)

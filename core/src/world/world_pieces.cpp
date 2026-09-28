@@ -22,89 +22,140 @@ Body* World::make_body_from_world(const std::vector<FragKey>& frags, const V3& v
   if (frags.empty()) return nullptr;
   const f64 h = grid_.h;
   auto b = std::make_unique<Body>();
-  std::vector<IVec3> vox;
-  std::vector<i32> vfrag;
+  // One shape per grid its fragments are in (in order of first appearance); the body's frame is
+  // its first shape's lattice.
+  std::vector<u16> grids;               // shape -> grid
+  std::vector<std::vector<IVec3>> vox;  // shape -> its voxels
+  std::vector<std::vector<i32>> vfrag;  // ... and their body fragments
   for (const FragKey& f : frags) {
-    FragChunk* fc = frag_chunk_if(f.chunk);
+    FragChunk* fc = frag_chunk_if(f);
     if (!fc || f.idx < 0 || f.idx >= static_cast<i32>(fc->frags.size())) continue;
     const FragInfo& fi = fc->frags[size_t(f.idx)];
     if (fi.count <= 0) continue;
-    const size_t before = vox.size();
-    voxels_of(f, vox);
-    if (vox.size() == before) continue;
+    size_t k = 0;
+    while (k < grids.size() && grids[k] != f.grid) ++k;
+    if (k == grids.size()) {
+      grids.push_back(f.grid);
+      vox.emplace_back();
+      vfrag.emplace_back();
+    }
+    const size_t before = vox[k].size();
+    voxels_of(f, vox[k]);
+    if (vox[k].size() == before) continue;
     const i32 j = static_cast<i32>(b->frags.size());
-    for (size_t k = before; k < vox.size(); ++k) vfrag.push_back(j);
+    for (size_t q = before; q < vox[k].size(); ++q) vfrag[k].push_back(j);
     BodyFrag bf;
     bf.com = fi.com;
     bf.mass = fi.mass;
     bf.inertia = fi.inertia;
     bf.mat = fi.mat;
-    bf.count = static_cast<i32>(vox.size() - before);
+    bf.count = static_cast<i32>(vox[k].size() - before);
     bf.strength = class_mult(frag_class(f));
+    bf.shape = static_cast<u16>(k);
     b->frags.push_back(bf);
   }
-  if (vox.empty()) return nullptr;
-  IVec3 lo{INT_MAX, INT_MAX, INT_MAX}, hi{INT_MIN, INT_MIN, INT_MIN};
-  for (const IVec3& p : vox)
-    for (int a = 0; a < 3; ++a) {
-      lo[a] = std::min(lo[a], p[a]);
-      hi[a] = std::max(hi[a], p[a]);
+  size_t total = 0;
+  for (const auto& vk : vox) total += vk.size();
+  if (total == 0) return nullptr;
+  const LatticeXf& X0 = xf_of(grids[0]);
+  const LatticeXf into0 = inverse(X0);  // (the world -> the first shape's lattice)
+  // (the voxels' world box, to wake what rests on them)
+  V3 wlo{INFINITY, INFINITY, INFINITY}, whi{-INFINITY, -INFINITY, -INFINITY};
+  b->shapes.resize(grids.size());
+  for (size_t k = 0; k < grids.size(); ++k) {
+    const u16 g = grids[k];
+    VoxelGrid& G = vg(g);
+    BodyShape& S = b->shapes[k];
+    S.grid = id_of(g);
+    S.xf = k == 0 ? LatticeXf{} : compose(into0, xf_of(g));
+    IVec3 lo{INT_MAX, INT_MAX, INT_MAX}, hi{INT_MIN, INT_MIN, INT_MIN};
+    for (const IVec3& p : vox[k])
+      for (int a = 0; a < 3; ++a) {
+        lo[a] = std::min(lo[a], p[a]);
+        hi[a] = std::max(hi[a], p[a]);
+      }
+    S.lo = lo;
+    S.dim = {hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1};
+    const size_t cells = size_t(S.dim[0]) * size_t(S.dim[1]) * size_t(S.dim[2]);
+    S.vox.assign(cells, kAir);
+    S.frag.assign(cells, 0);
+    S.brk.assign(cells, 0);
+    for (size_t q = 0; q < vox[k].size(); ++q) {
+      const i32 i = S.index(vox[k][q]);
+      S.vox[size_t(i)] = static_cast<Vox>(G.get(vox[k][q]) & ~kAnchorBit);
+      S.frag[size_t(i)] = static_cast<u32>(vfrag[k][q] + 1);
+      ++S.count;
     }
-  BodyShape& S = b->shape;
-  S.lo = lo;
-  S.dim = {hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1};
-  const size_t cells = size_t(S.dim[0]) * size_t(S.dim[1]) * size_t(S.dim[2]);
-  S.vox.assign(cells, kAir);
-  S.frag.assign(cells, 0);
-  S.brk.assign(cells, 0);
-  for (size_t k = 0; k < vox.size(); ++k) {
-    const i32 i = S.index(vox[k]);
-    S.vox[size_t(i)] = static_cast<Vox>(grid_.get(vox[k]) & ~kAnchorBit);
-    S.frag[size_t(i)] = static_cast<u32>(vfrag[k] + 1);
-    ++S.count;
+    // (the voxels' layer values go with them)
+    for (int L = 0; L < static_cast<int>(layer_specs_.size()); ++L)
+      for (const IVec3& p : vox[k]) {
+        const u8 lv = G.layer(L, p);
+        if (!lv) continue;
+        if (S.layer[size_t(L)].empty()) S.layer[size_t(L)].assign(cells, 0);
+        S.layer[size_t(L)][size_t(S.index(p))] = lv;
+        G.set_layer(L, p, 0);
+      }
+    for (const IVec3& p : vox[k]) {
+      const i32 i = S.index(p);
+      for (int a = 0; a < 3; ++a) {
+        IVec3 q = p;
+        q[a] += 1;
+        const i32 j = S.index(q);
+        if (j < 0 || !vox_solid(S.vox[size_t(j)])) continue;
+        if (G.broken(p, a)) S.brk[size_t(i)] |= static_cast<u8>(1u << a);
+      }
+    }
+    // (junction samples broken in the world stay broken between its shapes)
+    if (grids.size() > 1)
+      for (const IVec3& p : vox[k]) {
+        const Chunk* ch = G.chunk(chunk_of(p));
+        if (!ch || ch->jbroken.empty()) continue;
+        const u32 li = static_cast<u32>(chunk_index(p));
+        auto it = std::lower_bound(ch->jbroken.begin(), ch->jbroken.end(), li << 9);
+        for (; it != ch->jbroken.end() && (*it >> 9) == li; ++it) S.break_junction(S.index(p), static_cast<int>((*it >> 6) & 7), static_cast<int>(*it & 63));
+      }
+    // (its world box)
+    const V3 llo{h * (lo[0] - 0.5), h * (lo[1] - 0.5), h * (lo[2] - 0.5)}, lhi{h * (hi[0] + 0.5), h * (hi[1] + 0.5), h * (hi[2] + 0.5)};
+    for (int c = 0; c < 8; ++c) {
+      const V3 cw = xf_of(g).to(V3{(c & 1) ? lhi.x : llo.x, (c & 2) ? lhi.y : llo.y, (c & 4) ? lhi.z : llo.z});
+      for (int a = 0; a < 3; ++a) {
+        wlo[a] = std::min(wlo[a], cw[a]);
+        whi[a] = std::max(whi[a], cw[a]);
+      }
+    }
   }
-  // (the voxels' layer values go with them)
-  for (int L = 0; L < static_cast<int>(layer_specs_.size()); ++L)
-    for (const IVec3& p : vox) {
-      const u8 v = grid_.layer(L, p);
-      if (!v) continue;
-      if (S.layer[size_t(L)].empty()) S.layer[size_t(L)].assign(cells, 0);
-      S.layer[size_t(L)][size_t(S.index(p))] = v;
-      grid_.set_layer(L, p, 0);
-    }
-  for (const IVec3& p : vox) {
-    const i32 i = S.index(p);
-    for (int a = 0; a < 3; ++a) {
-      IVec3 q = p;
-      q[a] += 1;
-      const i32 j = S.index(q);
-      if (j < 0 || !vox_solid(S.vox[size_t(j)])) continue;
-      if (grid_.broken(p, a)) S.brk[size_t(i)] |= static_cast<u8>(1u << a);
-    }
+  // (fragments of the other shapes: into the body frame)
+  for (BodyFrag& bf : b->frags) {
+    const LatticeXf& X = b->shapes[bf.shape].xf;
+    if (X.identity) continue;
+    bf.com = X.to(bf.com);
+    bf.inertia = X.R * bf.inertia * X.Rt;
   }
   body_refresh(*b, h, cfg_.rigid.max_points);
   b->id = next_id_++;
-  b->x = b->com;
-  b->q = Quat{};
+  b->x = X0.to(b->com);
+  b->q = X0.q;
   b->v = v;
   b->w = w;
   b->v_pre = v;
   b->w_pre = w;
   b->refresh_box();
-  // the voxels leave the grid; the fragment caches that are current are patched in place (the
+  // the voxels leave their grids; the fragment caches that are current are patched in place (the
   // structures holding the remaining fragments stay valid)
-  std::unordered_map<u64, bool> current;
+  std::unordered_map<GKey, bool, GKeyHash> current;
   for (const FragKey& f : frags) {
-    if (current.count(f.chunk)) continue;
-    FragChunk* fc = frag_chunk_if(f.chunk);
-    const Chunk* ch = grid_.chunk(unkey3(f.chunk));
-    current[f.chunk] = fc && ch && fc->vox_version == ch->vox_version;
+    const GKey key{f.grid, f.chunk};
+    if (current.count(key)) continue;
+    FragChunk* fc = frag_chunk_if(f);
+    const Chunk* ch = vg(f.grid).chunk(unkey3(f.chunk));
+    current[key] = fc && ch && fc->vox_version == ch->vox_version;
   }
-  for (const IVec3& p : vox) grid_.set(p, kAir);
+  for (size_t k = 0; k < grids.size(); ++k)
+    for (const IVec3& p : vox[k]) vg(grids[k]).set(p, kAir);
   for (const FragKey& f : frags) {
-    if (!current[f.chunk]) continue;
-    FragChunk* fc = frag_chunk_if(f.chunk);
-    const Chunk* ch = grid_.chunk(unkey3(f.chunk));
+    if (!current[GKey{f.grid, f.chunk}]) continue;
+    FragChunk* fc = frag_chunk_if(f);
+    const Chunk* ch = vg(f.grid).chunk(unkey3(f.chunk));
     if (!fc || !ch || f.idx < 0 || f.idx >= static_cast<i32>(fc->frags.size())) continue;  // (as the first loop)
     for (i32 k = fc->vox_start[size_t(f.idx)]; k < fc->vox_start[size_t(f.idx) + 1]; ++k) {
       const i32 i = fc->vox[size_t(k)];
@@ -112,16 +163,23 @@ Body* World::make_body_from_world(const std::vector<FragKey>& frags, const V3& v
     }
     fc->frags[size_t(f.idx)].count = 0;
     fc->vox_version = ch->vox_version;
-    auto ot = owner_.find(f.chunk);
-    if (ot != owner_.end() && f.idx < static_cast<i32>(ot->second.size())) ot->second[size_t(f.idx)] = 0;
+    auto& owner = gs(f.grid).owner;
+    auto ot = owner.find(f.chunk);
+    if (ot != owner.end() && f.idx < static_cast<i32>(ot->second.size())) ot->second[size_t(f.idx)] = 0;
   }
   const V3 m{h, h, h};
-  rigid_.wake_box(V3{h * lo[0], h * lo[1], h * lo[2]} - m * 2.0, V3{h * hi[0], h * hi[1], h * hi[2]} + m * 2.0);
-  st_.detached_voxels += static_cast<i64>(vox.size());
-  if (static_cast<i32>(vox.size()) < cfg_.min_body_voxels) {
+  if (grids.size() == 1 && grids[0] == 0) {
+    const BodyShape& S = b->shapes[0];
+    const IVec3 lo = S.lo, hi{S.lo[0] + S.dim[0] - 1, S.lo[1] + S.dim[1] - 1, S.lo[2] + S.dim[2] - 1};
+    rigid_.wake_box(V3{h * lo[0], h * lo[1], h * lo[2]} - m * 2.0, V3{h * hi[0], h * hi[1], h * hi[2]} + m * 2.0);
+  } else {
+    rigid_.wake_box(wlo - m * 2.0, whi + m * 2.0);
+  }
+  st_.detached_voxels += static_cast<i64>(total);
+  if (static_cast<i32>(total) < cfg_.min_body_voxels) {
     // (a shard: dust and a few chips, not a rigid piece)
-    dust_event(b->x, v, static_cast<i32>(vox.size()), false);
-    st_.pulverized_voxels += static_cast<i64>(vox.size());
+    dust_event(b->x, v, static_cast<i32>(total), false);
+    st_.pulverized_voxels += static_cast<i64>(total);
     return nullptr;
   }
   ++st_.detached_pieces;
@@ -130,47 +188,138 @@ Body* World::make_body_from_world(const std::vector<FragKey>& frags, const V3& v
   return ptr;
 }
 
+namespace {
+
+// Junction samples between the shapes of a body (in its frame): each shape's exposed faces
+// sampled into the other shapes (JSample: vg, og are shape indices).
+void body_junctions(const Body& b, i32 S, f64 h, f64 push, std::vector<JSample>& out) {
+  const size_t ns = b.shapes.size();
+  if (ns < 2) return;
+  // (the shapes' boxes in the body frame: pairs that cannot meet are skipped)
+  std::vector<V3> lo(ns), hi(ns);
+  for (size_t k = 0; k < ns; ++k) {
+    const BodyShape& Sk = b.shapes[k];
+    lo[k] = V3{INFINITY, INFINITY, INFINITY};
+    hi[k] = V3{-INFINITY, -INFINITY, -INFINITY};
+    const f64 m = h + push;
+    for (int c = 0; c < 8; ++c) {
+      const V3 p{h * ((c & 1) ? Sk.lo[0] + Sk.dim[0] - 0.5 : Sk.lo[0] - 0.5), h * ((c & 2) ? Sk.lo[1] + Sk.dim[1] - 0.5 : Sk.lo[1] - 0.5),
+                 h * ((c & 4) ? Sk.lo[2] + Sk.dim[2] - 0.5 : Sk.lo[2] - 0.5)};
+      const V3 w = Sk.xf.to(p);
+      for (int a = 0; a < 3; ++a) {
+        lo[k][a] = std::min(lo[k][a], w[a] - m);
+        hi[k][a] = std::max(hi[k][a], w[a] + m);
+      }
+    }
+  }
+  for (size_t k = 0; k < ns; ++k) {
+    const BodyShape& A = b.shapes[k];
+    std::vector<size_t> others;
+    for (size_t l = 0; l < ns; ++l)
+      if (l != k && !(hi[l].x < lo[k].x || lo[l].x > hi[k].x || hi[l].y < lo[k].y || lo[l].y > hi[k].y || hi[l].z < lo[k].z ||
+                      lo[l].z > hi[k].z))
+        others.push_back(l);
+    if (others.empty()) continue;
+    for (i32 i = 0; i < static_cast<i32>(A.vox.size()); ++i) {
+      if (!vox_solid(A.vox[size_t(i)])) continue;
+      const IVec3 p = A.voxel(i);
+      for (int face = 0; face < 6; ++face) {
+        IVec3 q = p;
+        q[face >> 1] += (face & 1) ? 1 : -1;
+        if (vox_solid(A.get(q))) continue;
+        for (int sub = 0; sub < S * S; ++sub) {
+          if (!A.jbrk.empty() && A.junction_broken(i, face, sub)) continue;
+          const V3 X = A.xf.to(junction_point(p, face, sub, S, h, push));
+          for (size_t l : others) {
+            const BodyShape& B = b.shapes[l];
+            const IVec3 o = voxel_of(B.xf.from(X), h);
+            const i32 oi = B.index(o);
+            if (oi < 0 || !vox_solid(B.vox[size_t(oi)])) continue;
+            // (as in the world: an interface is measured by the newer grid's faces alone)
+            if (A.grid < B.grid) break;
+            out.push_back({p, o, static_cast<u16>(k), static_cast<u16>(l), static_cast<u8>(face), static_cast<u8>(sub), 0});
+            break;
+          }
+        }
+      }
+    }
+  }
+}
+
+}  // namespace
+
 void World::rebuild_body_graph(Body& b) {
   const f64 h = grid_.h;
   if (!b.graph) b.graph = std::make_shared<BodyGraph>();
   BodyGraph& G = *b.graph;
   G.P = StressProblem{};
   const i32 nf = static_cast<i32>(b.frags.size());
-  // fragment-level bonds from the shape
+  // fragment-level bonds from the shapes
   std::vector<SecAcc> fine;
   std::unordered_map<u64, i32> index;
-  const BodyShape& S = b.shape;
-  const i32 cells = static_cast<i32>(S.vox.size());
-  for (i32 i = 0; i < cells; ++i) {
-    if (!vox_solid(S.vox[size_t(i)])) continue;
-    const i32 fp = static_cast<i32>(S.frag[size_t(i)]) - 1;
-    if (fp < 0) continue;
-    const IVec3 p = S.voxel(i);
-    for (int a = 0; a < 3; ++a) {
-      if ((S.brk[size_t(i)] >> a) & 1) continue;
-      IVec3 q = p;
-      q[a] += 1;
-      const i32 j = S.index(q);
-      if (j < 0 || !vox_solid(S.vox[size_t(j)])) continue;
-      const i32 fq = static_cast<i32>(S.frag[size_t(j)]) - 1;
-      if (fq == fp || fq < 0) continue;
-      const u64 key = acc_key(fp, fq, a, 1);
+  for (size_t sk = 0; sk < b.shapes.size(); ++sk) {
+    const BodyShape& S = b.shapes[sk];
+    const i32 cells = static_cast<i32>(S.vox.size());
+    for (i32 i = 0; i < cells; ++i) {
+      if (!vox_solid(S.vox[size_t(i)])) continue;
+      const i32 fp = static_cast<i32>(S.frag[size_t(i)]) - 1;
+      if (fp < 0) continue;
+      const IVec3 p = S.voxel(i);
+      for (int a = 0; a < 3; ++a) {
+        if ((S.brk[size_t(i)] >> a) & 1) continue;
+        IVec3 q = p;
+        q[a] += 1;
+        const i32 j = S.index(q);
+        if (j < 0 || !vox_solid(S.vox[size_t(j)])) continue;
+        const i32 fq = static_cast<i32>(S.frag[size_t(j)]) - 1;
+        if (fq == fp || fq < 0) continue;
+        const u64 key = acc_key(fp, fq, a, 1);
+        auto it = index.find(key);
+        i32 ai;
+        if (it == index.end()) {
+          ai = static_cast<i32>(fine.size());
+          index.emplace(key, ai);
+          fine.emplace_back();
+          SecAcc& A = fine.back();
+          A.a = std::min(fp, fq);
+          A.b = std::max(fp, fq);
+          A.grid = static_cast<u16>(sk);
+        } else {
+          ai = it->second;
+        }
+        fine[size_t(ai)].add(p, a, fp < fq ? 1 : -1);
+      }
+    }
+  }
+  // junctions between its shapes (both sides' samples, half each)
+  const i32 JS = std::clamp(cfg_.junction_samples, 1, 7);
+  if (b.shapes.size() > 1) {
+    std::vector<JSample> js;
+    body_junctions(b, JS, h, std::clamp(cfg_.junction_reach, 0.0, 2.0) * h, js);
+    for (const JSample& j : js) {
+      const BodyShape& A = b.shapes[j.vg];
+      const BodyShape& B = b.shapes[j.og];
+      const i32 fp = static_cast<i32>(A.frag[size_t(A.index(j.v))]) - 1;
+      const i32 fq = static_cast<i32>(B.frag[size_t(B.index(j.o))]) - 1;
+      if (fp < 0 || fq < 0 || fp == fq) continue;
+      const u64 key = acc_key(fp, fq, 0, 1);
       auto it = index.find(key);
       i32 ai;
       if (it == index.end()) {
         ai = static_cast<i32>(fine.size());
         index.emplace(key, ai);
         fine.emplace_back();
-        SecAcc& A = fine.back();
-        A.a = std::min(fp, fq);
-        A.b = std::max(fp, fq);
+        SecAcc& A2 = fine.back();
+        A2.a = std::min(fp, fq);
+        A2.b = std::max(fp, fq);
+        A2.grid = j.vg;
       } else {
         ai = it->second;
       }
-      fine[size_t(ai)].add(p, a, fp < fq ? 1 : -1);
+      fine[size_t(ai)].add_sample(j, fp < fq ? 1 : -1, junction_weight(j));
     }
   }
-  // resolution: clusters of fragments for large pieces (cells in the shape frame)
+  // resolution: clusters of fragments for large pieces (cells in the body frame, within a shape)
   i64 live = 0;
   for (const BodyFrag& f : b.frags) live += f.count > 0 ? 1 : 0;
   // (pieces: per fragment up to body_cluster_nodes fragments, 1 m cells up to 3x that, 2 m
@@ -188,8 +337,13 @@ void World::rebuild_body_graph(Body& b) {
   }
   std::vector<std::pair<i32, i32>> links;
   for (const SecAcc& A : fine) links.push_back({A.a, A.b});
+  std::vector<u16> group;
+  if (b.shapes.size() > 1) {
+    group.resize(size_t(nf));
+    for (i32 f = 0; f < nf; ++f) group[size_t(f)] = b.frags[size_t(f)].shape;
+  }
   std::vector<i32> cl;
-  cluster_items(key, links, &cl);
+  cluster_items(key, links, &cl, group.empty() ? nullptr : &group);
   // nodes: clusters of live fragments (renumbered densely)
   G.frag_node.assign(static_cast<size_t>(nf), -1);
   std::vector<i32> node_of_cluster(static_cast<size_t>(nf), -1);
@@ -254,13 +408,21 @@ void World::rebuild_body_graph(Body& b) {
   G.face_start.assign(1, 0);
   G.face_p.clear();
   G.face_axis.clear();
+  G.face_shape.clear();
+  G.jstart.assign(1, 0);
+  G.jref.clear();
+  auto xf = [&b](u16 k) -> const LatticeXf& { return b.shapes[k].xf; };
+  auto at = [&](u16 k, const IVec3& p) { return piece_voxel_at(b, k, p); };
   for (const SecAcc& A0 : merged) {
     if (A0.a < 0 || A0.b < 0) continue;
     SecAcc A = A0;
     A.mb = nmat[size_t(A.b)];
     A.strength_b = nstr[size_t(A.b)];
-    SBond B = A.finish(h, G.P.nodes[size_t(A.a)].c, &G.P.nodes[size_t(A.b)].c, nmat[size_t(A.a)], nstr[size_t(A.a)]);
-    section_strengths(A.faces.data(), A.fax.data(), A.faces.size(), [&](const IVec3& p) { return piece_voxel_at(b, p); }, B);
+    SBond B = A.finish(h, xf, JS, G.P.nodes[size_t(A.a)].c, &G.P.nodes[size_t(A.b)].c, nmat[size_t(A.a)], nstr[size_t(A.a)]);
+    if (A.js.empty())
+      section_strengths(A.faces.data(), A.fax.data(), A.faces.size(), [&](const IVec3& p) { return piece_voxel_at(b, A.grid, p); }, B);
+    else
+      section_strengths_general(A.grid, A.faces.data(), A.fax.data(), A.faces.size(), A.js.data(), A.js.size(), at, B, JS);
     B.tag = static_cast<i32>(G.P.bonds.size());
     G.P.bonds.push_back(B);
     for (size_t k = 0; k < A.faces.size(); ++k) {
@@ -268,6 +430,9 @@ void World::rebuild_body_graph(Body& b) {
       G.face_axis.push_back(A.fax[k]);
     }
     G.face_start.push_back(static_cast<i32>(G.face_p.size()));
+    G.face_shape.push_back(A.grid);
+    G.jref.insert(G.jref.end(), A.js.begin(), A.js.end());
+    G.jstart.push_back(static_cast<i32>(G.jref.size()));
   }
   G.u.assign(6 * size_t(n), 0.0);
   {
@@ -281,53 +446,63 @@ void World::rebuild_body_graph(Body& b) {
 
 void World::refragment_body(Body& b) {
   const f64 h = grid_.h;
-  BodyShape& S = b.shape;
-  const i32 cells = static_cast<i32>(S.vox.size());
-  std::vector<i32> nl(size_t(cells), -1);
   std::vector<BodyFrag> nf;
   std::vector<std::array<f64, 10>> sums;
   std::vector<i32> stack;
-  const i32 stride[3] = {S.dim[1] * S.dim[2], S.dim[2], 1};
-  S.count = 0;
-  for (i32 i = 0; i < cells; ++i) {
-    if (!vox_solid(S.vox[size_t(i)]) || nl[size_t(i)] >= 0) continue;
-    const u32 lab = S.frag[size_t(i)];
-    const i32 f = static_cast<i32>(nf.size());
-    BodyFrag bf;
-    bf.mat = vox_mat(S.vox[size_t(i)]);
-    bf.strength = (lab > 0 && lab <= b.frags.size()) ? b.frags[size_t(lab - 1)].strength : 1.0;
-    nf.push_back(bf);
-    sums.push_back({});
-    nl[size_t(i)] = f;
-    stack.assign(1, i);
-    while (!stack.empty()) {
-      const i32 k = stack.back();
-      stack.pop_back();
-      const IVec3 p = S.voxel(k);
-      ++nf[size_t(f)].count;
-      ++S.count;
-      accumulate_voxel(material(vox_mat(S.vox[size_t(k)])).rho * h * h * h, V3{h * p[0], h * p[1], h * p[2]}, h,
-                       sums[size_t(f)].data());
-      const IVec3 l{p[0] - S.lo[0], p[1] - S.lo[1], p[2] - S.lo[2]};
-      for (int a = 0; a < 3; ++a)
-        for (int sg = -1; sg <= 1; sg += 2) {
-          if (l[a] + sg < 0 || l[a] + sg >= S.dim[a]) continue;
-          const i32 j = k + sg * stride[a];
-          if (nl[size_t(j)] >= 0 || !vox_solid(S.vox[size_t(j)]) || S.frag[size_t(j)] != lab) continue;
-          const bool broken = sg > 0 ? ((S.brk[size_t(k)] >> a) & 1) : ((S.brk[size_t(j)] >> a) & 1);
-          if (broken) continue;
-          nl[size_t(j)] = f;
-          stack.push_back(j);
-        }
+  for (size_t sk = 0; sk < b.shapes.size(); ++sk) {
+    BodyShape& S = b.shapes[sk];
+    const i32 cells = static_cast<i32>(S.vox.size());
+    std::vector<i32> nl(size_t(cells), -1);
+    const i32 stride[3] = {S.dim[1] * S.dim[2], S.dim[2], 1};
+    const size_t first = nf.size();
+    S.count = 0;
+    for (i32 i = 0; i < cells; ++i) {
+      if (!vox_solid(S.vox[size_t(i)]) || nl[size_t(i)] >= 0) continue;
+      const u32 lab = S.frag[size_t(i)];
+      const i32 f = static_cast<i32>(nf.size());
+      BodyFrag bf;
+      bf.mat = vox_mat(S.vox[size_t(i)]);
+      bf.strength = (lab > 0 && lab <= b.frags.size()) ? b.frags[size_t(lab - 1)].strength : 1.0;
+      bf.shape = static_cast<u16>(sk);
+      nf.push_back(bf);
+      sums.push_back({});
+      nl[size_t(i)] = f;
+      stack.assign(1, i);
+      while (!stack.empty()) {
+        const i32 k = stack.back();
+        stack.pop_back();
+        const IVec3 p = S.voxel(k);
+        ++nf[size_t(f)].count;
+        ++S.count;
+        accumulate_voxel(material(vox_mat(S.vox[size_t(k)])).rho * h * h * h, V3{h * p[0], h * p[1], h * p[2]}, h,
+                         sums[size_t(f)].data());
+        const IVec3 l{p[0] - S.lo[0], p[1] - S.lo[1], p[2] - S.lo[2]};
+        for (int a = 0; a < 3; ++a)
+          for (int sg = -1; sg <= 1; sg += 2) {
+            if (l[a] + sg < 0 || l[a] + sg >= S.dim[a]) continue;
+            const i32 j = k + sg * stride[a];
+            if (nl[size_t(j)] >= 0 || !vox_solid(S.vox[size_t(j)]) || S.frag[size_t(j)] != lab) continue;
+            const bool broken = sg > 0 ? ((S.brk[size_t(k)] >> a) & 1) : ((S.brk[size_t(j)] >> a) & 1);
+            if (broken) continue;
+            nl[size_t(j)] = f;
+            stack.push_back(j);
+          }
+      }
     }
+    for (size_t f = first; f < nf.size(); ++f) {
+      const MassProps mp = finish_mass(sums[f].data(), h);
+      nf[f].mass = mp.mass;
+      nf[f].com = mp.com;
+      nf[f].inertia = mp.inertia;
+      if (!S.xf.identity) {
+        nf[f].com = S.xf.to(nf[f].com);
+        nf[f].inertia = S.xf.R * nf[f].inertia * S.xf.Rt;
+      }
+    }
+    for (i32 i = 0; i < cells; ++i) S.frag[size_t(i)] = nl[size_t(i)] >= 0 ? static_cast<u32>(nl[size_t(i)] + 1) : 0;
   }
-  for (size_t f = 0; f < nf.size(); ++f) {
-    const MassProps mp = finish_mass(sums[f].data(), h);
-    nf[f].mass = mp.mass;
-    nf[f].com = mp.com;
-    nf[f].inertia = mp.inertia;
-  }
-  for (i32 i = 0; i < cells; ++i) S.frag[size_t(i)] = nl[size_t(i)] >= 0 ? static_cast<u32>(nl[size_t(i)] + 1) : 0;
+  b.count = 0;
+  for (const BodyShape& S : b.shapes) b.count += S.count;
   b.frags.swap(nf);
   b.graph_dirty = true;
 }
@@ -430,7 +605,7 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
       if (G.P.assemble(so)) r = G.P.solve(f, G.u, cfg_.body_stress_rtol, cfg_.body_stress_maxit, true);
     }
     if (!r.converged && (r.breakdown || r.rel_res > 5.0 * cfg_.body_stress_rtol)) {
-      if (dbg && b.shape.count > 5000)
+      if (dbg && b.count > 5000)
         std::printf("    [round %d] solve failed: pcg %d rel %.1e breakdown %d\n", round, r.iters, r.rel_res, r.breakdown ? 1 : 0);
       G.P.invalidate();  // (no reliable answer: nothing more breaks; the next check starts afresh)
       std::fill(G.u.begin(), G.u.end(), 0.0);
@@ -448,11 +623,11 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
       if (phi >= 1.0) over.push_back({phi, k});
     }
     if (round == 0) b.last_phi = maxphi;
-    if (dbg && b.shape.count > 5000) {
+    if (dbg && b.count > 5000) {
       f64 fs = 0.0;
       for (const PointForce& pf : forces) fs += norm(pf.F);
       std::printf("  [body t%lld r%d] id %lld: %d voxels, %zu nodes (%zu bonds), %zu forces sum %.3g N (weight %.3g), pcg %d (%.1e), max phi %.2f, %zu over, energy %.3g (spent %.3g)\n",
-                  static_cast<long long>(st_.ticks), round, static_cast<long long>(b.id), b.shape.count, G.P.nodes.size(), G.P.bonds.size(),
+                  static_cast<long long>(st_.ticks), round, static_cast<long long>(b.id), b.count, G.P.nodes.size(), G.P.bonds.size(),
                   forces.size(), fs, b.mass * cfg_.rigid.gravity, r.iters, r.rel_res, maxphi, over.size(), energy, spent);
     }
     if (over.empty()) break;
@@ -487,9 +662,16 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
       const i32 k = out[q];
       G.P.remove_bond(k);
       const SBond& B = G.P.bonds[size_t(k)];
+      BodyShape& Sk = b.shapes[G.face_shape[size_t(k)]];
       for (i32 e = G.face_start[size_t(k)]; e < G.face_start[size_t(k) + 1]; ++e) {
-        const i32 i = b.shape.index(G.face_p[size_t(e)]);
-        if (i >= 0) b.shape.brk[size_t(i)] |= static_cast<u8>(1u << G.face_axis[size_t(e)]);
+        const i32 i = Sk.index(G.face_p[size_t(e)]);
+        if (i >= 0) Sk.brk[size_t(i)] |= static_cast<u8>(1u << G.face_axis[size_t(e)]);
+      }
+      for (i32 e = G.jstart[size_t(k)]; e < G.jstart[size_t(k) + 1]; ++e) {
+        const JSample& j = G.jref[size_t(e)];
+        BodyShape& Sj = b.shapes[j.vg];
+        const i32 i = Sj.index(j.v);
+        if (i >= 0) Sj.break_junction(i, j.face, j.sub);
       }
       ++(impact ? o.impact_breaks : o.steady_breaks);
       if (modes[size_t(k)] == FailMode::Crush) o.crushed.push_back(k);
@@ -497,7 +679,7 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
       o.cracks.push_back({b.to_world(B.p), rotate(b.q, B.n)});
     }
     if (poor || out.size() == before || round + 1 == rounds) {
-      if (dbg && b.shape.count > 5000) std::printf("    [round %d] stop: poor %d, none %d, last %d\n", round, poor ? 1 : 0, out.size() == before ? 1 : 0, round + 1 == rounds ? 1 : 0);
+      if (dbg && b.count > 5000) std::printf("    [round %d] stop: poor %d, none %d, last %d\n", round, poor ? 1 : 0, out.size() == before ? 1 : 0, round + 1 == rounds ? 1 : 0);
       break;
     }
     // Come apart? A part of some size (freed, or on supports of its own) goes its own way: the
@@ -518,7 +700,7 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
     bool apart = false;
     for (i32 c = 1; c < nc; ++c)
       if (cmass[size_t(c)] > cfg_.impact_chip_fraction * b.mass) apart = true;
-    if (dbg && b.shape.count > 5000) {
+    if (dbg && b.count > 5000) {
       std::printf("    [round %d] %d components:", round, nc);
       for (i32 c = 0; c < std::min(nc, 8); ++c) std::printf(" %.1f%%", 100.0 * cmass[size_t(c)] / b.mass);
       std::printf("%s, %zu broken so far\n", apart ? " -> apart" : "", out.size());
@@ -597,44 +779,53 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
 bool World::pulverize(Body& b, const std::vector<i32>& crushed) {
   if (crushed.empty() || !b.graph) return false;
   const BodyGraph& G = *b.graph;
-  BodyShape& S = b.shape;
   std::vector<u8> kill(b.frags.size(), 0);
+  auto mark = [&](const BodyShape& S, const IVec3& p, i32 side) {
+    const i32 i = S.index(p);
+    if (i < 0) return;
+    const i32 f = static_cast<i32>(S.frag[size_t(i)]) - 1;
+    if (f >= 0 && f < static_cast<i32>(kill.size()) && G.frag_node[size_t(f)] == side) kill[size_t(f)] = 1;
+  };
   for (i32 k : crushed) {
     const SBond& B = G.P.bonds[size_t(k)];
     if (B.b < 0) continue;
     const i32 side = G.node_mass[size_t(B.a)] <= G.node_mass[size_t(B.b)] ? B.a : B.b;
+    const BodyShape& S = b.shapes[G.face_shape[size_t(k)]];
     for (i32 e = G.face_start[size_t(k)]; e < G.face_start[size_t(k) + 1]; ++e) {
       IVec3 p = G.face_p[size_t(e)];
       for (int s2 = 0; s2 < 2; ++s2) {
         if (s2) p[G.face_axis[size_t(e)]] += 1;
-        const i32 i = S.index(p);
-        if (i < 0) continue;
-        const i32 f = static_cast<i32>(S.frag[size_t(i)]) - 1;
-        if (f >= 0 && f < static_cast<i32>(kill.size()) && G.frag_node[size_t(f)] == side) kill[size_t(f)] = 1;
+        mark(S, p, side);
       }
+    }
+    for (i32 e = G.jstart[size_t(k)]; e < G.jstart[size_t(k) + 1]; ++e) {
+      const JSample& j = G.jref[size_t(e)];
+      mark(b.shapes[j.vg], j.v, side);
+      mark(b.shapes[j.og], j.o, side);
     }
   }
   i64 removed = 0;
   std::vector<V3> at(b.frags.size());
   std::vector<i32> cnt(b.frags.size(), 0);
   const f64 h = grid_.h;
-  for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
-    if (!vox_solid(S.vox[size_t(i)])) continue;
-    const i32 f = static_cast<i32>(S.frag[size_t(i)]) - 1;
-    if (f < 0 || !kill[size_t(f)]) continue;
-    // (ductile material yields where brittle material crushes: the bars of a crushed concrete
-    // fragment stay, the concrete around them falls away as dust)
-    if (material(vox_mat(S.vox[size_t(i)])).ductile) continue;
-    const IVec3 p = S.voxel(i);
-    at[size_t(f)] += V3{h * p[0], h * p[1], h * p[2]};
-    ++cnt[size_t(f)];
-    S.vox[size_t(i)] = kAir;
-    S.frag[size_t(i)] = 0;
-    S.brk[size_t(i)] = 0;
-    for (auto& l : S.layer)
-      if (!l.empty()) l[size_t(i)] = 0;
-    ++removed;
-  }
+  for (BodyShape& S : b.shapes)
+    for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
+      if (!vox_solid(S.vox[size_t(i)])) continue;
+      const i32 f = static_cast<i32>(S.frag[size_t(i)]) - 1;
+      if (f < 0 || !kill[size_t(f)]) continue;
+      // (ductile material yields where brittle material crushes: the bars of a crushed concrete
+      // fragment stay, the concrete around them falls away as dust)
+      if (material(vox_mat(S.vox[size_t(i)])).ductile) continue;
+      const IVec3 p = S.voxel(i);
+      at[size_t(f)] += S.xf.to(V3{h * p[0], h * p[1], h * p[2]});
+      ++cnt[size_t(f)];
+      S.vox[size_t(i)] = kAir;
+      S.frag[size_t(i)] = 0;
+      S.brk[size_t(i)] = 0;
+      for (auto& l : S.layer)
+        if (!l.empty()) l[size_t(i)] = 0;
+      ++removed;
+    }
   if (!removed) return false;
   for (size_t f = 0; f < kill.size(); ++f) {
     if (!cnt[f]) continue;
@@ -648,56 +839,100 @@ bool World::pulverize(Body& b, const std::vector<i32>& crushed) {
   return true;
 }
 
-std::unique_ptr<Body> World::sub_body(const Body& parent, const std::vector<i32>& voxels, const std::vector<i32>& frag_map,
-                                       bool use_pre) {
+std::unique_ptr<Body> World::sub_body(const Body& parent, const std::vector<SVox>& voxels, bool use_pre) {
   auto c = std::make_unique<Body>();
-  const BodyShape& P = parent.shape;
-  IVec3 lo{INT_MAX, INT_MAX, INT_MAX}, hi{INT_MIN, INT_MIN, INT_MIN};
-  for (i32 i : voxels) {
-    const IVec3 p = P.voxel(i);
+  const size_t np = parent.shapes.size();
+  // its shapes: the parent's that hold some of its voxels, in the parent's order
+  std::vector<IVec3> lo(np, IVec3{INT_MAX, INT_MAX, INT_MAX}), hi(np, IVec3{INT_MIN, INT_MIN, INT_MIN});
+  std::vector<i32> smap(np, -1);
+  for (const SVox& v : voxels) {
+    const IVec3 p = parent.shapes[v.shape].voxel(v.cell);
+    smap[v.shape] = 0;
     for (int a = 0; a < 3; ++a) {
-      lo[a] = std::min(lo[a], p[a]);
-      hi[a] = std::max(hi[a], p[a]);
+      lo[v.shape][a] = std::min(lo[v.shape][a], p[a]);
+      hi[v.shape][a] = std::max(hi[v.shape][a], p[a]);
     }
   }
+  i32 nshapes = 0;
+  for (size_t k = 0; k < np; ++k)
+    if (smap[k] >= 0) smap[k] = nshapes++;
   // fragments of the child, in parent order
   std::vector<i32> remap(parent.frags.size(), -1);
-  for (i32 i : voxels) {
-    const i32 fp = static_cast<i32>(P.frag[size_t(i)]) - 1;
+  for (const SVox& v : voxels) {
+    const i32 fp = static_cast<i32>(parent.shapes[v.shape].frag[size_t(v.cell)]) - 1;
     if (fp >= 0 && remap[size_t(fp)] < 0) remap[size_t(fp)] = 0;
   }
   for (size_t k = 0; k < parent.frags.size(); ++k)
     if (remap[k] == 0) {
       remap[k] = static_cast<i32>(c->frags.size());
       c->frags.push_back(parent.frags[k]);
+      c->frags.back().shape = static_cast<u16>(smap[parent.frags[k].shape]);
     }
-  (void)frag_map;
-  BodyShape& S = c->shape;
-  S.lo = lo;
-  S.dim = {hi[0] - lo[0] + 1, hi[1] - lo[1] + 1, hi[2] - lo[2] + 1};
-  const size_t cells = size_t(S.dim[0]) * size_t(S.dim[1]) * size_t(S.dim[2]);
-  S.vox.assign(cells, kAir);
-  S.frag.assign(cells, 0);
-  S.brk.assign(cells, 0);
-  for (i32 i : voxels) {
+  c->shapes.resize(size_t(nshapes));
+  std::vector<std::vector<i32>> cellmap(np);  // (parent shape cell -> child cell, for its broken junctions)
+  for (size_t k = 0; k < np; ++k) {
+    if (smap[k] < 0) continue;
+    const BodyShape& P = parent.shapes[k];
+    BodyShape& S = c->shapes[size_t(smap[k])];
+    S.xf = P.xf;
+    S.grid = P.grid;
+    S.lo = lo[k];
+    S.dim = {hi[k][0] - lo[k][0] + 1, hi[k][1] - lo[k][1] + 1, hi[k][2] - lo[k][2] + 1};
+    const size_t cells = size_t(S.dim[0]) * size_t(S.dim[1]) * size_t(S.dim[2]);
+    S.vox.assign(cells, kAir);
+    S.frag.assign(cells, 0);
+    S.brk.assign(cells, 0);
+    if (!P.jbrk.empty()) cellmap[k].assign(P.vox.size(), -1);
+  }
+  for (const SVox& v : voxels) {
+    const BodyShape& P = parent.shapes[v.shape];
+    BodyShape& S = c->shapes[size_t(smap[v.shape])];
+    const i32 i = v.cell;
     const IVec3 p = P.voxel(i);
     const i32 j = S.index(p);
     S.vox[size_t(j)] = P.vox[size_t(i)];
     const i32 fp = static_cast<i32>(P.frag[size_t(i)]) - 1;
     S.frag[size_t(j)] = fp >= 0 ? static_cast<u32>(remap[size_t(fp)] + 1) : 0;
     S.brk[size_t(j)] = P.brk[size_t(i)];
+    const size_t cells = S.vox.size();
     for (int L = 0; L < kMaxLayers; ++L) {
-      const u8 v = P.layer_at(L, i);
-      if (!v) continue;
+      const u8 lv = P.layer_at(L, i);
+      if (!lv) continue;
       if (S.layer[size_t(L)].empty()) S.layer[size_t(L)].assign(cells, 0);
-      S.layer[size_t(L)][size_t(j)] = v;
+      S.layer[size_t(L)][size_t(j)] = lv;
     }
+    if (!cellmap[v.shape].empty()) cellmap[v.shape][size_t(i)] = j;
     ++S.count;
+  }
+  for (size_t k = 0; k < np; ++k) {
+    if (smap[k] < 0 || cellmap[k].empty()) continue;
+    BodyShape& S = c->shapes[size_t(smap[k])];
+    for (u64 e : parent.shapes[k].jbrk) {
+      const i64 pc = static_cast<i64>(e >> 16);
+      if (pc < 0 || pc >= static_cast<i64>(cellmap[k].size()) || cellmap[k][size_t(pc)] < 0) continue;
+      S.jbrk.push_back(shape_junction_code(cellmap[k][size_t(pc)], static_cast<int>((e >> 8) & 0xFF), static_cast<int>(e & 0xFF)));
+    }
+    std::sort(S.jbrk.begin(), S.jbrk.end());
+  }
+  // (a part of one shape, placed in the parent's frame: its frame becomes its lattice's)
+  LatticeXf rebase;
+  if (nshapes == 1 && !c->shapes[0].xf.identity) {
+    rebase = c->shapes[0].xf;
+    c->shapes[0].xf = LatticeXf{};
+    for (BodyFrag& bf : c->frags) {
+      bf.com = rebase.from(bf.com);
+      bf.inertia = rebase.Rt * bf.inertia * rebase.R;
+    }
   }
   body_refresh(*c, grid_.h, cfg_.rigid.max_points);
   c->id = next_id_++;
-  c->q = parent.q;
-  c->x = parent.to_world(c->com);
+  if (rebase.identity) {
+    c->q = parent.q;
+    c->x = parent.to_world(c->com);
+  } else {
+    c->q = qnormalized(parent.q * rebase.q);
+    c->x = parent.to_world(rebase.to(c->com));
+  }
   c->parent = parent.announced ? parent.id : parent.parent;
   const V3 vp = use_pre ? parent.v_pre : parent.v;
   const V3 wp = use_pre ? parent.w_pre : parent.w;
@@ -724,13 +959,15 @@ bool World::split_body(Body& b, bool use_pre, bool force_replace, const std::vec
   std::vector<i32> frag_comp(b.frags.size(), -1);
   for (size_t f = 0; f < b.frags.size(); ++f)
     if (G.frag_node[f] >= 0) frag_comp[f] = comp[size_t(G.frag_node[f])];
-  std::vector<std::vector<i32>> parts(size_t(std::max(1, nc)));
-  const BodyShape& S = b.shape;
-  for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
-    if (!vox_solid(S.vox[size_t(i)])) continue;
-    const i32 f = static_cast<i32>(S.frag[size_t(i)]) - 1;
-    const i32 c = f >= 0 ? frag_comp[size_t(f)] : -1;
-    if (c >= 0) parts[size_t(c)].push_back(i);
+  std::vector<std::vector<SVox>> parts(size_t(std::max(1, nc)));
+  for (size_t k = 0; k < b.shapes.size(); ++k) {
+    const BodyShape& S = b.shapes[k];
+    for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
+      if (!vox_solid(S.vox[size_t(i)])) continue;
+      const i32 f = static_cast<i32>(S.frag[size_t(i)]) - 1;
+      const i32 c = f >= 0 ? frag_comp[size_t(f)] : -1;
+      if (c >= 0) parts[size_t(c)].push_back(SVox{static_cast<u16>(k), i});
+    }
   }
   // A part of some size came apart in this contact step: the step is solved again without the
   // piece (its parts keep the velocity they had before it). Chips only: they take the velocity the
@@ -782,9 +1019,10 @@ bool World::split_body(Body& b, bool use_pre, bool force_replace, const std::vec
       lost = true;
       // (a shard: dust and a few chips, not a rigid piece)
       V3 c;
-      for (i32 i : part) {
-        const IVec3 p = S.voxel(i);
-        c += V3{grid_.h * p[0], grid_.h * p[1], grid_.h * p[2]};
+      for (const SVox& v : part) {
+        const BodyShape& S = b.shapes[v.shape];
+        const IVec3 p = S.voxel(v.cell);
+        c += S.xf.to(V3{grid_.h * p[0], grid_.h * p[1], grid_.h * p[2]});
       }
       c *= 1.0 / static_cast<f64>(part.size());
       const V3 X = b.to_world(c);
@@ -793,7 +1031,7 @@ bool World::split_body(Body& b, bool use_pre, bool force_replace, const std::vec
       st_.pulverized_voxels += static_cast<i64>(part.size());
       continue;
     }
-    pending_add_.push_back(sub_body(b, part, frag_comp, use_pre));
+    pending_add_.push_back(sub_body(b, part, use_pre));
     if (separated) {
       // (broken in this substep's collision: the parts part for the rest of it)
       pending_add_.back()->family = b.id;
@@ -899,14 +1137,14 @@ int World::fracture_hook(f64 dt) {
     if (norm2(J) <= 0.0) continue;
     Body& A = *rigid_.bodies[size_t(c.a)];
     const V3 Fa = J * (resting ? 1.0 / dt : kf[size_t(c.a)]);
-    const i32 fa = static_cast<i32>(A.shape.frag[size_t(c.vox_a)]) - 1;
+    const i32 fa = static_cast<i32>(A.shapes[size_t(c.shape_a)].frag[size_t(c.vox_a)]) - 1;
     per[size_t(c.a)].push_back({fa, Fa, c.p});
     carried[size_t(c.a)].push_back({fa, J, c.p, c.b >= 0 ? 0.5 * e : e});
     fsum[size_t(c.a)] += norm(Fa);
     if (c.b >= 0) {
       Body& B = *rigid_.bodies[size_t(c.b)];
       const V3 Fb = J * -(resting ? 1.0 / dt : kf[size_t(c.b)]);
-      const i32 fb = static_cast<i32>(B.shape.frag[size_t(c.vox_b)]) - 1;
+      const i32 fb = static_cast<i32>(B.shapes[size_t(c.shape_b)].frag[size_t(c.vox_b)]) - 1;
       per[size_t(c.b)].push_back({fb, Fb, c.p});
       carried[size_t(c.b)].push_back({fb, J * -1.0, c.p, 0.5 * e});
       fsum[size_t(c.b)] += norm(Fb);
@@ -978,7 +1216,7 @@ int World::fracture_hook(f64 dt) {
     if (b.graph_dirty || !b.graph) rebuild_body_graph(b);
     const auto r1 = FClock::now();
     c.rebuild_ms = std::chrono::duration<f64, std::milli>(r1 - r0).count();
-    c.voxels = b.shape.count;
+    c.voxels = b.count;
     c.nodes = static_cast<i32>(b.graph->P.nodes.size());
     if (b.graph->components > 1) {
       c.split = true;
@@ -993,7 +1231,7 @@ int World::fracture_hook(f64 dt) {
   std::vector<size_t> small;
   for (size_t k = 0; k < checks.size(); ++k) {
     const Body& b = *rigid_.bodies[checks[k].i];
-    if (checks.size() == 1 || b.shape.count > cfg_.big_piece_voxels) run(checks[k]);
+    if (checks.size() == 1 || b.count > cfg_.big_piece_voxels) run(checks[k]);
     else small.push_back(k);
   }
   parallel_for(static_cast<i64>(small.size()), 1, [&](i64 k0, i64 k1) {
@@ -1014,7 +1252,7 @@ int World::fracture_hook(f64 dt) {
     apply_stress_out(c.out);
     if (c.out.broken.empty()) continue;
     const bool reshaped = cfg_.pulverize && pulverize(b, c.out.crushed);
-    if (reshaped && b.shape.count == 0) {
+    if (reshaped && b.count == 0) {
       wake_around(b);
       pending_retire_.push_back(b.id);
       changed = true;
@@ -1032,7 +1270,7 @@ int World::fracture_hook(f64 dt) {
     static f64 acc[4] = {0, 0, 0, 0}, reb = 0.0, str = 0.0, reb_big = 0.0, str_big = 0.0;
     static i64 calls = 0, nchecks = 0, big = 0;
     for (const Check& c : checks) {
-      const bool bg = rigid_.bodies.size() > c.i && rigid_.bodies[c.i]->shape.count > cfg_.big_piece_voxels;
+      const bool bg = rigid_.bodies.size() > c.i && rigid_.bodies[c.i]->count > cfg_.big_piece_voxels;
       (bg ? reb_big : reb) += c.rebuild_ms;
       (bg ? str_big : str) += c.stress_ms;
       if (c.rebuild_ms + c.stress_ms > 5.0)
@@ -1045,7 +1283,7 @@ int World::fracture_hook(f64 dt) {
     acc[2] += ms(f2, f3);
     acc[3] += ms(f3, FClock::now());
     nchecks += static_cast<i64>(checks.size());
-    for (const Check& c : checks) big += rigid_.bodies.size() > c.i && rigid_.bodies[c.i]->shape.count > cfg_.big_piece_voxels ? 1 : 0;
+    for (const Check& c : checks) big += rigid_.bodies.size() > c.i && rigid_.bodies[c.i]->count > cfg_.big_piece_voxels ? 1 : 0;
     if (++calls % 120 == 0) {
       std::printf("  [fracture] per substep: triggers %.2f checks %.2f splits %.2f flush %.2f ms (%.1f checks, %.2f big) | cpu: rebuild %.2f stress %.2f, big: rebuild %.2f stress %.2f\n",
                   acc[0] / 120, acc[1] / 120, acc[2] / 120, acc[3] / 120, nchecks / 120.0, big / 120.0, reb / 120, str / 120, reb_big / 120,
@@ -1072,28 +1310,31 @@ void World::carve_bodies(const V3& c, f64 r) {
     Body* bp = rigid_.find(id);
     if (!bp) continue;
     Body& b = *bp;
-    const V3 s = b.to_shape(c);
-    const IVec3 sv = voxel_of(s, h);
+    const V3 sb = b.to_shape(c);
     const i32 R = static_cast<i32>(std::ceil(r / h)) + 1;
     i32 removed = 0;
-    for (i32 x = sv[0] - R; x <= sv[0] + R; ++x)
-      for (i32 y = sv[1] - R; y <= sv[1] + R; ++y)
-        for (i32 z = sv[2] - R; z <= sv[2] + R; ++z) {
-          const IVec3 p{x, y, z};
-          const i32 i = b.shape.index(p);
-          if (i < 0 || !vox_solid(b.shape.vox[size_t(i)])) continue;
-          if (norm(V3{h * x, h * y, h * z} - s) > r) continue;
-          if (material(vox_mat(b.shape.vox[size_t(i)])).ductile) continue;  // (as in the world)
-          b.shape.vox[size_t(i)] = kAir;
-          b.shape.frag[size_t(i)] = 0;
-          for (auto& l : b.shape.layer)
-            if (!l.empty()) l[size_t(i)] = 0;
-          ++removed;
-        }
+    for (BodyShape& S : b.shapes) {
+      const V3 s = S.xf.from(sb);  // (the centre in the shape's lattice)
+      const IVec3 sv = voxel_of(s, h);
+      for (i32 x = sv[0] - R; x <= sv[0] + R; ++x)
+        for (i32 y = sv[1] - R; y <= sv[1] + R; ++y)
+          for (i32 z = sv[2] - R; z <= sv[2] + R; ++z) {
+            const IVec3 p{x, y, z};
+            const i32 i = S.index(p);
+            if (i < 0 || !vox_solid(S.vox[size_t(i)])) continue;
+            if (norm(V3{h * x, h * y, h * z} - s) > r) continue;
+            if (material(vox_mat(S.vox[size_t(i)])).ductile) continue;  // (as in the world)
+            S.vox[size_t(i)] = kAir;
+            S.frag[size_t(i)] = 0;
+            for (auto& l : S.layer)
+              if (!l.empty()) l[size_t(i)] = 0;
+            ++removed;
+          }
+    }
     if (!removed) continue;
     refragment_body(b);
     rigid_.wake(b);
-    if (b.shape.count == 0) {
+    if (b.count == 0) {
       wake_around(b);
       pending_retire_.push_back(b.id);
       continue;
@@ -1140,14 +1381,17 @@ void World::blast_bodies(const PendingEvent& e) {
 }
 
 i64 World::body_bytes(const Body& b) {
-  const BodyShape& S = b.shape;
-  i64 n = sizeof(Body) + vec_bytes(S.vox) + vec_bytes(S.frag) + vec_bytes(S.brk) + vec_bytes(b.frags) + vec_bytes(b.pts) +
-          vec_bytes(b.pt_vox) + vec_bytes(b.wpts);
-  for (const auto& l : S.layer) n += vec_bytes(l);
+  i64 n = sizeof(Body) + vec_bytes(b.frags) + vec_bytes(b.pts) + vec_bytes(b.pt_vox) + vec_bytes(b.pt_shape) + vec_bytes(b.wpts) +
+          vec_bytes(b.shapes);
+  for (const BodyShape& S : b.shapes) {
+    n += vec_bytes(S.vox) + vec_bytes(S.frag) + vec_bytes(S.brk) + vec_bytes(S.jbrk);
+    for (const auto& l : S.layer) n += vec_bytes(l);
+  }
   if (b.graph) {
     const BodyGraph& G = *b.graph;
     n += sizeof(BodyGraph) + G.P.memory_bytes() + vec_bytes(G.frag_node) + vec_bytes(G.node_com) + vec_bytes(G.node_mass) +
-         vec_bytes(G.node_inertia) + vec_bytes(G.face_start) + vec_bytes(G.face_p) + vec_bytes(G.face_axis) + vec_bytes(G.u);
+         vec_bytes(G.node_inertia) + vec_bytes(G.face_start) + vec_bytes(G.face_p) + vec_bytes(G.face_axis) + vec_bytes(G.face_shape) +
+         vec_bytes(G.jstart) + vec_bytes(G.jref) + vec_bytes(G.u);
   }
   return n;
 }
@@ -1164,7 +1408,7 @@ void World::announce_bodies() {
     ev.rot = b.q;
     ev.vel = b.v;
     ev.ang = b.w;
-    ev.voxels = b.shape.count;
+    ev.voxels = b.count;
     b.announced = true;
     events_.push_back(std::move(ev));
   }
@@ -1190,7 +1434,7 @@ void World::remove_bodies(std::vector<i64> ids, PieceEnd end) {
     ev.rot = b->q;
     ev.vel = b->v;
     ev.ang = b->w;
-    ev.voxels = b->shape.count;
+    ev.voxels = b->count;
     events_.push_back(std::move(ev));
   }
   rigid_.remove_if([&](const Body& b) { return std::binary_search(ids.begin(), ids.end(), b.id); });
@@ -1205,7 +1449,7 @@ void World::limit_bodies() {
   i32 excess = static_cast<i32>(rigid_.bodies.size()) - cfg_.max_bodies;
   if (excess <= 0 && bytes <= budget) return;
   std::vector<std::tuple<int, i32, i64>> cand;  // (awake, voxels, id)
-  for (const auto& bp : rigid_.bodies) cand.push_back({bp->asleep ? 0 : 1, bp->shape.count, bp->id});
+  for (const auto& bp : rigid_.bodies) cand.push_back({bp->asleep ? 0 : 1, bp->count, bp->id});
   std::sort(cand.begin(), cand.end());
   std::vector<i64> ids;
   for (const auto& [awake, voxels, id] : cand) {
@@ -1231,7 +1475,7 @@ std::vector<PieceState> World::pieces() const {
     p.rot = b.q;
     p.vel = b.v;
     p.ang = b.w;
-    p.voxels = b.shape.count;
+    p.voxels = b.count;
     p.mass = b.mass;
     p.asleep = b.asleep;
     out.push_back(p);

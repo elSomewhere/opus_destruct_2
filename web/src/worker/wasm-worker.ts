@@ -84,6 +84,10 @@ interface SvxModule {
   _svx_mesh_indices(e: number, i: number): number;
   _svx_poll_removed(e: number): number;
   _svx_removed_chunk(e: number, i: number, out3: number): void;
+  _svx_poll_removed_grid(e: number): number;
+  _svx_removed_grid_chunk(e: number, i: number, out4: number): void;
+  _svx_poll_occupancy(e: number): number;
+  _svx_occupancy_chunk(e: number, i: number, out3: number): void;
   _svx_chunk_occupancy(e: number, cx: number, cy: number, cz: number, out: number): number;
   _svx_poll_far(e: number): number;
   _svx_far_info(e: number, i: number, out: number): void;
@@ -187,6 +191,11 @@ function chunkKey(x: number, y: number, z: number): string {
   return `${x},${y},${z}`;
 }
 
+/** An oriented grid's chunk (its mesh is placed in the world by the engine: only its key differs). */
+function gridChunkKey(grid: number, x: number, y: number, z: number): string {
+  return `g${grid}:${x},${y},${z}`;
+}
+
 async function ensureModule(): Promise<SvxModule> {
   if (mod) return mod;
   const m = (await createSvxModule()) as unknown as SvxModule;
@@ -272,9 +281,11 @@ function flushMeshes(): void {
     m._svx_mesh_info(eng, i, scratch);
     const vc = f64(6);
     const ic = f64(7);
-    // (a decoration-only mesh - charring, glow - leaves the chunk's occupancy as it was)
-    if (f64(8) === 0) occupancy.push(occupancyOf(f64(0), f64(1), f64(2)));
-    const key = chunkKey(f64(0), f64(1), f64(2));
+    const grid = f64(9);
+    // (a decoration-only mesh - charring, glow - leaves the chunk's occupancy as it was; an
+    // oriented grid's chunk changes the world chunks' occupancy, polled below)
+    if (grid === 0 && f64(8) === 0) occupancy.push(occupancyOf(f64(0), f64(1), f64(2)));
+    const key = grid === 0 ? chunkKey(f64(0), f64(1), f64(2)) : gridChunkKey(grid, f64(0), f64(1), f64(2));
     knownChunks.add(key);
     meshes.push({
       key,
@@ -361,6 +372,24 @@ function flushMeshes(): void {
       if (knownChunks.delete(key)) keys.push(key);
     }
     if (keys.length > 0) postToMain({ type: 'chunkRemoved', keys });
+  }
+  // oriented grids: their emptied chunks, and the world chunks whose occupancy they changed
+  const rg = m._svx_poll_removed_grid(eng);
+  if (rg > 0) {
+    const keys: string[] = [];
+    for (let i = 0; i < rg; i++) {
+      m._svx_removed_grid_chunk(eng, i, scratch);
+      const b = scratch >> 2;
+      const key = gridChunkKey(m.HEAP32[b] ?? 0, m.HEAP32[b + 1] ?? 0, m.HEAP32[b + 2] ?? 0, m.HEAP32[b + 3] ?? 0);
+      if (knownChunks.delete(key)) keys.push(key);
+    }
+    if (keys.length > 0) postToMain({ type: 'chunkRemoved', keys });
+  }
+  const oc = m._svx_poll_occupancy(eng);
+  for (let i = 0; i < oc; i++) {
+    m._svx_occupancy_chunk(eng, i, scratch);
+    const b = scratch >> 2;
+    occupancy.push(occupancyOf(m.HEAP32[b] ?? 0, m.HEAP32[b + 1] ?? 0, m.HEAP32[b + 2] ?? 0));
   }
   if (occupancy.length > 0) postToMain({ type: 'occupancy', voxelSize: config.voxelSize, chunks: occupancy });
 }

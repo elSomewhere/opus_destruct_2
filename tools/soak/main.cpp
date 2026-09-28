@@ -114,6 +114,7 @@ int main(int argc, char** argv) {
   } else {
     ProcWorld w = make_procedural(world, 1, h);
     game.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+    add_grids(game.world(), std::move(w.grids));
   }
   game.bake();
   const V3 start = game.spawn_pos();
@@ -166,6 +167,7 @@ int main(int argc, char** argv) {
       } else {
         ProcWorld w = make_procedural(world, 1 + static_cast<u64>(t), h);
         game.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+        add_grids(game.world(), std::move(w.grids));
         game.bake();
       }
     }

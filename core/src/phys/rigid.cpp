@@ -95,6 +95,46 @@ void tangents(const V3& n, V3& t1, V3& t2) {
 
 }  // namespace
 
+LatticeXf LatticeXf::make(const V3& off, const Quat& q) {
+  LatticeXf x;
+  x.q = qnormalized(q);
+  if (x.q.w < 0.0) x.q = Quat{-x.q.x, -x.q.y, -x.q.z, -x.q.w};  // (one sign for one rotation)
+  x.off = off;
+  x.identity = off.x == 0.0 && off.y == 0.0 && off.z == 0.0 && x.q.x == 0.0 && x.q.y == 0.0 && x.q.z == 0.0 && x.q.w == 1.0;
+  if (x.identity) {
+    x.off = V3{};
+    x.q = Quat{};
+    return x;
+  }
+  x.R = to_matrix(x.q);
+  x.Rt = transpose(x.R);
+  return x;
+}
+
+LatticeXf compose(const LatticeXf& b, const LatticeXf& a) {
+  if (a.identity) return b;
+  if (b.identity) return a;
+  return LatticeXf::make(b.to(a.off), b.q * a.q);
+}
+
+LatticeXf inverse(const LatticeXf& a) {
+  if (a.identity) return a;
+  return LatticeXf::make(a.Rt * (a.off * -1.0), conj(a.q));
+}
+
+bool BodyShape::junction_broken(i32 cell, int face, int sub) const {
+  if (jbrk.empty()) return false;
+  return std::binary_search(jbrk.begin(), jbrk.end(), shape_junction_code(cell, face, sub)) ||
+         (sub != kJunctionFace && std::binary_search(jbrk.begin(), jbrk.end(), shape_junction_code(cell, face, kJunctionFace)));
+}
+
+void BodyShape::break_junction(i32 cell, int face, int sub) {
+  const u64 code = shape_junction_code(cell, face, sub);
+  const auto at = std::lower_bound(jbrk.begin(), jbrk.end(), code);
+  if (at != jbrk.end() && *at == code) return;
+  jbrk.insert(at, code);
+}
+
 void body_refresh(Body& b, f64 h, int max_points) {
   // mass properties from the fragments
   b.mass = 0.0;
@@ -117,58 +157,64 @@ void body_refresh(Body& b, f64 h, int max_points) {
   b.inertia = I;
   if (!inverse(I, b.inv_inertia)) b.inv_inertia = M3{};
   // collision samples: lattice corners of exposed faces, pulled 0.1 h into their voxel; each
-  // corner once (a bitmap over the corner lattice), in voxel scan order (deterministic)
-  const BodyShape& S = b.shape;
+  // corner once (a bitmap over each shape's corner lattice), in voxel scan order, shape by shape
+  // (deterministic); in the body frame
   struct Cand {
     V3 pt;
     i32 vox;
+    u16 shape;
     bool sharp;
   };
   std::vector<Cand> uniq;
-  auto solid = [&](const IVec3& p) { return vox_solid(S.get(p)); };
-  const i64 cx = S.dim[0] + 1, cy = S.dim[1] + 1, cz = S.dim[2] + 1;
-  std::vector<u8> seen(static_cast<size_t>((cx * cy * cz + 7) / 8), 0);
-  for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
-    if (!vox_solid(S.vox[size_t(i)])) continue;
-    const IVec3 p = S.voxel(i);
-    for (int a = 0; a < 3; ++a)
-      for (int sg = -1; sg <= 1; sg += 2) {
-        IVec3 nb = p;
-        nb[a] += sg;
-        if (solid(nb)) continue;
-        const int a1 = (a + 1) % 3, a2 = (a + 2) % 3;
-        for (int u = -1; u <= 1; u += 2)
-          for (int w = -1; w <= 1; w += 2) {
-            // the corner p + (d / 2) and its index on the (dim + 1)^3 corner lattice
-            int d[3];
-            d[a] = sg;
-            d[a1] = u;
-            d[a2] = w;
-            const i64 ix = (p[0] - S.lo[0]) + (d[0] > 0 ? 1 : 0), iy = (p[1] - S.lo[1]) + (d[1] > 0 ? 1 : 0),
-                      iz = (p[2] - S.lo[2]) + (d[2] > 0 ? 1 : 0);
-            const i64 ci = (ix * cy + iy) * cz + iz;
-            if (seen[size_t(ci >> 3)] & (1u << (ci & 7))) continue;
-            seen[size_t(ci >> 3)] = static_cast<u8>(seen[size_t(ci >> 3)] | (1u << (ci & 7)));
-            int around = 0;
-            for (int dx = 0; dx < 2; ++dx)
-              for (int dy = 0; dy < 2; ++dy)
-                for (int dz = 0; dz < 2; ++dz) {
-                  const IVec3 q{static_cast<i32>(S.lo[0] + ix - 1 + dx), static_cast<i32>(S.lo[1] + iy - 1 + dy),
-                                static_cast<i32>(S.lo[2] + iz - 1 + dz)};
-                  around += solid(q) ? 1 : 0;
-                }
-            const V3 centre{h * p[0], h * p[1], h * p[2]};
-            const V3 corner = centre + V3{0.4 * h * d[0], 0.4 * h * d[1], 0.4 * h * d[2]};
-            uniq.push_back({corner, i, around <= 2});
-          }
-      }
+  b.count = 0;
+  for (const BodyShape& S : b.shapes) b.count += S.count;
+  for (size_t k = 0; k < b.shapes.size(); ++k) {
+    const BodyShape& S = b.shapes[k];
+    auto solid = [&](const IVec3& p) { return vox_solid(S.get(p)); };
+    const i64 cx = S.dim[0] + 1, cy = S.dim[1] + 1, cz = S.dim[2] + 1;
+    std::vector<u8> seen(static_cast<size_t>((cx * cy * cz + 7) / 8), 0);
+    for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
+      if (!vox_solid(S.vox[size_t(i)])) continue;
+      const IVec3 p = S.voxel(i);
+      for (int a = 0; a < 3; ++a)
+        for (int sg = -1; sg <= 1; sg += 2) {
+          IVec3 nb = p;
+          nb[a] += sg;
+          if (solid(nb)) continue;
+          const int a1 = (a + 1) % 3, a2 = (a + 2) % 3;
+          for (int u = -1; u <= 1; u += 2)
+            for (int w = -1; w <= 1; w += 2) {
+              // the corner p + (d / 2) and its index on the (dim + 1)^3 corner lattice
+              int d[3];
+              d[a] = sg;
+              d[a1] = u;
+              d[a2] = w;
+              const i64 ix = (p[0] - S.lo[0]) + (d[0] > 0 ? 1 : 0), iy = (p[1] - S.lo[1]) + (d[1] > 0 ? 1 : 0),
+                        iz = (p[2] - S.lo[2]) + (d[2] > 0 ? 1 : 0);
+              const i64 ci = (ix * cy + iy) * cz + iz;
+              if (seen[size_t(ci >> 3)] & (1u << (ci & 7))) continue;
+              seen[size_t(ci >> 3)] = static_cast<u8>(seen[size_t(ci >> 3)] | (1u << (ci & 7)));
+              int around = 0;
+              for (int dx = 0; dx < 2; ++dx)
+                for (int dy = 0; dy < 2; ++dy)
+                  for (int dz = 0; dz < 2; ++dz) {
+                    const IVec3 q{static_cast<i32>(S.lo[0] + ix - 1 + dx), static_cast<i32>(S.lo[1] + iy - 1 + dy),
+                                  static_cast<i32>(S.lo[2] + iz - 1 + dz)};
+                    around += solid(q) ? 1 : 0;
+                  }
+              const V3 centre{h * p[0], h * p[1], h * p[2]};
+              const V3 corner = centre + V3{0.4 * h * d[0], 0.4 * h * d[1], 0.4 * h * d[2]};
+              uniq.push_back({S.xf.to(corner), i, static_cast<u16>(k), around <= 2});
+            }
+        }
+    }
   }
   std::vector<const Cand*> keep;
   size_t sharp = 0;
   for (const Cand& cd : uniq) sharp += cd.sharp ? 1 : 0;
   // small pieces need few samples (their corners), large ones more (flat faces as well): about
   // 12 + 1.5 count^(2/3), in integers (no cube root: the same on every platform)
-  const i64 n2 = static_cast<i64>(std::max(1, S.count)) * static_cast<i64>(std::max(1, S.count));
+  const i64 n2 = static_cast<i64>(std::max(1, b.count)) * static_cast<i64>(std::max(1, b.count));
   i64 m23 = 0;  // floor(count^(2/3)): the largest m with m^3 <= count^2
   for (i64 lo = 0, hi = 1 << 20; lo <= hi;) {  // (2^60 fits; beyond, the cap is max_points anyway)
     const i64 mid = (lo + hi) / 2;
@@ -200,11 +246,13 @@ void body_refresh(Body& b, f64 h, int max_points) {
   }
   b.pts.clear();
   b.pt_vox.clear();
+  b.pt_shape.clear();
   b.radius = 0.0;
   for (const Cand* cd : keep) {
     const V3 r = cd->pt - b.com;
     b.pts.push_back(r);
     b.pt_vox.push_back(cd->vox);
+    b.pt_shape.push_back(cd->shape);
     b.radius = std::max(b.radius, norm(r));
   }
 }
@@ -317,10 +365,11 @@ const std::vector<V3>& world_points(Body& B) {
 
 }  // namespace
 
-void RigidWorld::collide(const VoxelGrid& g, const std::vector<u8>* only) {
+void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vector<u8>* only) {
   // only (optional): contacts of these bodies alone (the others' contacts are kept by the caller)
   if (!only) contacts_.clear();
-  const f64 h = g.h, ih = 1.0 / h;
+  if (statics.empty()) return;
+  const f64 h = statics.front().g->h, ih = 1.0 / h;
   const i32 nb = static_cast<i32>(bodies.size());
   {
     bool any = false;
@@ -339,48 +388,69 @@ void RigidWorld::collide(const VoxelGrid& g, const std::vector<u8>* only) {
   parallel_for(nb, 64, [&](i64 b0, i64 b1) {
     for (i64 i = b0; i < b1; ++i) world_points(*bodies[size_t(i)]);
   });
-  // world contacts, per body in parallel (each with its own chunk cache), joined in body order
+  // static contacts, per body in parallel (each with its own chunk caches), joined in body order:
+  // each sample against every static grid near the body, in grid order (the world grid first)
   std::vector<std::vector<Contact>> wc(static_cast<size_t>(nb));
   parallel_for(nb, 16, [&](i64 b0, i64 b1) {
-    IVec3 cache_cc{INT32_MIN, 0, 0};
-    const Chunk* cache_ch = nullptr;
-    auto world_vox = [&](const IVec3& p) -> Vox {
+    struct Cache {
+      IVec3 cc{INT32_MIN, 0, 0};
+      const Chunk* ch = nullptr;
+    };
+    std::vector<Cache> caches(statics.size());
+    std::vector<u32> near;
+    auto grid_vox = [&](u32 s, const IVec3& p) -> Vox {
+      Cache& c = caches[s];
       const IVec3 cc = chunk_of(p);
-      if (cc != cache_cc) {
-        cache_cc = cc;
-        cache_ch = g.chunk(cc);
+      if (cc != c.cc) {
+        c.cc = cc;
+        c.ch = statics[s].g->chunk(cc);
       }
-      if (!cache_ch) return kAir;
-      return cache_ch->uniform ? cache_ch->value : cache_ch->v[size_t(chunk_index(p))];
+      if (!c.ch) return kAir;
+      return c.ch->uniform ? c.ch->value : c.ch->v[size_t(chunk_index(p))];
     };
     for (i64 i = b0; i < b1; ++i) {
       const i32 ia = static_cast<i32>(i);
       Body& A = *bodies[size_t(ia)];
       if (A.asleep || !selected(ia)) continue;
+      near.clear();
+      for (u32 s = 0; s < static_cast<u32>(statics.size()); ++s) {
+        const StaticGrid& G = statics[s];
+        if (G.unbounded || !(A.box_hi.x < G.lo.x || A.box_lo.x > G.hi.x || A.box_hi.y < G.lo.y || A.box_lo.y > G.hi.y ||
+                             A.box_hi.z < G.lo.z || A.box_lo.z > G.hi.z))
+          near.push_back(s);
+      }
       std::vector<Contact>& out = wc[size_t(ia)];
       const auto& W = A.wpts;
       for (size_t k = 0; k < A.pts.size(); ++k) {
         const V3& X = W[k];
-        const IVec3 p = voxel_of(X, ih);
-        if (!vox_solid(world_vox(p))) continue;
-        int axis = 2, sign = 1;
-        f64 depth = 0.5 * h;
-        if (!exit_face(X, p, h, [&](const IVec3& q) { return vox_solid(world_vox(q)); }, &axis, &sign, &depth)) {
-          axis = 2;
-          sign = 1;
-          depth = 0.5 * h;
+        for (u32 s : near) {
+          const StaticGrid& G = statics[s];
+          const V3 L = G.xf.from(X);  // (the world grid: X itself)
+          const IVec3 p = voxel_of(L, ih);
+          if (!vox_solid(grid_vox(s, p))) continue;
+          int axis = 2, sign = 1;
+          f64 depth = 0.5 * h;
+          if (!exit_face(L, p, h, [&](const IVec3& q) { return vox_solid(grid_vox(s, q)); }, &axis, &sign, &depth)) {
+            axis = 2;
+            sign = 1;
+            depth = 0.5 * h;
+          }
+          Contact c;
+          c.a = ia;
+          c.b = -1;
+          c.p = X;
+          c.n = V3{};
+          c.n[axis] = sign;
+          if (!G.xf.identity) c.n = G.xf.dir_to(c.n);
+          c.depth = depth;
+          c.vox_a = A.pt_vox[k];
+          c.shape_a = static_cast<i16>(A.pt_shape[k]);
+          c.grid = G.slot;
+          c.wvox = p;
+          c.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(~0ull) ^ (static_cast<u64>(k) << 1));
+          if (G.slot != 0) c.key = mix64(c.key ^ (static_cast<u64>(G.slot) * 0x9E3779B97F4A7C15ull));
+          out.push_back(c);
         }
-        Contact c;
-        c.a = ia;
-        c.b = -1;
-        c.p = X;
-        c.n = V3{};
-        c.n[axis] = sign;
-        c.depth = depth;
-        c.vox_a = A.pt_vox[k];
-        c.wvox = p;
-        c.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(~0ull) ^ (static_cast<u64>(k) << 1));
-        out.push_back(c);
       }
       reduce_manifold(out, h);
     }
@@ -431,34 +501,41 @@ void RigidWorld::collide(const VoxelGrid& g, const std::vector<u8>* only) {
         const M3 RBt = transpose(RB);
         const f64 reach2 = (B.radius + h) * (B.radius + h);
         const auto& W = A.wpts;
-        auto solidB = [&](const IVec3& qv) { return vox_solid(B.shape.get(qv)); };
         for (size_t k = 0; k < A.pts.size(); ++k) {
           const V3& X = W[k];
           if (norm2(X - B.x) > reach2) continue;
-          const V3 sp = B.com + RBt * (X - B.x);
-          const IVec3 p = voxel_of(sp, ih);
-          const i32 vi = B.shape.index(p);
-          if (vi < 0 || !vox_solid(B.shape.vox[size_t(vi)])) continue;
-          int axis = 2, sign = 1;
-          f64 depth = 0.5 * h;
-          V3 ns{0, 0, 0};
-          if (exit_face(sp, p, h, solidB, &axis, &sign, &depth)) {
-            ns[axis] = sign;
-          } else {
-            ns = normalized(sp - B.com);
-            if (norm2(ns) == 0) ns = V3{0, 0, 1};
-            depth = 0.5 * h;
+          const V3 sb = B.com + RBt * (X - B.x);  // (B's body frame)
+          for (size_t m = 0; m < B.shapes.size(); ++m) {
+            const BodyShape& SB = B.shapes[m];
+            const V3 sp = SB.xf.from(sb);  // (its lattice)
+            const IVec3 p = voxel_of(sp, ih);
+            const i32 vi = SB.index(p);
+            if (vi < 0 || !vox_solid(SB.vox[size_t(vi)])) continue;
+            int axis = 2, sign = 1;
+            f64 depth = 0.5 * h;
+            V3 ns{0, 0, 0};
+            if (exit_face(sp, p, h, [&](const IVec3& qv) { return vox_solid(SB.get(qv)); }, &axis, &sign, &depth)) {
+              ns[axis] = sign;
+              ns = SB.xf.dir_to(ns);
+            } else {
+              ns = normalized(sb - B.com);
+              if (norm2(ns) == 0) ns = V3{0, 0, 1};
+              depth = 0.5 * h;
+            }
+            Contact c;
+            c.a = ia;
+            c.b = ib;
+            c.p = X;
+            c.n = RB * ns;
+            c.depth = depth;
+            c.vox_a = A.pt_vox[k];
+            c.vox_b = vi;
+            c.shape_a = static_cast<i16>(A.pt_shape[k]);
+            c.shape_b = static_cast<i16>(m);
+            c.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(static_cast<u64>(B.id)) ^ (static_cast<u64>(k) << 1));
+            if (m != 0) c.key = mix64(c.key ^ (static_cast<u64>(m) * 0xC2B2AE3D27D4EB4Full));
+            one.push_back(c);
           }
-          Contact c;
-          c.a = ia;
-          c.b = ib;
-          c.p = X;
-          c.n = RB * ns;
-          c.depth = depth;
-          c.vox_a = A.pt_vox[k];
-          c.vox_b = vi;
-          c.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(static_cast<u64>(B.id)) ^ (static_cast<u64>(k) << 1));
-          one.push_back(c);
         }
         reduce_manifold(one, h);
         for (const Contact& c : one) pc[size_t(q)].push_back(c);
@@ -834,6 +911,13 @@ bool RigidWorld::busy() const {
 }
 
 void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<int(f64)>& fracture) {
+  StaticGrid w;
+  w.g = &g;
+  w.unbounded = true;
+  substep(dt, std::vector<StaticGrid>{w}, fracture);
+}
+
+void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const std::function<int(f64)>& fracture) {
   busy_ = busy();
   set_step(dt);
   using Clock = std::chrono::steady_clock;
@@ -843,7 +927,7 @@ void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<int(f64
   {
     static const bool sc = diag("SVX_SERIAL_COLLIDE");
     std::unique_ptr<SerialScope> ss(sc ? new SerialScope() : nullptr);
-    collide(g);
+    collide(statics);
   }
   const auto t1 = Clock::now();
   {
@@ -921,7 +1005,7 @@ void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<int(f64
     std::vector<u8> fresh(bodies.size(), 0);
     for (size_t i = 0; i < bodies.size(); ++i) fresh[i] = std::binary_search(before_ids.begin(), before_ids.end(), bodies[i]->id) ? 0 : 1;
     contacts_.swap(kept);
-    collide(g, &fresh);
+    collide(statics, &fresh);
     // (warm-started from the first solve of this substep: fewer iterations do)
     const int iters = par.iterations;
     par.iterations = std::max(4, iters / 2);

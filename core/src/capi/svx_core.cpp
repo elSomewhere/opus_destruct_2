@@ -21,7 +21,7 @@ struct svxc_world {
   std::vector<u8> delta;
   std::vector<WorldEvent> events;
   std::vector<PieceState> pieces;
-  std::vector<i32> changed, evicted, layer_changed;
+  std::vector<i32> changed, evicted, layer_changed, grid_changed;
   std::vector<u8> piece_vox;
 };
 
@@ -187,30 +187,112 @@ int svxc_set(svxc_world* w, const char* name, double value) {
 
 double svxc_get(svxc_world* w, const char* name) { return w ? get_tunable(w->w, name) : NAN; }
 
-void svxc_load_box(svxc_world* w, const uint8_t* vox, int nx, int ny, int nz, int ox, int oy, int oz) {
-  if (!w) return;
-  VoxelGrid g;
-  g.h = w->h;
+namespace {
+// A grid of a dense box of voxels (false: out of range).
+bool box_grid(f64 h, const uint8_t* vox, int nx, int ny, int nz, int ox, int oy, int oz, VoxelGrid* g) {
+  g->h = h;
   constexpr i32 kLim = 1 << 19;  // (voxel coordinates well within the key range)
   const bool ok = vox && nx > 0 && ny > 0 && nz > 0 && std::abs(ox) < kLim && std::abs(oy) < kLim && std::abs(oz) < kLim &&
                   nx < kLim && ny < kLim && nz < kLim;
-  if (ok) {
-    for (i32 x = 0; x < nx; ++x)
-      for (i32 y = 0; y < ny; ++y) {
-        const u8* col = vox + (size_t(x) * size_t(ny) + size_t(y)) * size_t(nz);
-        // runs of equal voxels per column
-        for (i32 z = 0; z < nz;) {
-          i32 e = z + 1;
-          while (e < nz && col[e] == col[z]) ++e;
-          if (col[z] != kAir) g.fill_column(ox + x, oy + y, oz + z, oz + e, col[z]);
-          z = e;
-        }
+  if (!ok) return false;
+  for (i32 x = 0; x < nx; ++x)
+    for (i32 y = 0; y < ny; ++y) {
+      const u8* col = vox + (size_t(x) * size_t(ny) + size_t(y)) * size_t(nz);
+      // runs of equal voxels per column
+      for (i32 z = 0; z < nz;) {
+        i32 e = z + 1;
+        while (e < nz && col[e] == col[z]) ++e;
+        if (col[z] != kAir) g->fill_column(ox + x, oy + y, oz + z, oz + e, col[z]);
+        z = e;
       }
-    g.compact();
-    g.lo = {ox, oy, oz};
-    g.hi = {ox + nx, oy + ny, oz + nz};
-  }
+    }
+  g->compact();
+  g->lo = {ox, oy, oz};
+  g->hi = {ox + nx, oy + ny, oz + nz};
+  return true;
+}
+}  // namespace
+
+void svxc_load_box(svxc_world* w, const uint8_t* vox, int nx, int ny, int nz, int ox, int oy, int oz) {
+  if (!w) return;
+  VoxelGrid g;
+  box_grid(w->h, vox, nx, ny, nz, ox, oy, oz, &g);
   w->w.load(std::move(g));
+}
+
+// ---- grids
+
+uint32_t svxc_add_grid(svxc_world* w, const uint8_t* voxels, int nx, int ny, int nz, int ox, int oy, int oz, const double origin[3],
+                       const double rot[4], int base) {
+  if (!w || !origin || !rot) return 0;
+  VoxelGrid g;
+  if (!box_grid(w->h, voxels, nx, ny, nz, ox, oy, oz, &g)) return 0;
+  return w->w.add_grid(GridFrame{V3{origin[0], origin[1], origin[2]}, Quat{rot[0], rot[1], rot[2], rot[3]}}, std::move(g), base != 0);
+}
+
+int svxc_remove_grid(svxc_world* w, uint32_t id) { return w && w->w.remove_grid(id) ? 1 : 0; }
+
+int svxc_grids(svxc_world* w, uint32_t* out, int max) {
+  if (!w) return 0;
+  const std::vector<GridId> ids = w->w.grids();
+  if (out)
+    for (int i = 0; i < std::min<int>(max, static_cast<int>(ids.size())); ++i) out[i] = ids[size_t(i)];
+  return static_cast<int>(ids.size());
+}
+
+int svxc_grid_frame(svxc_world* w, uint32_t id, double origin[3], double rot[4]) {
+  GridFrame f;
+  if (!w || !w->w.grid_frame(id, &f)) return 0;
+  if (origin) put3(origin, f.origin);
+  if (rot) put4(rot, f.rot);
+  return 1;
+}
+
+int svxc_set_grid_voxels(svxc_world* w, uint32_t grid, const int32_t* xyz, const uint8_t* values, int n, unsigned flags) {
+  if (!w || n <= 0 || !xyz || !values) return 0;
+  std::vector<VoxelEdit> edits(static_cast<size_t>(n));
+  for (int i = 0; i < n; ++i) edits[size_t(i)] = {{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]}, values[i]};
+  u32 f = 0;
+  if (flags & SVXC_EDIT_UNTRACKED) f |= kEditUntracked;
+  if (flags & SVXC_EDIT_ISOLATED) f |= kEditIsolated;
+  return w->w.set_voxels(grid, edits, f);
+}
+
+int svxc_grid_chunk_voxels(svxc_world* w, uint32_t grid, int cx, int cy, int cz, uint8_t* out) {
+  if (!w || !out) return 0;
+  const VoxelGrid* g = w->w.grid(grid);
+  const Chunk* c = g ? g->chunk({cx, cy, cz}) : nullptr;
+  if (!c) return 0;
+  if (c->uniform) {
+    std::fill(out, out + kChunkVox, c->value);
+    return 1;
+  }
+  std::copy(c->v.begin(), c->v.end(), out);
+  return 2;
+}
+
+int svxc_poll_changed_grid_chunks(svxc_world* w, const int32_t** chunks) {
+  if (!w) return 0;
+  const std::vector<GridChunk> cs = w->w.take_changed_grid_chunks();
+  w->grid_changed.clear();
+  for (const GridChunk& c : cs) w->grid_changed.insert(w->grid_changed.end(), {static_cast<i32>(c.grid), c.chunk[0], c.chunk[1], c.chunk[2]});
+  if (chunks) *chunks = w->grid_changed.data();
+  return static_cast<int>(cs.size());
+}
+
+int svxc_set_grid_layer(svxc_world* w, uint32_t grid, int layer, const int32_t* xyz, const uint8_t* values, int n) {
+  if (!w || n <= 0 || !xyz || !values) return 0;
+  return w->w.set_layer(grid, layer, layer_edits(xyz, values, n));
+}
+
+uint8_t svxc_grid_layer(svxc_world* w, uint32_t grid, int layer, int x, int y, int z) { return w ? w->w.layer(grid, layer, {x, y, z}) : 0; }
+
+void svxc_set_grid_loads(svxc_world* w, uint64_t group, const uint32_t* grids, const int32_t* xyz, const double* forces, int n) {
+  if (!w || (n > 0 && (!xyz || !forces))) return;
+  std::vector<VoxelLoad> loads;
+  for (int i = 0; i < n; ++i)
+    loads.push_back({{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]}, {forces[3 * i], forces[3 * i + 1], forces[3 * i + 2]}, grids ? grids[i] : 0u});
+  w->w.set_loads(group, std::move(loads));
 }
 
 int svxc_bake(svxc_world* w) { return w && w->w.bake() ? 1 : 0; }
@@ -419,14 +501,26 @@ int svxc_piece_at(svxc_world* w, int i, svxc_piece* out) {
 }
 
 const uint8_t* svxc_piece_voxels(svxc_world* w, int64_t id, int lo[3], int dim[3]) {
+  return svxc_piece_shape(w, id, 0, lo, dim, nullptr, nullptr, nullptr);
+}
+
+int svxc_piece_shape_count(svxc_world* w, int64_t id) {
+  const Body* b = w ? w->w.piece(id) : nullptr;
+  return b ? static_cast<int>(b->shapes.size()) : 0;
+}
+
+const uint8_t* svxc_piece_shape(svxc_world* w, int64_t id, int shape, int lo[3], int dim[3], double off[3], double rot[4], uint32_t* grid) {
   if (!w) return nullptr;
   const Body* b = w->w.piece(id);
-  if (!b) return nullptr;
-  const BodyShape& S = b->shape;
+  if (!b || shape < 0 || shape >= static_cast<int>(b->shapes.size())) return nullptr;
+  const BodyShape& S = b->shapes[size_t(shape)];
   if (lo)
     for (int a = 0; a < 3; ++a) lo[a] = S.lo[a];
   if (dim)
     for (int a = 0; a < 3; ++a) dim[a] = S.dim[a];
+  if (off) put3(off, S.xf.off);
+  if (rot) put4(rot, S.xf.q);
+  if (grid) *grid = S.grid;
   w->piece_vox = S.vox;
   return w->piece_vox.data();
 }
@@ -484,6 +578,8 @@ svxc_hit svxc_raycast(svxc_world* w, const double origin[3], const double dir[3]
   out.material = h.material;
   for (int a = 0; a < 3; ++a) out.voxel[a] = h.voxel[a];
   out.piece = h.piece;
+  out.grid = h.grid;
+  out.shape = h.shape;
   return out;
 }
 
@@ -494,6 +590,19 @@ void svxc_collide(svxc_world* w, const double mn[3], const double mx[3], const d
   const CollideResult r = w->w.collide({mn[0], mn[1], mn[2]}, {mx[0], mx[1], mx[2]}, {move[0], move[1], move[2]});
   put3(out, r.move);
   out[3] = r.on_ground ? 1.0 : 0.0;
+}
+
+int svxc_sweep(svxc_world* w, const double mn[3], const double mx[3], const double move[3], double out[5]) {
+  if (!out) return 0;
+  out[0] = 1.0;
+  out[1] = out[2] = out[3] = out[4] = 0.0;
+  if (!w || !mn || !mx || !move) return 0;
+  const SweepHit r = w->w.sweep({mn[0], mn[1], mn[2]}, {mx[0], mx[1], mx[2]}, {move[0], move[1], move[2]});
+  if (!r.hit) return 0;
+  out[0] = r.t;
+  put3(out + 1, r.normal);
+  out[4] = static_cast<double>(r.grid);
+  return 1;
 }
 
 void svxc_get_stats(svxc_world* w, svxc_stats* out) {
@@ -523,6 +632,7 @@ void svxc_get_stats(svxc_world* w, svxc_stats* out) {
   out->dropped_events = s.dropped_events;
   out->archive_used_mb = s.archive_used_mb;
   out->archive_capacity_mb = s.archive_capacity_mb;
+  out->grids = s.grids;
 }
 
 void svxc_get_memory(svxc_world* w, svxc_memory* out) {

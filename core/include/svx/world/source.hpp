@@ -5,9 +5,18 @@
 #include <string>
 #include <vector>
 
+#include "svx/base/vec.hpp"
 #include "svx/world/grid.hpp"
 
 namespace svx {
+
+// An oriented grid a source places in its world (docs/GRIDS.md): a voxel lattice with a frame of
+// its own (its voxel p is centred at origin + rot (h p)).
+struct SourceGrid {
+  u32 id = 0;        // unique and stable (not 0): the same grid gets the same id every time
+  V3 origin;
+  Quat rot;
+};
 
 class ChunkSource {
  public:
@@ -29,6 +38,19 @@ class ChunkSource {
   // thread after generate().
   virtual bool generate_layer(const IVec3& chunk, const std::string& layer, std::vector<u8>& out) const {
     (void)chunk, (void)layer, (void)out;
+    return false;
+  }
+  // Oriented grids of the source's (docs/GRIDS.md): the grids at home in a chunk - generated
+  // whole when that chunk is, evicted with it (their changes archived with its region, forgotten
+  // with it). A grid is at home in one chunk only (e.g. the chunk of its origin). Called from the
+  // world's thread after generate().
+  virtual std::vector<SourceGrid> grids(const IVec3& chunk) const {
+    (void)chunk;
+    return {};
+  }
+  // The voxels of one of those grids, in its own coordinates (false: none).
+  virtual bool generate_grid(u32 id, VoxelGrid& out) const {
+    (void)id, (void)out;
     return false;
   }
 };

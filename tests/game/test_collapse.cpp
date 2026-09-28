@@ -15,6 +15,7 @@ Game world(const char* kind) {
   ProcWorld w = make_procedural(kind, 1);
   Game eng;
   eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+  add_grids(eng.world(), std::move(w.grids));
   eng.bake();
   return eng;
 }
@@ -65,8 +66,8 @@ TEST_CASE("collapse: a slab whose columns are cut falls and breaks where it land
   // (nearly) everything is on the ground now: at most bits of the slab left on the column stumps
   i64 low = 0, all = 0;
   for (const auto& b : eng.world().rigid().bodies) {
-    all += b->shape.count;
-    low += b->x.z < 4.0 ? b->shape.count : 0;
+    all += b->count;
+    low += b->x.z < 4.0 ? b->count : 0;
   }
   CHECK(low >= 0.9 * all);
 }

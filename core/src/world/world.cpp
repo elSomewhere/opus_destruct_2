@@ -26,6 +26,7 @@ inline f64 ms_since(Clock::time_point t0) { return std::chrono::duration<f64, st
 }  // namespace
 
 World::World() : archive_(std::make_unique<ChangeArchive>()) {
+  grids_.push_back(std::make_unique<GridState>());  // (the world grid's)
   add_layer({"damage", true, LayerBind::Solid});  // (kDamageLayer)
 }
 World::~World() = default;
@@ -74,15 +75,32 @@ void World::load(VoxelGrid&& g) {
   std::vector<u64> old_keys;
   for (const auto& [k, c] : grid_.chunks()) old_keys.push_back(k);
   structures_.clear();
-  frags_.clear();
-  owner_.clear();
+  // the oriented grids go too (a level adds its own again)
+  for (size_t g = 1; g < grids_.size(); ++g) {
+    if (!grids_[g]) continue;
+    WorldEvent ev;
+    ev.kind = WorldEvent::Kind::GridRemoved;
+    ev.id = static_cast<i64>(grids_[g]->id);
+    ev.pos = grids_[g]->xf.off;
+    ev.rot = grids_[g]->xf.q;
+    events_.push_back(std::move(ev));
+  }
+  grids_.clear();
+  grids_.push_back(std::make_unique<GridState>());
+  slots_.clear();
+  next_grid_ = 1;
+  oriented_ = 0;
+  ++grid_epoch_;
+  grid_dirty_.clear();
+  removed_base_.clear();
+  home_grids_.clear();
+  statics_.clear();
   seeds_.clear();
   warm_u_.clear();
   judged_.clear();
   designed_all_ = false;
   dead_loads_.clear();
   blast_loads_.clear();
-  undesigned_.clear();
   // the grid's layers are the world's (by name: a grid made with layers of its own keeps them)
   for (const LayerSpec& spec : g.layers())
     if (std::none_of(layer_specs_.begin(), layer_specs_.end(), [&](const LayerSpec& l) { return l.name == spec.name; }) &&
@@ -117,11 +135,13 @@ void World::load(VoxelGrid&& g) {
 // ---------------------------------------------------------------------------------------------
 // Fragments
 
-void World::mark_owners_stale(u64 key, u64 changed) {
-  // the structures owning fragments of chunk `key`: stale, with `changed` (default: key) to patch
-  if (changed == ~0ull) changed = key;
-  const auto ot = owner_.find(key);
-  if (ot == owner_.end()) return;
+void World::mark_owners_stale(u16 g, u64 key, GKey changed) {
+  // the structures owning fragments of chunk `key` of grid g: stale, with `changed` (default:
+  // that chunk) to patch
+  if (changed.grid == 0xFFFF) changed = GKey{g, key};
+  const auto& owner = gs(g).owner;
+  const auto ot = owner.find(key);
+  if (ot == owner.end()) return;
   for (i64 id : ot->second)
     if (id)
       if (Structure* s = structure(id)) {
@@ -136,30 +156,32 @@ World::Structure* World::structure(i64 id) {
   return (it != structures_.end() && (*it)->id == id) ? it->get() : nullptr;
 }
 
-FragChunk& World::frag_chunk(const IVec3& cc) {
+FragChunk& World::frag_chunk(u16 g, const IVec3& cc) {
   const u64 key = key3(cc[0], cc[1], cc[2]);
-  const Chunk* ch = grid_.chunk(cc);
+  const Chunk* ch = vg(g).chunk(cc);
+  auto& frags = gs(g).frags;
   if (!ch) {
-    const auto it = frags_.find(key);
-    if (it != frags_.end()) {
-      mark_owners_stale(key);  // (evicted / emptied)
-      owner_.erase(key);
-      frags_.erase(it);
+    const auto it = frags.find(key);
+    if (it != frags.end()) {
+      mark_owners_stale(g, key);  // (evicted / emptied)
+      gs(g).owner.erase(key);
+      frags.erase(it);
     }
     empty_frags_ = FragChunk{};
     return empty_frags_;
   }
-  auto it = frags_.find(key);
-  if (it != frags_.end() && it->second.vox_version == ch->vox_version) {
+  auto it = frags.find(key);
+  if (it != frags.end() && it->second.vox_version == ch->vox_version) {
     it->second.used = st_.ticks;
     return it->second;
   }
-  return adopt_fragments(key, fragment_chunk(grid_, cc, cfg_.frag));
+  return adopt_fragments(g, key, fragment_chunk(vg(g), cc, cfg_.frag));
 }
 
-FragChunk& World::adopt_fragments(u64 key, FragChunk&& nf) {
-  const auto it = frags_.find(key);
-  if (it != frags_.end()) {
+FragChunk& World::adopt_fragments(u16 g, u64 key, FragChunk&& nf) {
+  auto& frags = gs(g).frags;
+  const auto it = frags.find(key);
+  if (it != frags.end()) {
     const FragChunk& of = it->second;
     bool same = of.id == nf.id && of.frags.size() == nf.frags.size();
     for (size_t f = 0; f < of.frags.size() && same; ++f) same = of.frags[f].count == nf.frags[f].count;
@@ -169,15 +191,15 @@ FragChunk& World::adopt_fragments(u64 key, FragChunk&& nf) {
     }
   }
   // re-fragmented: the structures holding its old fragments are stale
-  mark_owners_stale(key);
-  owner_[key].assign(nf.frags.size(), 0);
-  FragChunk& slot = frags_[key];
+  mark_owners_stale(g, key);
+  gs(g).owner[key].assign(nf.frags.size(), 0);
+  FragChunk& slot = frags[key];
   slot = std::move(nf);
   slot.used = st_.ticks;
   return slot;
 }
 
-void World::prefragment(const IVec3& seed, f64 max_radius) {
+void World::prefragment(u16 g, const IVec3& seed, f64 max_radius) {
   // The chunks a structure walk from here can reach - face-connected chunks holding free
   // voxels, within its reach - fragmented at once, in parallel (fragment_chunk only reads the
   // grid): the walk then finds them cached. The fragments are the ones the walk would make
@@ -186,13 +208,15 @@ void World::prefragment(const IVec3& seed, f64 max_radius) {
   const i32 R = static_cast<i32>(std::ceil(max_radius / (grid_.h * kChunk))) + 1;
   std::vector<IVec3> queue{seed}, todo;
   std::unordered_set<u64> seen{key3(seed[0], seed[1], seed[2])};
+  const VoxelGrid& G = vg(g);
+  const auto& frags = gs(g).frags;
   for (size_t i = 0; i < queue.size() && queue.size() < kMaxFlood; ++i) {
     const IVec3 cc = queue[i];
-    const Chunk* ch = grid_.chunk(cc);
+    const Chunk* ch = G.chunk(cc);
     if (!ch || ch->free_count() == 0) continue;
     // (only chunks never fragmented: a stale cache is rebuilt when the walk comes to it, which
     // is also when the structures holding its old fragments learn of it)
-    if (!frags_.count(key3(cc[0], cc[1], cc[2]))) todo.push_back(cc);
+    if (!frags.count(key3(cc[0], cc[1], cc[2]))) todo.push_back(cc);
     for (int d = 0; d < 6; ++d) {
       IVec3 q = cc;
       q[d / 2] += (d & 1) ? -1 : 1;
@@ -203,37 +227,47 @@ void World::prefragment(const IVec3& seed, f64 max_radius) {
   if (todo.size() < kMin) return;  // (a few: the walk does them as well)
   std::vector<FragChunk> out(todo.size());
   parallel_for(static_cast<i64>(todo.size()), 1, [&](i64 a, i64 b) {
-    for (i64 j = a; j < b; ++j) out[size_t(j)] = fragment_chunk(grid_, todo[size_t(j)], cfg_.frag);
+    for (i64 j = a; j < b; ++j) out[size_t(j)] = fragment_chunk(G, todo[size_t(j)], cfg_.frag);
   });
-  for (size_t j = 0; j < todo.size(); ++j) adopt_fragments(key3(todo[j][0], todo[j][1], todo[j][2]), std::move(out[j]));
+  for (size_t j = 0; j < todo.size(); ++j) adopt_fragments(g, key3(todo[j][0], todo[j][1], todo[j][2]), std::move(out[j]));
 }
 
-FragChunk* World::frag_chunk_if(u64 key) {
-  const auto it = frags_.find(key);
-  if (it == frags_.end()) return nullptr;
+FragChunk* World::frag_chunk_if(u16 g, u64 key) {
+  auto& frags = gs(g).frags;
+  const auto it = frags.find(key);
+  if (it == frags.end()) return nullptr;
   it->second.used = st_.ticks;
   return &it->second;
 }
 
-bool World::frag_at(const IVec3& p, FragKey* out) {
-  const Vox v = grid_.get(p);
-  if (!vox_free(v)) return false;
-  const IVec3 cc = chunk_of(p);
-  FragChunk& fc = frag_chunk(cc);
-  const i32 f = fc.at(chunk_index(p));
+bool World::frag_at(const GVox& v, FragKey* out) {
+  const Vox x = vg(v.grid).get(v.p);
+  if (!vox_free(x)) return false;
+  const IVec3 cc = chunk_of(v.p);
+  FragChunk& fc = frag_chunk(v.grid, cc);
+  const i32 f = fc.at(chunk_index(v.p));
   if (f < 0) return false;
   out->chunk = key3(cc[0], cc[1], cc[2]);
   out->idx = f;
+  out->grid = v.grid;
   return true;
 }
 
 i64 World::owner_of(const FragKey& f) const {
-  const auto it = owner_.find(f.chunk);
-  return (it != owner_.end() && f.idx >= 0 && f.idx < static_cast<i32>(it->second.size())) ? it->second[size_t(f.idx)] : 0;
+  const auto& owner = gs(f.grid).owner;
+  const auto it = owner.find(f.chunk);
+  return (it != owner.end() && f.idx >= 0 && f.idx < static_cast<i32>(it->second.size())) ? it->second[size_t(f.idx)] : 0;
+}
+
+V3 World::frag_com(const FragKey& f) {
+  FragChunk* fc = frag_chunk_if(f);
+  if (!fc || f.idx < 0 || f.idx >= static_cast<i32>(fc->frags.size())) return V3{};
+  const V3& c = fc->frags[size_t(f.idx)].com;
+  return f.grid == 0 ? c : xf_of(f.grid).to(c);
 }
 
 void World::voxels_of(const FragKey& f, std::vector<IVec3>& out) {
-  FragChunk* fc = frag_chunk_if(f.chunk);
+  FragChunk* fc = frag_chunk_if(f);
   if (!fc || f.idx < 0 || f.idx >= static_cast<i32>(fc->frags.size())) return;
   const IVec3 cc = unkey3(f.chunk);
   const IVec3 base{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
@@ -246,9 +280,9 @@ void World::voxels_of(const FragKey& f, std::vector<IVec3>& out) {
 }
 
 u8 World::frag_class(const FragKey& f) {
-  FragChunk* fc = frag_chunk_if(f.chunk);
+  FragChunk* fc = frag_chunk_if(f);
   if (!fc) return 0;
-  const Chunk* ch = grid_.chunk(unkey3(f.chunk));
+  const Chunk* ch = vg(f.grid).chunk(unkey3(f.chunk));
   if (!ch || ch->strength.empty()) return 0;
   u8 c = 255;
   for (i32 k = fc->vox_start[size_t(f.idx)]; k < fc->vox_start[size_t(f.idx) + 1]; ++k) {
@@ -265,26 +299,26 @@ u8 World::frag_class(const FragKey& f) {
 World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_radius, bool detach_free) {
   if (max_nodes <= 0) max_nodes = cfg_.structure_max_nodes;
   if (max_radius <= 0) max_radius = cfg_.structure_max_radius;
-  prefragment(unkey3(seed.chunk), max_radius);
+  prefragment(seed.grid, unkey3(seed.chunk), max_radius);
   auto s = std::make_unique<Structure>();
   s->id = next_id_++;
   std::vector<FragKey> members;
   auto nodemap_slot = [&](const FragKey& f) -> i32& {
-    auto& v = s->nodemap[f.chunk];
+    auto& v = s->nodemap[GKey{f.grid, f.chunk}];
     if (v.empty()) {
-      FragChunk* fc = frag_chunk_if(f.chunk);
+      FragChunk* fc = frag_chunk_if(f);
       v.assign(fc ? fc->frags.size() : size_t(f.idx + 1), -1);
     }
     if (f.idx >= static_cast<i32>(v.size())) v.resize(size_t(f.idx) + 1, -1);
     return v[size_t(f.idx)];
   };
-  FragChunk& sfc = frag_chunk(unkey3(seed.chunk));
-  const V3 seed_pos = sfc.frags[size_t(seed.idx)].com;
+  frag_chunk(seed.grid, unkey3(seed.chunk));
+  const V3 seed_pos = frag_com(seed);
   nodemap_slot(seed) = 0;
   members.push_back(seed);
   std::vector<SecAcc> accs;
   std::unordered_map<u64, i32> acc_index;
-  auto acc_for = [&](i32 a, i32 b, int axis, int sign) -> SecAcc& {
+  auto acc_for = [&](i32 a, i32 b, int axis, int sign, u16 grid) -> SecAcc& {
     const u64 k = acc_key(a, b, axis, sign);
     auto it = acc_index.find(k);
     if (it != acc_index.end()) return accs[size_t(it->second)];
@@ -293,19 +327,49 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
     SecAcc& A = accs.back();
     A.a = b >= 0 ? std::min(a, b) : a;
     A.b = b >= 0 ? std::max(a, b) : b;
-    A.axis = static_cast<u8>(axis);
+    A.axis = static_cast<u32>(axis);
     A.sign = static_cast<i8>(sign);
+    A.grid = grid;
     return A;
+  };
+  // A fragment met through a face or a junction: a member (its slot), or held fixed (-2)
+  auto meet = [&](const FragKey& G) -> i32 {
+    i32& slot = nodemap_slot(G);
+    if (slot == -1) {
+      const V3 gc = frag_com(G);
+      // Another registered structure's fragment: the extraction takes that structure over
+      // whole (past the radius, which would cut it in two: frontiers next to what happens
+      // are artificial supports), up to the node limit. What it cannot take is extracted
+      // again (append_nodes: superseded) - but a structure made in this refresh is a
+      // frontier: in a world too large for one extraction, the two would otherwise take
+      // each other over in turn, every tick.
+      const i64 other = owner_of(G);
+      const bool owned = other != 0 && other != s->id && structure(other) != nullptr;
+      const bool fresh = owned && other >= fresh_from_;
+      const bool room = static_cast<i32>(members.size()) < max_nodes;
+      if (!fresh && room && (owned || norm(gc - seed_pos) <= max_radius)) {
+        slot = static_cast<i32>(members.size());
+        members.push_back(G);
+      } else {
+        slot = -2;  // frontier: held fixed
+        s->truncated = true;
+      }
+    }
+    return slot;
   };
   bool any_support = false;
   bool touched_unloaded = false;  // (held by chunks not generated yet)
+  IVec3 ulo{INT32_MAX, INT32_MAX, INT32_MAX}, uhi{INT32_MIN, INT32_MIN, INT32_MIN};  // (such chunks reached by junctions)
+  JunctionScratch js;
   constexpr int kStride[3] = {kChunk * kChunk, kChunk, 1};
   for (size_t qi = 0; qi < members.size(); ++qi) {
     const FragKey F = members[qi];
     const i32 nF = static_cast<i32>(qi);
+    const u16 g = F.grid;
+    const VoxelGrid& G = vg(g);
     const IVec3 cc = unkey3(F.chunk);
-    FragChunk* fcp = frag_chunk_if(F.chunk);
-    const Chunk* ch = grid_.chunk(cc);
+    FragChunk* fcp = frag_chunk_if(F);
+    const Chunk* ch = G.chunk(cc);
     if (!fcp || !ch) continue;
     const IVec3 base{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
     for (i32 k = fcp->vox_start[size_t(F.idx)]; k < fcp->vox_start[size_t(F.idx) + 1]; ++k) {
@@ -320,68 +384,90 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
           q[a] += sg;
           const bool inside = l[a] + sg >= 0 && l[a] + sg < kChunk;
           const int qi2 = li + sg * kStride[a];
-          const Vox vq = inside ? (ch->uniform ? ch->value : ch->v[size_t(qi2)]) : grid_.get(q);
+          const Vox vq = inside ? (ch->uniform ? ch->value : ch->v[size_t(qi2)]) : G.get(q);
           // a neighbour in a chunk not resident (not generated yet, or evicted) holds it: the
           // world there is unknown, and is not air
-          const bool unloaded = !inside && !chunk_resident(chunk_of(q));
+          const bool unloaded = g == 0 && !inside && !chunk_resident(chunk_of(q));
           if (!unloaded) {
             if (!vox_solid(vq)) continue;
-            const bool face_broken = sg > 0 ? ((brk_p >> a) & 1) != 0 : grid_.broken(q, a);
+            const bool face_broken = sg > 0 ? ((brk_p >> a) & 1) != 0 : G.broken(q, a);
             if (face_broken) continue;
           }
           const IVec3 lower = sg > 0 ? p : q;
           if (unloaded) touched_unloaded = true;
           if (vox_anchored(vq) || unloaded) {
-            SecAcc& A = acc_for(nF, -1, a, sg);
+            SecAcc& A = acc_for(nF, -1, a, sg, g);
             A.mb = unloaded ? vox_mat(ch->uniform ? ch->value : ch->v[size_t(li)]) : vox_mat(vq);
             A.add(lower, a);
             any_support = true;
             continue;
           }
-          FragKey G;
+          FragKey Gk;
+          Gk.grid = g;
           if (inside) {
-            const i32 g = fcp->at(qi2);
-            if (g < 0 || g == F.idx) continue;
-            G = {F.chunk, g};
+            const i32 g2 = fcp->at(qi2);
+            if (g2 < 0 || g2 == F.idx) continue;
+            Gk.chunk = F.chunk;
+            Gk.idx = g2;
           } else {
             const IVec3 qc = chunk_of(q);
-            FragChunk& fq = frag_chunk(qc);
-            const i32 g = fq.at(chunk_index(q));
-            if (g < 0) continue;
-            G = {key3(qc[0], qc[1], qc[2]), g};
+            FragChunk& fq = frag_chunk(g, qc);
+            const i32 g2 = fq.at(chunk_index(q));
+            if (g2 < 0) continue;
+            Gk.chunk = key3(qc[0], qc[1], qc[2]);
+            Gk.idx = g2;
           }
-          i32& slot = nodemap_slot(G);
-          if (slot == -1) {
-            FragChunk* gfc = frag_chunk_if(G.chunk);
-            const V3 gc = gfc->frags[size_t(G.idx)].com;
-            // Another registered structure's fragment: the extraction takes that structure over
-            // whole (past the radius, which would cut it in two: frontiers next to what happens
-            // are artificial supports), up to the node limit. What it cannot take is extracted
-            // again (append_nodes: superseded) - but a structure made in this refresh is a
-            // frontier: in a world too large for one extraction, the two would otherwise take
-            // each other over in turn, every tick.
-            const i64 other = owner_of(G);
-            const bool owned = other != 0 && other != s->id && structure(other) != nullptr;
-            const bool fresh = owned && other >= fresh_from_;
-            const bool room = static_cast<i32>(members.size()) < max_nodes;
-            if (!fresh && room && (owned || norm(gc - seed_pos) <= max_radius)) {
-              slot = static_cast<i32>(members.size());
-              members.push_back(G);
-            } else {
-              slot = -2;  // frontier: held fixed
-              s->truncated = true;
-            }
-          }
+          const i32 slot = meet(Gk);
           if (slot >= 0) {
-            if (sg > 0) acc_for(nF, slot, a, 1).add(lower, a, nF < slot ? 1 : -1);
+            if (sg > 0) acc_for(nF, slot, a, 1, g).add(lower, a, nF < slot ? 1 : -1);
           } else {
-            SecAcc& A = acc_for(nF, -1, a, sg);
+            SecAcc& A = acc_for(nF, -1, a, sg, g);
             A.mb = vox_mat(vq);
             A.add(lower, a);
             any_support = true;
           }
         }
     }
+    // Its junctions: bonds to the voxels of other grids its faces meet, and those whose faces
+    // meet it. A bond counts both sides' samples half each: a member's own samples come with its
+    // walk, the samples of what is not walked (supports, fragments held fixed) with this one's.
+    each_junction(js, F, [&](const JSample& j, bool fwd) {
+      if (fwd && j.kind == kJunctionUnknown) {
+        // (reaching into the unknown world: it holds it)
+        SecAcc& A = acc_for(nF, -1, 3 + j.face, 1, g);
+        A.mb = vox_mat(G.get(j.v));
+        A.add_sample(j, 1, 1.0f);
+        any_support = true;
+        touched_unloaded = true;
+        const IVec3 oc = chunk_of(j.o);
+        for (int a = 0; a < 3; ++a) {
+          ulo[a] = std::min(ulo[a], oc[a]);
+          uhi[a] = std::max(uhi[a], oc[a]);
+        }
+        return;
+      }
+      const GVox other = fwd ? GVox{j.o, j.og} : GVox{j.v, j.vg};
+      const Vox vo = vg(other.grid).get(other.p);
+      if (!vox_solid(vo)) return;
+      if (vox_anchored(vo)) {
+        SecAcc& A = acc_for(nF, -1, 3 + 6 * other.grid + junction_side(g, j, fwd), 1, g);
+        A.mb = vox_mat(vo);
+        A.add_sample(j, fwd ? 1 : -1, junction_weight(j));
+        any_support = true;
+        return;
+      }
+      FragKey Gk;
+      if (!frag_at(other, &Gk)) return;
+      const i32 slot = meet(Gk);
+      if (slot >= 0) {
+        if (fwd) acc_for(nF, slot, 0, 1, g).add_sample(j, nF < slot ? 1 : -1, junction_weight(j));
+      } else {
+        SecAcc& A = acc_for(nF, -1, 3 + 6 * other.grid + junction_side(g, j, fwd), 1, g);
+        A.mb = vox_mat(vo);
+        A.add_sample(j, fwd ? 1 : -1, junction_weight(j));
+        any_support = true;
+      }
+    });
   }
   st_.extractions++;
   st_.extracted_nodes += static_cast<i64>(members.size());
@@ -390,13 +476,16 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
       make_body_from_world(members, V3{}, V3{});  // a free piece: it falls
     } else {
       // (bake) a piece of the source world that cannot stand: removed, not a gameplay change
-      std::vector<IVec3> vox;
-      for (const FragKey& f : members) voxels_of(f, vox);
-      const bool tracked = grid_.tracking();
-      grid_.track_changes(false);
-      for (const IVec3& p : vox) grid_.set(p, kAir);
-      grid_.track_changes(tracked);
-      design_.floating_voxels += static_cast<i64>(vox.size());
+      for (const FragKey& f : members) {
+        std::vector<IVec3> vox;
+        voxels_of(f, vox);
+        VoxelGrid& Gf = vg(f.grid);
+        const bool tracked = Gf.tracking();
+        Gf.track_changes(false);
+        for (const IVec3& p : vox) Gf.set(p, kAir);
+        Gf.track_changes(tracked);
+        design_.floating_voxels += static_cast<i64>(vox.size());
+      }
     }
     return nullptr;
   }
@@ -426,16 +515,21 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
     if (touched_unloaded && ensuring_ < 8) {
       IVec3 lo{INT32_MAX, INT32_MAX, INT32_MAX}, hi{INT32_MIN, INT32_MIN, INT32_MIN};
       for (const FragKey& f : out->frags) {
-        if (f.idx < 0) continue;
+        if (f.idx < 0 || f.grid != 0) continue;
         const IVec3 cc = unkey3(f.chunk);
         for (int a = 0; a < 3; ++a) {
           lo[a] = std::min(lo[a], (cc[a] - 1) * kChunk);
           hi[a] = std::max(hi[a], (cc[a] + 2) * kChunk - 1);
         }
       }
+      if (ulo[0] <= uhi[0])
+        for (int a = 0; a < 3; ++a) {
+          lo[a] = std::min(lo[a], (ulo[a] - 1) * kChunk);
+          hi[a] = std::max(hi[a], (uhi[a] + 2) * kChunk - 1);
+        }
       drop_structure(id);
       ++ensuring_;
-      ensure_chunks(lo, hi);
+      if (lo[0] <= hi[0]) ensure_chunks(lo, hi);
       Structure* again = extract(seed, max_nodes, max_radius, detach_free);
       --ensuring_;
       return again;
@@ -449,7 +543,7 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
       return again;
     }
     for (const FragKey& f : out->frags)
-      if (f.idx >= 0) undesigned_.erase(f.chunk);
+      if (f.idx >= 0) gs(f.grid).undesigned.erase(f.chunk);
   }
   return out;
 }
@@ -459,7 +553,7 @@ bool World::pristine(const Structure& s) const {
     if (B.broken) return false;
   // (changed voxels or bonds: a player's; water, burn marks - persistent layers - do not count)
   for (const FragKey& f : s.frags)
-    if (f.idx >= 0 && grid_.voxels_modified(f.chunk)) return false;
+    if (f.idx >= 0 && vg(f.grid).voxels_modified(f.chunk)) return false;
   return true;
 }
 
@@ -475,22 +569,27 @@ void World::append_nodes(Structure& s, const std::vector<FragKey>& frags, const 
   const i32 m = static_cast<i32>(frags.size());
   const i32 n0 = static_cast<i32>(s.P.nodes.size());
   s.cell = cell;
-  // clusters: fragments in one chunk-local cell, connected inside it
+  // clusters: fragments in one chunk-local cell (of one grid), connected inside it
   std::vector<u64> key(static_cast<size_t>(m));
   for (i32 f = 0; f < m; ++f) {
     if (cell <= 0) {
       key[size_t(f)] = static_cast<u64>(f);
       continue;
     }
-    const FragInfo& fi = frag_chunk_if(frags[size_t(f)].chunk)->frags[size_t(frags[size_t(f)].idx)];
+    const FragInfo& fi = frag_chunk_if(frags[size_t(f)])->frags[size_t(frags[size_t(f)].idx)];
     const IVec3 l = local_of(fi.first);
     key[size_t(f)] = mix64(frags[size_t(f)].chunk ^ (static_cast<u64>((l[0] / cell) * 64 + (l[1] / cell) * 8 + l[2] / cell) << 58));
   }
   std::vector<std::pair<i32, i32>> links;
   for (const SecAcc& A : fine)
     if (A.a >= 0 && A.a < m && A.b >= 0 && A.b < m) links.push_back({A.a, A.b});
+  std::vector<u16> group;
+  if (oriented_ > 0) {
+    group.resize(size_t(m));
+    for (i32 f = 0; f < m; ++f) group[size_t(f)] = frags[size_t(f)].grid;
+  }
   std::vector<i32> fnode;
-  const i32 K = cluster_items(key, links, &fnode);
+  const i32 K = cluster_items(key, links, &fnode, group.empty() ? nullptr : &group);
   // nodes
   std::vector<std::vector<i32>> members(static_cast<size_t>(K));
   for (i32 f = 0; f < m; ++f) members[size_t(fnode[size_t(f)])].push_back(f);
@@ -502,20 +601,20 @@ void World::append_nodes(Structure& s, const std::vector<FragKey>& frags, const 
     MaterialId mat = MaterialId::Concrete;
     for (i32 f : members[size_t(c)]) {
       const FragKey& fk = frags[size_t(f)];
-      const FragInfo& fi = frag_chunk_if(fk.chunk)->frags[size_t(fk.idx)];
+      const FragInfo& fi = frag_chunk_if(fk)->frags[size_t(fk.idx)];
       mass += fi.mass;
-      com += fi.com * fi.mass;
+      com += (fk.grid == 0 ? fi.com : xf_of(fk.grid).to(fi.com)) * fi.mass;
       if (fi.mass > heavy) {
         heavy = fi.mass;
         mat = fi.mat;
       }
       strength = std::min(strength, class_mult(frag_class(fk)));
       s.frags.push_back(fk);
-      auto& nm = s.nodemap[fk.chunk];
-      const size_t nf = frag_chunk_if(fk.chunk)->frags.size();
+      auto& nm = s.nodemap[GKey{fk.grid, fk.chunk}];
+      const size_t nf = frag_chunk_if(fk)->frags.size();
       if (nm.size() < nf) nm.resize(nf, -1);
       nm[size_t(fk.idx)] = nd;
-      auto& ov = owner_[fk.chunk];
+      auto& ov = gs(fk.grid).owner[fk.chunk];
       if (ov.size() < nf) ov.resize(nf, 0);
       if (ov[size_t(fk.idx)] && ov[size_t(fk.idx)] != s.id && superseded) superseded->push_back(ov[size_t(fk.idx)]);
       ov[size_t(fk.idx)] = s.id;
@@ -525,11 +624,11 @@ void World::append_nodes(Structure& s, const std::vector<FragKey>& frags, const 
     node.mass = mass;
     s.P.nodes.push_back(node);
     const FragKey& f0 = frags[size_t(members[size_t(c)].front())];
-    const FragInfo& fi0 = frag_chunk_if(f0.chunk)->frags[size_t(f0.idx)];
-    s.ident.push_back(frag_ident(f0.chunk, fi0.first));
+    const FragInfo& fi0 = frag_chunk_if(f0)->frags[size_t(f0.idx)];
+    s.ident.push_back(frag_ident_of(f0, fi0.first));
     const IVec3 cc = unkey3(f0.chunk);
     const IVec3 l = local_of(fi0.first);
-    s.vox0.push_back({cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]});
+    s.vox0.push_back(GVox{{cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]}, f0.grid});
     s.weight.push_back(mass * cfg_.rigid.gravity);
     s.nmat.push_back(mat);
     s.nstrength.push_back(strength);
@@ -547,6 +646,9 @@ void World::append_nodes(Structure& s, const std::vector<FragKey>& frags, const 
     s.peak_mag.push_back(0.0);
   }
   // bonds
+  const i32 S = std::clamp(cfg_.junction_samples, 1, 7);
+  auto xf = [this](u16 g) -> const LatticeXf& { return xf_of(g); };
+  auto at = [this](u16 g, const IVec3& p) { return voxel_at(GVox{p, g}); };
   const std::vector<SecAcc> merged = merge_accs(fine, [&](i32 e) { return e >= kExisting ? e - kExisting : n0 + fnode[size_t(e)]; });
   for (const SecAcc& A0 : merged) {
     SecAcc A = A0;
@@ -556,6 +658,7 @@ void World::append_nodes(Structure& s, const std::vector<FragKey>& frags, const 
     if (A.b >= 0 && s.ident[size_t(A.a)] > s.ident[size_t(A.b)]) {
       std::swap(A.a, A.b);
       for (i8& g : A.fsg) g = static_cast<i8>(-g);
+      for (i8& g : A.jsg) g = static_cast<i8>(-g);
     }
     const i32 ia = A.a, ib = A.b;
     if (ib >= 0) {
@@ -565,8 +668,11 @@ void World::append_nodes(Structure& s, const std::vector<FragKey>& frags, const 
       A.strength_b = 1e9;  // (the anchored side never governs)
     }
     const V3* cb = ib >= 0 ? &s.P.nodes[size_t(ib)].c : nullptr;
-    SBond B = A.finish(h, s.P.nodes[size_t(ia)].c, cb, s.nmat[size_t(ia)], s.nstrength[size_t(ia)]);
-    section_strengths(A.faces.data(), A.fax.data(), A.faces.size(), [&](const IVec3& p) { return voxel_at(p); }, B);
+    SBond B = A.finish(h, xf, S, s.P.nodes[size_t(ia)].c, cb, s.nmat[size_t(ia)], s.nstrength[size_t(ia)]);
+    if (A.js.empty())
+      section_strengths(A.faces.data(), A.fax.data(), A.faces.size(), [&](const IVec3& p) { return voxel_at(GVox{p, A.grid}); }, B);
+    else
+      section_strengths_general(A.grid, A.faces.data(), A.fax.data(), A.faces.size(), A.js.data(), A.js.size(), at, B, S);
     B.tag = static_cast<i32>(s.P.bonds.size());
     s.P.bonds.push_back(B);
     for (size_t k = 0; k < A.faces.size(); ++k) {
@@ -574,6 +680,9 @@ void World::append_nodes(Structure& s, const std::vector<FragKey>& frags, const 
       s.face_axis.push_back(A.fax[k]);
     }
     s.face_start.push_back(static_cast<i32>(s.face_p.size()));
+    s.bgrid.push_back(A.grid);
+    s.jref.insert(s.jref.end(), A.js.begin(), A.js.end());
+    s.jstart.push_back(static_cast<i32>(s.jref.size()));
     s.bid.push_back(bond_ident(s.ident[size_t(ia)], ib >= 0 ? s.ident[size_t(ib)] : 0, ib >= 0 ? 0 : A.axis, ib >= 0 ? 1 : A.sign));
     s.phi.push_back(0.0f);
   }
@@ -583,9 +692,10 @@ void World::drop_structure(i64 id) {
   Structure* s = structure(id);
   if (!s) return;
   for (const FragKey& f : s->frags) {
-    if (f.idx < 0) continue;
-    auto it = owner_.find(f.chunk);
-    if (it == owner_.end() || f.idx >= static_cast<i32>(it->second.size())) continue;
+    if (f.idx < 0 || !live(f.grid)) continue;
+    auto& owner = gs(f.grid).owner;
+    auto it = owner.find(f.chunk);
+    if (it == owner.end() || f.idx >= static_cast<i32>(it->second.size())) continue;
     if (it->second[size_t(f.idx)] == id) it->second[size_t(f.idx)] = 0;
   }
   s->dead = true;
@@ -623,7 +733,7 @@ void World::refresh_structures() {
             continue;
           }
           for (const FragKey& f : s->frags)
-            if (f.idx >= 0) undesigned_.erase(f.chunk);
+            if (f.idx >= 0) gs(f.grid).undesigned.erase(f.chunk);
         }
         if (prof)
           std::printf("  [prof] patch s%lld: %zu changed chunks, %zu nodes (%d gone): %.1f ms\n", static_cast<long long>(id), nch,
@@ -635,9 +745,10 @@ void World::refresh_structures() {
       drop_structure(id);
     }
     if (seeds_.empty()) break;
-    std::vector<IVec3> seeds;
+    std::vector<GVox> seeds;
     seeds.swap(seeds_);
-    for (const IVec3& p : seeds) {
+    for (const GVox& p : seeds) {
+      if (!live(p.grid)) continue;
       FragKey f;
       if (!frag_at(p, &f)) continue;
       // owned: its structure is current (stale ones were patched above) or was extracted just now
@@ -647,7 +758,7 @@ void World::refresh_structures() {
       Structure* xs = extract(f);
       if (prof && xs)
         std::printf("  [prof] extract s%lld from (%d %d %d) (owner was %lld, round %d): %zu nodes %zu bonds %.1f ms\n",
-                    static_cast<long long>(xs->id), p[0], p[1], p[2], static_cast<long long>(prev_owner), round, xs->P.nodes.size(),
+                    static_cast<long long>(xs->id), p.p[0], p.p[1], p.p[2], static_cast<long long>(prev_owner), round, xs->P.nodes.size(),
                     xs->P.bonds.size(), ms_since(tx));
     }
     bool any_stale = false;
@@ -707,6 +818,7 @@ void World::step_structures() {
     if (!s.P.assembled()) {
       StressOptions so;
       so.rtol = cfg_.stress_rtol;
+      if (s.multigrid) so.amg_min_nodes = 0;
       if (!s.P.assemble(so)) {
         s.solving = false;
         continue;
@@ -739,13 +851,25 @@ void World::step_structures() {
       continue;
     }
     if (!r.converged && s.run_iters + r.iters > 120) {
-      // a stale preconditioner (after many breaks): rebuild it, and restart from here
+      // a stale preconditioner (after many breaks): rebuild it, and restart from here. A small
+      // structure's block-Jacobi one that did not converge meets a near-mechanism (a frame left
+      // hanging by one face, a member held by a sliver of junction): its multigrid from now on
+      // (rigid-body coarse spaces, the coarsest level solved exactly). What converges in neither
+      // is no longer solved - never judged, it would take its iterations every tick for good.
       s.P.current(s.u);
       s.P.invalidate();
       s.run_iters = 0;
+      s.multigrid = true;
+      if (++s.restarts >= cfg_.solve_restarts) {
+        s.P.stop();
+        s.solving = false;
+        s.restarts = 0;
+        ++st_.solves_abandoned;
+      }
       continue;
     }
     if (r.converged) {
+      s.restarts = 0;
       s.P.current(s.u);
       s.P.stop();
       ++st_.solves;
@@ -773,8 +897,9 @@ void World::step_structures() {
 }
 
 u64 World::node_chunk(const Structure& s, i32 node) const {
-  const IVec3 cc = chunk_of(s.vox0[size_t(node)]);
-  return key3(cc[0], cc[1], cc[2]);
+  const GVox& v = s.vox0[size_t(node)];
+  const IVec3 cc = chunk_of(v.p);
+  return residency_key(v.grid, key3(cc[0], cc[1], cc[2]));
 }
 
 void World::prune_caches() {
@@ -783,9 +908,9 @@ void World::prune_caches() {
   // resident go; beyond the budget, only the registered structures' are kept.
   if (source_) {
     for (auto it = judged_.begin(); it != judged_.end();)
-      it = generated_.count(it->second.chunk) ? std::next(it) : judged_.erase(it);
+      it = resident_key(it->second.chunk) ? std::next(it) : judged_.erase(it);
     for (auto it = warm_u_.begin(); it != warm_u_.end();)
-      it = generated_.count(it->second.chunk) ? std::next(it) : warm_u_.erase(it);
+      it = resident_key(it->second.chunk) ? std::next(it) : warm_u_.erase(it);
   }
   const i64 budget = static_cast<i64>(cfg_.memory.cache_mb * 1048576.0);
   if (hash_bytes(judged_) + hash_bytes(warm_u_) <= budget) return;
@@ -849,7 +974,7 @@ void World::judge(Structure& s) {
   s.reload = false;
   if (par_.debug_fields)
     for (const FragKey& f : s.frags)
-      if (f.idx >= 0) grid_.mark_dirty(unkey3(f.chunk));
+      if (f.idx >= 0) vg(f.grid).mark_dirty(unkey3(f.chunk));
   if (over.empty() || s.rounds >= cfg_.max_rounds) {
     s.solving = more;  // (a waiting load case, or the steady state after an impact: solve again)
     s.shock = false;
@@ -871,6 +996,16 @@ void World::judge(Structure& s) {
     }
     std::printf("  [judge t%lld s%lld] round %d: %zu over 1 (of %d), max %.2f, thr %.2f, shock %d\n", static_cast<long long>(st_.ticks),
                 static_cast<long long>(s.id), s.rounds, over.size(), nb, over.front().first, thr, s.shock ? 1 : 0);
+    if (diag("SVX_DEBUG_JUDGE_ALL"))
+      for (i32 b = 0; b < nb; ++b) {
+        const SBond& B = s.P.bonds[size_t(b)];
+        if (B.broken) continue;
+        const BondLoad L = s.P.bond_load(b, s.u);
+        if (std::abs(L.N) + std::hypot(L.V1, L.V2) < 1.5e6) continue;
+        std::printf("      [big] b%d at (%.2f %.2f %.2f) n (%.2f %.2f %.2f) faces %d area %.4f sup %d junction %d (%d samples) la %.3f lb %.3f N %.0f V %.0f %.0f M %.0f %.0f\n", b,
+                    B.p.x, B.p.y, B.p.z, B.n.x, B.n.y, B.n.z, B.faces, B.area, B.b < 0 ? 1 : 0, s.jstart[size_t(b) + 1] > s.jstart[size_t(b)] ? 1 : 0,
+                    s.jstart[size_t(b) + 1] - s.jstart[size_t(b)], B.la, B.lb, L.N, L.V1, L.V2, L.M1, L.M2);
+      }
     for (size_t k = 0; k < std::min<size_t>(4, over.size()); ++k) {
       const SBond& B = s.P.bonds[size_t(over[k].second)];
       const BondLoad L = s.P.bond_load(over[k].second, s.u);
@@ -891,7 +1026,7 @@ void World::judge(Structure& s) {
     if ((phi < thr && k >= quota) || count >= cfg_.max_breaks_per_round) break;
     s.P.remove_bond(b);
     const SBond& B = s.P.bonds[size_t(b)];
-    for (i32 k = s.face_start[size_t(b)]; k < s.face_start[size_t(b) + 1]; ++k) grid_.break_bond(s.face_p[size_t(k)], s.face_axis[size_t(k)]);
+    break_structure_bond(s, b);
     ++count;
     ++st_.bonds_broken;
     crack_event(B.p, B.n, phi);
@@ -899,6 +1034,16 @@ void World::judge(Structure& s) {
   s.shock = true;
   ++s.rounds;
   detach_unsupported(s);
+}
+
+void World::break_structure_bond(Structure& s, i32 b) {
+  VoxelGrid& G = vg(s.bgrid[size_t(b)]);
+  for (i32 k = s.face_start[size_t(b)]; k < s.face_start[size_t(b) + 1]; ++k) G.break_bond(s.face_p[size_t(k)], s.face_axis[size_t(k)]);
+  // (a junction breaks sample by sample, each at the voxel whose face it samples)
+  for (i32 k = s.jstart[size_t(b)]; k < s.jstart[size_t(b) + 1]; ++k) {
+    const JSample& j = s.jref[size_t(k)];
+    if (live(j.vg)) vg(j.vg).break_junction(j.v, j.face, j.sub);
+  }
 }
 
 void World::crack_event(const V3& p, const V3& n, f64 phi) {
@@ -959,10 +1104,10 @@ void World::retire_structure_nodes(Structure& s, const std::vector<i32>& list) {
     for (i32 k = s.fstart[size_t(i)]; k < s.fstart[size_t(i) + 1]; ++k) {
       const FragKey f = s.frags[size_t(k)];
       if (f.idx < 0) continue;
-      auto it = s.nodemap.find(f.chunk);
+      auto it = s.nodemap.find(GKey{f.grid, f.chunk});
       if (it != s.nodemap.end() && f.idx < static_cast<i32>(it->second.size()) && it->second[size_t(f.idx)] == i)
         it->second[size_t(f.idx)] = -1;
-      if (owner_of(f) == s.id) owner_[f.chunk][size_t(f.idx)] = 0;
+      if (owner_of(f) == s.id) gs(f.grid).owner[f.chunk][size_t(f.idx)] = 0;
       s.frags[size_t(k)] = FragKey{};
     }
     for (int q = 0; q < 6; ++q) {
@@ -995,38 +1140,40 @@ void World::reseed(const Structure& s) {
   // fragments (where the fragment cache is current): a fragment that cracks cut off inside a
   // cluster is then extracted on its own (and falls) instead of floating, unowned.
   for (size_t i = 0; i < s.vox0.size(); ++i)
-    if (!s.P.nodes[i].gone) seeds_.push_back(s.vox0[i]);
+    if (!s.P.nodes[i].gone && live(s.vox0[i].grid)) seeds_.push_back(s.vox0[i]);
   for (const FragKey& f : s.frags) {
-    if (f.idx < 0) continue;
-    FragChunk* fc = frag_chunk_if(f.chunk);
+    if (f.idx < 0 || !live(f.grid)) continue;
+    FragChunk* fc = frag_chunk_if(f);
     const IVec3 cc = unkey3(f.chunk);
-    const Chunk* ch = grid_.chunk(cc);
+    const Chunk* ch = vg(f.grid).chunk(cc);
     if (!fc || !ch || fc->vox_version != ch->vox_version || f.idx >= static_cast<i32>(fc->frags.size())) continue;
     for (i32 k = fc->vox_start[size_t(f.idx)]; k < fc->vox_start[size_t(f.idx) + 1]; ++k) {
       const i32 li = fc->vox[size_t(k)];
       if (fc->id[size_t(li)] != static_cast<u16>(f.idx + 1)) continue;
       const IVec3 l = local_of(li);
-      seeds_.push_back({cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]});
+      seeds_.push_back(GVox{{cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]}, f.grid});
       break;
     }
   }
 }
 
 bool World::patch_structure(Structure& s) {
-  std::vector<u64> changed = s.changed;
+  std::vector<GKey> changed = s.changed;
   std::sort(changed.begin(), changed.end());
   s.changed.clear();
   s.stale = false;
-  auto is_changed = [&](u64 k) { return std::binary_search(changed.begin(), changed.end(), k); };
+  auto is_changed = [&](const GKey& k) { return std::binary_search(changed.begin(), changed.end(), k); };
+  for (const GKey& k : changed)
+    if (!live(k.grid)) return false;  // (a grid gone: extract again)
   // 1. nodes in re-fragmented chunks retire (clusters are chunk-local; the chunks' fragment
   // numbering and ownership were reset when they were rebuilt)
-  for (u64 k : changed) s.nodemap.erase(k);
+  for (const GKey& k : changed) s.nodemap.erase(k);
   std::vector<i32> retire;
   for (i32 i = 0; i < static_cast<i32>(s.P.nodes.size()); ++i) {
     if (s.P.nodes[size_t(i)].gone) continue;
     bool hit = false;
     for (i32 k = s.fstart[size_t(i)]; k < s.fstart[size_t(i) + 1] && !hit; ++k)
-      hit = s.frags[size_t(k)].idx >= 0 && is_changed(s.frags[size_t(k)].chunk);
+      hit = s.frags[size_t(k)].idx >= 0 && is_changed(GKey{s.frags[size_t(k)].grid, s.frags[size_t(k)].chunk});
     if (hit) retire.push_back(i);
   }
   s.P.retire_nodes(retire);
@@ -1034,13 +1181,13 @@ bool World::patch_structure(Structure& s) {
     for (i32 k = s.fstart[size_t(i)]; k < s.fstart[size_t(i) + 1]; ++k) {
       FragKey& f = s.frags[size_t(k)];
       if (f.idx < 0) continue;
-      if (!is_changed(f.chunk)) {
+      if (!is_changed(GKey{f.grid, f.chunk})) {
         // (a cluster reaching out of the chunk: its other fragments are released as well)
-        auto it = s.nodemap.find(f.chunk);
+        auto it = s.nodemap.find(GKey{f.grid, f.chunk});
         if (it != s.nodemap.end() && f.idx < static_cast<i32>(it->second.size())) it->second[size_t(f.idx)] = -1;
       }
       // (a chunk re-fragmented reset its owners; one whose supports changed kept them)
-      if (owner_of(f) == s.id) owner_[f.chunk][size_t(f.idx)] = 0;
+      if (owner_of(f) == s.id) gs(f.grid).owner[f.chunk][size_t(f.idx)] = 0;
       f = FragKey{};
     }
     for (int q = 0; q < 6; ++q) {
@@ -1059,73 +1206,97 @@ bool World::patch_structure(Structure& s) {
   if (n0 - s.gone <= 0 || s.gone > std::max<i32>(64, (n0 - s.gone) / 2)) return false;  // (mostly changed: extract again)
   // 2. the fragments of those chunks that touch the structure, and what they reach there
   std::vector<FragKey> members;
-  std::unordered_map<u64, std::vector<i32>> member_of;  // chunk -> member index per fragment (-1)
-  for (u64 k : changed) {
-    FragChunk& fc = frag_chunk(unkey3(k));
+  std::unordered_map<GKey, std::vector<i32>, GKeyHash> member_of;  // chunk -> member index per fragment (-1)
+  for (const GKey& k : changed) {
+    FragChunk& fc = frag_chunk(k.grid, unkey3(k.chunk));
     member_of[k].assign(fc.frags.size(), -1);
   }
+  JunctionScratch js;
   // fragments released above (outside the changed chunks) are candidates too
   auto touches = [&](const FragKey& F) {
     std::vector<IVec3> vox;
     voxels_of(F, vox);
+    const VoxelGrid& G = vg(F.grid);
     for (const IVec3& p : vox)
       for (int a = 0; a < 3; ++a)
         for (int sg = -1; sg <= 1; sg += 2) {
           IVec3 q = p;
           q[a] += sg;
-          if (!vox_free(grid_.get(q))) continue;
-          if (sg > 0 ? grid_.broken(p, a) : grid_.broken(q, a)) continue;
-          FragKey G;
-          if (!frag_at(q, &G)) continue;
-          if (s.node(G) >= 0 && !s.P.nodes[size_t(s.node(G))].gone) return true;
+          if (!vox_free(G.get(q))) continue;
+          if (sg > 0 ? G.broken(p, a) : G.broken(q, a)) continue;
+          FragKey Gk;
+          if (!frag_at(GVox{q, F.grid}, &Gk)) continue;
+          if (s.node(Gk) >= 0 && !s.P.nodes[size_t(s.node(Gk))].gone) return true;
         }
-    return false;
+    bool hit = false;
+    each_junction(js, F, [&](const JSample& j, bool fwd) {
+      if (hit || (fwd && j.kind == kJunctionUnknown)) return;
+      FragKey Gk;
+      if (!frag_at(fwd ? GVox{j.o, j.og} : GVox{j.v, j.vg}, &Gk)) return;
+      const i32 nd = s.node(Gk);
+      hit = nd >= 0 && !s.P.nodes[size_t(nd)].gone;
+    });
+    return hit;
   };
   auto member_slot = [&](const FragKey& G) -> i32* {
-    auto it = member_of.find(G.chunk);
+    auto it = member_of.find(GKey{G.grid, G.chunk});
     if (it == member_of.end()) return nullptr;
     if (G.idx >= static_cast<i32>(it->second.size())) it->second.resize(size_t(G.idx) + 1, -1);
     return &it->second[size_t(G.idx)];
   };
   std::vector<FragKey> stack;
-  for (u64 k : changed) {
-    FragChunk* fc = frag_chunk_if(k);
+  for (const GKey& k : changed) {
+    FragChunk* fc = frag_chunk_if(k.grid, k.chunk);
     if (!fc) continue;  // (an empty or evicted chunk)
     for (i32 f = 0; f < static_cast<i32>(fc->frags.size()); ++f) {
-      if (fc->frags[size_t(f)].count <= 0 || owner_of({k, f})) continue;
-      if (member_of[k][size_t(f)] >= 0 || !touches({k, f})) continue;
+      const FragKey F0{k.chunk, f, k.grid};
+      if (fc->frags[size_t(f)].count <= 0 || owner_of(F0)) continue;
+      if (member_of[k][size_t(f)] >= 0 || !touches(F0)) continue;
       member_of[k][size_t(f)] = static_cast<i32>(members.size());
-      members.push_back({k, f});
-      stack.push_back({k, f});
+      members.push_back(F0);
+      stack.push_back(F0);
       while (!stack.empty()) {  // flood through the changed chunks
         const FragKey F = stack.back();
         stack.pop_back();
         std::vector<IVec3> vox;
         voxels_of(F, vox);
+        const VoxelGrid& G = vg(F.grid);
         for (const IVec3& p : vox)
           for (int a = 0; a < 3; ++a)
             for (int sg = -1; sg <= 1; sg += 2) {
               IVec3 q = p;
               q[a] += sg;
               const IVec3 qc = chunk_of(q);
-              if (!is_changed(key3(qc[0], qc[1], qc[2])) || !vox_free(grid_.get(q))) continue;
-              if (sg > 0 ? grid_.broken(p, a) : grid_.broken(q, a)) continue;
-              FragKey G;
-              if (!frag_at(q, &G) || (G.chunk == F.chunk && G.idx == F.idx) || owner_of(G)) continue;
-              i32* slot = member_slot(G);
+              if (!is_changed(GKey{F.grid, key3(qc[0], qc[1], qc[2])}) || !vox_free(G.get(q))) continue;
+              if (sg > 0 ? G.broken(p, a) : G.broken(q, a)) continue;
+              FragKey Gk;
+              if (!frag_at(GVox{q, F.grid}, &Gk) || (Gk.chunk == F.chunk && Gk.idx == F.idx) || owner_of(Gk)) continue;
+              i32* slot = member_slot(Gk);
               if (!slot || *slot >= 0) continue;
               *slot = static_cast<i32>(members.size());
-              members.push_back(G);
-              stack.push_back(G);
+              members.push_back(Gk);
+              stack.push_back(Gk);
             }
+        each_junction(js, F, [&](const JSample& j, bool fwd) {
+          if (fwd && j.kind == kJunctionUnknown) return;
+          FragKey Gk;
+          if (!frag_at(fwd ? GVox{j.o, j.og} : GVox{j.v, j.vg}, &Gk) || owner_of(Gk)) return;
+          if (!is_changed(GKey{Gk.grid, Gk.chunk})) return;
+          i32* slot = member_slot(Gk);
+          if (!slot || *slot >= 0) return;
+          *slot = static_cast<i32>(members.size());
+          members.push_back(Gk);
+          stack.push_back(Gk);
+        });
       }
     }
   }
   // 3. their bonds: to each other through + faces (counted once), to the structure's other
-  // nodes through faces of either side, to supports
+  // nodes through faces of either side, to supports; and their junctions (a member's own
+  // samples with its walk; both sides' where the other side is not walked)
   std::vector<SecAcc> fine;
   std::unordered_map<u64, i32> index;
-  auto acc_for = [&](i32 a, i32 b, int axis, int sign) -> SecAcc& {
+  auto acc_for = [&](i32 a, i32 b, int axis, int sign, u16 grid) -> SecAcc& {
     const u64 k = acc_key(a, b, axis, sign);
     auto it = index.find(k);
     if (it != index.end()) return fine[size_t(it->second)];
@@ -1134,13 +1305,15 @@ bool World::patch_structure(Structure& s) {
     SecAcc& A = fine.back();
     A.a = b >= 0 ? std::min(a, b) : a;
     A.b = b >= 0 ? std::max(a, b) : b;
-    A.axis = static_cast<u8>(axis);
+    A.axis = static_cast<u32>(axis);
     A.sign = static_cast<i8>(sign);
+    A.grid = grid;
     return A;
   };
   for (size_t mi = 0; mi < members.size(); ++mi) {
     const FragKey F = members[mi];
     const i32 eF = static_cast<i32>(mi);
+    const VoxelGrid& G = vg(F.grid);
     std::vector<IVec3> vox;
     voxels_of(F, vox);
     for (const IVec3& p : vox)
@@ -1148,39 +1321,71 @@ bool World::patch_structure(Structure& s) {
         for (int sg = -1; sg <= 1; sg += 2) {
           IVec3 q = p;
           q[a] += sg;
-          const Vox vq = grid_.get(q);
-          const bool unloaded = !chunk_resident(chunk_of(q));  // (holds it, as in extract)
+          const Vox vq = G.get(q);
+          const bool unloaded = F.grid == 0 && !chunk_resident(chunk_of(q));  // (holds it, as in extract)
           if (!unloaded) {
             if (!vox_solid(vq)) continue;
-            if (sg > 0 ? grid_.broken(p, a) : grid_.broken(q, a)) continue;
+            if (sg > 0 ? G.broken(p, a) : G.broken(q, a)) continue;
           }
           const IVec3 lower = sg > 0 ? p : q;
           if (vox_anchored(vq) || unloaded) {
-            SecAcc& A = acc_for(eF, -1, a, sg);
-            A.mb = unloaded ? vox_mat(grid_.get(p)) : vox_mat(vq);
+            SecAcc& A = acc_for(eF, -1, a, sg, F.grid);
+            A.mb = unloaded ? vox_mat(G.get(p)) : vox_mat(vq);
             A.add(lower, a);
             continue;
           }
-          FragKey G;
-          if (!frag_at(q, &G) || (G.chunk == F.chunk && G.idx == F.idx)) continue;
+          FragKey Gk;
+          if (!frag_at(GVox{q, F.grid}, &Gk) || (Gk.chunk == F.chunk && Gk.idx == F.idx)) continue;
           i32 eG = -1;
-          if (i32* slot = member_slot(G); slot && *slot >= 0) {
+          if (i32* slot = member_slot(Gk); slot && *slot >= 0) {
             if (sg < 0) continue;  // (a member: counted from its + face)
             eG = *slot;
           } else {
-            const i32 nd = s.node(G);
+            const i32 nd = s.node(Gk);
             if (nd >= 0 && !s.P.nodes[size_t(nd)].gone) eG = kExisting + nd;
           }
           if (eG < 0) {
             // a fragment of no structure here (another one's, a frontier): held fixed
-            SecAcc& A = acc_for(eF, -1, a, sg);
+            SecAcc& A = acc_for(eF, -1, a, sg, F.grid);
             A.mb = vox_mat(vq);
             A.add(lower, a);
             continue;
           }
           const i32 low = sg > 0 ? eF : eG;
-          acc_for(eF, eG, a, 1).add(lower, a, low == std::min(eF, eG) ? 1 : -1);
+          acc_for(eF, eG, a, 1, F.grid).add(lower, a, low == std::min(eF, eG) ? 1 : -1);
         }
+    each_junction(js, F, [&](const JSample& j, bool fwd) {
+      if (fwd && j.kind == kJunctionUnknown) {
+        SecAcc& A = acc_for(eF, -1, 3 + j.face, 1, F.grid);
+        A.mb = vox_mat(G.get(j.v));
+        A.add_sample(j, 1, 1.0f);
+        return;
+      }
+      const GVox other = fwd ? GVox{j.o, j.og} : GVox{j.v, j.vg};
+      const Vox vo = vg(other.grid).get(other.p);
+      if (!vox_solid(vo)) return;
+      i32 eG = -1;
+      bool walked = false;
+      FragKey Gk;
+      if (vox_free(vo) && frag_at(other, &Gk)) {
+        if (i32* slot = member_slot(Gk); slot && *slot >= 0) {
+          eG = *slot;
+          walked = true;
+        } else {
+          const i32 nd = s.node(Gk);
+          if (nd >= 0 && !s.P.nodes[size_t(nd)].gone) eG = kExisting + nd;
+        }
+      }
+      if (eG < 0) {
+        // (a support, or a fragment held fixed)
+        SecAcc& A = acc_for(eF, -1, 3 + 6 * other.grid + junction_side(F.grid, j, fwd), 1, F.grid);
+        A.mb = vox_mat(vo);
+        A.add_sample(j, fwd ? 1 : -1, junction_weight(j));
+        return;
+      }
+      if (walked && !fwd) return;  // (a member's own samples come with its walk)
+      acc_for(eF, eG, 0, 1, F.grid).add_sample(j, (fwd ? 1 : -1) * (eF < eG ? 1 : -1), junction_weight(j));
+    });
   }
   append_nodes(s, members, fine, s.cell, nullptr);
   // 4. the new nodes start from their neighbours' motion; the solver keeps its preconditioner
@@ -1205,12 +1410,14 @@ void World::structure_loads(f64 dt_sub) {
     if (c.b >= 0) continue;
     const V3 F = c.impulse() * (-imp / dt_sub);  // on the world
     if (!finite3(F)) continue;  // (one such force would never decay out of the loads)
+    if (!live(c.grid)) continue;
+    const GVox wv{c.wvox, c.grid};
     FragKey f;
-    if (!frag_at(c.wvox, &f)) continue;
+    if (!frag_at(wv, &f)) continue;
     const i64 o = owner_of(f);
     Structure* s = o ? structure(o) : nullptr;
     if (!s) {
-      if (norm(F) > 4.0 * cfg_.load_trigger_abs) seeds_.push_back(c.wvox);
+      if (norm(F) > 4.0 * cfg_.load_trigger_abs) seeds_.push_back(wv);
       continue;
     }
     const i32 i = s->node(f);
@@ -1242,9 +1449,9 @@ void World::structure_loads(f64 dt_sub) {
       auto& dl = dead_loads_[b.id];
       dl.clear();
       for (const Contact& c : cs)
-        if (c.a == static_cast<i32>(bi) && c.b < 0 && finite3(c.impulse())) {
-          dl.push_back({c.wvox, c.p, c.impulse() * (-1.0 / dt_sub)});
-          seeds_.push_back(c.wvox);
+        if (c.a == static_cast<i32>(bi) && c.b < 0 && finite3(c.impulse()) && live(c.grid)) {
+          dl.push_back({GVox{c.wvox, c.grid}, c.p, c.impulse() * (-1.0 / dt_sub)});
+          seeds_.push_back(GVox{c.wvox, c.grid});
         }
     } else if (!b.asleep && b.was_asleep) {
       dead_loads_.erase(b.id);
@@ -1266,7 +1473,7 @@ void World::finish_loads(int substeps) {
   for (i64 id : sleepers)
     for (const DeadLoad& d : dead_loads_.at(id)) {
       FragKey f;
-      if (!frag_at(d.vox, &f)) continue;
+      if (!live(d.vox.grid) || !frag_at(d.vox, &f)) continue;
       Structure* s = structure(owner_of(f));
       if (!s) continue;
       const i32 i = s->node(f);
@@ -1328,9 +1535,11 @@ void World::finish_loads(int substeps) {
   }
 }
 
-f64 World::probe_utilization(const IVec3& voxel, i32* over) {
+f64 World::probe_utilization(GridId grid, const IVec3& voxel, i32* over) {
+  const i32 g = slot_of(grid);
+  if (g < 0 || !in_voxel_range(voxel)) return -1.0;
   FragKey f;
-  if (!frag_at(voxel, &f)) return -1.0;
+  if (!frag_at(GVox{voxel, static_cast<u16>(g)}, &f)) return -1.0;
   Structure* s = structure(owner_of(f));
   if (!s) s = extract(f);
   if (!s) return -1.0;
@@ -1355,8 +1564,11 @@ f64 World::probe_utilization(const IVec3& voxel, i32* over) {
     const SBond& B = s->P.bonds[size_t(worst)];
     FailMode mode;
     bond_utilization(B, s->P.bond_load(worst, s->u), par_.fragility, &mode);
+    const BondLoad L = s->P.bond_load(worst, s->u);
     std::printf("  [probe] worst bond at (%.2f %.2f %.2f) n (%.1f %.1f %.1f) mode %d faces %d support %d sectioned %d ft %.2g fb %.2g\n", B.p.x,
                 B.p.y, B.p.z, B.n.x, B.n.y, B.n.z, static_cast<int>(mode), B.faces, B.b < 0 ? 1 : 0, B.sectioned ? 1 : 0, B.ft, B.fb);
+    std::printf("          area %.4f s1 %.3g s2 %.3g c1 %.3f c2 %.3f la %.3f lb %.3f | N %.0f V %.0f %.0f T %.0f M %.0f %.0f | node a %.0f kg\n", B.area,
+                B.s1, B.s2, B.c1, B.c2, B.la, B.lb, L.N, L.V1, L.V2, L.T, L.M1, L.M2, s->P.nodes[size_t(B.a)].mass);
   }
   if (over) *over = cnt;
   return mx;
@@ -1389,7 +1601,15 @@ void World::blast(const V3& pos, f64 radius, f64 energy) {
   queue_.push_back(e);
 }
 
-i32 World::set_voxels(const std::vector<VoxelEdit>& in, u32 flags) {
+i32 World::set_voxels(const std::vector<VoxelEdit>& in, u32 flags) { return world_set_voxels(0, in, flags); }
+
+i32 World::set_voxels(GridId grid, const std::vector<VoxelEdit>& in, u32 flags) {
+  const i32 g = slot_of(grid);
+  if (g < 0) return 0;
+  return world_set_voxels(static_cast<u16>(g), in, flags);
+}
+
+i32 World::world_set_voxels(u16 g, const std::vector<VoxelEdit>& in, u32 flags) {
   // (voxels within the key range, valid values)
   std::vector<VoxelEdit> edits;
   edits.reserve(in.size());
@@ -1402,39 +1622,51 @@ i32 World::set_voxels(const std::vector<VoxelEdit>& in, u32 flags) {
       lo[a] = std::min(lo[a], e.p[a]);
       hi[a] = std::max(hi[a], e.p[a]);
     }
-  if (source_) ensure_chunks({lo[0] - 1, lo[1] - 1, lo[2] - 1}, {hi[0] + 2, hi[1] + 2, hi[2] + 2});
-  const bool tracked = grid_.tracking();
-  if (flags & kEditUntracked) grid_.track_changes(false);
-  std::vector<IVec3> changed, unbonded;
-  std::vector<u64> supports;
+  if (source_ && g == 0) ensure_chunks({lo[0] - 1, lo[1] - 1, lo[2] - 1}, {hi[0] + 2, hi[1] + 2, hi[2] + 2});
+  VoxelGrid& G = vg(g);
+  const bool tracked = G.tracking();
+  if (flags & kEditUntracked) G.track_changes(false);
+  std::vector<GVox> changed, unbonded;
+  std::vector<GKey> supports;
+  const size_t chunks_before = G.chunks().size();
   for (const VoxelEdit& e : edits) {
-    const Vox cur = grid_.get(e.p);
+    const Vox cur = G.get(e.p);
     if (cur == e.v && !(flags & kEditIsolated)) continue;
+    const GVox gv{e.p, g};
     if (cur != e.v) {
-      if (vox_anchored(cur)) support_changed(e.p, &supports);  // (a support of a structure goes)
-      grid_.set(e.p, e.v);
-      changed.push_back(e.p);
+      if (vox_anchored(cur)) support_changed(gv, &supports);  // (a support of a structure goes)
+      G.set(e.p, e.v);
+      changed.push_back(gv);
       // what the old voxel held may lose its support (an isolated voxel held nothing)
-      if (vox_solid(cur) && (!(flags & kEditIsolated) || vox_free(cur))) unbonded.push_back(e.p);
-      if (vox_free(e.v)) seeds_.push_back(e.p);  // a new free voxel joins or makes a structure
+      if (vox_solid(cur) && (!(flags & kEditIsolated) || vox_free(cur))) unbonded.push_back(gv);
+      if (vox_free(e.v)) seeds_.push_back(gv);  // a new free voxel joins or makes a structure
     }
     if ((flags & kEditIsolated) && vox_solid(e.v))
-      for (int a = 0; a < 3; ++a) {
-        grid_.break_bond(e.p, a);
-        IVec3 q = e.p;
-        q[a] -= 1;
-        grid_.break_bond(q, a);
-      }
+      tear_voxel(gv);
     else if (cur != e.v && vox_anchored(e.v))
-      support_changed(e.p, &supports);  // (a new support)
+      support_changed(gv, &supports);  // (a new support)
   }
-  grid_.track_changes(tracked);
-  for (u64 k : supports) mark_owners_stale(k);
+  G.track_changes(tracked);
+  for (const GKey& k : supports) mark_owners_stale(k.grid, k.chunk);
   if (changed.empty()) return 0;
+  if (g != 0 && G.chunks().size() != chunks_before) refresh_grid_box(g);
   seed_near(unbonded);
   const f64 h = grid_.h;
   const V3 m{2 * h, 2 * h, 2 * h};
-  rigid_.wake_box(V3{h * lo[0], h * lo[1], h * lo[2]} - m, V3{h * hi[0], h * hi[1], h * hi[2]} + m);
+  if (g == 0) {
+    rigid_.wake_box(V3{h * lo[0], h * lo[1], h * lo[2]} - m, V3{h * hi[0], h * hi[1], h * hi[2]} + m);
+  } else {
+    // (the edits' box in the world)
+    V3 wlo{INFINITY, INFINITY, INFINITY}, whi{-INFINITY, -INFINITY, -INFINITY};
+    for (int c = 0; c < 8; ++c) {
+      const V3 w = xf_of(g).to(V3{h * ((c & 1) ? hi[0] : lo[0]), h * ((c & 2) ? hi[1] : lo[1]), h * ((c & 4) ? hi[2] : lo[2])});
+      for (int a = 0; a < 3; ++a) {
+        wlo[a] = std::min(wlo[a], w[a]);
+        whi[a] = std::max(whi[a], w[a]);
+      }
+    }
+    rigid_.wake_box(wlo - m, whi + m);
+  }
   return static_cast<i32>(changed.size());
 }
 
@@ -1453,59 +1685,118 @@ bool World::remove_piece(i64 id) {
   return true;
 }
 
-void World::support_changed(const IVec3& p, std::vector<u64>* chunks) {
-  // the structures holding a free neighbour bonded to p: their supports change (the fragments
+void World::support_changed(const GVox& v, std::vector<GKey>* chunks) {
+  // the structures holding a free neighbour bonded to v: their supports change (the fragments
   // of free voxels stay as they are, so nothing else would tell them)
+  const VoxelGrid& G = vg(v.grid);
+  auto note = [&](u16 g, const IVec3& q) {
+    const IVec3 cc = chunk_of(q);
+    const GKey k{g, key3(cc[0], cc[1], cc[2])};
+    if (std::find(chunks->begin(), chunks->end(), k) == chunks->end()) chunks->push_back(k);
+  };
   for (int a = 0; a < 3; ++a)
     for (int sg = -1; sg <= 1; sg += 2) {
-      IVec3 q = p;
+      IVec3 q = v.p;
       q[a] += sg;
-      if (!vox_free(grid_.get(q))) continue;
-      if (!(sg > 0 ? grid_.bond(p, a) : grid_.bond(q, a))) continue;
-      const IVec3 cc = chunk_of(q);
-      const u64 k = key3(cc[0], cc[1], cc[2]);
-      if (std::find(chunks->begin(), chunks->end(), k) == chunks->end()) chunks->push_back(k);
+      if (!vox_free(G.get(q))) continue;
+      if (!(sg > 0 ? G.bond(v.p, a) : G.bond(q, a))) continue;
+      note(v.grid, q);
     }
+  // (and those of other grids it may hold through junctions: the chunks around it there)
+  if (oriented_ > 0) {
+    const V3 X = voxel_centre(v);
+    const f64 r = (1.0 + std::clamp(cfg_.junction_reach, 0.0, 2.0)) * grid_.h;
+    const IVec3 cc = chunk_of(v.p);
+    for (u16 o : near_grids(v.grid, key3(cc[0], cc[1], cc[2]))) {
+      const V3 L = o == 0 ? X : xf_of(o).from(X);
+      for (int c = 0; c < 8; ++c) {
+        const V3 d{(c & 1) ? r : -r, (c & 2) ? r : -r, (c & 4) ? r : -r};
+        note(o, voxel_of(L + d, grid_.h));
+      }
+    }
+  }
 }
 
-void World::carve_world(const V3& c, f64 r, std::vector<IVec3>* removed) {
+void World::carve_world(const V3& c, f64 r, std::vector<GVox>* removed) {
   const f64 h = grid_.h;
   const i32 R = static_cast<i32>(std::ceil(r / h)) + 1;
-  const IVec3 cv = voxel_of(c, h);
-  std::vector<u64> supports;
-  for (i32 x = cv[0] - R; x <= cv[0] + R; ++x)
-    for (i32 y = cv[1] - R; y <= cv[1] + R; ++y)
-      for (i32 z = cv[2] - R; z <= cv[2] + R; ++z) {
-        const V3 p{h * x, h * y, h * z};
-        // a slightly jagged crater edge (deterministic per voxel)
-        const f64 jag = 1.0 + 0.18 * (unit01(mix64(key3(x, y, z))) - 0.5);
-        if (norm(p - c) > r * jag) continue;
-        const IVec3 q{x, y, z};
-        const Vox v = grid_.get(q);
-        if (!vox_solid(v)) continue;
-        const Material& M = material(vox_mat(v));
-        if (M.indestructible || M.ductile) continue;  // (bullets and craters bend steel and bars; they do not remove it)
-        if (vox_anchored(v)) support_changed(q, &supports);
-        grid_.set(q, kAir);
-        removed->push_back(q);
-      }
-  for (u64 k : supports) mark_owners_stale(k);
+  std::vector<GKey> supports;
+  // every grid the sphere reaches: the world grid, and the oriented ones it overlaps
+  for (size_t gi = 0; gi < grids_.size(); ++gi) {
+    if (!grids_[gi]) continue;
+    const u16 g = static_cast<u16>(gi);
+    if (g != 0) {
+      const GridState& st = gs(g);
+      if (!st.any || c.x + r < st.lo.x || c.x - r > st.hi.x || c.y + r < st.lo.y || c.y - r > st.hi.y || c.z + r < st.lo.z ||
+          c.z - r > st.hi.z)
+        continue;
+    }
+    VoxelGrid& G = vg(g);
+    const V3 cl = g == 0 ? c : xf_of(g).from(c);  // (the centre in the grid)
+    const IVec3 cv = voxel_of(cl, h);
+    const u64 salt = g == 0 ? 0 : mix64(static_cast<u64>(id_of(g)));
+    for (i32 x = cv[0] - R; x <= cv[0] + R; ++x)
+      for (i32 y = cv[1] - R; y <= cv[1] + R; ++y)
+        for (i32 z = cv[2] - R; z <= cv[2] + R; ++z) {
+          const V3 p{h * x, h * y, h * z};
+          // a slightly jagged crater edge (deterministic per voxel)
+          const f64 jag = 1.0 + 0.18 * (unit01(mix64(key3(x, y, z) ^ salt)) - 0.5);
+          if (norm(p - cl) > r * jag) continue;
+          const IVec3 q{x, y, z};
+          const Vox v = G.get(q);
+          if (!vox_solid(v)) continue;
+          const Material& M = material(vox_mat(v));
+          if (M.indestructible || M.ductile) continue;  // (bullets and craters bend steel and bars; they do not remove it)
+          if (vox_anchored(v)) support_changed(GVox{q, g}, &supports);
+          G.set(q, kAir);
+          removed->push_back(GVox{q, g});
+        }
+  }
+  for (const GKey& k : supports) mark_owners_stale(k.grid, k.chunk);
 }
 
-void World::seed_near(const std::vector<IVec3>& removed) {
-  for (const IVec3& p : removed)
+void World::seed_near(const std::vector<GVox>& removed) {
+  for (const GVox& v : removed) {
+    const VoxelGrid& G = vg(v.grid);
     for (int a = 0; a < 3; ++a)
       for (int s = -1; s <= 1; s += 2) {
-        IVec3 q = p;
+        IVec3 q = v.p;
         q[a] += s;
-        if (vox_free(grid_.get(q))) seeds_.push_back(q);
+        if (vox_free(G.get(q))) seeds_.push_back(GVox{q, v.grid});
       }
+  }
+  // (what other grids held through junctions to it: their voxels around it; and the chunk it
+  // was in learns of it now - its fragments rebuilt, its owners stale - since the seeds may all
+  // be in other grids)
+  if (oriented_ > 0) {
+    const f64 h = grid_.h;
+    const f64 r = (0.5 + std::clamp(cfg_.junction_reach, 0.0, 2.0)) * h;
+    GKey last{0xFFFF, 0};
+    for (const GVox& v : removed) {
+      const IVec3 cc = chunk_of(v.p);
+      const GKey k{v.grid, key3(cc[0], cc[1], cc[2])};
+      if (k == last) continue;
+      last = k;
+      frag_chunk(v.grid, cc);
+    }
+    for (const GVox& v : removed) {
+      const V3 X = voxel_centre(v);
+      const IVec3 cc = chunk_of(v.p);
+      for (u16 o : near_grids(v.grid, key3(cc[0], cc[1], cc[2]))) {
+        const V3 L = o == 0 ? X : xf_of(o).from(X);
+        for (int c = 0; c < 8; ++c) {
+          const IVec3 q = voxel_of(L + V3{(c & 1) ? r : -r, (c & 2) ? r : -r, (c & 4) ? r : -r}, h);
+          if (vox_free(vg(o).get(q))) seeds_.push_back(GVox{q, o});
+        }
+      }
+    }
+  }
 }
 
 void World::process(const PendingEvent& e) {
   ++st_.events;
   design_near(e.pos, (e.blast ? cfg_.blast_reach : 1.0) * e.radius + 1.0);
-  std::vector<IVec3> removed;
+  std::vector<GVox> removed;
   carve_world(e.pos, e.radius, &removed);
   carve_bodies(e.pos, e.radius);
   if (e.blast) {
@@ -1527,30 +1818,40 @@ void World::process(const PendingEvent& e) {
 void World::blast_world(const PendingEvent& e) {
   const f64 h = grid_.h;
   const f64 rs = cfg_.blast_shatter * e.radius, rl = cfg_.blast_reach * e.radius;
-  // fragments within the load radius
+  // fragments within the load radius, grid by grid
   const i32 R = static_cast<i32>(std::ceil(rl / h)) + 1;
-  const IVec3 cv = voxel_of(e.pos, h);
   std::vector<std::pair<FragKey, f64>> near;  // fragment, distance of its centre
-  for (i32 cx = (cv[0] - R) >> kChunkBits; cx <= (cv[0] + R) >> kChunkBits; ++cx)
-    for (i32 cy = (cv[1] - R) >> kChunkBits; cy <= (cv[1] + R) >> kChunkBits; ++cy)
-      for (i32 cz = (cv[2] - R) >> kChunkBits; cz <= (cv[2] + R) >> kChunkBits; ++cz) {
-        const IVec3 cc{cx, cy, cz};
-        if (!grid_.chunk(cc)) continue;
-        FragChunk& fc = frag_chunk(cc);
-        const u64 key = key3(cx, cy, cz);
-        for (i32 f = 0; f < static_cast<i32>(fc.frags.size()); ++f) {
-          const FragInfo& fi = fc.frags[size_t(f)];
-          if (fi.count <= 0) continue;
-          const f64 d = norm(fi.com - e.pos);
-          if (d <= rl) near.push_back({FragKey{key, f}, d});
+  for (size_t gi = 0; gi < grids_.size(); ++gi) {
+    if (!grids_[gi]) continue;
+    const u16 g = static_cast<u16>(gi);
+    if (g != 0) {
+      const GridState& st = gs(g);
+      if (!st.any || e.pos.x + rl < st.lo.x || e.pos.x - rl > st.hi.x || e.pos.y + rl < st.lo.y || e.pos.y - rl > st.hi.y ||
+          e.pos.z + rl < st.lo.z || e.pos.z - rl > st.hi.z)
+        continue;
+    }
+    const IVec3 cv = voxel_of(g == 0 ? e.pos : xf_of(g).from(e.pos), h);
+    for (i32 cx = (cv[0] - R) >> kChunkBits; cx <= (cv[0] + R) >> kChunkBits; ++cx)
+      for (i32 cy = (cv[1] - R) >> kChunkBits; cy <= (cv[1] + R) >> kChunkBits; ++cy)
+        for (i32 cz = (cv[2] - R) >> kChunkBits; cz <= (cv[2] + R) >> kChunkBits; ++cz) {
+          const IVec3 cc{cx, cy, cz};
+          if (!vg(g).chunk(cc)) continue;
+          FragChunk& fc = frag_chunk(g, cc);
+          const u64 key = key3(cx, cy, cz);
+          for (i32 f = 0; f < static_cast<i32>(fc.frags.size()); ++f) {
+            const FragInfo& fi = fc.frags[size_t(f)];
+            if (fi.count <= 0) continue;
+            const f64 d = norm((g == 0 ? fi.com : xf_of(g).to(fi.com)) - e.pos);
+            if (d <= rl) near.push_back({FragKey{key, f, g}, d});
+          }
         }
-      }
+  }
   if (near.empty()) return;
   // shatter: loose pieces near the crater (each its own body) thrown outwards
   auto falloff = [&](f64 d) { return std::min(1.0, (e.radius * e.radius) / std::max(1e-6, d * d)); };
   f64 m_shatter = 0.0, m_loaded = 0.0;
   for (const auto& [f, d] : near) {
-    const f64 m = frag_chunk_if(f.chunk)->frags[size_t(f.idx)].mass;
+    const f64 m = frag_chunk_if(f)->frags[size_t(f.idx)].mass;
     if (d <= rs) m_shatter += m;
     else m_loaded += m * falloff(d) * falloff(d);
   }
@@ -1561,43 +1862,52 @@ void World::blast_world(const PendingEvent& e) {
   const f64 vmax = m_kinetic > 0 ? std::min(cfg_.blast_max_speed, std::sqrt(2.0 * cfg_.blast_kinetic * e.energy / m_kinetic))
                                  : cfg_.blast_max_speed;
   auto speed = [&](f64 d) { return vmax * falloff(d); };
+  if (diag("SVX_DEBUG_BLAST"))
+    std::printf("  [blast t%lld] at (%.2f %.2f %.2f) r %.2f: %zu fragments near, shatter %.0f kg, loaded %.0f kg, vmax %.1f m/s\n",
+                static_cast<long long>(st_.ticks), e.pos.x, e.pos.y, e.pos.z, e.radius, near.size(), m_shatter, m_loaded, vmax);
   std::vector<std::pair<FragKey, f64>> shatter;
   for (const auto& fd : near)
     if (fd.second <= rs) shatter.push_back(fd);
   for (const auto& [f, d0] : shatter) {
-    FragChunk* fc = frag_chunk_if(f.chunk);
+    FragChunk* fc = frag_chunk_if(f);
     if (!fc || fc->frags[size_t(f.idx)].count <= 0) continue;
     const FragInfo fi = fc->frags[size_t(f.idx)];
-    const f64 d = std::max(1e-3, norm(fi.com - e.pos));
-    const V3 dir = (fi.com - e.pos) * (1.0 / d);
-    const u64 hs = mix64(frag_ident(f.chunk, fi.first) ^ static_cast<u64>(st_.ticks));
+    const V3 com = f.grid == 0 ? fi.com : xf_of(f.grid).to(fi.com);
+    const f64 d = std::max(1e-3, norm(com - e.pos));
+    const V3 dir = (com - e.pos) * (1.0 / d);
+    const u64 hs = mix64(frag_ident_of(f, fi.first) ^ static_cast<u64>(st_.ticks));
     const V3 spin{(unit01(hs) - 0.5) * 12.0, (unit01(mix64(hs ^ 1)) - 0.5) * 12.0, (unit01(mix64(hs ^ 2)) - 0.5) * 12.0};
     // its faces are torn (the piece keeps none of the world's bonds); the structure holding it
     // is patched (the fragment cache is updated in place: nothing else would tell it)
-    if (owner_of(f)) mark_owners_stale(f.chunk);
+    if (owner_of(f)) mark_owners_stale(f.grid, f.chunk);
     std::vector<IVec3> vox;
     voxels_of(f, vox);
+    VoxelGrid& G = vg(f.grid);
     for (const IVec3& p : vox)
       for (int a = 0; a < 3; ++a) {
-        grid_.break_bond(p, a);
+        G.break_bond(p, a);
         IVec3 q = p;
         q[a] -= 1;
-        grid_.break_bond(q, a);
+        G.break_bond(q, a);
       }
     make_body_from_world({f}, dir * speed(d), spin);
-    seed_near(vox);
+    std::vector<GVox> gv;
+    gv.reserve(vox.size());
+    for (const IVec3& p : vox) gv.push_back(GVox{p, f.grid});
+    seed_near(gv);
   }
   // load: the blast's impulse on the structures around it (an impact load case)
   for (const auto& [f, d] : near) {
     if (d <= rs) continue;
-    FragChunk* fc = frag_chunk_if(f.chunk);
+    FragChunk* fc = frag_chunk_if(f);
     if (!fc || fc->frags[size_t(f.idx)].count <= 0) continue;
     const FragInfo& fi = fc->frags[size_t(f.idx)];
-    const V3 dir = (fi.com - e.pos) * (1.0 / std::max(1e-3, d));
-    blast_loads_.push_back({fi.first, f.chunk, dir * (par_.impact * fi.mass * speed(d) / cfg_.dt), fi.com});
+    const V3 com = f.grid == 0 ? fi.com : xf_of(f.grid).to(fi.com);
+    const V3 dir = (com - e.pos) * (1.0 / std::max(1e-3, d));
+    blast_loads_.push_back({fi.first, f.chunk, f.grid, dir * (par_.impact * fi.mass * speed(d) / cfg_.dt), com});
     const IVec3 cc = unkey3(f.chunk);
     const IVec3 l = local_of(fi.first);
-    seeds_.push_back({cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]});
+    seeds_.push_back(GVox{{cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]}, f.grid});
   }
 }
 
@@ -1607,7 +1917,7 @@ void World::apply_blast_loads() {
     const IVec3 cc = unkey3(bl.chunk);
     const IVec3 l = local_of(bl.first);
     FragKey f;
-    if (!frag_at({cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]}, &f)) continue;
+    if (!live(bl.grid) || !frag_at(GVox{{cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]}, bl.grid}, &f)) continue;
     Structure* s = structure(owner_of(f));
     if (!s) continue;
     const i32 i = s->node(f);
@@ -1645,23 +1955,30 @@ void World::trim_fragment_caches() {
   // least recently used first, beyond the budget (rebuilt, identical, when needed again).
   const i64 budget = static_cast<i64>(cfg_.memory.fragment_cache_mb * 1048576.0);
   i64 bytes = 0;
-  for (const auto& [k, fc] : frags_) bytes += fc.memory_bytes();
+  for (const auto& gp : grids_)
+    if (gp)
+      for (const auto& [k, fc] : gp->frags) bytes += fc.memory_bytes();
   if (bytes <= budget) return;
-  std::vector<std::pair<i64, u64>> cand;  // (last use, chunk)
-  for (const auto& [k, fc] : frags_) {
-    const auto ot = owner_.find(k);
-    bool held = false;
-    if (ot != owner_.end())
-      for (i64 id : ot->second) held = held || id != 0;
-    if (!held) cand.push_back({fc.used, k});
+  std::vector<std::tuple<i64, u16, u64>> cand;  // (last use, grid, chunk)
+  for (size_t g = 0; g < grids_.size(); ++g) {
+    if (!grids_[g]) continue;
+    const GridState& st = *grids_[g];
+    for (const auto& [k, fc] : st.frags) {
+      const auto ot = st.owner.find(k);
+      bool held = false;
+      if (ot != st.owner.end())
+        for (i64 id : ot->second) held = held || id != 0;
+      if (!held) cand.push_back({fc.used, static_cast<u16>(g), k});
+    }
   }
   std::sort(cand.begin(), cand.end());
-  for (const auto& [used, k] : cand) {
+  for (const auto& [used, g, k] : cand) {
     if (bytes <= budget) break;
-    const auto it = frags_.find(k);
+    GridState& st = gs(g);
+    const auto it = st.frags.find(k);
     bytes -= it->second.memory_bytes();
-    frags_.erase(it);
-    owner_.erase(k);
+    st.frags.erase(it);
+    st.owner.erase(k);
     ++st_.dropped_fragment_caches;
   }
 }
@@ -1669,7 +1986,8 @@ void World::trim_fragment_caches() {
 i64 World::structure_bytes(const Structure& s) const {
   i64 b = sizeof(Structure) + s.P.memory_bytes() + vec_bytes(s.fstart) + vec_bytes(s.frags) + vec_bytes(s.ident) + vec_bytes(s.nmat) +
           vec_bytes(s.nstrength) + vec_bytes(s.vox0) + vec_bytes(s.weight) + vec_bytes(s.face_start) + vec_bytes(s.face_p) +
-          vec_bytes(s.face_axis) + vec_bytes(s.bid) + vec_bytes(s.phi) + vec_bytes(s.u) + vec_bytes(s.ext) + vec_bytes(s.ext_solved) +
+          vec_bytes(s.face_axis) + vec_bytes(s.bgrid) + vec_bytes(s.jstart) + vec_bytes(s.jref) + vec_bytes(s.bid) + vec_bytes(s.phi) +
+          vec_bytes(s.u) + vec_bytes(s.ext) + vec_bytes(s.ext_solved) +
           vec_bytes(s.acc) + vec_bytes(s.peak) + vec_bytes(s.pending) + vec_bytes(s.peak_mag) + vec_bytes(s.changed) +
           hash_bytes(s.nodemap);
   for (const auto& [k, v] : s.nodemap) b += vec_bytes(v);
@@ -1759,8 +2077,9 @@ void World::tick() {
   const bool busy = rigid_.busy() || rigid_.contacts().size() > cfg_.rigid.busy_contacts;
   const int ns = busy ? 1 : std::max(1, cfg_.rigid.substeps);
   const f64 dts = cfg_.dt / ns;
+  statics_ = static_grids();
   for (int k = 0; k < ns; ++k) {
-    rigid_.substep(dts, grid_, [this](f64 dt) { return fracture_hook(dt); });
+    rigid_.substep(dts, statics_, [this](f64 dt) { return fracture_hook(dt); });
     structure_loads(dts);
   }
   st_.rigid_ms = ms_since(tr);
@@ -1778,12 +2097,14 @@ void World::tick() {
     std::printf("  [tick] events %.2f rigid %.2f loads %.2f structures %.2f ms\n", st_.event_ms, st_.rigid_ms, loads_ms, st_.structural_ms);
   // bodies that left the world (or whose state is no longer finite: never expected, but one
   // such piece would poison every contact solve it takes part in)
-  const f64 floor_z = grid_.h * grid_.lo[2] - cfg_.rigid.kill_depth;
+  f64 floor_z = grid_.h * grid_.lo[2] - cfg_.rigid.kill_depth;
+  for (size_t g = 1; g < grids_.size(); ++g)
+    if (grids_[g] && grids_[g]->any) floor_z = std::min(floor_z, grids_[g]->lo.z - cfg_.rigid.kill_depth);
   std::vector<i64> out;
   for (const auto& bp : rigid_.bodies) {
     const Body& b = *bp;
     const bool finite = finite3(b.x) && finite3(b.v) && finite3(b.w) && std::isfinite(b.q.w);
-    if (!finite || b.x.z < floor_z || b.shape.count <= 0) out.push_back(b.id);
+    if (!finite || b.x.z < floor_z || b.count <= 0) out.push_back(b.id);
   }
   if (!out.empty()) remove_bodies(out, PieceEnd::OutOfWorld);
   limit_bodies();
@@ -1796,6 +2117,13 @@ void World::tick() {
   st_.systems_ms = ms_since(tsys);
   flush_body_changes();
   grid_.compact_changed();
+  for (size_t g = 1; g < grids_.size(); ++g) {
+    if (!grids_[g]) continue;
+    grids_[g]->g.compact_changed();
+    // (a grid of this session whose voxels are all gone - it fell as pieces, it was blown
+    // away - goes; a level's grid stays, empty: that is its change)
+    if (!grids_[g]->base && grids_[g]->g.solid_count() == 0) remove_grid_slot(static_cast<u16>(g), true);
+  }
   enforce_budgets();
   announce_bodies();
   st_.tick_ms = ms_since(t0);

@@ -22,6 +22,8 @@ struct svx_engine {
   std::string error;
   std::vector<ChunkMesh> meshes;
   std::vector<u64> removed;
+  std::vector<GridChunk> removed_grid;
+  std::vector<u64> occupancy;
   std::vector<GameEvent> events;
   std::unique_ptr<doom::DoomWorld> doom;  // texturing / light for Doom worlds
   std::vector<u8> delta;
@@ -89,6 +91,7 @@ int svx_load_procedural(svx_engine* e, const char* kind, double seed) {
   }
   ProcWorld w = make_procedural(k, seed_of(seed), e->h);
   e->eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+  add_grids(e->eng.world(), std::move(w.grids));
   return 0;
 }
 
@@ -324,17 +327,21 @@ int svx_poll_meshes(svx_engine* e) {
 
 void svx_mesh_info(svx_engine* e, int i, double* out) {
   if (!in_range(e->meshes, i)) {
-    std::fill(out, out + 9, 0.0);
+    std::fill(out, out + 10, 0.0);
     return;
   }
   const ChunkMesh& m = e->meshes[i];
+  V3 lo;
   for (int q = 0; q < 3; ++q) {
     out[q] = m.chunk[q];
-    out[3 + q] = e->h * (m.chunk[q] * kChunk - 0.5);
+    lo[q] = e->h * (m.chunk[q] * kChunk - 0.5);
   }
+  if (m.grid != kWorldGrid) lo = e->eng.world().grid_to_world(m.grid, lo);
+  for (int q = 0; q < 3; ++q) out[3 + q] = lo[q];
   out[6] = static_cast<double>(m.vertices.size());
   out[7] = static_cast<double>(m.indices.size());
-  out[8] = e->eng.decoration_only(key3(m.chunk[0], m.chunk[1], m.chunk[2])) ? 1.0 : 0.0;
+  out[8] = m.grid == kWorldGrid && e->eng.decoration_only(key3(m.chunk[0], m.chunk[1], m.chunk[2])) ? 1.0 : 0.0;
+  out[9] = static_cast<double>(m.grid);
 }
 
 const void* svx_mesh_vertices(svx_engine* e, int i) { return in_range(e->meshes, i) ? e->meshes[i].vertices.data() : nullptr; }
@@ -351,6 +358,35 @@ void svx_removed_chunk(svx_engine* e, int i, int* out3) {
     return;
   }
   const IVec3 c = unkey3(e->removed[i]);
+  for (int q = 0; q < 3; ++q) out3[q] = c[q];
+}
+
+int svx_poll_removed_grid(svx_engine* e) {
+  e->removed_grid = e->eng.take_removed_grid_chunks();
+  return static_cast<int>(e->removed_grid.size());
+}
+
+void svx_removed_grid_chunk(svx_engine* e, int i, int* out4) {
+  if (!in_range(e->removed_grid, i)) {
+    out4[0] = out4[1] = out4[2] = out4[3] = 0;
+    return;
+  }
+  const GridChunk& c = e->removed_grid[i];
+  out4[0] = static_cast<int>(c.grid);
+  for (int q = 0; q < 3; ++q) out4[1 + q] = c.chunk[q];
+}
+
+int svx_poll_occupancy(svx_engine* e) {
+  e->occupancy = e->eng.take_occupancy_changed();
+  return static_cast<int>(e->occupancy.size());
+}
+
+void svx_occupancy_chunk(svx_engine* e, int i, int* out3) {
+  if (!in_range(e->occupancy, i)) {
+    out3[0] = out3[1] = out3[2] = 0;
+    return;
+  }
+  const IVec3 c = unkey3(e->occupancy[i]);
   for (int q = 0; q < 3; ++q) out3[q] = c[q];
 }
 
@@ -392,20 +428,7 @@ void svx_far_removed(svx_engine* e, int i, int* out2) {
 }
 
 int svx_chunk_occupancy(svx_engine* e, int cx, int cy, int cz, uint8_t* out4096) {
-  const Chunk* ch = e->eng.grid().chunk({cx, cy, cz});
-  if (!ch) return 0;
-  if (ch->uniform) return vox_solid(ch->value) ? 1 : 0;
-  std::fill(out4096, out4096 + kChunkVox / 8, uint8_t{0});
-  int any = 0, all = 1;
-  for (int v = 0; v < kChunkVox; ++v) {
-    if (vox_solid(ch->v[static_cast<size_t>(v)])) {
-      out4096[v >> 3] = static_cast<uint8_t>(out4096[v >> 3] | (1u << (v & 7)));
-      any = 1;
-    } else {
-      all = 0;
-    }
-  }
-  return all ? 1 : any ? 2 : 0;
+  return e->eng.chunk_occupancy({cx, cy, cz}, out4096);
 }
 
 int svx_poll_events(svx_engine* e) {

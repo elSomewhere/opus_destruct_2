@@ -82,8 +82,8 @@ export const DEBUG_VIEW_NAMES: Readonly<Record<DebugView, string>> = {
   [DebugView.Fragments]: 'fragments',
 };
 
-export type ProceduralKind = 'city' | 'rooms' | 'tower' | 'yard';
-export const PROCEDURAL_KINDS: readonly ProceduralKind[] = ['rooms', 'city', 'tower', 'yard'];
+export type ProceduralKind = 'city' | 'rooms' | 'tower' | 'yard' | 'angles';
+export const PROCEDURAL_KINDS: readonly ProceduralKind[] = ['rooms', 'city', 'tower', 'yard', 'angles'];
 
 // ---------------------------------------------------------------------------------------
 // Chunk mesh vertex format (28 bytes, interleaved, little-endian)

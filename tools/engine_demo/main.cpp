@@ -5,10 +5,14 @@
 // render frames with a small CPU ray caster (world grid + rigid pieces) to PPM files, which
 // ffmpeg turns into a video: the collapse can be judged without a browser.
 //
-// usage: svx_engine_demo [--world rooms|city|tower] [--seed N] [--wad F --map M] [--threads T]
+// usage: svx_engine_demo [--world rooms|city|tower|yard|slab|chimney|bridge|angles] [--seed N] [--wad F --map M] [--threads T]
 //          [--seconds S] [--scenario pillars|side|rockets|core|none] [--fragility F] [--impact I]
 //          [--dif D] [--frames DIR] [--fps F] [--res WxH] [--cam x,y,z] [--look x,y,z]
-//          [--report S] [--debug-view N]
+//          [--report S] [--debug-view N] [--turn DEG]
+//
+// --turn DEG: a procedural world's structure (everything above the ground) stands in a grid of
+// its own turned DEG degrees about the vertical through its centre (docs/GRIDS.md), on the world
+// grid's ground (bonded to it by junctions); the scenario's blasts and the camera turn with it.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -115,6 +119,8 @@ int main(int argc, char** argv) {
   i64 work = 0;
   bool cam_set = false, look_set = false;
   V3 cam, look;
+  f64 turn = 0.0;
+  bool turned = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -135,6 +141,10 @@ int main(int argc, char** argv) {
     else if (a == "--debug-view") debug_view = std::atoi(next());
     else if (a == "--work") work = std::atoll(next());
     else if (a == "--res") std::sscanf(next(), "%dx%d", &W, &H);
+    else if (a == "--turn") {
+      turn = std::atof(next());
+      turned = true;
+    }
     else if (a == "--cam") {
       cam = parse3(next());
       cam_set = true;
@@ -178,6 +188,8 @@ int main(int argc, char** argv) {
     eng.configure(c);
   }
   const f64 h = 0.125;
+  IVec3 turn_pivot{0, 0, 0};
+  Quat turn_rot;
   std::unique_ptr<doom::DoomWorld> dw;
   if (!wad_path.empty()) {
     std::ifstream in(wad_path, std::ios::binary);
@@ -205,7 +217,56 @@ int main(int argc, char** argv) {
     eng.load_streaming(std::move(src), eng.grid().h);
   } else {
     ProcWorld w = make_procedural(world, seed, h);
-    eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+    if (turned) {
+      // the structure (z >= 0) into a grid of its own, turned about the vertical through its
+      // centre; the ground (z < 0) stays, grown to reach under it
+      VoxelGrid& g = w.grid;
+      IVec3 lo{INT32_MAX, INT32_MAX, 0}, hi{INT32_MIN, INT32_MIN, 0};
+      for (const auto& [k, c] : g.chunks()) {
+        const IVec3 cc = unkey3(k);
+        if (cc[2] < 0) continue;
+        for (int i = 0; i < kChunkVox; ++i) {
+          if (!vox_solid(c.uniform ? c.value : c.v[size_t(i)])) continue;
+          const IVec3 l{i / (kChunk * kChunk), (i / kChunk) % kChunk, i % kChunk};
+          for (int a = 0; a < 2; ++a) {
+            lo[a] = std::min(lo[a], cc[a] * kChunk + l[a]);
+            hi[a] = std::max(hi[a], cc[a] * kChunk + l[a]);
+          }
+        }
+      }
+      turn_pivot = IVec3{(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, 0};
+      VoxelGrid t;
+      t.h = h;
+      std::vector<std::pair<IVec3, Vox>> moved;
+      for (const auto& [k, c] : g.chunks()) {
+        const IVec3 cc = unkey3(k);
+        if (cc[2] < 0) continue;
+        for (int i = 0; i < kChunkVox; ++i) {
+          const Vox v = c.uniform ? c.value : c.v[size_t(i)];
+          if (!vox_solid(v)) continue;
+          const IVec3 l{i / (kChunk * kChunk), (i / kChunk) % kChunk, i % kChunk};
+          moved.push_back({{cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]}, v});
+        }
+      }
+      for (const auto& [q, v] : moved) {
+        g.set(q, kAir);
+        t.set(q[0] - turn_pivot[0], q[1] - turn_pivot[1], q[2], v);
+      }
+      const i32 r = static_cast<i32>(std::ceil(0.75 * std::max(hi[0] - lo[0], hi[1] - lo[1]))) + 16;
+      for (i32 x = turn_pivot[0] - r; x < turn_pivot[0] + r; ++x)
+        for (i32 y = turn_pivot[1] - r; y < turn_pivot[1] + r; ++y)
+          if (!vox_solid(g.get(x, y, -1))) g.fill_column(x, y, -4, 0, make_vox(MaterialId::Rock, true));
+      g.compact();
+      t.compact();
+      eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+      const f64 th = 0.5 * turn * 3.14159265358979323846 / 180.0;
+      turn_rot = Quat{0.0, 0.0, std::sin(th), std::cos(th)};
+      const GridId id = eng.world().add_grid(GridFrame{V3{h * turn_pivot[0], h * turn_pivot[1], 0.0}, turn_rot}, std::move(t));
+      std::printf("turned %.1f degrees: %zu voxels in grid %u about (%d %d)\n", turn, moved.size(), id, turn_pivot[0], turn_pivot[1]);
+    } else {
+      eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+    }
+    add_grids(eng.world(), std::move(w.grids));
   }
   eng.set_params(par);
   if (const char* wv = std::getenv("SVX_WATCH")) {
@@ -220,7 +281,7 @@ int main(int argc, char** argv) {
   const auto& dr = eng.world().design_report();
   std::printf("world %s: %lld voxels; design: %lld structures, %lld nodes, max utilization %.3f, %lld voxels strengthened, "
               "%lld floating removed, %.0f ms\n",
-              world.c_str(), static_cast<long long>(eng.grid().solid_count()), static_cast<long long>(dr.structures),
+              world.c_str(), static_cast<long long>(eng.stats().voxels), static_cast<long long>(dr.structures),
               static_cast<long long>(dr.nodes), dr.max_utilization, static_cast<long long>(dr.strengthened_voxels),
               static_cast<long long>(dr.floating_voxels), bake_ms);
   // scenario
@@ -304,6 +365,23 @@ int main(int argc, char** argv) {
     }
     if (!cam_set) cam = V3{20.0, -12.0, 16.0};
     if (!look_set) look = V3{20.0, 12.0, 2.0};
+  } else if (world == "angles") {
+    // structures in oriented grids: a pier of the diagonal bridge, the portal's left column (it
+    // hangs on the braces), the ramp's block, the turned tower's west columns, the 20 degree
+    // wall, the stacked crates and the monolith's foot
+    if (scenario != "none") {
+      const World& W = eng.world();
+      shots.push_back({0.3, true, V3{h * 224, h * 168, 1.0}, 1.2, 1e6});
+      shots.push_back({0.5, true, V3{h * 224, h * 168, 3.5}, 1.2, 1e6});
+      shots.push_back({0.7, true, V3{h * 161.5, h * 41, h * 14}, 0.7, 1e6});
+      shots.push_back({0.9, true, V3{h * 106, h * 60, 1.0}, 1.2, 1e6});
+      for (int k = 0; k < 3; ++k) shots.push_back({1.2 + 0.15 * k, true, W.grid_to_world(1, V3{h * -25.5, h * (-25.5 + 26 * k), 0.8}), 0.9, 1e6});
+      shots.push_back({1.8, true, W.grid_to_world(6, V3{h * 12, 0.0, 1.5}), 0.8, 5e5});
+      shots.push_back({2.0, true, V3{h * 170, h * 120, 1.2}, 0.6, 2e5});
+      shots.push_back({2.2, true, V3{h * 350, h * 140, 0.4}, 0.5, 5e5});
+    }
+    if (!cam_set) cam = V3{-6.0, -10.0, 18.0};
+    if (!look_set) look = V3{24.0, 16.0, 2.0};
   } else if (world == "rooms") {
     if (scenario != "none") {
       shots.push_back({0.3, true, V3{h * 51, h * 23, 1.5}, 1.0, 1e6});
@@ -321,6 +399,14 @@ int main(int argc, char** argv) {
     // (debug) a tiny carve at x,y,z at time t
     double px, py, pz, pt;
     if (std::sscanf(e, "%lf,%lf,%lf,%lf", &px, &py, &pz, &pt) == 4) shots.push_back({pt, false, V3{px, py, pz}, 0.06, 0.0});
+  }
+  if (turned) {
+    // (the scenario turns with the structure)
+    const V3 pv{h * turn_pivot[0], h * turn_pivot[1], 0.0};
+    auto turned = [&](const V3& p) { return pv + rotate(turn_rot, p - pv); };
+    for (Shot& s : shots) s.pos = turned(s.pos);
+    cam = turned(cam);
+    look = turned(look);
   }
   std::sort(shots.begin(), shots.end(), [](const Shot& a, const Shot& b) { return a.t < b.t; });
   const f64 dt = eng.config().dt;
@@ -418,7 +504,7 @@ int main(int argc, char** argv) {
       int k = 0;
       while (k < 7 && sp > edges[k]) ++k;
       ++hist[k];
-      (b->shape.count < 100 ? small : big)++;
+      (b->count < 100 ? small : big)++;
     }
     std::printf("awake speed histogram (m/s: <0.05 <0.15 <0.3 <1 <3 <10 <25 more): %d %d %d %d %d %d %d %d; small %d big %d, below ground %d\n",
                 hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7], small, big, below);
@@ -446,7 +532,7 @@ int main(int argc, char** argv) {
     // pieces resting high up (floating?)
     for (const auto& bp : eng.world().rigid().bodies)
       if (bp->x.z > std::atof(std::getenv("SVX_HIGH")))
-        std::printf("high piece %lld: %d voxels at (%.2f %.2f %.2f) asleep %d v %.2f age %.1f\n", static_cast<long long>(bp->id), bp->shape.count,
+        std::printf("high piece %lld: %d voxels at (%.2f %.2f %.2f) asleep %d v %.2f age %.1f\n", static_cast<long long>(bp->id), bp->count,
                     bp->x.x, bp->x.y, bp->x.z, bp->asleep ? 1 : 0, norm(bp->v), bp->age);
   }
   {
@@ -454,7 +540,7 @@ int main(int argc, char** argv) {
     int hist[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     long long vox[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     for (const auto& bp : eng.world().rigid().bodies) {
-      const int n = bp->shape.count;
+      const int n = bp->count;
       const int k = n < 8 ? 0 : n < 32 ? 1 : n < 64 ? 2 : n < 128 ? 3 : n < 512 ? 4 : n < 2048 ? 5 : n < 8192 ? 6 : 7;
       hist[k]++;
       vox[k] += n;

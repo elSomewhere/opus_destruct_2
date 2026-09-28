@@ -9,9 +9,10 @@ another. This page is the guide for such hosts. The method itself is in
 ## 1. Layers
 
 ```
-core/   svx_core   voxel grid, materials, fragments, structures, stress solver, rigid pieces,
-                   streaming, persistence. Public API: svx::World (svx/world/world.hpp) and the
-                   C API (svx/svx_core.h). Depends on the C++ standard library only.
+core/   svx_core   voxel grids (the world grid and oriented grids), materials, fragments,
+                   structures, stress solver, rigid pieces, streaming, persistence. Public API:
+                   svx::World (svx/world/world.hpp) and the C API (svx/svx_core.h). Depends on
+                   the C++ standard library only.
 mesh/   svx_mesh   voxel meshing for renderers: world chunks, pieces (in their shape frame),
                    coarse far tiles, water surfaces. Optional. Depends on svx_core.
 env/    svx_env    environment systems on the core's extension points (§5): fire, smoke,
@@ -48,6 +49,12 @@ is one byte: 0 air, else `1 + material` in the low 7 bits and bit 7 **anchored**
 - **Free** voxels are structure: they are simulated.
 - Every two face-adjacent solid voxels are **bonded**, unless both are anchored or the bond was
   broken (a bit per voxel face).
+
+**Grids.** Besides the world grid (its axes the world's), a world can hold **oriented grids**:
+voxel lattices of the same voxel size placed with a position and rotation of their own (a
+building at an angle, a diagonal brace, a ramp), simulated like the world grid in every respect.
+Where the voxels of two grids meet they are bonded by **junctions**, so structures and pieces
+span grids. See [`GRIDS.md`](GRIDS.md).
 
 **Materials** live in a process-wide registry (`svx/material/material.hpp`): eleven presets
 (reinforced concrete, concrete, steel, masonry, soil, rock, indestructible bedrock, wood, stone,
@@ -126,18 +133,22 @@ for (;;) {
   - `Crack`: a bond broke (position, normal, utilization).
   - `Impact`: a blast or a heavy landing (energy).
   - `Dust`: crushed material, or a shard too small to be a piece.
+  - `GridAdded`, `GridRemoved`: an oriented grid came or went (streamed, removed, loaded).
 
   Cosmetic events (cracks, dust, landings) are budgeted per tick. Piece events never are.
 - **Pieces** (`pieces()`, `piece(id)`): pose (centre of mass `pos`, rotation `rot` from the shape
-  frame), velocities, mass, sleep state. `piece(id)->shape` holds the voxels in the shape frame
-  (the grid coordinates the piece had when it was made). A shape point `s` is at
-  `pos + rot (s - com)`.
-- **Chunks**: `take_changed_chunks()` lists the chunks whose voxels changed (carves, detachments,
-  edits, streaming). `take_evicted_chunks()` lists the ones no longer resident.
+  frame), velocities, mass, sleep state. `piece(id)->shapes` hold the voxels, one shape per grid
+  the piece came from, in that grid's coordinates. The first shape's lattice is the piece's shape
+  frame: a point `s` of it is at `pos + rot (s - com)`. The others carry their lattice's place in
+  that frame (`shapes[k].xf`; `Body::lattice_to_world(k, s)`).
+- **Chunks**: `take_changed_chunks()` lists the world grid's chunks whose voxels changed
+  (carves, detachments, edits, streaming), `take_changed_grid_chunks()` the oriented grids'.
+  `take_evicted_chunks()` lists the ones no longer resident.
 - **Queries**:
-  - `raycast` hits the world and the pieces.
-  - `collide` moves a box as far as the world's voxels let it (a character controller's sweep;
-    pieces are not obstacles to it).
+  - `raycast` hits the grids and the pieces.
+  - `collide` moves a box as far as the grids' voxels let it (a character controller's sweep;
+    pieces are not obstacles to it). `sweep` moves a box in any direction and returns the normal
+    of what stopped it (sliding along a turned wall).
   - `debug_field` gives per-voxel utilization or fragment colours of a chunk.
   - `probe_utilization` solves the structure holding a voxel now.
 - **Stats and hashes**: `stats()`; `state_hash()` (voxels and broken bonds);
@@ -149,9 +160,12 @@ The core never meshes. A host can:
 
 - Mesh changed chunks with `svx_mesh` (`mesh_chunk`: greedy, AO, texture/light/debug providers),
   or with its own mesher (read `grid().chunk(...)`).
-- Mesh a piece once, when its `PieceAdded` event arrives: `mesh_shape(piece(id)->shape, h, opts)`
-  gives vertices in the shape frame. Draw it every frame at `pos + rot (s - com)`. A piece never
+- Mesh a piece once, when its `PieceAdded` event arrives: `mesh_shape(piece(id)->shapes[k], h,
+  opts)` gives each shape's vertices in its lattice; `shapes[k].xf.to(v)` puts them in the shape
+  frame (the identity for the first). Draw it every frame at `pos + rot (s - com)`. A piece never
   changes shape: a new shape comes as a new piece (`Split`).
+- Mesh an oriented grid's changed chunks in its lattice and place them with its frame
+  ([`GRIDS.md`](GRIDS.md) §3).
 - Use `Crack`, `Dust` and `Impact` for particles, decals, sound and camera shake.
 
 The game harness (`game/src/game.cpp`) does exactly this. It also fades out culled pieces.
@@ -184,10 +198,12 @@ the level bounds them.
 
 ### Persistence
 
-`save_delta()` is a binary delta of the changed chunks (voxels, broken bonds, design classes)
-against the regenerable base world. `load_delta()` applies one:
+`save_delta()` is a binary delta of the changed chunks (voxels, broken bonds and junctions,
+design classes) against the regenerable base world, and of the oriented grids (the level's
+changed, the session's whole). `load_delta()` applies one:
 
-- Load the same base world, `bake()`, then `load_delta()`.
+- Load the same base world (and the level's oriented grids, in the same order), `bake()`, then
+  `load_delta()`.
 - A malformed delta is refused whole: nothing is applied.
 
 Pieces in flight are not part of a delta.
@@ -335,6 +351,8 @@ points, without touching the core. `svx_env` ([`ENV.md`](ENV.md)) is built on th
 - The extension points (§5) are there too: layers (`svxc_add_layer`, `svxc_set_layer`,
   `svxc_chunk_layer`, `svxc_poll_layer_changes`), piece layers and voxel removal, loads, piece
   forces, and systems with all their callbacks (`svxc_add_system_ex`).
+- Oriented grids (`svxc_add_grid`, `svxc_remove_grid`, voxels, layers and loads per grid,
+  pieces' shapes, `svxc_sweep`): [`GRIDS.md`](GRIDS.md) §6.
 
 `examples/c_api/main.c` is a complete C host.
 
@@ -353,7 +371,8 @@ A harness turns a game's world into the core's terms and the core's output into 
 | Weapons | `carve` (bullets), `blast` (rockets), `apply_impulse` (pushes); fire and water through `svx_env`'s systems (`ignite`, `pour`). |
 | Level loading | Build a `VoxelGrid` (procedural, WAD voxelizer, editor), `load`, `bake`; or a `ChunkSource` for streamed levels. |
 | Replays, lockstep networking | Log the commands with their tick; replay them on the same level (`game/src/replay.cpp`). |
-| Rendering | Chunk meshes from `take_changed_chunks`, piece meshes on `PieceAdded`, poses every frame, fades on `Culled`. |
+| Rendering | Chunk meshes from `take_changed_chunks` (and `take_changed_grid_chunks`, placed by the grids' frames), piece meshes on `PieceAdded`, poses every frame, fades on `Culled`. |
+| Structures off the lattice | Oriented grids (`add_grid`): a level's grids added after its world grid, in order ([`GRIDS.md`](GRIDS.md)). |
 
 Things a harness should not do:
 
@@ -363,8 +382,11 @@ Things a harness should not do:
 
 ## 8. Known limits
 
-- `collide` sweeps against the world's voxels only. Pieces are obstacles for rays, not for box
-  sweeps.
+- `collide` and `sweep` stop at the grids' voxels only. Pieces are obstacles for rays, not for
+  box sweeps.
+- Fire, smoke and water act on the world grid's static voxels only; oriented grids' static
+  voxels neither burn nor hold water (pieces do, whatever grid they came from). More limits of
+  grids are in [`GRIDS.md`](GRIDS.md) §8.
 - Materials are process-wide, not per world.
 - Pieces are not persisted in deltas, and sleeping rubble is unloaded with its chunks.
 - Contacts are found at the end of each substep: a piece faster than about 15 m/s can pass

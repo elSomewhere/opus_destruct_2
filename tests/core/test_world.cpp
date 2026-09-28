@@ -94,7 +94,7 @@ TEST_CASE("world: pieces take impulses and can be removed") {
   const PieceState p = w.pieces().front();
   const Body* b = w.piece(p.id);
   REQUIRE(b != nullptr);
-  CHECK(b->shape.count == p.voxels);
+  CHECK(b->count == p.voxels);
   CHECK(w.apply_impulse(p.id, p.pos, V3{0, 0, 50.0 * p.mass}));  // +50 m/s up
   CHECK(w.piece(p.id)->v.z > 40.0);
   CHECK_FALSE(w.apply_impulse(-7, p.pos, V3{1, 0, 0}));
@@ -664,7 +664,8 @@ TEST_CASE("materials: a blast strips concrete off its bars, and ductile bars nev
       for (i32 z = 0; z < 24; ++z)
         for (i32 y = 34; y < 37; ++y) n += w.grid().get(x, y, z) == v;
     for (const PieceState& p : w.pieces())
-      for (Vox s : w.piece(p.id)->shape.vox) n += s == v;
+      for (const BodyShape& S : w.piece(p.id)->shapes)
+        for (Vox s : S.vox) n += s == v;
     return n;
   };
   const i64 bars0 = count(bar), conc0 = count(kConcrete);
@@ -793,4 +794,39 @@ TEST_CASE("world: a piece landing on a thin stub of its own goes on when the stu
   MESSAGE("block: " << before << " m/s before its stub broke, " << after << " m/s after");
   REQUIRE(before < -1.0);
   CHECK(after < 0.7 * before);
+}
+
+TEST_CASE("world: a frame left hanging by one face of its support is still judged (a stagnating solve goes multigrid)") {
+  // A steel portal on rock whose left column's foot is cut away: the frame is a cantilever from
+  // the right column's foot, which cannot carry it. Its bonds there break round by round; the
+  // last round leaves the frame on one voxel face, a near-mechanism on which a block-Jacobi
+  // preconditioned solve stagnates (it would never converge, so never be judged: the frame hung
+  // there for good). The solve goes on with the structure's multigrid: the face breaks, it falls.
+  const Vox steel = make_vox(MaterialId::Steel, false);
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {140, 20, -4}, {232, 64, 0}, kRock);
+  for (i32 x : {160, 208}) box(g, {x, 40, 0}, {x + 3, 43, 44}, steel);
+  box(g, {160, 40, 44}, {211, 43, 47}, steel);
+  g.compact();
+  World w;
+  w.load(std::move(g));
+  w.bake();
+  for (int t = 0; t < 30; ++t) w.tick();
+  CHECK(w.pieces().empty());
+  std::vector<VoxelEdit> cut;
+  for (i32 x = 160; x < 163; ++x)
+    for (i32 y = 40; y < 43; ++y)
+      for (i32 z = 0; z < 2; ++z) cut.push_back({{x, y, z}, kAir});
+  w.set_voxels(cut);
+  for (int t = 0; t < 120; ++t) w.tick();
+  i32 left = 0;
+  for (i32 x = 140; x < 232; ++x)
+    for (i32 z = 0; z < 50; ++z) left += vox_solid(w.grid().get(x, 41, z)) ? 1 : 0;
+  MESSAGE("portal after its foot is cut: " << left << " voxels standing, " << w.pieces().size() << " pieces, "
+                                           << w.stats().bonds_broken << " bonds broken");
+  CHECK(left == 0);
+  CHECK(!w.pieces().empty());
+  CHECK(w.stats().solving == 0);
+  CHECK(w.stats().solves_abandoned == 0);
 }

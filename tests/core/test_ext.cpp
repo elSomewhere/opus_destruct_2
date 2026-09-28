@@ -388,8 +388,9 @@ TEST_CASE("ext: what slept on a piece falls when the piece loses the voxels unde
   const f64 z0 = w.piece(crate_id)->x.z;
   const Body* s = w.piece(slab_id);
   std::vector<IVec3> top;
-  for (i32 i = 0; i < static_cast<i32>(s->shape.vox.size()); ++i)
-    if (vox_solid(s->shape.vox[size_t(i)]) && s->shape.voxel(i)[2] >= s->shape.lo[2] + 2) top.push_back(s->shape.voxel(i));
+  const BodyShape& S = s->shapes[0];
+  for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i)
+    if (vox_solid(S.vox[size_t(i)]) && S.voxel(i)[2] >= S.lo[2] + 2) top.push_back(S.voxel(i));
   REQUIRE(w.remove_piece_voxels(slab_id, top, true));
   for (int t = 0; t < 120; ++t) w.tick();
   const Body* c = w.piece(crate_id);

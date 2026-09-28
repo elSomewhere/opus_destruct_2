@@ -22,7 +22,7 @@ Conventions:
 | `type` | fields | notes |
 |---|---|---|
 | `init` | `config: {voxelSize, threads, memoryMB, params, persist?, gpuDisplacement?}` | First message. `persist` (**ext**): keep gameplay changes per world in OPFS (below). `gpuDisplacement` (**ext**): displacement fields (below; v2 engines send none). |
-| `loadProcedural` | `seed, kind: 'city'\|'rooms'\|'tower'\|'yard'` | Test worlds. `city` is the streamed 1 km² city. `yard` has one construction of each kind (timber, stone, glass, steel, reinforced concrete, a reservoir, a water tower). |
+| `loadProcedural` | `seed, kind: 'city'\|'rooms'\|'tower'\|'yard'\|'angles'` | Test worlds. `city` is the streamed 1 km² city. `yard` has one construction of each kind (timber, stone, glass, steel, reinforced concrete, a reservoir, a water tower). `angles` has structures off the lattice, in oriented grids ([`GRIDS.md`](GRIDS.md)). |
 | `loadWad` | `buffer: ArrayBuffer (transfer), map: string, options: {mode:'rock'\|'air', shellVoxels, bake:boolean}` | Doom level. |
 | `viewer` | `pos:[x,y,z], dir:[x,y,z]` | Streaming, bake and LOD focus. Sent every frame or two, including while the player is not in control. |
 | `blast` | `pos:[x,y,z], radius, energy` | Rocket or explosion. `energy` is in J. |
@@ -54,7 +54,7 @@ Conventions:
 |---|---|---|
 | `ready` | `info: {bounds:{min,max}, voxelCount, spawn:{pos,dir}, textures:boolean}` | After a load. `spawn.pos` is the player's **feet** position, standing on the floor. |
 | `textures` | `list: [{id, name, width, height, rgba: ArrayBuffer}]` | Doom textures and flats (transfer). Sent before `ready` when `info.textures`. RGBA8, row 0 = top. |
-| `chunkMeshes` | `meshes: [{key, origin:[3], vertices: ArrayBuffer, vertexCount, indices: ArrayBuffer, indexCount}], fields?` | New or changed chunk meshes (transfer). A mesh replaces the previous mesh with the same key. `fields` (**ext**): see [Displacement fields](#displacement-fields). |
+| `chunkMeshes` | `meshes: [{key, origin:[3], vertices: ArrayBuffer, vertexCount, indices: ArrayBuffer, indexCount}], fields?` | New or changed chunk meshes (transfer). A mesh replaces the previous mesh with the same key. `fields` (**ext**): see [Displacement fields](#displacement-fields). An oriented grid's chunk (**ext**) has the key `g<grid>:<x>,<y>,<z>`; its vertices are in the world like every chunk's. |
 | `chunkRemoved` | `keys: string[]` | Evicted or emptied chunks. |
 | `events` | `list: [...]` | See [Events](#events). |
 | `debris` (**ext**) | `poses: [{id, pos:[3], rot:[x,y,z,w], opacity}]` | Rigid debris poses after every tick while any piece exists, plus one empty list when the last piece is gone. See [Rigid debris](#rigid-debris). |
@@ -209,7 +209,9 @@ ceilings, crushers and stairs.
 A large collapse can hold the worker for tens of milliseconds per tick. Player movement
 must not wait for it, so the WASM worker streams **occupancy**:
 
-- For every chunk it re-meshes or empties, it sends one bit per voxel.
+- For every chunk it re-meshes or empties, and every chunk whose occupancy oriented grids
+  changed, it sends one bit per voxel. A voxel is solid if the world grid's is, or if its centre
+  lies in a solid voxel of an oriented grid.
   - `state 0`: all air, or not resident.
   - `state 1`: all solid.
   - `state 2`: mixed. `bits` is 4096 bytes: bit `v` of byte `v >> 3` is voxel
@@ -238,8 +240,11 @@ the same world is loaded again. Worlds are identified by:
 - simulation and commands: `svx_tick`, `svx_blast`, `svx_carve`, `svx_use`, `svx_ignite`,
   `svx_extinguish`, `svx_pour`;
 - queries: `svx_raycast`, `svx_collide`;
-- output: `svx_poll_meshes`, `svx_poll_events`, `svx_debris`, `svx_stats`, `svx_poll_env`
-  (flames and smoke), `svx_poll_water` / `svx_poll_water_removed`;
+- output: `svx_poll_meshes` (`svx_mesh_info` gives a mesh's grid, 0 for the world grid),
+  `svx_poll_removed`, `svx_poll_removed_grid` (oriented grids' emptied chunks),
+  `svx_poll_occupancy` (world chunks whose occupancy the grids changed), `svx_poll_events`,
+  `svx_debris`, `svx_stats`, `svx_poll_env` (flames and smoke), `svx_poll_water` /
+  `svx_poll_water_removed`;
 - persistence: `svx_save_delta` / `svx_load_delta`;
 - determinism: `svx_state_hash`, a digest of the session including debris poses, identical
   across thread counts and between native and WASM builds.

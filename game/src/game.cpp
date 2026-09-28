@@ -83,6 +83,12 @@ void Game::load(VoxelGrid&& g, const V3& spawn_pos, const V3& spawn_dir) {
   far_sent_.clear();
   far_out_.clear();
   source_.reset();
+  // (the old level's oriented grids: their meshes and occupancy go)
+  for (const auto& [id, k] : grid_meshed_) removed_grid_chunks_.push_back(GridChunk{id, unkey3(k)});
+  grid_meshed_.clear();
+  grid_box_.clear();
+  for (const auto& [k, bits] : grid_occ_) occ_changed_.insert(k);
+  grid_occ_.clear();
   world_.load(std::move(g));
   world_.take_events();  // (the old level's pieces: gone with it)
   views_.clear();
@@ -294,7 +300,7 @@ void Game::tick() {
         g.pos = b->x;
         g.vel = b->v;
         g.ang = b->w;
-        g.voxels = b->shape.count;
+        g.voxels = b->count;
         g.mesh = piece_mesh(*b);
         vt->second = {b->x, b->q};  // (its poses from now on: from this mesh's frame)
         events_.push_back(std::move(g));
@@ -358,6 +364,22 @@ void Game::drain_world_events() {
         break;
       case WorldEvent::Kind::Forgotten:
         continue;  // (out of range by construction: nothing on screen changes)
+      case WorldEvent::Kind::GridAdded:
+        continue;  // (its chunks come with take_meshes)
+      case WorldEvent::Kind::GridRemoved: {
+        const GridId id = static_cast<GridId>(e.id);
+        for (auto it = grid_meshed_.lower_bound({id, 0}); it != grid_meshed_.end() && it->first == id;) {
+          removed_grid_chunks_.push_back(GridChunk{id, unkey3(it->second)});
+          it = grid_meshed_.erase(it);
+        }
+        if (const auto bt = grid_box_.find(id); bt != grid_box_.end()) {
+          std::vector<u64> wc;
+          grid_box_chunks(bt->second.first, bt->second.second, &wc);
+          grid_box_.erase(bt);
+          grids_occupancy(wc);
+        }
+        continue;
+      }
     }
     events_.push_back(std::move(g));
   }
@@ -371,10 +393,22 @@ void Game::drain_world_events() {
 }
 
 ChunkMesh Game::piece_mesh(const Body& b) const {
+  // each of its shapes (one per grid it came from), in world coordinates at its pose now
+  ChunkMesh out;
+  for (size_t k = 0; k < b.shapes.size(); ++k) {
+    ChunkMesh m = shape_mesh(b, k);
+    const u32 base = static_cast<u32>(out.vertices.size());
+    out.vertices.insert(out.vertices.end(), m.vertices.begin(), m.vertices.end());
+    for (u32 i : m.indices) out.indices.push_back(base + i);
+  }
+  return out;
+}
+
+ChunkMesh Game::shape_mesh(const Body& b, size_t k) const {
   MeshOptions mo;
   mo.texels_per_metre = mesh_base_.texels_per_metre;
   mo.texture = mesh_base_.texture;
-  const BodyShape& S = b.shape;
+  const BodyShape& S = b.shapes[k];
   if (par_.debug_view == 2) {
     mo.debug = [&](const IVec3& p) -> u8 {
       const i32 i = S.index(p);
@@ -397,11 +431,12 @@ ChunkMesh Game::piece_mesh(const Body& b) const {
     };
   }
   ChunkMesh out = mesh_shape(S, world_.voxel_size(), mo);
-  // to world coordinates at the piece's pose now
-  const M3 R = to_matrix(b.q);
+  // to world coordinates at the piece's pose now (through the shape's place in the piece)
+  const M3 R = S.xf.identity ? to_matrix(b.q) : to_matrix(b.q) * S.xf.R;
+  const V3 off = to_matrix(b.q) * (S.xf.off - b.com);
   for (MeshVertex& v : out.vertices) {
     const V3 s{v.pos[0], v.pos[1], v.pos[2]};
-    const V3 w = b.x + R * (s - b.com);
+    const V3 w = S.xf.identity ? b.x + R * (s - b.com) : b.x + off + R * s;
     v.pos[0] = static_cast<f32>(w.x);
     v.pos[1] = static_cast<f32>(w.y);
     v.pos[2] = static_cast<f32>(w.z);
@@ -483,7 +518,222 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
     meshed_.insert(keys[j]);  // (a removal queued before - an old level's - is void)
     out.push_back(std::move(meshes[j]));
   }
+  // The oriented grids' chunks: meshed in their lattice, placed in the world by their frames
+  // (docs/GRIDS.md). Debug views read the grids' fields; materials give their colours.
+  const std::vector<GridChunk> gcs = world_.take_changed_grid_chunks();
+  if (!gcs.empty()) {
+    std::vector<ChunkMesh> gm(gcs.size());
+    std::vector<std::vector<u8>> gfield(gcs.size());
+    if (par_.debug_view == 1 || par_.debug_view == 2) {
+      const DebugField f = par_.debug_view == 1 ? DebugField::Utilization : DebugField::Fragment;
+      for (size_t j = 0; j < gcs.size(); ++j) world_.debug_field(gcs[j].grid, gcs[j].chunk, f, &gfield[j]);
+    }
+    parallel_for(static_cast<i64>(gcs.size()), 1, [&](i64 b0, i64 e0) {
+      for (i64 j = b0; j < e0; ++j) {
+        const GridChunk& gc = gcs[size_t(j)];
+        const VoxelGrid* G = world_.grid(gc.grid);
+        GridFrame fr;
+        if (!G || !world_.grid_frame(gc.grid, &fr)) continue;
+        MeshOptions mg;
+        mg.texels_per_metre = base.texels_per_metre;
+        const std::vector<u8>& field = gfield[size_t(j)];
+        if (!field.empty()) mg.debug = [&field](const IVec3& p) -> u8 { return field[size_t(chunk_index(p))]; };
+        ChunkMesh m = mesh_chunk(*G, gc.chunk, mg, false);
+        const M3 R = to_matrix(fr.rot);
+        for (MeshVertex& v : m.vertices) {
+          const V3 w = fr.origin + R * V3{v.pos[0], v.pos[1], v.pos[2]};
+          v.pos[0] = static_cast<f32>(w.x);
+          v.pos[1] = static_cast<f32>(w.y);
+          v.pos[2] = static_cast<f32>(w.z);
+          const V3 n = R * V3{v.normal[0] / 127.0, v.normal[1] / 127.0, v.normal[2] / 127.0};
+          v.normal[0] = static_cast<i8>(std::lround(std::clamp(n.x, -1.0, 1.0) * 127.0));
+          v.normal[1] = static_cast<i8>(std::lround(std::clamp(n.y, -1.0, 1.0) * 127.0));
+          v.normal[2] = static_cast<i8>(std::lround(std::clamp(n.z, -1.0, 1.0) * 127.0));
+        }
+        m.chunk = gc.chunk;
+        m.grid = gc.grid;
+        gm[size_t(j)] = std::move(m);
+      }
+    });
+    std::vector<u64> occ;
+    for (size_t j = 0; j < gcs.size(); ++j) {
+      const GridChunk& gc = gcs[j];
+      const std::pair<GridId, u64> key{gc.grid, key3(gc.chunk[0], gc.chunk[1], gc.chunk[2])};
+      // (the chunk's world box: the grid's box grows with it, its occupancy is felt there)
+      const f64 h = world_.voxel_size();
+      V3 lo{INFINITY, INFINITY, INFINITY}, hi{-INFINITY, -INFINITY, -INFINITY};
+      for (int c = 0; c < 8; ++c) {
+        const V3 p{h * (gc.chunk[0] * kChunk + ((c & 1) ? kChunk : 0) - 0.5), h * (gc.chunk[1] * kChunk + ((c & 2) ? kChunk : 0) - 0.5),
+                   h * (gc.chunk[2] * kChunk + ((c & 4) ? kChunk : 0) - 0.5)};
+        const V3 w = world_.grid_to_world(gc.grid, p);
+        for (int a = 0; a < 3; ++a) {
+          lo[a] = std::min(lo[a], w[a]);
+          hi[a] = std::max(hi[a], w[a]);
+        }
+      }
+      auto& box = grid_box_.try_emplace(gc.grid, lo, hi).first->second;
+      for (int a = 0; a < 3; ++a) {
+        box.first[a] = std::min(box.first[a], lo[a]);
+        box.second[a] = std::max(box.second[a], hi[a]);
+      }
+      grid_box_chunks(lo, hi, &occ);
+      if (gm[j].vertices.empty()) {
+        if (grid_meshed_.erase(key)) removed_grid_chunks_.push_back(gc);
+        continue;
+      }
+      grid_meshed_.insert(key);
+      out.push_back(std::move(gm[j]));
+    }
+    grids_occupancy(occ);
+  }
   mesh_ms_ = ms_since(t0);
+  return out;
+}
+
+std::vector<GridChunk> Game::take_removed_grid_chunks() {
+  std::vector<GridChunk> out;
+  out.swap(removed_grid_chunks_);
+  // (a chunk meshed again since its removal was queued stays)
+  out.erase(std::remove_if(out.begin(), out.end(),
+                           [&](const GridChunk& c) { return grid_meshed_.count({c.grid, key3(c.chunk[0], c.chunk[1], c.chunk[2])}) > 0; }),
+            out.end());
+  return out;
+}
+
+void Game::grid_box_chunks(const V3& lo, const V3& hi, std::vector<u64>* out) const {
+  const f64 h = world_.voxel_size();
+  auto vc = [&](f64 x) { return static_cast<i32>(std::floor(x / h + 0.5)) >> kChunkBits; };
+  const i32 x0 = vc(lo.x), x1 = vc(hi.x), y0 = vc(lo.y), y1 = vc(hi.y), z0 = vc(lo.z), z1 = vc(hi.z);
+  if (static_cast<i64>(x1 - x0 + 1) * (y1 - y0 + 1) * (z1 - z0 + 1) > 1 << 20) return;  // (never: grids are bounded)
+  for (i32 x = x0; x <= x1; ++x)
+    for (i32 y = y0; y <= y1; ++y)
+      for (i32 z = z0; z <= z1; ++z) out->push_back(key3(x, y, z));
+}
+
+void Game::grids_occupancy(const std::vector<u64>& world_chunks) {
+  // Each world chunk's overlay again: its voxels whose centres lie in a grid's solid voxel (so a
+  // turned wall has no holes a centre-to-centre splat would leave).
+  std::vector<u64> wc = world_chunks;
+  std::sort(wc.begin(), wc.end());
+  wc.erase(std::unique(wc.begin(), wc.end()), wc.end());
+  if (wc.empty()) return;
+  const f64 h = world_.voxel_size();
+  struct Placed {
+    const VoxelGrid* g;
+    V3 origin;
+    M3 Rt;
+    V3 lo, hi;  // the solid chunks' world box
+  };
+  std::vector<Placed> placed;
+  for (GridId id : world_.grids()) {
+    const VoxelGrid* G = world_.grid(id);
+    GridFrame fr;
+    if (!G || !world_.grid_frame(id, &fr)) continue;
+    const M3 R = to_matrix(fr.rot);
+    Placed pl{G, fr.origin, transpose(R), {INFINITY, INFINITY, INFINITY}, {-INFINITY, -INFINITY, -INFINITY}};
+    for (const auto& [k, c] : G->chunks()) {
+      if (c.uniform && !vox_solid(c.value)) continue;
+      const IVec3 cc = unkey3(k);
+      for (int q = 0; q < 8; ++q) {
+        const V3 p{h * (cc[0] * kChunk + ((q & 1) ? kChunk : 0) - 0.5), h * (cc[1] * kChunk + ((q & 2) ? kChunk : 0) - 0.5),
+                   h * (cc[2] * kChunk + ((q & 4) ? kChunk : 0) - 0.5)};
+        const V3 w = fr.origin + R * p;
+        for (int a = 0; a < 3; ++a) {
+          pl.lo[a] = std::min(pl.lo[a], w[a]);
+          pl.hi[a] = std::max(pl.hi[a], w[a]);
+        }
+      }
+    }
+    if (pl.lo.x <= pl.hi.x) placed.push_back(pl);
+  }
+  for (u64 k : wc) {
+    const IVec3 cc = unkey3(k);
+    const V3 clo{h * (cc[0] * kChunk - 0.5), h * (cc[1] * kChunk - 0.5), h * (cc[2] * kChunk - 0.5)};
+    const V3 chi{clo.x + h * kChunk, clo.y + h * kChunk, clo.z + h * kChunk};
+    std::vector<u8> bits;
+    for (const Placed& pl : placed) {
+      // (the chunk's voxels whose centres lie in the grid's box)
+      i32 a0[3], a1[3];
+      bool none = false;
+      for (int a = 0; a < 3; ++a) {
+        a0[a] = std::max(cc[a] * kChunk, static_cast<i32>(std::floor(pl.lo[a] / h + 0.5)));
+        a1[a] = std::min(cc[a] * kChunk + kChunk - 1, static_cast<i32>(std::floor(pl.hi[a] / h + 0.5)));
+        none = none || a0[a] > a1[a];
+      }
+      if (none) continue;
+      const Chunk* gch = nullptr;
+      IVec3 gcc{0, 0, 0};
+      bool have = false;
+      for (i32 x = a0[0]; x <= a1[0]; ++x)
+        for (i32 y = a0[1]; y <= a1[1]; ++y)
+          for (i32 z = a0[2]; z <= a1[2]; ++z) {
+            const V3 q = pl.Rt * (V3{h * x, h * y, h * z} - pl.origin);
+            const IVec3 v{static_cast<i32>(std::floor(q.x / h + 0.5)), static_cast<i32>(std::floor(q.y / h + 0.5)),
+                          static_cast<i32>(std::floor(q.z / h + 0.5))};
+            const IVec3 vc = chunk_of(v);
+            if (!have || vc != gcc) {
+              gch = pl.g->chunk(vc);
+              gcc = vc;
+              have = true;
+            }
+            if (!gch || !vox_solid(gch->uniform ? gch->value : gch->v[size_t(chunk_index(v))])) continue;
+            if (bits.empty()) bits.assign(kChunkVox / 8, 0);
+            const int bi = chunk_index(IVec3{x, y, z});
+            bits[size_t(bi >> 3)] = static_cast<u8>(bits[size_t(bi >> 3)] | (1u << (bi & 7)));
+          }
+    }
+    const auto ot = grid_occ_.find(k);
+    if (bits.empty()) {
+      if (ot != grid_occ_.end()) {
+        grid_occ_.erase(ot);
+        occ_changed_.insert(k);
+      }
+      continue;
+    }
+    if (ot != grid_occ_.end() && ot->second == bits) continue;
+    grid_occ_[k] = std::move(bits);
+    occ_changed_.insert(k);
+  }
+}
+
+int Game::chunk_occupancy(const IVec3& cc, u8* bits) const {
+  const Chunk* ch = world_.grid().chunk(cc);
+  const auto ot = grid_occ_.find(key3(cc[0], cc[1], cc[2]));
+  if (ot == grid_occ_.end()) {
+    // the world grid's alone
+    if (!ch) return 0;
+    if (ch->uniform) return vox_solid(ch->value) ? 1 : 0;
+    std::fill(bits, bits + kChunkVox / 8, u8{0});
+    int any = 0, all = 1;
+    for (int v = 0; v < kChunkVox; ++v) {
+      if (vox_solid(ch->v[size_t(v)])) {
+        bits[v >> 3] = static_cast<u8>(bits[v >> 3] | (1u << (v & 7)));
+        any = 1;
+      } else {
+        all = 0;
+      }
+    }
+    return all ? 1 : any ? 2 : 0;
+  }
+  // with the grids' overlay
+  std::fill(bits, bits + kChunkVox / 8, u8{0});
+  int any = 0, all = 1;
+  for (int v = 0; v < kChunkVox; ++v) {
+    const bool solid = (ch && vox_solid(ch->uniform ? ch->value : ch->v[size_t(v)])) || ((ot->second[size_t(v >> 3)] >> (v & 7)) & 1);
+    if (solid) {
+      bits[v >> 3] = static_cast<u8>(bits[v >> 3] | (1u << (v & 7)));
+      any = 1;
+    } else {
+      all = 0;
+    }
+  }
+  return all ? 1 : any ? 2 : 0;
+}
+
+std::vector<u64> Game::take_occupancy_changed() {
+  std::vector<u64> out(occ_changed_.begin(), occ_changed_.end());
+  occ_changed_.clear();
+  std::sort(out.begin(), out.end());
   return out;
 }
 

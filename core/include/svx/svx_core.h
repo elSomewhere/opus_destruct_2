@@ -7,6 +7,11 @@
  * set for an anchored voxel (a support that never moves: bedrock, foundations, kinematic
  * parts): svxc_vox(material, anchored).
  *
+ * Grids (docs/GRIDS.md): the world grid (id 0) has the world's axes; oriented grids are voxel
+ * lattices of the same voxel size placed with a frame of their own (their voxel p is centred at
+ * origin + rot (h p)), bonded to the world grid and to each other where their voxels meet. The
+ * functions without a grid argument address the world grid.
+ *
  * Buffers returned by pointer stay valid until the next call that fills the same kind of
  * buffer on the same world, or the next tick. A world is not thread-safe: call it from one
  * thread (it runs its own work on a shared pool). */
@@ -98,6 +103,30 @@ const uint8_t* svxc_save_delta(svxc_world* w, size_t* size);
 int svxc_load_delta(svxc_world* w, const uint8_t* data, size_t size);
 int svxc_modified(svxc_world* w);
 
+/* ---- grids (docs/GRIDS.md) */
+
+/* Adds an oriented grid of a dense box of voxels (as svxc_load_box, in the grid's own
+ * coordinates) placed at origin[3], turned by rot[4] (a quaternion x, y, z, w). base: part of the
+ * level (1: not saved in deltas, only its changes; a host adds the level's grids again, in the same
+ * order, after load and before svxc_load_delta) or of this session (0: saved whole). Returns its
+ * id (> 0), or 0 if refused. */
+uint32_t svxc_add_grid(svxc_world* w, const uint8_t* voxels, int nx, int ny, int nz, int ox, int oy, int oz, const double origin[3],
+                       const double rot[4], int base);
+int svxc_remove_grid(svxc_world* w, uint32_t id);
+/* The oriented grids' ids (ascending) into out (up to max): their count. */
+int svxc_grids(svxc_world* w, uint32_t* out, int max);
+int svxc_grid_frame(svxc_world* w, uint32_t id, double origin[3], double rot[4]); /* 1, or 0: none */
+/* Voxel edits and chunks in a grid's coordinates (grid 0: the world grid's). */
+int svxc_set_grid_voxels(svxc_world* w, uint32_t grid, const int32_t* xyz, const uint8_t* values, int n, unsigned flags);
+int svxc_grid_chunk_voxels(svxc_world* w, uint32_t grid, int cx, int cy, int cz, uint8_t* out);
+/* The oriented grids' chunks whose voxels changed since the last poll: count, then 4 ints each
+ * (grid id, chunk x, y, z). */
+int svxc_poll_changed_grid_chunks(svxc_world* w, const int32_t** chunks);
+int svxc_set_grid_layer(svxc_world* w, uint32_t grid, int layer, const int32_t* xyz, const uint8_t* values, int n);
+uint8_t svxc_grid_layer(svxc_world* w, uint32_t grid, int layer, int x, int y, int z);
+/* Loads on voxels of grids (grids: n ids, or NULL for the world grid's). */
+void svxc_set_grid_loads(svxc_world* w, uint64_t group, const uint32_t* grids, const int32_t* xyz, const double* forces, int n);
+
 /* ---- commands (carve / blast: the next tick; edits: now) */
 
 void svxc_carve(svxc_world* w, double x, double y, double z, double radius);
@@ -165,7 +194,7 @@ int svxc_add_system_ex(svxc_world* w, const svxc_system* s);
 
 /* ---- output */
 
-enum { SVXC_PIECE_ADDED = 0, SVXC_PIECE_REMOVED, SVXC_CRACK, SVXC_IMPACT, SVXC_DUST, SVXC_FORGOTTEN };
+enum { SVXC_PIECE_ADDED = 0, SVXC_PIECE_REMOVED, SVXC_CRACK, SVXC_IMPACT, SVXC_DUST, SVXC_FORGOTTEN, SVXC_GRID_ADDED, SVXC_GRID_REMOVED };
 enum { SVXC_END_SPLIT = 0, SVXC_END_CULLED, SVXC_END_OUT_OF_WORLD, SVXC_END_REMOVED, SVXC_END_UNLOADED };
 typedef struct svxc_event {
   int kind;       /* SVXC_PIECE_ADDED, ... */
@@ -173,6 +202,7 @@ typedef struct svxc_event {
   int64_t id;     /* the piece */
   int64_t parent; /* PIECE_ADDED: the piece it broke from (0: the static world) */
                   /* FORGOTTEN: id is the region, pos its centre, voxels its chunks */
+                  /* GRID_ADDED, GRID_REMOVED: id is the grid, pos its origin, rot its turn */
   double pos[3], vel[3], ang[3], normal[3];
   double rot[4];  /* x, y, z, w */
   double radius, strength; /* CRACK: utilization; IMPACT: energy (J); DUST: 1 crushed, 0 a shard */
@@ -193,8 +223,14 @@ typedef struct svxc_piece {
 int svxc_poll_pieces(svxc_world* w); /* the pieces now: count */
 int svxc_piece_at(svxc_world* w, int i, svxc_piece* out);
 /* A piece's voxels in its shape frame: a box of dim[0] x dim[1] x dim[2] from voxel lo
- * (index (x * dim1 + y) * dim2 + z). Returns the voxel bytes, or NULL. */
+ * (index (x * dim1 + y) * dim2 + z). Returns the voxel bytes, or NULL. (Its first shape: a piece
+ * made of several grids has a shape per grid, below.) */
 const uint8_t* svxc_piece_voxels(svxc_world* w, int64_t id, int lo[3], int dim[3]);
+/* A piece's shapes: one per grid its voxels came from. Shape k's voxels (as svxc_piece_voxels),
+ * placed in the piece's shape frame: its voxel p is at off + rot (h p) there (the first shape:
+ * the identity); grid: the id of the grid it came from. */
+int svxc_piece_shape_count(svxc_world* w, int64_t id);
+const uint8_t* svxc_piece_shape(svxc_world* w, int64_t id, int shape, int lo[3], int dim[3], double off[3], double rot[4], uint32_t* grid);
 
 /* Chunks whose voxels changed (or were evicted) since the last poll: count, then their chunk
  * coordinates (3 ints each). */
@@ -209,13 +245,19 @@ typedef struct svxc_hit {
   int hit;
   double pos[3], normal[3], distance;
   int material;
-  int voxel[3];  /* the world's voxel, or the piece's shape voxel */
-  int64_t piece; /* 0: the world */
+  int voxel[3];  /* the grid's voxel, or the piece's shape voxel */
+  int64_t piece; /* 0: a grid */
+  uint32_t grid; /* (piece 0) the grid hit */
+  int shape;     /* (a piece) its shape hit */
 } svxc_hit;
 svxc_hit svxc_raycast(svxc_world* w, const double origin[3], const double dir[3], double max_dist);
 /* Moves the box [mn, mx] by move as far as the world's voxels let it (x, then y, then z); out:
  * the move made (3) and on_ground (1). */
 void svxc_collide(svxc_world* w, const double mn[3], const double mx[3], const double move[3], double out[4]);
+/* How far the box [mn, mx] moves along move (any direction) before it touches a grid's voxels:
+ * out[0] the free fraction (1: nothing), out[1..3] the touched surface's normal, out[4] its grid
+ * id; returns 1 if it touches. */
+int svxc_sweep(svxc_world* w, const double mn[3], const double mx[3], const double move[3], double out[5]);
 
 typedef struct svxc_stats {
   double tick_ms, structural_ms, rigid_ms, stream_ms, memory_mb;
@@ -223,6 +265,7 @@ typedef struct svxc_stats {
   int64_t bonds_broken, detached_pieces, pulverized_voxels, resident_chunks;
   int64_t archived_chunks, forgotten_regions, forgotten_chunks, culled_pieces, dropped_events;
   double archive_used_mb, archive_capacity_mb;
+  int64_t grids; /* oriented grids */
 } svxc_stats;
 void svxc_get_stats(svxc_world* w, svxc_stats* out);
 /* What the world holds, by kind (bytes): see svx::MemoryReport. */

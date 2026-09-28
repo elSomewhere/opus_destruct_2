@@ -100,8 +100,8 @@ class WaterSystem final : public WorldSystem {
   std::unordered_map<u64, std::vector<VoxelLoad>> loads_;    // chunk -> its loads
   std::unordered_map<i64, u8> wet_;                          // pieces in the water last tick
   struct Samples {
-    i32 count = -1;           // (the shape's voxel count they were taken for)
-    std::vector<i32> cells;   // shape cells sampled for buoyancy
+    i32 count = -1;           // (the piece's voxel count they were taken for)
+    std::vector<i32> cells;   // cells sampled for buoyancy (its shapes' cells one after the other)
   };
   std::unordered_map<i64, Samples> samples_;                 // per piece
   u64 loads_group_ = 0;                                      // (the group its loads are in the world under)

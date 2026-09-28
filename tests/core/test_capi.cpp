@@ -334,3 +334,86 @@ TEST_CASE("capi: every tunable by name reads back what was set") {
   CHECK(svxc_set(w, "fragility", NAN) == -1);
   svxc_destroy(w);
 }
+
+TEST_CASE("capi: an oriented grid on the world grid, its events, pieces of two shapes, rays and sweeps") {
+  svxc_world* w = svxc_create(0.125);
+  // the ground, and a free concrete column standing on it
+  const int nx = 64, ny = 64, nz = 30;
+  std::vector<uint8_t> v(size_t(nx) * size_t(ny) * size_t(nz), 0);
+  auto at = [&](int x, int y, int z) -> uint8_t& { return v[(size_t(x) * size_t(ny) + size_t(y)) * size_t(nz) + size_t(z)]; };
+  for (int x = 0; x < nx; ++x)
+    for (int y = 0; y < ny; ++y) {
+      for (int z = 0; z < 4; ++z) at(x, y, z) = svxc_vox(SVXC_ROCK, 1);
+      if (x >= 28 && x < 36 && y >= 28 && y < 36)
+        for (int z = 4; z < 24; ++z) at(x, y, z) = svxc_vox(SVXC_CONCRETE, 0);
+    }
+  svxc_load_box(w, v.data(), nx, ny, nz, -32, -32, -4);
+  // a slab turned 30 degrees about z, resting on the column's top (z = 20 - 1/2 voxels)
+  std::vector<uint8_t> slab(16 * 16 * 2, svxc_vox(SVXC_CONCRETE, 0));
+  const double origin[3] = {0.0, 0.0, 0.125 * 20};
+  const double t = 0.5 * 30.0 * 3.14159265358979323846 / 180.0;
+  const double rot[4] = {0.0, 0.0, std::sin(t), std::cos(t)};
+  const uint32_t id = svxc_add_grid(w, slab.data(), 16, 16, 2, -8, -8, 0, origin, rot, 1);
+  REQUIRE(id > 0);
+  uint32_t ids[4] = {0, 0, 0, 0};
+  CHECK(svxc_grids(w, ids, 4) == 1);
+  CHECK(ids[0] == id);
+  double o[3], r[4];
+  REQUIRE(svxc_grid_frame(w, id, o, r) == 1);
+  CHECK(std::abs(o[2] - 2.5) < 1e-12);
+  CHECK(std::abs(r[2] - std::sin(t)) < 1e-12);
+  CHECK(svxc_bake(w) == 1);
+  // it stands (bonded to the column's top) and is hit where it is
+  for (int k = 0; k < 30; ++k) svxc_tick(w);
+  CHECK(svxc_poll_pieces(w) == 0);
+  const double ro[3] = {0.1, 0.1, 6.0}, rd[3] = {0.0, 0.0, -1.0};
+  const svxc_hit hit = svxc_raycast(w, ro, rd, 20.0);
+  REQUIRE(hit.hit);
+  CHECK(hit.grid == id);
+  CHECK(std::abs(hit.pos[2] - (2.5 + 1.5 * 0.125)) < 1e-6);
+  const double mn[3] = {-0.1, -0.1, 4.0}, mx[3] = {0.1, 0.1, 4.5}, mv[3] = {0.0, 0.0, -3.0};
+  double sw[5];
+  REQUIRE(svxc_sweep(w, mn, mx, mv, sw) == 1);
+  CHECK(static_cast<uint32_t>(sw[4]) == id);
+  CHECK(std::abs(4.0 + sw[0] * -3.0 - (2.5 + 1.5 * 0.125)) < 1e-6);
+  // the column's foot goes: column and slab fall as one piece of two shapes
+  std::vector<int32_t> xyz;
+  std::vector<uint8_t> air;
+  for (int x = -4; x < 4; ++x)
+    for (int y = -4; y < 4; ++y) {
+      xyz.insert(xyz.end(), {x, y, 0});
+      air.push_back(0);
+    }
+  CHECK(svxc_set_voxels(w, xyz.data(), air.data(), static_cast<int>(air.size()), 0) == 64);
+  svxc_tick(w);
+  const int np = svxc_poll_pieces(w);
+  int two = 0;
+  for (int i = 0; i < np; ++i) {
+    svxc_piece p;
+    REQUIRE(svxc_piece_at(w, i, &p) == 1);
+    if (svxc_piece_shape_count(w, p.id) != 2) continue;
+    ++two;
+    int lo[3], dim[3];
+    double off[3], sr[4];
+    uint32_t g = 99;
+    REQUIRE(svxc_piece_shape(w, p.id, 1, lo, dim, off, sr, &g) != nullptr);
+    CHECK(g == id);
+    CHECK(std::abs(std::abs(sr[2]) - std::sin(t)) < 1e-9);
+  }
+  CHECK(two == 1);
+  // events: the grid came, and goes
+  svxc_poll_events(w);
+  CHECK(svxc_remove_grid(w, id) == 1);
+  const int ne = svxc_poll_events(w);
+  bool removed = false;
+  for (int i = 0; i < ne; ++i) {
+    svxc_event e;
+    svxc_event_at(w, i, &e);
+    removed = removed || (e.kind == SVXC_GRID_REMOVED && e.id == static_cast<int64_t>(id));
+  }
+  CHECK(removed);
+  svxc_stats s;
+  svxc_get_stats(w, &s);
+  CHECK(s.grids == 0);
+  svxc_destroy(w);
+}

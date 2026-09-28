@@ -20,6 +20,11 @@ three more things, all interacting with the structures:
 
 All of it works in streamed and bounded worlds alike.
 
+Structures need not follow the voxel lattice. **Oriented grids** give a structure a lattice of
+its own, at any position and rotation: a building at an angle, a diagonal brace, a tilted ramp.
+They are simulated like the world grid in every respect, bonded to it and to each other where
+they meet, with no voxel stepping ([`docs/GRIDS.md`](docs/GRIDS.md)).
+
 - **Video:** [`docs/media/tower_collapse.mp4`](docs/media/tower_collapse.mp4): the tower losing its
   two west rows of ground columns (`svx_engine_demo --world tower --scenario pillars`, CPU
   renderer).
@@ -35,6 +40,8 @@ All of it works in streamed and bounded worlds alike.
   - Bonds fail by fibre-stress checks: tension, flexure, crushing, Mohr–Coulomb shear.
   - Falling pieces are rigid bodies that keep their bonds and break on impact, progressively,
     part by part.
+- **Structures off the lattice:** [`docs/GRIDS.md`](docs/GRIDS.md): oriented grids, the
+  junctions that bond them, their persistence, streaming and API.
 - **Fire, smoke and water:** [`docs/ENV.md`](docs/ENV.md). `svx_env` is built on the core's
   public extension points (voxel layers, damage, loads, piece forces, systems), so the core
   stays a clean destruction and structural-integrity engine.
@@ -71,11 +78,13 @@ npm run dev -- --port 5190           # COOP/COEP headers are set (SharedArrayBuf
 open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engine=mock without it)
 ```
 
-- **Worlds:** `?world=rooms|city|tower|yard&seed=N` (`city` is a streamed 1 km² city with timber
-  floors in a third of its buildings and ponds; `yard` has one of each construction: a timber
-  house, a stone tower, a greenhouse, a steel shed, a reinforced wall, a reservoir and a timber
-  water tower), or a Freedoom WAD via the panel (doors, lifts, floors, platforms, crushers and
-  stairs work).
+- **Worlds:** `?world=rooms|city|tower|yard|angles&seed=N`, or a Freedoom WAD via the panel
+  (doors, lifts, floors, platforms, crushers and stairs work).
+  - `city`: a streamed 1 km² city, with timber floors in a third of its buildings, and ponds.
+  - `yard`: one of each construction: a timber house, a stone tower, a greenhouse, a steel
+    shed, a reinforced wall, a reservoir and a timber water tower.
+  - `angles`: structures in oriented grids: a turned tower, a diagonal bridge deck, a ramp, a
+    cross-braced steel portal, turned masonry walls, crates and a leaning monolith.
 - **Controls:** WASD move, mouse look, Space jump, Shift run; 1 to 5 or the wheel select pistol,
   shotgun, rocket launcher, flamethrower, water hose, click fires; E uses, V toggles noclip, R respawns; G cycles debug
   views (bond utilization, fragments); H toggles the HUD and its tick timeline; Esc opens the
@@ -91,12 +100,15 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
   - `node scripts/fire-wasm.mjs http://localhost:5190/ OUT 60`: sets the yard's timber house
     on fire, then hoses it down.
   - `node scripts/water-wasm.mjs http://localhost:5190/ OUT`: breaches the yard's reservoir.
+  - `node scripts/angles-wasm.mjs http://localhost:5190/ OUT`: the `angles` world. It checks
+    that the turned structures draw, that a box stops at the 45° wall and the player stands on
+    the ramp, then blasts them.
 
 ## Tools (`build/native-release/tools/`)
 
 | Tool | Purpose |
 |---|---|
-| `svx_engine_demo --world tower\|rooms\|slab\|chimney\|bridge\|city [--scenario S] [--seconds T] [--threads N] [--frames DIR --fps F --res WxH --cam x,y,z --look x,y,z]` | Headless scenario run with a CPU renderer for frames. Tower scenarios: `pillars` (both west rows of ground columns), `side`, `core`, `all`, `rockets`. Reports pieces, breaks, per-phase rigid costs, awake speeds, piece sizes and the session hash. |
+| `svx_engine_demo --world tower\|rooms\|slab\|chimney\|bridge\|yard\|angles\|city [--scenario S] [--seconds T] [--threads N] [--turn DEG] [--frames DIR --fps F --res WxH --cam x,y,z --look x,y,z]` | Headless scenario run with a CPU renderer for frames. Tower scenarios: `pillars` (both west rows of ground columns), `side`, `core`, `all`, `rockets`. `--turn DEG` stands a procedural world's structure in a grid turned about the vertical. Reports pieces, breaks, per-phase rigid costs, awake speeds, piece sizes and the session hash. |
 | `svx_replay record\|play --world W --seconds S [--out F \| --log F] [--threads T]` | Records and replays sessions from command logs; checkpoint hashes are the determinism check. |
 | `svx_map_check [--threads T] [--movers] WAD...` | Imports, bakes and design-checks every map, then runs it idle. |
 | `svx_soak [--world city\|tower\|rooms\|yard] [--wad F --map M] [--minutes M] [--archive-mb MB] [--forget-s S] [--no-shoot] [--no-env]` | Long sessions and their memory: a streamed city crossed for minutes with continuous destruction, fires and water (or a bounded level shot at), printing the world's memory by kind (the environment systems included), the change archive, forgotten regions and the process's physical footprint. |
@@ -115,8 +127,8 @@ core/      svx_core: the destruction physics (docs/CORE.md). Depends on the stan
   include/svx/svx_core.h        the C API
   base/      types, vectors, deterministic parallel pool, diagnostics
   material/  the material registry (strengths, fracture energies, rubble sizes)
-  world/     voxel grid, chunk sources, World (structures, pieces and their fracture, streaming,
-             persistence, queries)
+  world/     voxel grids (the world grid, oriented grids and their junctions), chunk sources,
+             World (structures, pieces and their fracture, streaming, persistence, queries)
   frag/      fragments (pre-scored rubble pieces per chunk)
   solve/     smoothed-aggregation multigrid, PCG
   stress/    fragment-graph stress problems, bond failure checks
@@ -132,5 +144,5 @@ examples/  minimal hosts of the core (C++, C)
 tools/     command-line tools (game level runs, replays, map checks, benches), WASM modules
 tests/     core/ (links svx_core only), env/ (svx_env) and game/ doctest suites
 web/       TypeScript + Vite front end: worker host, WebGPU renderer, FPS sandbox
-docs/      the core guide, design, game API, v1 history
+docs/      the core guide, design, grids, environment, game API, v1 history
 ```

@@ -1,6 +1,7 @@
 #include "svx/game/procgen.hpp"
 
 #include <algorithm>
+#include <cmath>
 
 #include "svx/game/reinforce.hpp"
 
@@ -161,7 +162,83 @@ void yard(VoxelGrid& g) {
   }
 }
 
+// A turn of deg degrees about the unit axis (x, y, z).
+Quat turn(f64 deg, f64 x, f64 y, f64 z) {
+  const f64 th = 0.5 * deg * 3.14159265358979323846 / 180.0, s = std::sin(th);
+  return Quat{x * s, y * s, z * s, std::cos(th)};
+}
+
+// Structures off the lattice, each in a grid of its own (docs/GRIDS.md): what they stand on or are
+// cast into is the world grid's (or another grid's), their joints are the grids' junctions.
+void angles(ProcWorld& w, Rng& rng) {
+  VoxelGrid& g = w.grid;
+  const f64 h = g.h;
+  const Vox rc = make_vox(MaterialId::Rc, false), steel = make_vox(MaterialId::Steel, false);
+  const Vox masonry = make_vox(MaterialId::Masonry, false), wood = make_vox(MaterialId::Wood, false);
+  const Vox stone = make_vox(MaterialId::Stone, false);
+  // (a grid at world voxel coordinates o, turned by r: its voxel p's centre is h (o + R p))
+  auto place = [&](const V3& o, const Quat& r) -> VoxelGrid& {
+    ProcGrid pg;
+    pg.frame = GridFrame{V3{h * o.x, h * o.y, h * o.z}, r};
+    pg.grid.h = h;
+    w.grids.push_back(std::move(pg));
+    return w.grids.back().grid;
+  };
+  // A frame building (2 x 2 bays, 5 storeys) turned 30 degrees about the vertical.
+  building(place({80, 200, 0}, turn(30, 0, 0, 1)), rng, -27, -27, 2, 2, 5, 26, 22);
+  // A bridge deck (17 m, 3 m wide, 0.5 m) running diagonally, cast 2 voxels into the tops of two
+  // piers of the world grid.
+  for (const auto& [px, py] : {std::pair{216, 160}, std::pair{308, 224}}) {
+    box(g, px, px + 16, py, py + 16, 0, 50, rc);
+    reinforce(g, {px, py, 0}, {px + 16, py + 16, 50});
+  }
+  {
+    VoxelGrid& d = place({270, 200, 48}, turn(35, 0, 0, 1));
+    box(d, -68, 68, -12, 12, 0, 4, rc);
+    reinforce(d, {-68, -12, 0}, {68, 12, 4});
+  }
+  // A ramp (9 m, 3 m wide) rising at 15 degrees from the ground (its foot a voxel into it) onto a
+  // block of the world grid.
+  box(g, 100, 112, 48, 72, 0, 18, rc);
+  reinforce(g, {100, 48, 0}, {112, 72, 18});
+  {
+    VoxelGrid& r = place({40, 60, -1}, turn(-15, 0, 1, 0));
+    box(r, 0, 72, -12, 12, 0, 3, rc);
+    reinforce(r, {0, -12, 0}, {72, 12, 3});
+  }
+  // A steel portal (6 m span, 5.5 m high) with a cross brace: two diagonal bars in grids of their
+  // own crossing at mid-height, each running from low on one column to high on the other through
+  // both (welded: a junction is as strong as the faces that overlap).
+  for (int x : {160, 208}) box(g, x, x + 3, 40, 43, 0, 44, steel);
+  box(g, 160, 211, 40, 43, 44, 47, steel);
+  const f64 brace = std::atan2(36.0, 51.0) * 180.0 / 3.14159265358979323846;
+  for (f64 a : {-brace, brace}) box(place({185, 41, 22}, turn(a, 0, 1, 0)), -32, 32, -1, 2, -1, 2, steel);
+  // Masonry walls (8 m, 3 m high, 3 voxels thick) turned 20 degrees (with a doorway under a
+  // masonry lintel) and 45 degrees.
+  {
+    VoxelGrid& m = place({290, 50, 0}, turn(20, 0, 0, 1));
+    box(m, -32, 32, -1, 2, 0, 24, masonry);
+    box(m, -4, 4, -1, 2, 0, 16, kAir);
+  }
+  box(place({290, 110, 0}, turn(45, 0, 0, 1)), -32, 32, -1, 2, 0, 24, masonry);
+  // Timber crates (1 m, walls one voxel) at yaws of their own, one stacked on another.
+  const std::array<std::array<f64, 4>, 5> crates{{{170, 120, 0, 10}, {190, 126, 0, 25}, {212, 118, 0, 40}, {182, 144, 0, 55},
+                                                  {170, 120, 8, 50}}};
+  for (const auto& c : crates) {
+    VoxelGrid& b = place({c[0], c[1], c[2]}, turn(c[3], 0, 0, 1));
+    box(b, -4, 4, -4, 4, 0, 8, wood);
+    box(b, -3, 3, -3, 3, 1, 7, kAir);
+  }
+  // A stone monolith (1 x 0.5 x 5 m) leaning 12 degrees, its foot 2 voxels in the ground.
+  box(place({350, 140, 0}, turn(30, 0, 0, 1) * turn(12, 1, 0, 0)), -4, 4, -2, 2, -2, 40, stone);
+}
+
 }  // namespace
+
+void add_grids(World& world, std::vector<ProcGrid>&& grids) {
+  for (ProcGrid& pg : grids) world.add_grid(pg.frame, std::move(pg.grid));
+  grids.clear();
+}
 
 ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h) {
   ProcWorld w;
@@ -230,6 +307,13 @@ ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h) {
     g.hi = {176, 64, 60};
     w.spawn_pos = {h * 88, h * 4, -0.5 * h + 0.02};
     w.spawn_dir = {0, 1, 0.2};
+  } else if (kind == "angles") {
+    ground(g, 0, 384, 0, 288, 4);
+    angles(w, rng);
+    g.lo = {0, 0, -4};
+    g.hi = {384, 288, 128};
+    w.spawn_pos = {h * 190, h * 16, -0.5 * h + 0.02};
+    w.spawn_dir = {0, 1, 0.1};
   } else if (kind == "tower") {
     ground(g, -160, 320, -160, 320, 4);  // (60 m square: room for the rubble)
     building(g, rng, 40, 40, 3, 3, 10, 26, 22);

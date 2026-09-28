@@ -125,6 +125,7 @@ void VoxelGrid::compact_changed() {
     c.v = {};
     c.broken = {};
     c.strength = {};
+    std::vector<u32>().swap(c.jbroken);
     c.uniform = true;
     c.value = kAir;
     c.free = 0;
@@ -175,6 +176,31 @@ void VoxelGrid::break_bond(const IVec3& p, int axis) {
   // (a broken bond changes no surface: the chunk is not reported changed)
   note_modified(chunk_of(p));
   const IVec3 bc = chunk_of(p);
+  note_voxels_modified(key3(bc[0], bc[1], bc[2]));
+}
+
+bool VoxelGrid::junction_broken(const IVec3& p, int face, int sub) const {
+  const Chunk* c = chunk(chunk_of(p));
+  if (!c || c->jbroken.empty()) return false;
+  const int li = chunk_index(p);
+  const u32 whole = junction_code(li, face, kJunctionFace);
+  const u32 one = junction_code(li, face, sub);
+  return std::binary_search(c->jbroken.begin(), c->jbroken.end(), one) ||
+         (sub != kJunctionFace && std::binary_search(c->jbroken.begin(), c->jbroken.end(), whole));
+}
+
+void VoxelGrid::break_junction(const IVec3& p, int face, int sub) {
+  // (like a broken bond: a voxel in no chunk, or in an all-air one, has no junction to break)
+  const auto it = chunks_.find(key3(p[0] >> kChunkBits, p[1] >> kChunkBits, p[2] >> kChunkBits));
+  if (it == chunks_.end()) return;
+  Chunk& c = it->second;
+  if (c.uniform && !vox_solid(c.value)) return;
+  const u32 code = junction_code(chunk_index(p), face, sub);
+  const auto at = std::lower_bound(c.jbroken.begin(), c.jbroken.end(), code);
+  if (at != c.jbroken.end() && *at == code) return;
+  c.jbroken.insert(at, code);
+  const IVec3 bc = chunk_of(p);
+  note_modified(bc);
   note_voxels_modified(key3(bc[0], bc[1], bc[2]));
 }
 
@@ -312,7 +338,7 @@ i64 VoxelGrid::solid_count() const {
 i64 VoxelGrid::memory_bytes() const {
   i64 b = 0;
   for (const auto& [k, c] : chunks_) {
-    b += sizeof(Chunk) + i64(c.v.size()) + i64(c.broken.size()) + i64(c.strength.size());
+    b += sizeof(Chunk) + i64(c.v.size()) + i64(c.broken.size()) + i64(c.strength.size()) + 4 * i64(c.jbroken.capacity());
     for (const auto& l : c.layer) b += i64(l.size());
   }
   return b;
@@ -352,7 +378,7 @@ void VoxelGrid::compact() {
   // mixed chunks whose voxels are all equal (and carry no broken bonds) become uniform
   for (auto it = chunks_.begin(); it != chunks_.end();) {
     Chunk& c = it->second;
-    if (!c.uniform && c.broken.empty() && c.strength.empty()) {
+    if (!c.uniform && c.broken.empty() && c.strength.empty() && c.jbroken.empty()) {
       const Vox v0 = c.v[0];
       bool same = true;
       for (Vox v : c.v)
@@ -369,7 +395,7 @@ void VoxelGrid::compact() {
         c.free = vox_free(v0) ? kChunkVox : 0;
       }
     }
-    if (c.uniform && c.value == kAir && c.broken.empty() && c.strength.empty() && !c.has_layers()) it = chunks_.erase(it);
+    if (c.uniform && c.value == kAir && c.broken.empty() && c.strength.empty() && c.jbroken.empty() && !c.has_layers()) it = chunks_.erase(it);
     else ++it;
   }
 }
@@ -493,12 +519,14 @@ bool upgrade_v1(std::vector<u8>* rec) {
 
 // A v2 record (voxels, broken bonds, strength classes) as a v3 record (no layers).
 void upgrade_v2(std::vector<u8>* rec) { rec->push_back(0); }
+// A v3 record as a v4 record (no broken junctions).
+void upgrade_v3(std::vector<u8>* rec) { rec->insert(rec->end(), 4, u8(0)); }
 
 constexpr u32 kDeltaMagic = 0x44585653;  // "SVXD"
 // v1: per chunk voxels, broken bonds, (unused) damage and offset lists; v2: voxels, broken
-// bonds, strength classes; v3: and the persistent layers by name. Records are written as v3;
-// v1 and v2 deltas are read.
-constexpr u32 kDeltaVersion = 3;
+// bonds, strength classes; v3: and the persistent layers by name; v4: and the broken junction
+// samples (bonds to other grids). Records are written as v4; v1 to v3 deltas are read.
+constexpr u32 kDeltaVersion = 4;
 
 }  // namespace
 
@@ -528,6 +556,10 @@ std::vector<u8> VoxelGrid::chunk_record(u64 k) const {
     for (char ch : name) o.u8_(static_cast<u8>(ch));
     o.rle(c->layer[size_t(L)]);
   }
+  // broken junction samples
+  const u32 nj = c ? static_cast<u32>(c->jbroken.size()) : 0u;
+  o.u32_(nj);
+  for (u32 k = 0; k < nj; ++k) o.u32_(c->jbroken[k]);
   return std::move(o.b);
 }
 
@@ -559,6 +591,7 @@ bool VoxelGrid::unpack_delta(const std::vector<u8>& bytes, std::vector<std::pair
     for (int i = 0; i < 8; ++i) key |= u64(rec[i]) << (8 * i);
     if (version == 1 && !upgrade_v1(&rec)) return false;
     if (version == 2) upgrade_v2(&rec);
+    if (version <= 3) upgrade_v3(&rec);
     out.emplace_back(key, std::move(rec));
   }
   if (!in.ok) return false;
@@ -580,6 +613,7 @@ struct ChunkDelta {
   u64 key = 0;
   std::vector<u8> vox, brk, str;
   std::vector<std::pair<std::string, std::vector<u8>>> layers;
+  std::vector<u32> jbroken;
 };
 
 bool parse_record(const std::vector<u8>& rec, ChunkDelta* cd) {
@@ -600,6 +634,15 @@ bool parse_record(const std::vector<u8>& rec, ChunkDelta* cd) {
     std::vector<u8> data;
     if (!in.rle(data, kChunkVox)) return false;
     cd->layers.emplace_back(std::move(name), std::move(data));
+  }
+  // broken junction samples: sorted, of voxels of the chunk, faces 0..5
+  const u32 nj = in.u32_();
+  if (!in.ok || u64(nj) * 4 > rec.size() - in.p) return false;
+  cd->jbroken.resize(nj);
+  for (u32 k = 0; k < nj && in.ok; ++k) {
+    const u32 c = in.u32_();
+    if ((c >> 9) >= u32(kChunkVox) || ((c >> 6) & 7) >= 6 || (k > 0 && c <= cd->jbroken[k - 1])) return false;
+    cd->jbroken[k] = c;
   }
   if (!in.ok || in.p != rec.size()) return false;
   // valid voxel values only (air, or a material; not "anchored air")
@@ -645,6 +688,7 @@ bool VoxelGrid::apply_record(const std::vector<u8>& rec, u64* key_out) {
     if (anys) c.strength = std::move(cd.str);
     else c.strength = {};
   }
+  c.jbroken = std::move(cd.jbroken);
   // persistent layers: the record's (those it does not hold are zero); transient ones stay
   for (size_t L = 0; L < layers_.size(); ++L) {
     if (!layers_[L].persistent) continue;
@@ -708,6 +752,7 @@ void VoxelGrid::insert_chunk(const IVec3& cc, std::vector<Vox>&& voxels) {
   c.v = std::move(voxels);
   c.broken = {};
   c.strength = {};
+  std::vector<u32>().swap(c.jbroken);
   c.uniform = false;
   c.solid = 0;
   c.free = 0;

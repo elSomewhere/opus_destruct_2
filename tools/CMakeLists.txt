@@ -34,6 +34,7 @@ if(SVX_WASM)
     _svx_last_error _svx_save_delta _svx_load_delta _svx_modified _svx_texture_count _svx_texture_size _svx_texture_name _svx_texture_rgba _svx_bake
     _svx_world_info _svx_tick _svx_viewer _svx_carve _svx_blast _svx_use _svx_raycast _svx_collide _svx_poll_meshes
     _svx_mesh_info _svx_mesh_vertices _svx_mesh_indices _svx_poll_removed _svx_removed_chunk _svx_chunk_occupancy
+    _svx_poll_removed_grid _svx_removed_grid_chunk _svx_poll_occupancy _svx_occupancy_chunk
     _svx_poll_events _svx_event_info _svx_event_vertices _svx_event_indices _svx_stats
     _svx_debris _svx_debris_data _svx_set_debris _svx_set_gpu_displacement _svx_poll_fields
     _svx_field_info _svx_field_data _svx_poll_far _svx_far_info _svx_far_vertices _svx_far_indices

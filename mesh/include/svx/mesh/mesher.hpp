@@ -32,6 +32,7 @@ struct ChunkMesh {
   IVec3 chunk{0, 0, 0};
   std::vector<MeshVertex> vertices;
   std::vector<u32> indices;
+  u32 grid = 0;  // the grid of the chunk (0: the world grid; an oriented grid's mesh is placed in the world by its host)
 };
 
 struct MeshOptions {

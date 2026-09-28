@@ -42,6 +42,16 @@ settles and sleeps.
     strength class multiplies it (§3, design pass).
 - **Persistent state is the voxel grid**: materials, a broken bit per voxel face, design classes.
   Fragments and bonds are caches derived from it.
+- **Oriented grids** ([`GRIDS.md`](GRIDS.md)) are voxel lattices with a position and rotation of
+  their own, fragmented in their own lattice. Where two grids' voxels meet, **junctions** bond
+  them:
+  - The faces of the newer grid (which owns any overlap) are sampled 3 × 3 per face, pushed half
+    a voxel out; samples landing in the other grid's solid are the interface.
+  - A junction bond's section is its samples projected on their mean normal, like a lattice
+    bond's faces.
+  - It breaks sample by sample; the broken samples are kept on the voxels whose faces they
+    sample.
+  - A world of the world grid alone computes exactly as before.
 
 ## 2. Stress: one elastic equilibrium solve per body
 
@@ -66,6 +76,14 @@ linear-elastic equilibrium on the fragment graph:
   - Static structures converge over ticks under a work budget (stress spreads through a building
     over a few frames) and are patched in place: removed bonds are subtracted from K, detached
     nodes retired, new fragments appended.
+  - Small structures (under 160 fragments) are preconditioned by block-Jacobi.
+    - One whose solve does not converge meets a near-mechanism: a frame left hanging by one face
+      of its support, or a member held by a sliver of junction. It is solved with its multigrid
+      from then on (rigid-body coarse spaces, the coarsest level exact), and so is still judged.
+      Before, such a solve never converged, so the frame hung there for good.
+    - What converges in neither after `solve_restarts` restarts is left alone rather than solved
+      every tick (`WorldStats::solves_abandoned`).
+    - The design pass retries a stagnating solve with the multigrid the same way.
   - Pieces are solved within the substep (exactly, for small ones).
 
 ## 3. Failure of static structures
@@ -97,7 +115,9 @@ linear-elastic equilibrium on the fragment graph:
 
 ## 4. Rigid pieces
 
-Each piece owns a voxel shape in its own grid-aligned frame, its fragments and its bond graph.
+Each piece owns its voxels in their grids' lattices (one shape per grid it came from; the first
+shape's lattice is the piece's frame), its fragments and its bond graph: the lattice bonds within
+each shape and the junctions between its shapes.
 
 - **Contacts.** Surface samples (inset corners of exposed faces; more for larger pieces) are
   tested against the world grid and other pieces' shapes. Normals come from the face of least
@@ -232,3 +252,5 @@ by name, see [`CORE.md`](CORE.md)):
 | min_body_voxels, min_fracture_frags | 16, 8 | dust below; unbreakable rubble below |
 | max_bodies | 3,000 | beyond: the smallest sleeping pieces are culled (the game fades them) |
 | substeps, iterations | 2, 10 | rigid solver |
+| junction_samples, junction_reach | 3, 0.5 | samples per face edge and how far out they reach (voxels) at junctions between grids |
+| solve_restarts | 60 | unconverged restarts of a structure's solve (each after 120 iterations) before it is left alone |

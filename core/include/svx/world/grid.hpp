@@ -5,7 +5,10 @@
 // never simulated). A bond exists between every pair of face-adjacent solid voxels unless both
 // are anchored or it is marked broken (bit per voxel and +axis, allocated lazily per chunk).
 // Design strength classes (the world's design pass) are a lazily allocated byte per voxel.
-// Voxel p is the cube h (p - 1/2) .. h (p + 1/2) (its centre is h p, metres).
+// Voxel p is the cube h (p - 1/2) .. h (p + 1/2) (its centre is h p, metres, in the grid's own
+// frame: a world holds several grids, each placed with a frame of its own, World::add_grid).
+// Where a voxel's face meets another grid's voxels, the world bonds them through samples of the
+// face (junctions); the samples that broke are kept per voxel (sparse, per chunk).
 #pragma once
 
 #include <array>
@@ -59,6 +62,15 @@ inline IVec3 unkey3(u64 k) {
           static_cast<i32>(i64(k & 0x1FFFFF) - off)};
 }
 
+// Junction samples of a voxel's face (the bonds between grids, World): face = axis * 2 + (1 for
+// the +axis face), sub = the sample (0 .. kJunctionSubs - 1), or kJunctionFace for every sample
+// of the face.
+constexpr int kJunctionSubs = 63;
+constexpr int kJunctionFace = 63;
+inline u32 junction_code(int local_index, int face, int sub) {
+  return (static_cast<u32>(local_index) << 9) | (static_cast<u32>(face) << 6) | static_cast<u32>(sub);
+}
+
 // Per-voxel byte channels besides the voxel itself (the world's damage, a fire's heat, water,
 // ...): registered by name; a chunk allocates a layer's array when it first holds a nonzero
 // value there, and drops it when the layer is all zero again.
@@ -86,6 +98,7 @@ struct Chunk {
   i32 free = 0;                 // ... of them not anchored: structure, not rock (mixed chunks)
   std::array<std::vector<u8>, kMaxLayers> layer;  // kChunkVox each when the layer has values here
   std::array<u16, kMaxLayers> layer_count{};      // nonzero values per layer
+  std::vector<u32> jbroken;     // broken junction samples of its voxels (junction_code), sorted
   i32 free_count() const { return uniform ? (vox_free(value) ? kChunkVox : 0) : free; }
   bool has_layers() const {
     for (const auto& l : layer)
@@ -111,6 +124,11 @@ class VoxelGrid {
 
   u8 strength(const IVec3& p) const;  // design strength class (0: as the material)
   void set_strength(const IVec3& p, u8 cls);
+
+  // Junctions (bonds to other grids): whether sample `sub` of face `face` of voxel p no longer
+  // bonds (it, or the whole face, broke), and breaking one (sub kJunctionFace: the whole face).
+  bool junction_broken(const IVec3& p, int face, int sub) const;
+  void break_junction(const IVec3& p, int face, int sub);
 
   // Layers: add_layer returns a layer's index (the existing one for a name already added).
   int add_layer(const LayerSpec& spec);

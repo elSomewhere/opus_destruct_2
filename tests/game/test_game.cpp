@@ -1,4 +1,5 @@
 // Game core (plan Phases 3-6): determinism, queries, persistence round trip.
+#include <algorithm>
 #include <cmath>
 #include <vector>
 
@@ -268,4 +269,65 @@ TEST_CASE("game: burning pieces are meshed again (charring, glow); charring chun
   }
   CHECK(decor > 0);
   CHECK(remesh > 0);
+}
+
+TEST_CASE("game: an oriented grid is meshed where its frame puts it, felt by the client's collision, and goes with it") {
+  const f64 h = 0.125;
+  auto box = [](VoxelGrid& g, const IVec3& lo, const IVec3& hi, Vox v) {
+    for (i32 x = lo[0]; x < hi[0]; ++x)
+      for (i32 y = lo[1]; y < hi[1]; ++y) g.fill_column(x, y, lo[2], hi[2], v);
+  };
+  Game g;
+  VoxelGrid w;
+  w.h = h;
+  box(w, {-32, -32, -4}, {96, 96, 0}, make_vox(MaterialId::Rock, true));
+  w.compact();
+  g.load(std::move(w), V3{0, 0, 0}, V3{1, 0, 0});
+  // a masonry wall (8 m, 3 voxels thick, 3 m high) turned 45 degrees about z, centred at (6, 6)
+  VoxelGrid wall;
+  wall.h = h;
+  box(wall, {-32, -1, 0}, {32, 2, 24}, make_vox(MaterialId::Masonry, false));
+  wall.compact();
+  const f64 s = std::sqrt(0.5);
+  const Quat rot{0.0, 0.0, std::sin(0.125 * 3.14159265358979323846), std::cos(0.125 * 3.14159265358979323846)};
+  const V3 origin{6.0, 6.0, 0.0};
+  const GridId id = g.world().add_grid(GridFrame{origin, rot}, std::move(wall));
+  REQUIRE(id != 0);
+  g.bake();
+  g.tick();
+  // its chunks' meshes: its id, and vertices on its turned faces (in the wall's frame: across it
+  // within its half thickness, along it within its half length)
+  i32 meshes = 0;
+  bool placed = true;
+  for (const ChunkMesh& m : g.take_meshes({})) {
+    if (m.grid != id) continue;
+    ++meshes;
+    for (const MeshVertex& v : m.vertices) {
+      const V3 d = V3{v.pos[0], v.pos[1], v.pos[2]} - origin;
+      const f64 along = s * (d.x + d.y), across = s * (d.y - d.x);
+      placed = placed && std::abs(across) <= 1.5 * h + 1e-4 && std::abs(along + 0.5 * h) <= 32 * h + 1e-4 && d.z >= -0.5 * h - 1e-4 &&
+               d.z <= 23.5 * h + 1e-4;
+    }
+  }
+  CHECK(meshes > 0);
+  CHECK(placed);
+  // the client's collision: the world voxel at the wall's centre is solid, one 1 m off it is not
+  const std::vector<u64> occ = g.take_occupancy_changed();
+  const IVec3 on{48, 48, 8}, off{42, 54, 8};
+  const IVec3 cc = chunk_of(on);
+  CHECK(chunk_of(off) == cc);
+  CHECK(std::find(occ.begin(), occ.end(), key3(cc[0], cc[1], cc[2])) != occ.end());
+  std::vector<u8> bits(kChunkVox / 8);
+  REQUIRE(g.chunk_occupancy(cc, bits.data()) == 2);
+  auto bit = [&](const IVec3& p) { return (bits[size_t(chunk_index(p) >> 3)] >> (chunk_index(p) & 7)) & 1; };
+  CHECK(bit(on) == 1);
+  CHECK(bit(off) == 0);
+  // removed: its meshes and its occupancy go
+  REQUIRE(g.world().remove_grid(id));
+  g.tick();
+  g.take_meshes({});
+  CHECK(static_cast<i32>(g.take_removed_grid_chunks().size()) == meshes);
+  const std::vector<u64> occ2 = g.take_occupancy_changed();
+  CHECK(std::find(occ2.begin(), occ2.end(), key3(cc[0], cc[1], cc[2])) != occ2.end());
+  CHECK(g.chunk_occupancy(cc, bits.data()) == 0);
 }

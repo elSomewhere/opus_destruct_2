@@ -15,6 +15,7 @@
 #include <array>
 #include <functional>
 #include <memory>
+#include <set>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -148,8 +149,19 @@ class Game {
   std::function<std::vector<MoverTrigger>(const V3& at)> shot_resolver;
 
   // Output for the front end.
+  // (the oriented grids' chunks among them: ChunkMesh::grid their id, their vertices in world
+  // coordinates, docs/GRIDS.md)
   std::vector<ChunkMesh> take_meshes(const MeshOptions& base);
   std::vector<u64> take_removed_chunks();
+  // The oriented grids' chunks whose meshes go (emptied, or their grid removed).
+  std::vector<GridChunk> take_removed_grid_chunks();
+  // The player's collision occupancy of a world chunk (kChunkVox / 8 bytes of bits: 0 no chunk,
+  // 1 all solid, 2 mixed): the world grid's voxels and the oriented grids' there (a turned voxel
+  // as the world voxel its centre is in: a turned wall is felt a little stepped, never leaky for a
+  // body wider than a voxel).
+  int chunk_occupancy(const IVec3& chunk, u8* bits) const;
+  // World chunks whose occupancy changed through the oriented grids since the last call.
+  std::vector<u64> take_occupancy_changed();
   std::vector<ChunkMesh> take_far_meshes();
   std::vector<std::array<i32, 2>> take_far_removed();
   std::vector<GameEvent> take_events();
@@ -191,7 +203,10 @@ class Game {
   bool blocks_player(const Mover& m, i32 rows) const;
   void check_movers_hit();  // (after a tick: carves and blasts destroy the movers they hollowed)
   void drain_world_events();
+  void grids_occupancy(const std::vector<u64>& world_chunks);  // (the grids' overlay of these world chunks, again)
+  void grid_box_chunks(const V3& lo, const V3& hi, std::vector<u64>* out) const;  // (world chunks of a world box)
   ChunkMesh piece_mesh(const Body& b) const;
+  ChunkMesh shape_mesh(const Body& b, size_t shape) const;
   void far_update();
   ChunkMesh far_mesh(i32 tx, i32 ty) const;
 
@@ -216,6 +231,13 @@ class Game {
   f64 wet_clock_ = 0.0;
   std::vector<u64> removed_chunks_;
   f64 mesh_ms_ = 0.0;
+  // oriented grids: the chunks with a mesh at the front end, the ones to drop, each grid's world
+  // box (its occupancy goes with it); the grids' occupancy overlay per world chunk
+  std::set<std::pair<GridId, u64>> grid_meshed_;
+  std::vector<GridChunk> removed_grid_chunks_;
+  std::unordered_map<GridId, std::pair<V3, V3>> grid_box_;
+  std::unordered_map<u64, std::vector<u8>> grid_occ_;  // world chunk -> kChunkVox bits
+  std::unordered_set<u64> occ_changed_;
 
   struct View {                              // a piece's mesh frame: sent at (x0, q0)
     V3 x0;

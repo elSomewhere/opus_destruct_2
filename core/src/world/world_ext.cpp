@@ -18,30 +18,47 @@ using namespace world_detail;
 
 int World::add_layer(const LayerSpec& spec) {
   const int i = grid_.add_layer(spec);
-  if (i >= 0) layer_specs_ = grid_.layers();
+  if (i >= 0) {
+    layer_specs_ = grid_.layers();
+    for (size_t g = 1; g < grids_.size(); ++g)
+      if (grids_[g]) grids_[g]->g.adopt_layers(layer_specs_);
+  }
   return i;
 }
 
-i32 World::set_layer(int L, const std::vector<LayerEdit>& edits) {
+u8 World::layer(GridId grid, int L, const IVec3& p) const {
+  const i32 g = slot_of(grid);
+  return g < 0 ? 0 : vg(static_cast<u16>(g)).layer(L, p);
+}
+
+i32 World::set_layer(int L, const std::vector<LayerEdit>& edits) { return world_set_layer(0, L, edits); }
+
+i32 World::set_layer(GridId grid, int L, const std::vector<LayerEdit>& edits) {
+  const i32 g = slot_of(grid);
+  return g < 0 ? 0 : world_set_layer(static_cast<u16>(g), L, edits);
+}
+
+i32 World::world_set_layer(u16 g, int L, const std::vector<LayerEdit>& edits) {
   if (L < 0 || L >= static_cast<int>(layer_specs_.size())) return 0;
+  VoxelGrid& G = vg(g);
   i32 changed = 0;
-  std::vector<IVec3> damaged;
+  std::vector<GVox> damaged;
   for (const LayerEdit& e : edits) {
     if (!in_voxel_range(e.p)) continue;
     // (a chunk of a streamed world not generated yet has no voxels to hold values: a chunk
     // made for them would stand in for the generated one)
-    if (source_ && !chunk_resident(chunk_of(e.p))) continue;
-    if (!grid_.set_layer(L, e.p, e.v)) continue;
+    if (g == 0 && source_ && !chunk_resident(chunk_of(e.p))) continue;
+    if (!G.set_layer(L, e.p, e.v)) continue;
     ++changed;
-    if (L == kDamageLayer) damaged.push_back(e.p);
+    if (L == kDamageLayer) damaged.push_back(GVox{e.p, g});
   }
   if (!damaged.empty()) {
     refresh_strengths(damaged);
     // structures nobody registered are extracted and judged: their sections are weaker (a seed
     // per fragment)
     std::unordered_set<u64> seeded;
-    for (const IVec3& p : damaged) {
-      if (!vox_free(grid_.get(p))) continue;
+    for (const GVox& p : damaged) {
+      if (!vox_free(G.get(p.p))) continue;
       FragKey f;
       if (!frag_at(p, &f) || owner_of(f) != 0) continue;
       if (seeded.insert(f.chunk * 4099u + static_cast<u64>(f.idx)).second) seeds_.push_back(p);
@@ -50,16 +67,17 @@ i32 World::set_layer(int L, const std::vector<LayerEdit>& edits) {
   return changed;
 }
 
-u8 World::piece_layer(i64 id, int L, const IVec3& p) const {
+u8 World::piece_layer(i64 id, i32 shape, int L, const IVec3& p) const {
   const Body* b = piece(id);
-  if (!b || L < 0 || L >= kMaxLayers) return 0;
-  return b->shape.layer_at(L, b->shape.index(p));
+  if (!b || L < 0 || L >= kMaxLayers || shape < 0 || shape >= static_cast<i32>(b->shapes.size())) return 0;
+  const BodyShape& S = b->shapes[size_t(shape)];
+  return S.layer_at(L, S.index(p));
 }
 
-i32 World::set_piece_layer(i64 id, int L, const std::vector<LayerEdit>& edits) {
+i32 World::set_piece_layer(i64 id, i32 shape, int L, const std::vector<LayerEdit>& edits) {
   Body* b = rigid_.find(id);
-  if (!b || L < 0 || L >= static_cast<int>(layer_specs_.size())) return 0;
-  BodyShape& S = b->shape;
+  if (!b || L < 0 || L >= static_cast<int>(layer_specs_.size()) || shape < 0 || shape >= static_cast<i32>(b->shapes.size())) return 0;
+  BodyShape& S = b->shapes[size_t(shape)];
   std::vector<u8>& a = S.layer[size_t(L)];
   i32 changed = 0;
   bool zeroed = false;
@@ -86,11 +104,11 @@ i32 World::set_piece_layer(i64 id, int L, const std::vector<LayerEdit>& edits) {
   return changed;
 }
 
-bool World::remove_piece_voxels(i64 id, const std::vector<IVec3>& voxels, bool dust) {
+bool World::remove_piece_voxels(i64 id, i32 shape, const std::vector<IVec3>& voxels, bool dust) {
   Body* bp = rigid_.find(id);
-  if (!bp) return false;
+  if (!bp || shape < 0 || shape >= static_cast<i32>(bp->shapes.size())) return false;
   Body& b = *bp;
-  BodyShape& S = b.shape;
+  BodyShape& S = b.shapes[size_t(shape)];
   const f64 h = grid_.h;
   V3 at;
   i32 removed = 0;
@@ -102,7 +120,7 @@ bool World::remove_piece_voxels(i64 id, const std::vector<IVec3>& voxels, bool d
     S.brk[size_t(i)] = 0;
     for (auto& l : S.layer)
       if (!l.empty()) l[size_t(i)] = 0;
-    at += V3{h * p[0], h * p[1], h * p[2]};
+    at += S.xf.to(V3{h * p[0], h * p[1], h * p[2]});
     ++removed;
   }
   if (!removed) return false;
@@ -112,7 +130,7 @@ bool World::remove_piece_voxels(i64 id, const std::vector<IVec3>& voxels, bool d
   }
   refragment_body(b);
   rigid_.wake(b);
-  if (b.shape.count == 0) {
+  if (b.count == 0) {
     remove_bodies({id}, PieceEnd::Split);
     return true;
   }
@@ -122,12 +140,13 @@ bool World::remove_piece_voxels(i64 id, const std::vector<IVec3>& voxels, bool d
   return true;
 }
 
-void World::refresh_strengths(const std::vector<IVec3>& voxels) {
+void World::refresh_strengths(const std::vector<GVox>& voxels) {
   // The bonds with a face at a voxel whose damage changed are measured again: every face of a
   // free voxel is in a bond of its node, and those of an anchored one in bonds of its free
-  // neighbours' nodes (the other bonds' sections did not change).
+  // neighbours' nodes (the other bonds' sections did not change); junction samples likewise
+  // (a node's bonds are all measured again: its junctions too).
   std::map<i64, std::vector<i32>> marked;  // structure -> nodes
-  auto mark = [&](const IVec3& q) {
+  auto mark = [&](const GVox& q) {
     FragKey f;
     if (!frag_at(q, &f)) return;
     const i64 id = owner_of(f);
@@ -135,18 +154,33 @@ void World::refresh_strengths(const std::vector<IVec3>& voxels) {
     const i32 i = s ? s->node(f) : -1;
     if (i >= 0) marked[id].push_back(i);
   };
-  for (const IVec3& p : voxels) {
-    const Vox v = grid_.get(p);
+  for (const GVox& p : voxels) {
+    const VoxelGrid& G = vg(p.grid);
+    const Vox v = G.get(p.p);
     if (vox_free(v)) {
       mark(p);
     } else if (vox_anchored(v)) {
       for (int d = 0; d < 6; ++d) {
-        IVec3 q = p;
+        IVec3 q = p.p;
         q[d / 2] += (d & 1) ? -1 : 1;
-        if (vox_free(grid_.get(q))) mark(q);
+        if (vox_free(G.get(q))) mark(GVox{q, p.grid});
+      }
+      // (free voxels of other grids around it: its junctions)
+      if (oriented_ > 0) {
+        const V3 X = voxel_centre(p);
+        const f64 r = (0.5 + std::clamp(cfg_.junction_reach, 0.0, 2.0)) * grid_.h;
+        const IVec3 cc = chunk_of(p.p);
+        for (u16 o : near_grids(p.grid, key3(cc[0], cc[1], cc[2]))) {
+          const V3 L = o == 0 ? X : xf_of(o).from(X);
+          for (int c = 0; c < 8; ++c) {
+            const IVec3 q = voxel_of(L + V3{(c & 1) ? r : -r, (c & 2) ? r : -r, (c & 4) ? r : -r}, grid_.h);
+            if (vox_free(vg(o).get(q))) mark(GVox{q, o});
+          }
+        }
       }
     }
   }
+  auto at = [this](u16 g, const IVec3& q) { return voxel_at(GVox{q, g}); };
   for (const auto& [id, nodes] : marked) {
     Structure* s = structure(id);
     if (!s) continue;
@@ -156,18 +190,25 @@ void World::refresh_strengths(const std::vector<IVec3>& voxels) {
       SBond& B = s->P.bonds[size_t(b)];
       if (B.broken || !(m[size_t(B.a)] || (B.b >= 0 && m[size_t(B.b)]))) continue;
       const i32 f0 = s->face_start[size_t(b)], f1 = s->face_start[size_t(b) + 1];
+      const i32 j0 = s->jstart[size_t(b)], j1 = s->jstart[size_t(b) + 1];
       const f32 ft = B.ft, fb = B.fb, fc = B.fc, coh = B.coh;
-      section_strengths(&s->face_p[size_t(f0)], &s->face_axis[size_t(f0)], size_t(f1 - f0), [&](const IVec3& p) { return voxel_at(p); }, B);
+      const u16 g = s->bgrid[size_t(b)];
+      if (j0 == j1)
+        section_strengths(&s->face_p[size_t(f0)], &s->face_axis[size_t(f0)], size_t(f1 - f0), [&](const IVec3& q) { return voxel_at(GVox{q, g}); }, B);
+      else
+        section_strengths_general(g, s->face_p.data() + f0, s->face_axis.data() + f0, size_t(f1 - f0), s->jref.data() + j0, size_t(j1 - j0), at, B,
+                                  std::clamp(cfg_.junction_samples, 1, 7));
       if (B.ft != ft || B.fb != fb || B.fc != fc || B.coh != coh) s->rejudge = true;
     }
   }
 }
 
-VoxelAt World::voxel_at(const IVec3& p) const { return {grid_.get(p), grid_.layer(kDamageLayer, p)}; }
+VoxelAt World::voxel_at(const GVox& v) const { return {vg(v.grid).get(v.p), vg(v.grid).layer(kDamageLayer, v.p)}; }
 
-VoxelAt World::piece_voxel_at(const Body& b, const IVec3& p) const {
-  const i32 i = b.shape.index(p);
-  return {i < 0 ? kAir : b.shape.vox[size_t(i)], b.shape.layer_at(kDamageLayer, i)};
+VoxelAt World::piece_voxel_at(const Body& b, i32 shape, const IVec3& p) const {
+  const BodyShape& S = b.shapes[size_t(shape)];
+  const i32 i = S.index(p);
+  return {i < 0 ? kAir : S.vox[size_t(i)], S.layer_at(kDamageLayer, i)};
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -177,6 +218,7 @@ namespace {
 
 u64 load_hash(const VoxelLoad& l) {
   u64 h = key3(l.voxel[0], l.voxel[1], l.voxel[2]) * 0x9E3779B97F4A7C15ull;
+  if (l.grid != kWorldGrid) h = (h ^ l.grid) * 0x100000001B3ull;
   for (f64 v : {l.force.x, l.force.y, l.force.z}) {
     u64 b;
     std::memcpy(&b, &v, sizeof b);
@@ -201,11 +243,13 @@ void World::set_loads(u64 group, std::vector<VoxelLoad> loads) {
   u64 last = ~0ull;
   for (const VoxelLoad& l : ok) {
     if (before.count(load_hash(l))) continue;
+    const i32 g = slot_of(l.grid);
+    if (g < 0) continue;
     const IVec3 cc = chunk_of(l.voxel);
-    const u64 k = key3(cc[0], cc[1], cc[2]) ^ (static_cast<u64>(chunk_index(l.voxel)) << 1);
+    const u64 k = (key3(cc[0], cc[1], cc[2]) ^ (static_cast<u64>(chunk_index(l.voxel)) << 1)) + static_cast<u64>(l.grid);
     if (k == last) continue;
     last = k;
-    seeds_.push_back(l.voxel);
+    seeds_.push_back(GVox{l.voxel, static_cast<u16>(g)});
   }
   if (ok.empty()) loads_.erase(group);
   else loads_[group] = std::move(ok);
@@ -215,6 +259,8 @@ void World::add_external_loads() {
   // (in the loads' own order - the same sums on every platform - with what a load's chunk
   // resolves to kept for the next load: producers write their loads chunk by chunk)
   u64 ck = ~0ull;
+  GridId cg = ~0u;
+  i32 g = -1;
   const Chunk* ch = nullptr;
   FragChunk* fc = nullptr;
   const std::vector<i64>* own = nullptr;
@@ -225,9 +271,11 @@ void World::add_external_loads() {
     for (const VoxelLoad& l : list) {
       const IVec3 cc = chunk_of(l.voxel);
       const u64 k = key3(cc[0], cc[1], cc[2]);
-      if (k != ck) {
+      if (k != ck || l.grid != cg) {
         ck = k;
-        ch = grid_.chunk(cc);
+        cg = l.grid;
+        g = slot_of(l.grid);
+        ch = g >= 0 ? vg(static_cast<u16>(g)).chunk(cc) : nullptr;
         fc = nullptr;
         own = nullptr;
         nodes = nullptr;
@@ -236,9 +284,10 @@ void World::add_external_loads() {
       const i32 li = chunk_index(l.voxel);
       if (!ch || !vox_free(ch->uniform ? ch->value : ch->v[size_t(li)])) continue;
       if (!fc) {
-        fc = &frag_chunk(cc);
-        const auto ot = owner_.find(k);
-        own = ot == owner_.end() ? nullptr : &ot->second;
+        fc = &frag_chunk(static_cast<u16>(g), cc);
+        const auto& owner = gs(static_cast<u16>(g)).owner;
+        const auto ot = owner.find(k);
+        own = ot == owner.end() ? nullptr : &ot->second;
       }
       const i32 fi = fc->at(li);
       if (fi < 0) continue;
@@ -248,14 +297,14 @@ void World::add_external_loads() {
         s = structure(id);
         nodes = nullptr;
         if (s) {
-          const auto nt = s->nodemap.find(k);
+          const auto nt = s->nodemap.find(GKey{static_cast<u16>(g), k});
           if (nt != s->nodemap.end()) nodes = &nt->second;
         }
       }
       if (!s || !nodes || fi >= static_cast<i32>(nodes->size())) continue;
       const i32 i = (*nodes)[size_t(fi)];
       if (i < 0) continue;
-      const V3 p{grid_.h * l.voxel[0], grid_.h * l.voxel[1], grid_.h * l.voxel[2]};
+      const V3 p = voxel_centre(GVox{l.voxel, static_cast<u16>(g)});
       const V3 M = cross(p - s->P.nodes[size_t(i)].c, l.force);
       f64* a = &s->acc[6 * size_t(i)];
       a[0] += l.force.x;
@@ -288,7 +337,18 @@ void World::add_system(std::shared_ptr<WorldSystem> s) {
 }
 
 void World::finish_tick_changes() {
-  // voxel changes of this tick: to the systems now, to the host when it takes them
+  // voxel changes of this tick: to the systems now, to the host when it takes them (the
+  // oriented grids' to the host only)
+  for (size_t g = 1; g < grids_.size(); ++g) {
+    if (!grids_[g]) continue;
+    for (u64 k : grids_[g]->g.take_dirty()) grid_dirty_.push_back(GridChunk{grids_[g]->id, unkey3(k)});
+  }
+  if (grid_dirty_.size() > 65536) {
+    // (nobody takes them: every chunk of every grid is reported instead)
+    grid_dirty_.clear();
+    for (size_t g = 1; g < grids_.size(); ++g)
+      if (grids_[g]) grids_[g]->g.mark_all_dirty();
+  }
   std::vector<u64> keys = grid_.take_dirty();
   if (!host_dirty_all_) {
     host_dirty_.insert(keys.begin(), keys.end());

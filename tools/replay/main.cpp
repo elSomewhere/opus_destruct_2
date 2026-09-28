@@ -65,6 +65,7 @@ bool load_world(Game& eng, const std::string& world, std::string* err) {
   }
   ProcWorld pw = make_procedural(world, 1);
   eng.load(std::move(pw.grid), pw.spawn_pos, pw.spawn_dir);
+  add_grids(eng.world(), std::move(pw.grids));
   return true;
 }
 

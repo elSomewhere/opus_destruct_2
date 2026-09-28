@@ -1,7 +1,11 @@
 // structvox — the destruction world: the public API of the physics core (docs/CORE.md).
 //
-// A World owns a voxel grid (world/grid.hpp) and the rigid pieces that broke off it, and runs
+// A World owns voxel grids (world/grid.hpp) and the rigid pieces that broke off them, and runs
 // the fragment-graph mechanics:
+//   - Grids: the world grid (id 0: its axes the world's; loaded or streamed) and oriented grids,
+//     each a voxel lattice of the same voxel size placed with a frame of its own (a building at an
+//     angle, a diagonal brace, a tilted slab: docs/GRIDS.md). Where the voxels of two grids meet,
+//     they are bonded (junctions), so structures and pieces span grids.
 //   - The free (non-anchored) voxels are grouped into fragments (frag/fragments.hpp): pre-scored
 //     rubble pieces. Anchored voxels are supports (bedrock, foundations, kinematic parts).
 //   - A static structure is a connected set of fragments that reaches a support. It is extracted
@@ -51,8 +55,26 @@ namespace svx {
 namespace world_detail {
 struct SecAcc;
 struct VoxelAt;
+struct JSample;
 class ChangeArchive;
 }
+
+// Grids (docs/GRIDS.md): the world grid is kWorldGrid; oriented grids have ids from 1.
+using GridId = u32;
+constexpr GridId kWorldGrid = 0;
+
+// Where a grid is: its voxel p (integer coordinates in the grid) is centred at
+// origin + rot (h p) in the world.
+struct GridFrame {
+  V3 origin;
+  Quat rot;
+};
+
+// A chunk of a grid (World::take_changed_grid_chunks).
+struct GridChunk {
+  GridId grid = 0;
+  IVec3 chunk{0, 0, 0};
+};
 
 // Runtime knobs: may change between ticks.
 struct WorldParams {
@@ -94,6 +116,7 @@ struct WorldConfig {
   i32 max_breaks_per_round = 256;
   f64 break_band = 0.85;           // a round breaks the bonds with phi >= max(1, band x max phi)
   i32 max_rounds = 400;            // break rounds of one structure before it is left alone
+  i32 solve_restarts = 60;         // solves restarted in a row unconverged before it is left alone
   i32 idle_drop_ticks = 1800;      // idle structures without loads are dropped after this
   f64 load_trigger = 0.25;         // re-solve when a node's external load changes by this x its weight ...
   f64 load_trigger_abs = 800.0;    // ... plus this (N)
@@ -128,6 +151,10 @@ struct WorldConfig {
   // design pass (bake / first touch of streamed chunks): members above this self-weight
   // utilization are strengthened
   f64 design_utilization = 0.45;
+  // junctions (bonds between grids, docs/GRIDS.md): a face bonds to another grid's voxels where
+  // its samples (junction_samples^2 per face), pushed out by junction_reach voxels, land in them
+  i32 junction_samples = 3;
+  f64 junction_reach = 0.5;
   // event budgets per tick (cosmetic events beyond them are dropped; piece events never are)
   i32 crack_events_per_tick = 24;  // cracks and dust
   i32 impact_events_per_tick = 6;  // heavy landings
@@ -152,6 +179,8 @@ struct WorldEvent {
     Impact,        // pos, radius, strength (energy, J): blasts and heavy landings
     Dust,          // pos, vel, radius, voxels; strength 1: material crushed, 0: a shard too small to be a piece
     Forgotten,     // id: a region whose changes were forgotten (StreamConfig::archive_mb); pos: its centre; voxels: its chunks
+    GridAdded,     // id: an oriented grid (a streamed one came, or load_delta made one); pos: its origin, rot
+    GridRemoved,   // id: an oriented grid gone (removed, evicted with its home chunk, or by load)
   };
   Kind kind = Kind::Crack;
   PieceEnd end = PieceEnd::Split;
@@ -179,13 +208,23 @@ struct RayHit {
   V3 pos, normal;
   f64 distance = 0.0;
   int material = -1;
-  IVec3 voxel{0, 0, 0};  // the grid voxel hit (the world) or the shape voxel (a piece)
-  i64 piece = 0;         // the rigid piece hit (0: the world)
+  IVec3 voxel{0, 0, 0};  // the grid voxel hit (a static grid) or the shape voxel (a piece)
+  i64 piece = 0;         // the rigid piece hit (0: a static grid)
+  GridId grid = 0;       // the static grid hit (piece 0)
+  i32 shape = 0;         // the piece's shape hit (piece != 0)
 };
 
 struct CollideResult {
   V3 move;  // the part of the requested move that is free
   bool on_ground = false;
+};
+
+// World::sweep: how far a box moves along a direction before it touches a static grid.
+struct SweepHit {
+  bool hit = false;
+  f64 t = 1.0;     // the fraction of the move that is free
+  V3 normal;       // the touched surface's normal (against the move)
+  GridId grid = 0;
 };
 
 // One voxel write of World::set_voxels.
@@ -218,7 +257,10 @@ struct WorldStats {
   i64 solve_nodes = 0;                    // nodes of the structures being solved
   i64 extractions = 0, extracted_nodes = 0, solves = 0, pcg_iters = 0;
   i64 bonds_broken = 0, detached_voxels = 0, detached_pieces = 0;
+  i64 solves_abandoned = 0;               // structures left alone after solve_restarts unconverged restarts
   f64 max_utilization = 0.0;              // of the last judged round
+  // grids
+  i32 grids = 0;                          // oriented grids
   // pieces
   i32 bodies = 0, awake = 0, contacts = 0;
   i64 body_checks = 0, body_splits = 0, impacts = 0;
@@ -280,6 +322,7 @@ class WorldSystem {
 struct VoxelLoad {
   IVec3 voxel{0, 0, 0};
   V3 force;
+  GridId grid = kWorldGrid;  // (the voxel's grid)
 };
 
 // One layer value write (World::set_layer, set_piece_layer).
@@ -303,8 +346,9 @@ class World {
   const WorldParams& params() const { return par_; }
 
   // ---- content
-  // Replaces the world with grid g (the pieces are removed: PieceRemoved events; its chunks are
-  // reported changed). Changes from here on are tracked for save_delta().
+  // Replaces the world with grid g (the pieces are removed: PieceRemoved events; the oriented
+  // grids too: GridRemoved; its chunks are reported changed). Changes from here on are tracked
+  // for save_delta().
   void load(VoxelGrid&& g);
   // Design pass (bake): removes floating source pieces, then solves every structure under its
   // own weight and strengthens members above design_utilization (so a level stands as built).
@@ -334,14 +378,34 @@ class World {
   bool chunk_resident(const IVec3& chunk) const;
 
   // Persistence: the changes since load() as a binary delta against the regenerable base
-  // world (a level file, a generator); load_delta() applies one after load() (false: malformed,
-  // nothing applied). Untracked edits are not part of it.
+  // world (a level file, a generator, and the level's oriented grids); load_delta() applies one
+  // after load() and the level's grids (false: malformed, nothing applied). Untracked edits are
+  // not part of it.
   std::vector<u8> save_delta() const;
   bool load_delta(const std::vector<u8>& bytes);
   bool modified() const;
 
   const VoxelGrid& grid() const { return grid_; }
   f64 voxel_size() const { return grid_.h; }
+
+  // ---- grids (docs/GRIDS.md)
+  // Adds an oriented grid: `voxels` in the grid's own coordinates (its voxel size is the
+  // world's), placed at `frame`. It is structure like the world grid's voxels: anchored voxels
+  // are supports, free ones form fragments and structures, and faces that meet other grids'
+  // voxels bond to them (junctions). A grid of free voxels touching nothing falls as a piece (a
+  // rotated object dropped in). base: part of the level (not saved in deltas: a host that loads
+  // the level adds its grids again, in the same order, before load_delta; their changes are
+  // saved like the world grid's); else a change of this session, saved whole. Returns its id
+  // (0: refused - a frame or voxels out of range, or from inside a tick).
+  GridId add_grid(const GridFrame& frame, VoxelGrid&& voxels, bool base = true);
+  // Removes an oriented grid (its voxels; pieces that broke off it stay). GridRemoved.
+  bool remove_grid(GridId id);
+  std::vector<GridId> grids() const;                  // the oriented grids, ascending ids
+  const VoxelGrid* grid(GridId id) const;             // kWorldGrid: grid(); nullptr: none
+  bool grid_frame(GridId id, GridFrame* out) const;   // false: none
+  // A grid's point (its coordinates, metres: voxel p's centre is h p) in the world, and back.
+  V3 grid_to_world(GridId id, const V3& lattice) const;
+  V3 world_to_grid(GridId id, const V3& world) const;
 
   // ---- commands
   // Queued: they take effect in the next tick, in call order.
@@ -351,6 +415,7 @@ class World {
   // (voxels written into a piece push it out). Chunks not resident in a streamed world are
   // generated first. Returns the number of voxels changed.
   i32 set_voxels(const std::vector<VoxelEdit>& edits, u32 flags = 0);
+  i32 set_voxels(GridId grid, const std::vector<VoxelEdit>& edits, u32 flags = 0);  // (in a grid's coordinates)
   bool apply_impulse(i64 piece, const V3& point, const V3& impulse);  // N s at a world point
   bool remove_piece(i64 piece);                                         // PieceRemoved (Removed)
 
@@ -359,10 +424,12 @@ class World {
 
   // ---- output
   std::vector<WorldEvent> take_events();   // since the last call, in order
-  std::vector<u64> take_changed_chunks();  // keys (key3) of chunks whose voxels changed since the last call (sorted)
+  std::vector<u64> take_changed_chunks();  // keys (key3) of the world grid's chunks whose voxels changed since the last call (sorted)
   std::vector<u64> take_evicted_chunks();  // keys of chunks no longer resident (streaming) since the last call
+  // The oriented grids' chunks whose voxels changed since the last call (by grid, then chunk).
+  std::vector<GridChunk> take_changed_grid_chunks();
   std::vector<PieceState> pieces() const;  // id order
-  const Body* piece(i64 id) const;         // shape, fragments and state (nullptr: gone)
+  const Body* piece(i64 id) const;         // shapes, fragments and state (nullptr: gone)
   const RigidWorld& rigid() const { return rigid_; }
 
   // ---- extensions: layers, loads, forces, systems (world_ext.cpp)
@@ -375,13 +442,21 @@ class World {
   int add_layer(const LayerSpec& spec);
   int layer_index(const std::string& name) const { return grid_.layer_index(name); }
   u8 layer(int L, const IVec3& p) const { return grid_.layer(L, p); }
+  u8 layer(GridId grid, int L, const IVec3& p) const;
   i32 set_layer(int L, const std::vector<LayerEdit>& edits);  // returns the values changed
+  i32 set_layer(GridId grid, int L, const std::vector<LayerEdit>& edits);
   std::vector<u64> take_layer_changes(int L) { return grid_.take_layer_dirty(L); }
-  u8 piece_layer(i64 piece, int L, const IVec3& shape_voxel) const;
-  i32 set_piece_layer(i64 piece, int L, const std::vector<LayerEdit>& shape_voxels);
+  // A piece's layer values at its shape voxels (shape: its shapes' index, 0 the first).
+  u8 piece_layer(i64 piece, int L, const IVec3& shape_voxel) const { return piece_layer(piece, 0, L, shape_voxel); }
+  u8 piece_layer(i64 piece, i32 shape, int L, const IVec3& shape_voxel) const;
+  i32 set_piece_layer(i64 piece, int L, const std::vector<LayerEdit>& shape_voxels) { return set_piece_layer(piece, 0, L, shape_voxels); }
+  i32 set_piece_layer(i64 piece, i32 shape, int L, const std::vector<LayerEdit>& shape_voxels);
   // Removes voxels of a piece (burnt out, melted, ...): what is left is one or more new pieces
   // (PieceRemoved Split, PieceAdded with this one as parent). dust: a Dust event per piece.
-  bool remove_piece_voxels(i64 piece, const std::vector<IVec3>& shape_voxels, bool dust);
+  bool remove_piece_voxels(i64 piece, const std::vector<IVec3>& shape_voxels, bool dust) {
+    return remove_piece_voxels(piece, 0, shape_voxels, dust);
+  }
+  bool remove_piece_voxels(i64 piece, i32 shape, const std::vector<IVec3>& shape_voxels, bool dust);
   // Loads on the static world, by group (a system's, a chunk's, ...): replaces the group's
   // loads; they stay until replaced (an empty list removes them). Structures under loads that
   // are new or change are solved again; the design pass designs for them.
@@ -397,57 +472,121 @@ class World {
   // ---- queries (no state change)
   // A point commands and queries accept: finite, and within the voxel key range (kVoxelLimit).
   bool in_range(const V3& p) const;
-  RayHit raycast(const V3& origin, const V3& dir, f64 max_dist) const;  // the world's voxels and the pieces
-  // Moves the box [min, max] by `move` (per axis, x then y then z) as far as the world's voxels
+  RayHit raycast(const V3& origin, const V3& dir, f64 max_dist) const;  // the grids' voxels and the pieces
+  // Moves the box [min, max] by `move` (per axis, x then y then z) as far as the grids' voxels
   // let it (not the pieces): a character controller's sweep; stepping up ledges is the host's
   // business. Boxes and moves beyond 16 m are refused / clamped.
   CollideResult collide(const V3& min, const V3& max, const V3& move) const;
+  // How far the box [min, max] moves along `move` (any direction) before it touches a grid's
+  // voxels, and the normal there: a controller slides along rotated walls with it.
+  SweepHit sweep(const V3& min, const V3& max, const V3& move) const;
   // Diagnostic field of the voxels of a resident chunk (kChunkVox values, Chunk::v order).
   // (Brings the chunk's fragments up to date: not const.)
-  bool debug_field(const IVec3& chunk, DebugField field, std::vector<u8>* out);
+  bool debug_field(const IVec3& chunk, DebugField field, std::vector<u8>* out) { return debug_field(kWorldGrid, chunk, field, out); }
+  bool debug_field(GridId grid, const IVec3& chunk, DebugField field, std::vector<u8>* out);
   // Utilization of the structure holding a voxel (solved now, gravity and current loads): max
   // phi and the number of bonds at or over 1. -1 if the voxel is in no structure.
-  f64 probe_utilization(const IVec3& voxel, i32* over = nullptr);
+  f64 probe_utilization(const IVec3& voxel, i32* over = nullptr) { return probe_utilization(kWorldGrid, voxel, over); }
+  f64 probe_utilization(GridId grid, const IVec3& voxel, i32* over = nullptr);
   void debug_voxel(const IVec3& p);  // prints a voxel's fragment, owner and neighbours (stdout)
 
   WorldStats stats() const;
   MemoryReport memory() const;
-  u64 state_hash() const;    // voxels and broken bonds
+  u64 state_hash() const;    // voxels, broken bonds and junctions, the grids
   u64 session_hash() const;  // + the pieces' poses
 
  private:
   struct Structure;
+  struct GridState;
+  struct JunctionScratch;
   struct PendingEvent {
     bool blast = false;
     V3 pos;
     f64 radius = 0.0, energy = 0.0;
   };
-  // a fragment's identity: chunk and its first voxel (stable while that voxel stays)
+  // Internally a grid is its slot (grids_ index; the world grid's is 0), not its id.
+  // A voxel of a grid.
+  struct GVox {
+    IVec3 p{0, 0, 0};
+    u16 grid = 0;
+  };
+  // a fragment's identity: grid, chunk and its first voxel (stable while that voxel stays)
   struct FragKey {
     u64 chunk = 0;
     i32 idx = -1;  // index in the chunk's FragChunk (valid for the chunk's current fragments)
+    u16 grid = 0;
+  };
+  // a chunk of a grid, ordered by grid then chunk (the world grid's first, in key order)
+  struct GKey {
+    u16 grid = 0;
+    u64 chunk = 0;
+    bool operator==(const GKey& o) const { return grid == o.grid && chunk == o.chunk; }
+    bool operator<(const GKey& o) const { return grid < o.grid || (grid == o.grid && chunk < o.chunk); }
+  };
+  struct GKeyHash {
+    size_t operator()(const GKey& k) const {
+      u64 x = k.chunk ^ (static_cast<u64>(k.grid) * 0x9E3779B97F4A7C15ull);
+      x = (x ^ (x >> 31)) * 0xBF58476D1CE4E5B9ull;
+      return static_cast<size_t>(x ^ (x >> 29));
+    }
   };
 
+  // ---- grids (world_grids.cpp)
+  VoxelGrid& vg(u16 g);
+  const VoxelGrid& vg(u16 g) const;
+  GridState& gs(u16 g);
+  const GridState& gs(u16 g) const;
+  bool live(u16 g) const { return g < grids_.size() && grids_[g] != nullptr; }
+  i32 slot_of(GridId id) const;              // -1: none
+  GridId id_of(u16 g) const;
+  const LatticeXf& xf_of(u16 g) const;       // lattice -> world
+  V3 voxel_centre(const GVox& v) const;      // in the world
+  u64 frag_ident_of(const FragKey& f, i32 first) const;  // (identities: the world grid's as they always were)
+  u64 residency_key(u16 g, u64 chunk) const; // (warm starts, reference loads: dropped with their chunk or grid)
+  bool resident_key(u64 k) const;
+  void refresh_grid_box(u16 g);              // (after its chunks changed)
+  void grids_changed();                      // (added, removed, grown: junction candidates are found again)
+  // Other grids whose voxels a junction sample of this chunk may reach (the world grid first).
+  const std::vector<u16>& near_grids(u16 g, u64 chunk);
+  // Which side of a node of grid g a junction sample bonds it on (0..5: the axis and sign, in g's
+  // lattice, of the normal out of the node): a node's junction supports are one bond per side
+  // and grid, as its supports in its own grid are one per face direction.
+  int junction_side(u16 g, const world_detail::JSample& j, bool fwd) const;
+  std::vector<StaticGrid> static_grids() const;  // (the rigid bodies' static world)
+  void remove_grid_slot(u16 g, bool event);
+  void tear_voxel(const GVox& v);            // (its faces bond to nothing any more: intra and junctions)
+  // Junction samples (world_grids.cpp): of a chunk's faces into other grids, cached per extraction.
+  const std::vector<world_detail::JSample>& junction_fwd(JunctionScratch& js, u16 g, u64 chunk);
+  // The samples of other grids' faces that land in fragment f.
+  const std::vector<world_detail::JSample>* junction_rev(JunctionScratch& js, const FragKey& f);
+  // Calls fn(sample, fwd) for fragment f's junction samples: its faces' into other grids (fwd),
+  // and other grids' faces' landing in it.
+  template <class Fn>
+  void each_junction(JunctionScratch& js, const FragKey& f, Fn&& fn);
+
   // ---- fragments
-  FragChunk& frag_chunk(const IVec3& cc);   // (re)builds when stale
-  FragChunk& adopt_fragments(u64 key, FragChunk&& nf);        // (a chunk's new fragments into the cache)
-  void prefragment(const IVec3& seed_chunk, f64 max_radius);  // (the chunks a walk can reach, in parallel)
-  FragChunk* frag_chunk_if(u64 key);         // current or nullptr (no rebuild)
-  bool frag_at(const IVec3& p, FragKey* out); // the free fragment holding voxel p
+  FragChunk& frag_chunk(u16 g, const IVec3& cc);  // (re)builds when stale
+  FragChunk& adopt_fragments(u16 g, u64 key, FragChunk&& nf);  // (a chunk's new fragments into the cache)
+  void prefragment(u16 g, const IVec3& seed_chunk, f64 max_radius);  // (the chunks a walk can reach, in parallel)
+  FragChunk* frag_chunk_if(u16 g, u64 key);  // current or nullptr (no rebuild)
+  FragChunk* frag_chunk_if(const FragKey& f) { return frag_chunk_if(f.grid, f.chunk); }
+  bool frag_at(const GVox& v, FragKey* out);  // the free fragment holding voxel v
   i64 owner_of(const FragKey& f) const;      // structure id holding it (0: none)
-  world_detail::VoxelAt voxel_at(const IVec3& p) const;                 // (sections: the grid's voxel)
-  world_detail::VoxelAt piece_voxel_at(const Body& b, const IVec3& p) const;  // (a piece's shape voxel)
-  void voxels_of(const FragKey& f, std::vector<IVec3>& out);
+  world_detail::VoxelAt voxel_at(const GVox& v) const;                  // (sections: the grid's voxel)
+  world_detail::VoxelAt piece_voxel_at(const Body& b, i32 shape, const IVec3& p) const;  // (a piece's shape voxel)
+  void voxels_of(const FragKey& f, std::vector<IVec3>& out);  // (its grid's coordinates)
   u8 frag_class(const FragKey& f);           // weakest design class of its voxels
-  void mark_owners_stale(u64 chunk_key, u64 changed = ~0ull);  // owners of chunk_key: stale, `changed` (default: chunk_key) to patch
+  V3 frag_com(const FragKey& f);             // its centre of mass in the world
+  // owners of a grid's chunk: stale, `changed` (default: that chunk) to patch
+  void mark_owners_stale(u16 g, u64 chunk_key, GKey changed = GKey{0xFFFF, 0});
 
   // ---- structures (world.cpp)
   Structure* structure(i64 id);
   void process(const PendingEvent& e);
-  void carve_world(const V3& c, f64 r, std::vector<IVec3>* removed);
+  void carve_world(const V3& c, f64 r, std::vector<GVox>* removed);
   void blast_world(const PendingEvent& e);
-  void seed_near(const std::vector<IVec3>& removed);
-  void support_changed(const IVec3& p, std::vector<u64>* chunks);  // (before an anchored voxel goes / after one comes)
+  void seed_near(const std::vector<GVox>& removed);
+  void support_changed(const GVox& v, std::vector<GKey>* chunks);  // (before an anchored voxel goes / after one comes)
   void prune_caches();
   // Extracts the structure holding fragment f (bounded: max_nodes / max_radius, 0 = config): a
   // new Structure, or nullptr after detaching it (it reaches no support).
@@ -460,9 +599,11 @@ class World {
   bool touches_undesigned(const Structure& s) const;
   bool pristine(const Structure& s) const;  // no broken bond, no changed chunk
   void design_near(const V3& c, f64 r);
+  void design_node(const Structure& s, i32 node, u8 cls, i64* strengthened);  // (its voxels to class cls)
   void refresh_structures();                 // seeds and stale structures -> (re)extracted
   void step_structures();                    // solves within the work budget, judging
   void judge(Structure& s);
+  void break_structure_bond(Structure& s, i32 b);  // (its faces and junction samples, in the grids)
   void detach_unsupported(Structure& s);
   void drop_structure(i64 id);
   // Updates a structure whose chunks were re-fragmented: nodes there retire, the new fragments
@@ -482,9 +623,10 @@ class World {
   void crack_event(const V3& p, const V3& n, f64 phi);
   void dust_event(const V3& p, const V3& v, i32 voxels, bool crushed);
   std::vector<f64> load_vector(const Structure& s) const;
+  i32 world_set_voxels(u16 g, const std::vector<VoxelEdit>& edits, u32 flags);
 
   // ---- pieces (world_pieces.cpp)
-  // A body from world fragments (their voxels leave the grid), with a velocity field.
+  // A body from world fragments (their voxels leave their grids), with a velocity field.
   Body* make_body_from_world(const std::vector<FragKey>& frags, const V3& v, const V3& w);
   int fracture_hook(f64 dt);                 // rigid substep hook: body stress, splits (0 none, 1 bodies changed, 2 solve again)
   struct PointForce {
@@ -525,8 +667,12 @@ class World {
   };
   bool split_body(Body& b, bool use_pre, bool force_replace, const std::vector<Carried>* carried = nullptr, f64 spent = 0.0);
   void wake_around(const Body& b);  // (the sleepers touching b's box)
-  std::unique_ptr<Body> sub_body(const Body& parent, const std::vector<i32>& voxels, const std::vector<i32>& frag_map,
-                                 bool use_pre);
+  // A voxel of a body: its shape and cell.
+  struct SVox {
+    u16 shape = 0;
+    i32 cell = 0;
+  };
+  std::unique_ptr<Body> sub_body(const Body& parent, const std::vector<SVox>& voxels, bool use_pre);
   void carve_bodies(const V3& c, f64 r);
   void blast_bodies(const PendingEvent& e);
   void flush_body_changes();                 // pending additions / retirements into the world
@@ -542,10 +688,27 @@ class World {
   void evict_chunk(u64 key);
   void insert_generated(u64 key, bool any, std::vector<Vox>&& voxels);
   f64 focus_distance(const IVec3& chunk) const;  // horizontal, m (to the nearest focus point)
+  void generate_grids(u64 key);              // (the source's grids at home in a chunk just generated)
+  void evict_grid(u16 g, u64 home_region);   // (a streamed grid out of range: its changes archived)
+  // add_grid's work: id 0 = the next; home: the world chunk a streamed grid came with (~0: none);
+  // seed: extract its structures at the next tick (a grid added after the design pass)
+  GridId add_grid_impl(const GridFrame& frame, VoxelGrid&& voxels, bool base, GridId id, u64 home, bool seed);
+  // A grid's changes as saved (its id, whether a level's, its frame, its chunk records: the
+  // changed ones, or all of them for a grid of this session), and applying one to a grid.
+  std::vector<u8> grid_entry(u16 g) const;
+  bool apply_grid_entry(u16 g, const std::vector<u8>& entry, std::vector<u64>* touched);
+  SweepHit sweep_grids(const V3& mn, const V3& mx, const V3& mv, bool world_grid) const;
 
   WorldConfig cfg_;
   WorldParams par_;
-  VoxelGrid grid_;
+  VoxelGrid grid_;                           // the world grid (slot 0)
+  std::vector<std::unique_ptr<GridState>> grids_;  // by slot (nullptr: free); slot 0: the world grid's state
+  std::unordered_map<GridId, u16> slots_;    // oriented grid id -> slot
+  GridId next_grid_ = 1;
+  i32 oriented_ = 0;                         // oriented grids there are (none: no junctions anywhere)
+  u64 grid_epoch_ = 1;                       // (junction candidates: found again when it changes)
+  std::vector<GridChunk> grid_dirty_;        // (oriented grids' changed chunks the host has not taken)
+  std::vector<GridId> removed_base_;         // base grids removed since load (saved in deltas)
   std::vector<PendingEvent> queue_;
   std::vector<WorldEvent> events_;
   std::vector<u64> evicted_chunks_;
@@ -555,11 +718,9 @@ class World {
   std::vector<V3> focus_;
   bool focus_set_ = false;
 
-  std::unordered_map<u64, FragChunk> frags_;
   FragChunk empty_frags_;                    // (frag_chunk of a chunk that is not there)
-  std::unordered_map<u64, std::vector<i64>> owner_;  // chunk -> structure id per fragment (0 none)
   std::vector<std::unique_ptr<Structure>> structures_;  // ascending id
-  std::vector<IVec3> seeds_;                 // voxels whose structures must be (re)extracted
+  std::vector<GVox> seeds_;                  // voxels whose structures must be (re)extracted
   i64 fresh_from_ = INT64_MAX;               // (during a refresh: the first id made in it)
   // (both keep the chunk of the node they belong to: dropped with it when it leaves)
   struct WarmStart {
@@ -576,13 +737,14 @@ class World {
   bool designed_all_ = false;
   bool in_tick_ = false;  // (a system calling tick / load from inside a tick is refused)
   struct DeadLoad {
-    IVec3 vox;
+    GVox vox;
     V3 p, F;
   };
   std::unordered_map<i64, std::vector<DeadLoad>> dead_loads_;  // sleeping body -> its resting forces
   struct BlastLoad {
-    i32 first;                               // the fragment's identity (chunk, first voxel)
+    i32 first;                               // the fragment's identity (grid, chunk, first voxel)
     u64 chunk;
+    u16 grid;
     V3 F, at;                                // (at: the fragment's centre of mass)
   };
   std::vector<BlastLoad> blast_loads_;
@@ -591,11 +753,11 @@ class World {
   i32 crack_budget_ = 0;
   i32 impact_budget_ = 0;
   bool rollback_ = false;  // (fracture hook) a part of some size came apart: the contact step is solved again
-  std::unordered_set<u64> undesigned_;  // streamed chunks generated and not designed yet
   i32 ensuring_ = 0;  // (nesting of first-touch chunk generation)
   i64 impact_count_tick_ = 0;
 
   RigidWorld rigid_;
+  std::vector<StaticGrid> statics_;          // (the rigid bodies' static world of this tick)
 
   // streaming
   std::shared_ptr<const ChunkSource> source_;
@@ -604,11 +766,12 @@ class World {
   std::unordered_map<u64, i32> column_count_;
   std::unique_ptr<world_detail::ChangeArchive> archive_;
   std::unordered_map<u64, i32> region_resident_;  // region -> resident chunks
+  std::unordered_map<u64, std::vector<u16>> home_grids_;  // (streamed) chunk key -> the grids at home in it
   u64 region_of(u64 chunk_key) const;
   void unload_sleepers(const std::vector<u64>& chunks,
                        const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of);
   // Keeps a chunk's changes (the archive; a full bounded archive forgets old regions first).
-  void archive_record(u64 key, const std::vector<u8>& rec);
+  void archive_record(u64 key, const std::vector<u8>& rec, u64 region);
   bool forget_regions(size_t need, u64 keep);  // (need bytes free; `keep`: never this region)
   void forget_region(u64 region);
   void forget_stale_regions();
@@ -620,7 +783,8 @@ class World {
   std::unordered_set<u64> host_dirty_;            // chunks changed since the host last took them
   bool host_dirty_all_ = false;
   std::vector<u64> sys_changed_, sys_generated_, sys_evicted_;  // (for the systems' next step)
-  void refresh_strengths(const std::vector<IVec3>& voxels);  // (their damage changed)
+  void refresh_strengths(const std::vector<GVox>& voxels);  // (their damage changed)
+  i32 world_set_layer(u16 g, int L, const std::vector<LayerEdit>& edits);
   void finish_tick_changes();                              // voxel changes: to the systems and the host
   void step_systems(bool step = true);  // (notifications; and the steps unless paused)
   void add_external_loads();                               // (finish_loads)

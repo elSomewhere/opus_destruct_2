@@ -397,10 +397,10 @@ void FireSystem::fire_step(World& w, f64 dt) {
 }
 
 void FireSystem::step_pieces(World& w, f64 dt, std::vector<V3>& heat_world) {
-  // Fire on pieces works as in the world, in each piece's shape (its own neighbours; "up" is the
-  // shape axis nearest the world's). Burning world voxels heat the pieces in their flames, and
+  // Fire on pieces works as in the world, in each of a piece's shapes (its own neighbours; "up" is
+  // the shape axis nearest the world's). Burning world voxels heat the pieces in their flames, and
   // burning pieces the world voxels in theirs (heat_world: pairs of point, (flame degC, reach)).
-  // A piece's shape voxels keep the coordinates they had in the world: the same voxel has the
+  // A piece's shape voxels keep the coordinates they had in their grid: the same voxel has the
   // same jitter, in the world or on a piece.
   const f64 h = w.voxel_size();
   const u8 quantum = static_cast<u8>(cfg_.damage_quantum);
@@ -421,7 +421,9 @@ void FireSystem::step_pieces(World& w, f64 dt, std::vector<V3>& heat_world) {
         for (i32 y = lo[1]; y <= hi[1]; ++y)
           for (i32 z = lo[2]; z <= hi[2]; ++z) near[key3(x, y, z)].push_back(ps.id);
     }
-  std::unordered_map<i64, std::unordered_map<i32, f64>> pD;  // piece -> cell -> degC
+  // piece -> (shape, cell) -> degC
+  auto sc = [](size_t k, i32 i) { return (static_cast<i64>(k) << 32) | static_cast<i64>(static_cast<u32>(i)); };
+  std::unordered_map<i64, std::unordered_map<i64, f64>> pD;
   for (const Flame& f : flames_) {
     const IVec3 p = voxel_at(f.pos, h);
     const auto it = near.find(ckey(p));
@@ -431,10 +433,13 @@ void FireSystem::step_pieces(World& w, f64 dt, std::vector<V3>& heat_world) {
       if (norm(f.pos - b->x) > b->radius + h * (kFlameReach + 2)) continue;
       for (const Reach& r : kFlame) {
         const V3 X{h * (p[0] + r.dx), h * (p[1] + r.dy), h * (p[2] + r.dz)};
-        const i32 i = b->shape.index(voxel_at(b->to_shape(X), h));
-        if (i < 0 || !vox_solid(b->shape.vox[size_t(i)])) continue;
-        const f64 Tq = b->shape.layer_at(heat_, i) * kUnit;
-        if (Tq < f.heat) pD[id][i] += cfg_.flame_reach * r.w * dt * (f.heat - Tq);
+        for (size_t k = 0; k < b->shapes.size(); ++k) {
+          const BodyShape& S = b->shapes[k];
+          const i32 i = S.index(voxel_at(b->world_to_lattice(k, X), h));
+          if (i < 0 || !vox_solid(S.vox[size_t(i)])) continue;
+          const f64 Tq = S.layer_at(heat_, i) * kUnit;
+          if (Tq < f.heat) pD[id][sc(k, i)] += cfg_.flame_reach * r.w * dt * (f.heat - Tq);
+        }
       }
     }
   }
@@ -442,17 +447,26 @@ void FireSystem::step_pieces(World& w, f64 dt, std::vector<V3>& heat_world) {
   std::vector<i64> ids;
   for (const PieceState& ps : w.pieces()) {
     const Body* b = w.piece(ps.id);
-    if (!b->shape.layer[size_t(heat_)].empty() || pD.count(ps.id)) ids.push_back(ps.id);
+    bool hot = pD.count(ps.id) > 0;
+    for (const BodyShape& S : b->shapes) hot = hot || !S.layer[size_t(heat_)].empty();
+    if (hot) ids.push_back(ps.id);
   }
   for (i64 id : ids) {
     const Body* b = w.piece(id);
-    const BodyShape& S = b->shape;
-    auto& D = pD[id];
+    const size_t nshapes = b->shapes.size();
+    auto& PD = pD[id];
+    bool changed = false;  // (its charring or glow: its mesh)
+    bool removed = false;  // (at most one removal a step: it announces the piece's parts again)
+    bool any_burning = false;
+    for (size_t sk = 0; sk < nshapes && !removed; ++sk) {
+    const BodyShape& S = b->shapes[sk];
+    std::unordered_map<i32, f64> D;
+    for (const auto& [key, d] : PD)
+      if (static_cast<size_t>(key >> 32) == sk) D[static_cast<i32>(key & 0xFFFFFFFF)] += d;
     std::vector<LayerEdit> burn_edits, damage_edits;
     std::vector<IVec3> gone;
-    bool changed = false;  // (its charring or glow: its mesh)
     // "up" in the shape: the axis nearest the world's
-    const V3 up = rotate_inv(b->q, V3{0, 0, 1});
+    const V3 up = S.xf.dir_from(rotate_inv(b->q, V3{0, 0, 1}));
     int ua = 0;
     for (int a = 1; a < 3; ++a)
       if (std::abs(up[a]) > std::abs(up[ua])) ua = a;
@@ -468,7 +482,6 @@ void FireSystem::step_pieces(World& w, f64 dt, std::vector<V3>& heat_world) {
       const u8 cur = S.layer_at(World::kDamageLayer, i);
       if (d > cur && (d - cur >= quantum || d == 254)) damage_edits.push_back({sp, d});
     };
-    bool any_burning = false;
     const std::vector<u8>& heat = S.layer[size_t(heat_)];
     for (i32 i = 0; i < static_cast<i32>(heat.size()); ++i) {
       if (!heat[size_t(i)] || !vox_solid(S.vox[size_t(i)])) continue;
@@ -479,7 +492,7 @@ void FireSystem::step_pieces(World& w, f64 dt, std::vector<V3>& heat_world) {
       }
       const FireMaterial& m = mats_[size_t(vox_mat(S.vox[size_t(i)])) & 0x7F];
       const f64 T = heat[size_t(i)] * kUnit;
-      const V3 X = b->to_world(V3{h * sp[0], h * sp[1], h * sp[2]});
+      const V3 X = b->lattice_to_world(sk, V3{h * sp[0], h * sp[1], h * sp[2]});
       if (w.in_range(X) && look.wet(water_, voxel_at(X, h))) {
         if (T > cfg_.quench_c) D[i] += cfg_.quench_c - T;
         continue;
@@ -536,7 +549,6 @@ void FireSystem::step_pieces(World& w, f64 dt, std::vector<V3>& heat_world) {
       }
       if (d01 > 0.0) damage(sp, i, d01);
     }
-    if (any_burning) ++st_.burning_pieces;
     std::vector<std::pair<i32, f64>> cells(D.begin(), D.end());
     std::sort(cells.begin(), cells.end());
     std::vector<LayerEdit> heat_edits;
@@ -548,13 +560,21 @@ void FireSystem::step_pieces(World& w, f64 dt, std::vector<V3>& heat_world) {
       heat_edits.push_back({sp, u});
       changed = changed || (old >= glow) != (u >= glow);
     }
-    if (changed) piece_changes_.push_back(id);
-    w.set_piece_layer(id, heat_, heat_edits);
-    w.set_piece_layer(id, burn_, burn_edits);
-    if (!damage_edits.empty()) w.set_piece_layer(id, World::kDamageLayer, damage_edits);
+    const i32 k32 = static_cast<i32>(sk);
+    w.set_piece_layer(id, k32, heat_, heat_edits);
+    w.set_piece_layer(id, k32, burn_, burn_edits);
+    if (!damage_edits.empty()) w.set_piece_layer(id, k32, World::kDamageLayer, damage_edits);
     // (burnt-out voxels leave a piece in batches: each removal announces its parts again, with
     // new meshes)
-    if (!gone.empty() && (steps_ + id) % cfg_.piece_batch_steps == 0) w.remove_piece_voxels(id, gone, false);  // (last: the piece may split)
+    if (!gone.empty() && (steps_ + id) % cfg_.piece_batch_steps == 0) {
+      if (changed) piece_changes_.push_back(id);
+      changed = false;
+      w.remove_piece_voxels(id, k32, gone, false);  // (last: the piece may split)
+      removed = true;
+    }
+    }
+    if (any_burning) ++st_.burning_pieces;
+    if (changed) piece_changes_.push_back(id);
   }
   if (piece_changes_.size() > 65536) piece_changes_.clear();  // (nobody takes them)
 }
@@ -615,15 +635,18 @@ void FireSystem::heat_sphere(World& w, const V3& pos, f64 radius, f64 celsius, b
   for (const PieceState& ps : w.pieces()) {
     const Body* b = w.piece(ps.id);
     if (norm(ps.pos - pos) > radius + b->radius) continue;
-    std::vector<LayerEdit> pe;
-    for (i32 i = 0; i < static_cast<i32>(b->shape.vox.size()); ++i) {
-      if (!vox_solid(b->shape.vox[size_t(i)])) continue;
-      const IVec3 sp = b->shape.voxel(i);
-      if (norm(b->to_world(V3{h * sp[0], h * sp[1], h * sp[2]}) - pos) > radius) continue;
-      const u8 u = target(b->shape.vox[size_t(i)]);
-      if (b->shape.layer_at(heat_, i) < u) pe.push_back({sp, u});
+    for (size_t k = 0; k < b->shapes.size(); ++k) {
+      const BodyShape& S = b->shapes[k];
+      std::vector<LayerEdit> pe;
+      for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
+        if (!vox_solid(S.vox[size_t(i)])) continue;
+        const IVec3 sp = S.voxel(i);
+        if (norm(b->lattice_to_world(k, V3{h * sp[0], h * sp[1], h * sp[2]}) - pos) > radius) continue;
+        const u8 u = target(S.vox[size_t(i)]);
+        if (S.layer_at(heat_, i) < u) pe.push_back({sp, u});
+      }
+      w.set_piece_layer(ps.id, static_cast<i32>(k), heat_, pe);
     }
-    w.set_piece_layer(ps.id, heat_, pe);
   }
 }
 
@@ -641,15 +664,19 @@ void FireSystem::extinguish(World& w, const V3& pos, f64 radius) {
   w.set_layer(heat_, edits);
   for (const PieceState& ps : w.pieces()) {
     const Body* b = w.piece(ps.id);
-    if (b->shape.layer[size_t(heat_)].empty() || norm(ps.pos - pos) > radius + b->radius) continue;
-    std::vector<LayerEdit> pe;
-    for (i32 i = 0; i < static_cast<i32>(b->shape.vox.size()); ++i) {
-      if (b->shape.layer_at(heat_, i) <= u) continue;
-      const IVec3 sp = b->shape.voxel(i);
-      if (norm(b->to_world(V3{h * sp[0], h * sp[1], h * sp[2]}) - pos) > radius) continue;  // (the sphere's cells only)
-      pe.push_back({sp, u});
+    if (norm(ps.pos - pos) > radius + b->radius) continue;
+    for (size_t k = 0; k < b->shapes.size(); ++k) {
+      const BodyShape& S = b->shapes[k];
+      if (S.layer[size_t(heat_)].empty()) continue;
+      std::vector<LayerEdit> pe;
+      for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
+        if (S.layer_at(heat_, i) <= u) continue;
+        const IVec3 sp = S.voxel(i);
+        if (norm(b->lattice_to_world(k, V3{h * sp[0], h * sp[1], h * sp[2]}) - pos) > radius) continue;  // (the sphere's cells only)
+        pe.push_back({sp, u});
+      }
+      w.set_piece_layer(ps.id, static_cast<i32>(k), heat_, pe);
     }
-    w.set_piece_layer(ps.id, heat_, pe);
   }
 }
 

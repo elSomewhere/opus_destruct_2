@@ -26,7 +26,8 @@ VoxelGrid ground() {
 std::unique_ptr<Body> box(i64 id, const IVec3& lo, const IVec3& n, f64 h) {
   auto b = std::make_unique<Body>();
   b->id = id;
-  BodyShape& S = b->shape;
+  b->shapes.resize(1);
+  BodyShape& S = b->shapes[0];
   S.lo = lo;
   S.dim = {n[0], n[1], n[2]};
   const size_t cells = size_t(n[0]) * size_t(n[1]) * size_t(n[2]);

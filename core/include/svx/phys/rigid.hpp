@@ -1,15 +1,19 @@
-// structvox — rigid voxel bodies (docs/V2_DESIGN.md §4).
+// structvox — rigid voxel bodies (docs/V2_DESIGN.md §4, docs/GRIDS.md).
 //
-// A body is a set of voxels in its own grid-aligned frame (the "shape frame": the world voxel
-// coordinates it had when it was made, metres = h p), with a pose (centre of mass x, rotation q):
-// a shape-frame point s is at x + R (s - com). Bodies keep their fragments and bond graph (the
-// world's fracture layer), so a body is structure that can keep breaking.
+// A body is one or more voxel shapes in its own frame (the "shape frame", or body frame), with a
+// pose (centre of mass x, rotation q): a body-frame point s is at x + R (s - com). Each shape is a
+// voxel lattice placed in the body frame (BodyShape::xf): a piece that broke off one grid has one
+// shape, its lattice the frame (the grid voxel coordinates it had when it was made, metres =
+// h p); a piece made of several grids (a rotated beam welded to a wall) has one shape per grid,
+// placed as the grids were. Bodies keep their fragments and bond graph (the world's fracture
+// layer), so a body is structure that can keep breaking.
 //
 // Contacts: surface sample points (lattice corners of exposed faces, pulled slightly inwards)
-// are tested against the world grid and against other bodies' shapes; a point inside a solid
-// voxel is a contact along the face of least penetration that leads to air. Contacts per pair
-// are reduced to a spread manifold. Solver: sequential impulses (projected Gauss-Seidel) with
-// warm starting, Coulomb friction, restitution for fast impacts and split-impulse position
+// are tested against the static grids (the world's, and oriented ones: each a lattice with a
+// frame of its own) and against other bodies' shapes; a point inside a solid voxel is a contact
+// along the face of least penetration that leads to air (in that voxel's lattice). Contacts per
+// pair are reduced to a spread manifold. Solver: sequential impulses (projected Gauss-Seidel)
+// with warm starting, Coulomb friction, restitution for fast impacts and split-impulse position
 // correction (the impulses stay true forces: the fracture layer reads them). Islands sleep.
 // No transcendental functions (at whole-numbered substeps of 1/120 s): bit-identical across
 // native and WASM.
@@ -25,14 +29,41 @@
 
 namespace svx {
 
+// A voxel lattice placed in a frame: lattice point s (metres: voxel p's centre is h p) is at
+// off + R s. The identity keeps the arithmetic of an unplaced lattice (the world grid's, a body's
+// first shape) exactly: results never change by going through it.
+struct LatticeXf {
+  V3 off;
+  Quat q;                              // R as a quaternion
+  M3 R = M3::identity(), Rt = M3::identity();
+  bool identity = true;
+  static LatticeXf make(const V3& off, const Quat& q);  // (q normalized; the identity when it is one)
+  V3 to(const V3& s) const { return identity ? s : off + R * s; }
+  V3 from(const V3& X) const { return identity ? X : Rt * (X - off); }
+  V3 dir_to(const V3& d) const { return identity ? d : R * d; }
+  V3 dir_from(const V3& d) const { return identity ? d : Rt * d; }
+};
+// b after a: first a, then b (b's frame is a's target frame)
+LatticeXf compose(const LatticeXf& b, const LatticeXf& a);
+LatticeXf inverse(const LatticeXf& a);
+
+// A broken junction sample of a body shape's voxel (cell index, face, sample; sub
+// kJunctionFace: the whole face), sorted in BodyShape::jbrk.
+inline u64 shape_junction_code(i32 cell, int face, int sub) {
+  return (static_cast<u64>(static_cast<u32>(cell)) << 16) | (static_cast<u64>(face) << 8) | static_cast<u64>(sub);
+}
+
 struct BodyShape {
-  IVec3 lo{0, 0, 0};                  // shape-frame voxel coordinates of cell (0, 0, 0)
+  LatticeXf xf;                       // its lattice in the body frame (identity: the body's first shape)
+  u32 grid = 0;                       // the id of the grid its voxels came from (0: the world grid)
+  IVec3 lo{0, 0, 0};                  // lattice voxel coordinates of cell (0, 0, 0)
   std::array<i32, 3> dim{0, 0, 0};
   std::vector<Vox> vox;               // air or a (non-anchored) voxel value
   std::vector<u32> frag;              // body fragment + 1 (0 none) (a large piece has more than 2^16)
   std::vector<u8> brk;                // broken face bits (+x, +y, +z), like the grid
   // the voxels' layer values (grid.hpp: damage, heat, ...), per cell; empty: all zero
   std::array<std::vector<u8>, kMaxLayers> layer;
+  std::vector<u64> jbrk;              // broken junction samples (shape_junction_code), sorted
   i32 count = 0;                      // solid voxels
   i32 index(const IVec3& p) const {   // -1 outside
     const i64 x = i64(p[0]) - lo[0], y = i64(p[1]) - lo[1], z = i64(p[2]) - lo[2];  // (no overflow at any input)
@@ -49,22 +80,26 @@ struct BodyShape {
     const i32 i = index(p);
     return i >= 0 && ((brk[size_t(i)] >> axis) & 1) != 0;
   }
+  bool junction_broken(i32 cell, int face, int sub) const;
+  void break_junction(i32 cell, int face, int sub);
 };
 
 struct BodyGraph;  // the fracture layer's bond graph of a body (world)
 
 struct BodyFrag {
-  V3 com;                             // shape frame
+  V3 com;                             // body frame
   f64 mass = 0.0;
-  M3 inertia;                         // about com
+  M3 inertia;                         // about com (body frame axes)
   MaterialId mat = MaterialId::Concrete;
   i32 count = 0;
   f64 strength = 1.0;                 // design strength multiplier (from the world)
+  u16 shape = 0;                      // the shape its voxels are in
 };
 
 struct Body {
   i64 id = 0;
-  BodyShape shape;
+  std::vector<BodyShape> shapes;      // one per lattice (at least one)
+  i32 count = 0;                      // solid voxels, all shapes (body_refresh)
   std::vector<BodyFrag> frags;
   // mass properties (shape frame)
   V3 com;
@@ -74,9 +109,10 @@ struct Body {
   V3 x, v, w;                         // centre of mass, linear and angular velocity (world)
   Quat q;
   V3 v_pre, w_pre;                    // velocities before this substep's contact solve
-  // collision samples: shape-frame points relative to com, and the voxel they belong to
+  // collision samples: body-frame points relative to com, and the voxel they belong to
   std::vector<V3> pts;
   std::vector<i32> pt_vox;            // shape voxel index
+  std::vector<u16> pt_shape;          // ... of this shape
   f64 radius = 0.0;                   // max |pt|
   V3 box_lo, box_hi;                  // world AABB (samples), refreshed each substep
   // sleep
@@ -108,6 +144,11 @@ struct Body {
 
   V3 to_world(const V3& s) const { return x + rotate(q, s - com); }
   V3 to_shape(const V3& X) const { return com + rotate_inv(q, X - x); }
+  // shape k's lattice point (metres) in the world, and back
+  V3 lattice_to_world(size_t k, const V3& s) const { return to_world(shapes[k].xf.to(s)); }
+  V3 world_to_lattice(size_t k, const V3& X) const { return shapes[k].xf.from(to_shape(X)); }
+  // the world rotation of shape k's lattice
+  Quat lattice_rot(size_t k) const { return shapes[k].xf.identity ? q : q * shapes[k].xf.q; }
   void refresh_box() {
     const f64 r = radius + 0.1;
     box_lo = x - V3{r, r, r};
@@ -119,8 +160,19 @@ struct Body {
   }
 };
 
-// Rebuilds a body's mass properties (from its fragments) and collision samples (from its shape).
+// Rebuilds a body's mass properties (from its fragments), voxel count and collision samples
+// (from its shapes).
 void body_refresh(Body& b, f64 h, int max_points);
+
+// A static grid the bodies collide with: the world's (the identity, unbounded) or an oriented
+// grid (a lattice with a frame, bounded by its world box).
+struct StaticGrid {
+  const VoxelGrid* g = nullptr;
+  LatticeXf xf;                      // lattice -> world
+  V3 lo, hi;                         // world box (bounded grids)
+  bool unbounded = false;
+  u16 slot = 0;                      // (Contact::grid)
+};
 
 struct RigidParams {
   f64 gravity = 9.81;
@@ -159,7 +211,9 @@ struct Contact {
   f64 depth = 0.0;
   i32 vox_a = -1;                    // a's shape voxel of the sample
   i32 vox_b = -1;                    // b's shape voxel hit (b >= 0)
-  IVec3 wvox{0, 0, 0};               // world voxel hit (b = -1)
+  i16 shape_a = 0, shape_b = 0;      // ... in these shapes
+  u16 grid = 0;                      // the static grid hit (b = -1: StaticGrid::slot)
+  IVec3 wvox{0, 0, 0};               // its voxel hit (b = -1)
   V3 ra, rb, t1, t2;
   f64 kn = 0, k1 = 0, k2 = 0;
   f64 ln = 0, l1 = 0, l2 = 0;        // accumulated impulses (N s)
@@ -185,7 +239,8 @@ class RigidWorld {
   // changed), 1 (bodies were split / removed / added: the contacts are carried over to the new
   // body list) or 2 (as 1, and velocities are rolled back to their pre-solve values and the step
   // solved again with the new bodies, before positions move).
-  void substep(f64 dt, const VoxelGrid& g, const std::function<int(f64 dt)>& fracture);
+  void substep(f64 dt, const std::vector<StaticGrid>& statics, const std::function<int(f64 dt)>& fracture);
+  void substep(f64 dt, const VoxelGrid& g, const std::function<int(f64 dt)>& fracture);  // (the world grid alone)
   void add(std::unique_ptr<Body> b);               // keeps id order
   void remove_if(const std::function<bool(const Body&)>& pred);
   void wake_box(const V3& lo, const V3& hi);       // wakes bodies overlapping a world box
@@ -200,7 +255,7 @@ class RigidWorld {
 
  private:
   void integrate_velocities(f64 dt);
-  void collide(const VoxelGrid& g, const std::vector<u8>* only = nullptr);
+  void collide(const std::vector<StaticGrid>& statics, const std::vector<u8>* only = nullptr);
   void reduce_manifold(std::vector<Contact>& cs, f64 h) const;
   void solve(f64 dt);
   void integrate_positions(f64 dt);
