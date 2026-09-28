@@ -57,6 +57,11 @@ export function buildLabLevel(): LabLevel {
   // a doorway wall
   box(-12, 8, 0, -1, 8.5, 3, Block.Plaster);
   box(-7, 8, 0, -5.75, 8.5, 2.25, AIR);
+  // fallen beams and a kerb across a running lane (x -3 .. 3 at y 6.4): feet that do not clear
+  // them catch
+  box(-1.3, 5.7, 0, -1.175, 7.1, 0.125, Block.Rubble);
+  box(0.5, 5.7, 0, 0.75, 7.1, 0.25, Block.Concrete);
+  box(2.0, 5.8, 0, 2.125, 7.0, 0.125, Block.Rubble);
   // uneven rubble field
   for (let k = 0; k < 90; k++) {
     const x = 5 + ((k * 37) % 50) / 10;

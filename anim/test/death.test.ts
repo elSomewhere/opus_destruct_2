@@ -17,8 +17,8 @@ function death(opts: { speed?: number; dir?: V3; z?: number; collapse?: number; 
   }
   const start: V3 = [c.pose.p[H.pelvis]![0], c.pose.p[H.pelvis]![1], 0];
   if (opts.blast) {
-    c.die(undefined, undefined, 0);
-    c.ragdoll!.blast([0.8, y - 0.5, 0.3], 3, 9);
+    c.die(null, null, 0);
+    c.blastPush([0.8, y - 0.5, 0.3], 3, 9);
   } else {
     const d = opts.dir ?? [0, -1, 0];
     const p = c.pose.p[H.chest]!;
@@ -50,9 +50,9 @@ function death(opts: { speed?: number; dir?: V3; z?: number; collapse?: number; 
       if (i > 9) worstTwist = Math.max(worstTwist, Math.acos(Math.max(-1, Math.min(1, x0[0] * x1[0] + x0[1] * x1[1] + x0[2] * x1[2]))));
     }
     prev = q.map((x) => [...x] as Quat);
-    pelvisZ.push(c.ragdoll!.body.particles[0]!.p[2]);
+    pelvisZ.push(c.pose.p[H.pelvis]![2]);
     headZ.push(c.pose.p[H.head]![2]);
-    if (sleptAt < 0 && c.ragdoll!.asleep) sleptAt = i * DT;
+    if (sleptAt < 0 && c.asleep) sleptAt = i * DT;
   }
   const end = c.pose.p[H.pelvis]!;
   // how far the head is turned from the chest (the face's direction about the chest's up)
@@ -62,14 +62,14 @@ function death(opts: { speed?: number; dir?: V3; z?: number; collapse?: number; 
   return { worstTwist: (worstTwist * 180) / Math.PI, pelvisZ, headZ, sleptAt, headTurn, moved: [end[0] - start[0], end[1] - start[1]] as const };
 }
 
-test('ragdolls: limbs never flip about their length, whatever the death', () => {
+test('deaths: limbs never flip about their length, whatever the death', () => {
   for (const o of [{}, { dir: [0, 1, 0] as V3 }, { speed: 4.5 }, { dir: [1, 0, 0] as V3, z: 1.6, collapse: 0.15 }, { blast: true }, { seed: 2, dir: [0, 1, 0] as V3 }]) {
     const r = death(o);
     assert.ok(r.worstTwist < 60, `${JSON.stringify(o)}: a bone rolled ${r.worstTwist.toFixed(0)} deg in one frame`);
   }
 });
 
-test('ragdolls: bodies come to rest on the ground and never bounce or blow up', () => {
+test('deaths: bodies come to rest on the ground and never bounce or blow up', () => {
   for (const o of [{}, { dir: [0, 1, 0] as V3 }, { speed: 4.5 }, { collapse: 0.15 }, { blast: true }, { seed: 2, dir: [0, 1, 0] as V3 }]) {
     const r = death(o);
     let low = Infinity, rise = 0;
@@ -84,7 +84,7 @@ test('ragdolls: bodies come to rest on the ground and never bounce or blow up', 
   }
 });
 
-test('ragdolls: a body shot crumples over a good half second; a head shot drops it', () => {
+test('deaths: a body shot crumples over a good half second; a head shot drops it', () => {
   const body = death({ collapse: 0.6 });
   // still mostly up after 0.2 s, on the ground by 1.5 s
   assert.ok(body.headZ[11]! > 1.0, `head at ${body.headZ[11]} m after 0.2 s`);
@@ -95,7 +95,7 @@ test('ragdolls: a body shot crumples over a good half second; a head shot drops 
   assert.ok(head.headZ[24]! < body.headZ[24]! - 0.15, `a head shot drops the body sooner (head at ${head.headZ[24]!.toFixed(2)} vs ${body.headZ[24]!.toFixed(2)} m after 0.4 s)`);
 });
 
-test('ragdolls: bodies fall the way the killing shot pushes them', () => {
+test('deaths: bodies fall the way the killing shot pushes them', () => {
   const front = death({ dir: [0, -1, 0] });
   const back = death({ dir: [0, 1, 0] });
   // facing +y: shot from the front they go down backwards, from behind forwards
@@ -103,7 +103,7 @@ test('ragdolls: bodies fall the way the killing shot pushes them', () => {
   assert.ok(back.moved[1] > 0.1, `shot from behind, the pelvis moved ${back.moved[1].toFixed(2)} m`);
 });
 
-test('ragdolls: the head rests turned within the range of the neck (face down it lies on a cheek)', () => {
+test('deaths: the head rests turned within the range of the neck (face down it lies on a cheek)', () => {
   for (const o of [{}, { dir: [0, 1, 0] as V3 }, { speed: 4.5 }, { dir: [1, 0, 0] as V3 }, { seed: 2, dir: [0, 1, 0] as V3 }, { blast: true }]) {
     const r = death(o);
     assert.ok(r.headTurn < 92, `${JSON.stringify(o)}: the head rests turned ${r.headTurn.toFixed(0)} deg from the chest`);

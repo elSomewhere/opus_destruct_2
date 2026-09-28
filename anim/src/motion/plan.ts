@@ -1,49 +1,46 @@
 /**
- * The humanoid animator: procedural animation of the humanoid rig from a handful of inputs.
+ * The motion plan: what the body means to do, as a pose (the intent the physical body's
+ * muscles track).
  *
- * The host moves the character (root position on the ground and facing yaw, each frame, with
- * whatever collision it has) and says what it is doing: stance, crouch, weapon carry, aim and
- * look targets, mood, talking, guard; it starts actions (strikes, reloads, gestures) and reports
- * hits. The animator makes the body follow, in layers:
+ * The host moves the character (root position on the ground and facing yaw, each frame) and
+ * says what it is doing: stance, crouch, weapon carry, aim and look targets, mood, talking,
+ * guard; it starts actions (strikes, reloads, gestures). The body's behaviours (behaviour/)
+ * add what the situation asks for through `control`: a hand to a wound, on a wall or out to
+ * break a fall, arms out for balance, the trunk ducking or folding, the head turned away, a
+ * limp, balance steps, a pelvis where the physics has it.
  *
- * 1. Stances (stances.ts): standing (with the locomotion below), kneeling, prone and crawling,
- *    sitting on a seat or the ground, knocked down; transitions blend through intermediate
- *    stances (stand -> kneel -> prone).
- * 2. Locomotion: a gait clock drives a foot planter (feet stay where they land, no sliding at
- *    any speed or turn rate) with heel-toe roll, landing on the ground found by the
- *    CollisionWorld. The walk has weight: a personal style (style.ts), footfall compression,
- *    lean into acceleration with overshoot, banking into turns, a tactical walk while aiming,
- *    a limp on a wounded leg.
- * 3. Trunk and head: aim and look spread over spine, chest, neck and head; peeking (lean);
- *    posture; breathing.
- * 4. Actions (actions.ts): a held posture layer (guard, idle poses, talking) and a one-shot
- *    layer (strikes that land on their target, blocks, reloads, gestures, fidgets). When
- *    standing still and free the animator picks idles and fidgets itself; when talking, gestures
- *    and nods.
- * 5. Arms: the held weapon (rifle, SMG, machine gun: relaxed, ready, shouldered, hip, port
- *    arms; pistol: two-handed, one-handed, low ready, lowered; knife in the hand) with both
- *    hands placed by IK; else guard, moods (panic, cower, surrender), rest hands of the stance,
- *    swing; action hands on top; a hand to a wound.
- * 6. Reactions (reactions.ts): hits by location and force as springs on the trunk, head and
- *    arms, a gut fold, a knockback the host applies, knockdowns.
- * 7. Legs by IK last, so every pelvis motion bends the knees with the feet where they are.
+ * The plan is built in layers:
+ * 1. Stances (stances.ts): standing, kneeling, prone and crawling, sitting on a seat or the
+ *    ground, lying (and getting up from it); transitions blend through intermediate stances.
+ * 2. Locomotion (feet.ts): the gait clock and the foot planter (planted feet, heel-toe roll,
+ *    ground under every step, obstacles cleared), balance steps. A personal style (style.ts),
+ *    footfall compression, lean into acceleration, banking into turns, a tactical walk while
+ *    aiming, a limp.
+ * 3. Trunk and head: aim and look spread over spine, chest, neck and head; peeking; posture;
+ *    breathing; behaviour offsets.
+ * 4. Actions (actions.ts): a posture layer (guard, idle poses, talking) and a one-shot layer
+ *    (strikes that land on their target, blocks, reloads, gestures, fidgets).
+ * 5. Arms (arms.ts): the held weapon with both hands on it; guard, moods, stance hands, the
+ *    swing; action hands; behaviour hand tasks on top.
+ * 6. Legs by IK last, so every pelvis motion bends the knees with the feet where they are.
  *
  * Output: `pose` (local), `world` (world transforms; `prevWorld` of the frame before), the
- * held prop's world transform, and events (a strike landing, a reload done) in `events`.
+ * held prop's transform, the feet, and events (a strike landing, a reload done).
  */
-import { ModelFK, frameRotation, setModelRotation, solveTwoBone } from '../core/ik.ts';
+import { ModelFK, setModelRotation, solveTwoBone } from '../core/ik.ts';
 import { Pose, WorldPose, type Skeleton } from '../core/skeleton.ts';
 import { Spring, Spring3 } from '../core/spring.ts';
-import { gaitFor, type GaitParams } from '../locomotion/gait.ts';
 import { writeRigid } from '../math/mat4.ts';
 import { Rng, valueNoise } from '../math/random.ts';
-import { qconj, qeuler, qexp, qmirrorX, qmul, qnlerp, qrotate, qx, qz, type Quat } from '../math/quat.ts';
-import { DEG, clamp, fract, lerp, smoothstep, vadd, vcopy, vcross, vdist, vlerp, vnorm, vscale, vsub, wrapAngle, type V3 } from '../math/vec.ts';
+import { qconj, qeuler, qmirrorX, qmul, qnlerp, qrotate, qx, qz, type Quat } from '../math/quat.ts';
+import { DEG, clamp, fract, lerp, smoothstep, vadd, vcopy, vdist, vlerp, vnorm, vscale, vsub, wrapAngle, type V3 } from '../math/vec.ts';
 import type { CollisionWorld } from '../physics/collision.ts';
 import type { Prop } from '../characters/props.ts';
+import { H } from '../humanoid/rig.ts';
 import { actionDef, ActionPlayer, ARMED_FIDGETS, FIDGETS, GESTURES, IDLE_POSES, type ActionDef, type ChannelFrame, type Limb } from './actions.ts';
-import { Reactions, type HitInfo, type Zone } from './reactions.ts';
-import { H } from './rig.ts';
+import { ArmRig, WeaponHold, type Carry, type Side } from './arms.ts';
+import { FootPlanner } from './feet.ts';
+import { gaitFor, type GaitParams } from './gait.ts';
 import {
   blendSamples,
   downSample,
@@ -62,11 +59,12 @@ import {
 } from './stances.ts';
 import { NEUTRAL_STYLE, type GaitStyle } from './style.ts';
 
-export type Carry = 'relaxed' | 'ready' | 'aim' | 'hip';
+export type { Carry } from './arms.ts';
+export type Mood = 'normal' | 'panic' | 'cower' | 'surrender';
 
 /** Where a knee points in the rest pose (the legs twist with their knees). */
 const KNEE_REST: V3 = [0, 1, 0];
-export type Mood = 'normal' | 'panic' | 'cower' | 'surrender';
+const TAU = Math.PI * 2;
 
 /** A seat to sit on (world). The character's root stays where it stood, in front of it. */
 export interface SeatInfo {
@@ -78,7 +76,7 @@ export interface SeatInfo {
   variant?: SitVariant;
 }
 
-export interface HumanoidInput {
+export interface MotionInput {
   /** 0 standing .. 1 crouched (standing stance). */
   crouch: number;
   stance: Stance;
@@ -103,6 +101,72 @@ export interface HumanoidInput {
   idle: boolean;
 }
 
+/** A hand sent somewhere by a behaviour (world). */
+export interface ArmTask {
+  /** Palm target. */
+  target: V3;
+  /** Hand rotation (the canonical fist frame: knuckles +y, palm -z), or null: as planned. */
+  rot: Quat | null;
+  /** Elbow direction, or null: out and down. */
+  pole: V3 | null;
+  /** 0..1 over the planned arm. */
+  weight: number;
+}
+
+/** What the body's behaviours ask of the plan this frame (reset by them every frame). */
+export class PlanControl {
+  /** Hand tasks, left and right. */
+  readonly arms: [ArmTask | null, ArmTask | null] = [null, null];
+  /** Extra trunk and head rotations (euler x, y, z in the joints' frames, rad). */
+  readonly spine: V3 = [0, 0, 0];
+  readonly chest: V3 = [0, 0, 0];
+  readonly neck: V3 = [0, 0, 0];
+  readonly head: V3 = [0, 0, 0];
+  /** Forward fold of the trunk (gut wound, pain), rad. */
+  fold = 0;
+  /** Added crouch 0..1. */
+  crouch = 0;
+  /** Shoulders drawn up (0..1). */
+  shrug = 0;
+  /** Limp per leg (0..1) and pain (0..1: a hunch, slower). */
+  readonly limp: [number, number] = [0, 0];
+  pain = 0;
+  /** Where the eyes go instead (world), with a weight. */
+  look: V3 | null = null;
+  lookWeight = 0;
+  /**
+   * The pelvis where the physics has it (world), blended in by `pelvisWeight`: across the
+   * ground always, its height only with `pelvisHeight` (else the plan says how high the legs
+   * hold it).
+   */
+  pelvisPos: V3 | null = null;
+  readonly pelvisRot: Quat = [0, 0, 0, 1];
+  pelvisWeight = 0;
+  pelvisHeight = false;
+  /** No gait steps: the feet move only by balance steps. */
+  holdFeet = false;
+  /** How much care the steps get (obstacle clearance), 0..1. */
+  care = 1;
+  /** No idle picks (postures, fidgets) of the plan's own. */
+  busy = false;
+
+  reset(): void {
+    this.arms[0] = this.arms[1] = null;
+    for (const v of [this.spine, this.chest, this.neck, this.head]) v[0] = v[1] = v[2] = 0;
+    this.fold = 0;
+    this.crouch = 0;
+    this.shrug = 0;
+    this.look = null;
+    this.lookWeight = 0;
+    this.pelvisPos = null;
+    this.pelvisWeight = 0;
+    this.pelvisHeight = false;
+    this.holdFeet = false;
+    this.care = 1;
+    this.busy = false;
+  }
+}
+
 export interface AnimEvent {
   name: string;
   action: string;
@@ -113,47 +177,17 @@ export interface AnimEvent {
   target: V3 | null;
 }
 
-interface Foot {
-  side: -1 | 1;
-  thigh: number;
-  shin: number;
-  foot: number;
-  toe: number;
-  offset: number;
-  planted: boolean;
-  /** Taken over by an action (a kick): the planter leaves it alone. */
-  held: boolean;
-  pos: V3;
-  yaw: number;
-  lift: V3;
-  /** Where the root was when the foot lifted (the swing travels with the body). */
-  liftRoot: V3;
-  liftYaw: number;
-  swing: number;
-  swingRate: number;
-  target: V3;
-  targetYaw: number;
-  ankle: V3;
-  pitch: number;
-}
-
-const TAU = Math.PI * 2;
-
-function angleLerp(a: number, b: number, t: number): number {
-  return a + wrapAngle(b - a) * t;
-}
-
 function tuple(v: readonly number[] | undefined, fallback: V3): V3 {
   return v ? [v[0] ?? 0, v[1] ?? 0, v[2] ?? 0] : [fallback[0], fallback[1], fallback[2]];
 }
 
-export class HumanoidAnimator {
+export class MotionPlan {
   readonly skeleton: Skeleton;
   readonly pose: Pose;
   readonly fk: ModelFK;
   readonly world: WorldPose;
   readonly prevWorld: WorldPose;
-  readonly input: HumanoidInput = {
+  readonly input: MotionInput = {
     crouch: 0,
     stance: 'stand',
     seat: null,
@@ -168,38 +202,45 @@ export class HumanoidAnimator {
     guard: false,
     idle: true,
   };
+  /** What the behaviours ask for (they fill it before every update). */
+  readonly control = new PlanControl();
   collision: CollisionWorld;
   weapon: Prop | null = null;
   style: GaitStyle = { ...NEUTRAL_STYLE };
-  readonly reactions = new Reactions();
   /** Events of the last updates (take them with takeEvents). */
   readonly events: AnimEvent[] = [];
   /** Character root: ground position and facing (radians, 0 = +x, CCW; +y is yaw pi/2). */
   readonly rootPos: V3 = [0, 0, 0];
   rootYaw = 0;
   time = 0;
-  /** The held prop's transform (world) after update. */
+  /** The held prop's transform (world) after update, and how it is held. */
   readonly weaponPos: V3 = [0, 0, 0];
   weaponRot: Quat = [0, 0, 0, 1];
-  phase = 0;
+  /** The prop is in the right hand only (a knife, a lowered pistol, a long gun let go of). */
+  weaponInHand = false;
+  /**
+   * How hard an action drives each limb this frame (0..1; left hand, right hand, left foot,
+   * right foot), and whether it strikes with it: the body tenses those muscles (a punch is not
+   * thrown with a relaxed arm).
+   */
+  readonly effort: [number, number, number, number] = [0, 0, 0, 0];
+  readonly striking: [boolean, boolean, boolean, boolean] = [false, false, false, false];
   gait: GaitParams = gaitFor(0, 0);
   /** Smoothed world velocity. */
   readonly velocity: V3 = [0, 0, 0];
   /** The settled stance (while a transition runs: the one it comes from). */
   stance: Stance = 'stand';
+  readonly feetPlanner: FootPlanner;
+  readonly arms: ArmRig;
+  readonly hold = new WeaponHold();
+  readonly k: number;
+  readonly legLen: number;
+  readonly restPelvisZ: number;
 
   // proportions
-  private readonly k: number;
-  private readonly legLen: number;
-  private readonly ankleH: number;
-  private readonly ballFwd: number;
-  private readonly heelBack: number;
-  private readonly footX: number;
-  private readonly restPelvisZ: number;
   private readonly dims: Dims;
 
   // locomotion state
-  private readonly feet: [Foot, Foot];
   private readonly lastPos: V3 = [0, 0, 0];
   private lastYaw = 0;
   private placed = false;
@@ -217,9 +258,6 @@ export class HumanoidAnimator {
   private readonly bank = new Spring(6, 0.8);
   private readonly swingAmp = new Spring(5, 1);
   private readonly aimW = new Spring(8, 1);
-  private readonly readyW = new Spring(6.5, 1);
-  private readonly sprintW = new Spring(6, 1);
-  private readonly hipW = new Spring(9, 1);
   private readonly moodW = new Spring(6, 1);
   private readonly airW = new Spring(8, 1);
   private readonly leanS = new Spring(7, 1);
@@ -227,13 +265,13 @@ export class HumanoidAnimator {
   private readonly aimPitch = new Spring(9, 1);
   private readonly headYaw = new Spring(5.5, 0.9);
   private readonly headPitch = new Spring(5.5, 0.9);
-  private readonly kickBack = new Spring(32, 0.55);
-  private readonly kickPitch = new Spring(26, 0.5);
-  private readonly sway = new Spring3(7, 0.7);
   private readonly shift = new Spring(1.5, 1);
+  private readonly lookW = new Spring(9, 1);
+  /** Footfall nod of the head, recoil of the chest (small secondary motion of the plan). */
+  private readonly nod = new Spring(11, 0.42);
+  private readonly recoil = new Spring(14, 0.5);
+  private readonly taskW: [Spring, Spring] = [new Spring(16, 1), new Spring(16, 1)];
   private moodKind: Mood = 'normal';
-  private stepping = false;
-  private wasAirborne = false;
   private readonly seed: number;
   private readonly rng: Rng;
 
@@ -242,8 +280,9 @@ export class HumanoidAnimator {
   private stanceP = 1;
   private stanceDur = 0.5;
   private readonly stanceQueue: Stance[] = [];
-  private downTimer = 0;
+  /** Lying: on the back (else face down), and whether it stays down. */
   private downBack = true;
+  private lying = false;
   private readonly sA = newSample();
   private readonly sB = newSample();
   private readonly sOut = newSample();
@@ -259,7 +298,9 @@ export class HumanoidAnimator {
   private nextFidget = 6;
   private nextIdlePose = 3;
   private nextGesture = 1;
-  private clutchW = new Spring(6, 1);
+  private idleChoice: string | null = null;
+  private armedIdle = 0;
+  private readonly pendingEvents: { e: { name: string; limb?: Limb }; p: ActionPlayer }[] = [];
 
   constructor(skeleton: Skeleton, collision: CollisionWorld, seed = 1) {
     this.skeleton = skeleton;
@@ -270,37 +311,22 @@ export class HumanoidAnimator {
     this.fk = new ModelFK(skeleton);
     this.world = new WorldPose(skeleton);
     this.prevWorld = new WorldPose(skeleton);
+    this.arms = new ArmRig(skeleton, this.pose, this.fk);
     const rh = skeleton.restHead;
     this.restPelvisZ = rh[H.pelvis]![2];
     this.k = this.restPelvisZ / 0.97;
     this.legLen = vdist(rh[H.thighL]!, rh[H.shinL]!) + vdist(rh[H.shinL]!, rh[H.footL]!);
-    this.ankleH = rh[H.footL]![2];
-    this.ballFwd = rh[H.toeL]![1] - rh[H.footL]![1];
-    this.heelBack = 0.06 * this.k;
-    this.footX = Math.abs(rh[H.footL]![0]);
-    this.dims = { k: this.k, ankleH: this.ankleH, footX: this.footX };
-    const foot = (side: -1 | 1): Foot => ({
-      side,
-      thigh: side < 0 ? H.thighL : H.thighR,
-      shin: side < 0 ? H.shinL : H.shinR,
-      foot: side < 0 ? H.footL : H.footR,
-      toe: side < 0 ? H.toeL : H.toeR,
-      offset: side < 0 ? 0 : 0.5,
-      planted: true,
-      held: false,
-      pos: [0, 0, 0],
-      yaw: 0,
-      lift: [0, 0, 0],
-      liftRoot: [0, 0, 0],
-      liftYaw: 0,
-      swing: 0,
-      swingRate: 1,
-      target: [0, 0, 0],
-      targetYaw: 0,
-      ankle: [0, 0, 0],
-      pitch: 0,
-    });
-    this.feet = [foot(-1), foot(1)];
+    const ankleH = rh[H.footL]![2];
+    const footX = Math.abs(rh[H.footL]![0]);
+    this.dims = { k: this.k, ankleH, footX };
+    this.feetPlanner = new FootPlanner(
+      { k: this.k, legLen: this.legLen, ankleH, ballFwd: rh[H.toeL]![1] - rh[H.footL]![1], heelBack: 0.06 * this.k, footX },
+      collision,
+      [
+        { thigh: H.thighL, shin: H.shinL, foot: H.footL, toe: H.toeL },
+        { thigh: H.thighR, shin: H.shinR, foot: H.footR, toe: H.toeR },
+      ],
+    );
   }
 
   /** Forward unit vector (world) of a facing yaw. */
@@ -308,8 +334,12 @@ export class HumanoidAnimator {
     return [Math.cos(yaw), Math.sin(yaw), 0];
   }
 
-  private rootRot(): Quat {
+  rootRot(): Quat {
     return qz(this.rootYaw - Math.PI / 2);
+  }
+
+  get phase(): number {
+    return this.feetPlanner.phase;
   }
 
   /** Puts the character at `pos` facing `yaw`, feet planted in the default stance. */
@@ -322,25 +352,12 @@ export class HumanoidAnimator {
     this.visZ.v = 0;
     this.velSpring.reset();
     vcopy([0, 0, 0], this.velocity);
-    this.resetFeet(yaw);
+    this.feetPlanner.collision = this.collision;
+    this.feetPlanner.reset(this.rootPos, yaw, this.crouchS.x, this.style);
     this.pelvisZ.x = this.restPelvisZ;
     this.placed = true;
     this.update(0);
     this.prevWorld.copyFrom(this.world);
-  }
-
-  private resetFeet(yaw: number): void {
-    for (const f of this.feet) {
-      this.nominalFoot(f, this.rootPos, yaw, f.pos);
-      f.pos[2] = this.ground(f.pos[0], f.pos[1], this.rootPos[2], this.rootPos[2]);
-      f.yaw = yaw - f.side * this.style.toeOut;
-      f.planted = true;
-      f.held = false;
-      f.swing = 0;
-      f.pitch = 0;
-      vcopy(f.pos, f.target);
-      this.ankleFromPlant(f.pos, f.yaw, 0, f.ankle);
-    }
   }
 
   /** The character's root this frame (ground position under it, facing yaw). */
@@ -353,6 +370,21 @@ export class HumanoidAnimator {
     this.rootYaw = yaw;
   }
 
+  /**
+   * Moves the root without the motion counting as walking (the body was carried there: a
+   * shove, a stagger, a fall).
+   */
+  carryRoot(pos: Readonly<V3>, yaw: number): void {
+    const dx = pos[0] - this.rootPos[0], dy = pos[1] - this.rootPos[1];
+    vcopy(pos, this.rootPos);
+    this.lastPos[0] += dx;
+    this.lastPos[1] += dy;
+    this.lastPos[2] = pos[2];
+    this.lastYaw += wrapAngle(yaw - this.rootYaw);
+    this.rootYaw = yaw;
+    if (Math.abs(pos[2] - this.visZ.x) > 0.3 * this.k) this.visZ.x = pos[2];
+  }
+
   /** Busy with a one-shot action. */
   get busy(): boolean {
     return this.act !== null && !this.act.done;
@@ -362,26 +394,26 @@ export class HumanoidAnimator {
     return this.act && !this.act.done ? this.act.def.name : null;
   }
 
-  /** Mid stance transition (or knocked down): the host should not move the root. */
+  /** Mid stance transition (or lying): the host should not move the root. */
   get transitioning(): boolean {
     return this.stanceP < 1 || this.stanceQueue.length > 0 || this.stance === 'down';
   }
 
-  /** Knocked down: falling, lying, or getting back up. */
-  get knockedDown(): boolean {
-    return this.downState;
+  /** Lying down, or getting up from it. */
+  get down(): boolean {
+    return this.lying || this.stance === 'down' || this.stanceTo === 'down' || (this.stanceQueue.length > 0 && this.getUpRun);
   }
 
-  private downState = false;
+  private getUpRun = false;
 
   /**
    * Starts a one-shot action (strike, block, reload, gesture, fidget), optionally aimed at a
    * world `target` (strikes). A held posture (guard, idle pose) goes on the pose layer. Returns
-   * false if the body cannot (knocked down, mid transition).
+   * false if the body cannot (down, mid transition).
    */
   play(name: string, target: V3 | null = null, rate = 1): boolean {
     const def = actionDef(name);
-    if (this.stance === 'down' || this.stanceP < 1) return false;
+    if (this.stance === 'down' || this.lying || this.stanceP < 1) return false;
     if (def.layer === 'pose') {
       this.setPoseAction(def);
       return true;
@@ -389,6 +421,14 @@ export class HumanoidAnimator {
     this.act?.stop();
     this.act = new ActionPlayer(def, target ? [target[0], target[1], target[2]] : null, rate);
     return true;
+  }
+
+  /** Stops the running one-shot action (a hit interrupts it). */
+  interrupt(hard = true): void {
+    if (hard && this.act && !this.act.def.name.startsWith('block')) this.act.stop();
+    if (this.poseAct && this.poseAct.def.name !== 'guard' && this.poseAct.def.name !== 'knifeGuard') this.poseAct.stop();
+    this.idleTime = 0;
+    this.nextIdlePose = 4 + this.rng.next() * 4;
   }
 
   /** Updates the target of the running action (a strike follows a moving opponent). */
@@ -408,152 +448,56 @@ export class HumanoidAnimator {
 
   /** Recoil of one shot. */
   fire(strength = 1): void {
-    const pistol = this.weapon?.kind === 'pistol';
-    this.kickBack.kick((pistol ? 0.8 : 1.1) * strength);
-    this.kickPitch.kick((pistol ? 12 : 7) * strength);
-    const s = this.reactions.springs.get(H.chest);
-    s?.kick([1, 0, 0], (pistol ? 0.15 : 0.35) * strength);
+    if (!this.weapon) return;
+    this.hold.fire(this.weapon, strength);
+    this.recoil.kick((this.weapon.kind === 'pistol' ? 0.15 : 0.35) * strength);
   }
 
   /**
-   * A hit on the body (world): `point` where it lands, `dir` the direction it travels, `force`
-   * (1 ~ a rifle round or a punch), its kind and, if known, the bone. Returns the zone.
+   * Lies on the ground where the body lies (root on the ground under the pelvis, `yaw` the way
+   * the feet point from the head for a body on its back, the head's way face down): the plan
+   * holds the lying pose until `getUp`.
    */
-  hitAt(info: HitInfo): Zone {
-    const inv = qconj(this.rootRot());
-    const origin: V3 = [this.rootPos[0], this.rootPos[1], this.visZ.x];
-    const pm = qrotate(inv, vsub(info.point, origin));
-    const dm = qrotate(inv, vnorm(info.dir));
-    const bone = info.bone ?? this.nearestBone(info.point);
-    const knockBefore: V3 = [this.reactions.knockback[0], this.reactions.knockback[1], 0];
-    const zone = this.reactions.hit(this.skeleton, (b) => this.fk.p[b]!, pm, dm, info.force, info.kind, bone);
-    // knockback came out in model space: turn the added part into world space
-    const add = qrotate(this.rootRot(), [this.reactions.knockback[0] - knockBefore[0], this.reactions.knockback[1] - knockBefore[1], 0]);
-    this.reactions.knockback[0] = knockBefore[0] + add[0];
-    this.reactions.knockback[1] = knockBefore[1] + add[1];
-    // the wound, for a hand to go to
-    const c = this.reactions.clutch;
-    if (c && c.bone === bone) {
-      const q = this.world.q[bone]!;
-      const local = qrotate(qconj(q), vsub(info.point, this.world.p[bone]!));
-      c.rest = vadd(this.skeleton.restHead[bone]!, local);
-    }
-    // a hit interrupts what the body was doing (idle postures at once, actions if it is hard)
-    if (info.force > 0.8 && this.act && !this.act.def.name.startsWith('block')) this.act.stop();
-    if (this.poseAct && this.poseAct.def.name !== 'guard') this.poseAct.stop();
-    this.idleTime = 0;
-    this.nextIdlePose = 4 + this.rng.next() * 4;
-    if (this.reactions.down && this.stanceTo !== 'down') {
-      this.downBack = this.reactions.down.back;
-      this.reactions.down = null;
-      this.knockDown(this.downBack);
-    }
-    return zone;
-  }
-
-  /** Legacy hit: a direction, a strength and a height 0 (legs) .. 1 (head). */
-  hit(dir: Readonly<V3>, strength = 1, height = 0.7): void {
-    const bone = height > 0.9 ? H.head : height > 0.65 ? H.chest : height > 0.45 ? H.spine : height > 0.3 ? H.pelvis : H.thighR;
-    const p = this.world.p[bone]!;
-    this.hitAt({ point: [p[0], p[1], p[2]], dir: [dir[0], dir[1], dir[2]], force: strength, kind: 'bullet', bone });
-  }
-
-  /**
-   * Knocked down: falls (backwards or forwards) and gets up after a while (`seconds` on the
-   * ground: longer for a knockout).
-   */
-  knockDown(back: boolean, seconds = 1.4 + this.rng.next() * 1.4): void {
-    this.downBack = back;
+  lie(root: Readonly<V3>, yaw: number, back: boolean): void {
     this.stanceQueue.length = 0;
     this.act?.stop();
+    this.poseAct?.stop();
+    this.downBack = back;
+    this.stance = 'down';
+    this.stanceTo = 'down';
+    this.stanceP = 1;
+    this.lying = true;
+    this.getUpRun = false;
+    this.carryRoot(root, yaw);
+    this.velSpring.reset();
+    vcopy([0, 0, 0], this.velocity);
+  }
+
+  /** A fall to lying played by the plan alone (no physics: retro frames, a body far away). */
+  fall(back: boolean): void {
+    this.stanceQueue.length = 0;
+    this.act?.stop();
+    this.downBack = back;
+    this.lying = true;
+    this.getUpRun = false;
     this.beginTransition('down');
-    this.downTimer = seconds;
-    this.downState = true;
   }
 
-  /**
-   * Thrown off balance by a push (a blast close by, a shove): `dir` is the push (world),
-   * `strength` about 0.5 (a jolt) .. 2 (thrown). The body is pushed its way and the feet stumble
-   * after it, arms out for balance, the trunk rocking with it; a strong push fells it.
-   */
-  stumble(dir: Readonly<V3>, strength: number): void {
-    if (this.stance !== 'stand' || this.stanceP < 1 || this.downState) return;
-    const l = Math.hypot(dir[0], dir[1]);
-    if (l < 1e-6) return;
-    const s = clamp(strength, 0, 3);
-    const R = this.reactions;
-    R.knockback[0] += (dir[0] / l) * (0.8 + 1.4 * s);
-    R.knockback[1] += (dir[1] / l) * (0.8 + 1.4 * s);
-    // the trunk rocks with the push, the head lags (model space)
-    const m = qrotate(qconj(this.rootRot()), [dir[0] / l, dir[1] / l, 0]);
-    const axis = vnorm(vcross([0, 0, 1], m), [0, 0, 0], [1, 0, 0]);
-    R.springs.get(H.spine)?.kick(axis, 2.2 * s);
-    R.springs.get(H.chest)?.kick(axis, 2.6 * s);
-    R.springs.get(H.head)?.kick(axis, -1.5 * s);
-    R.sinceHit = 0;
-    if (s >= 1.8) this.knockDown(m[1] < 0.3);
-    else this.play('stumble');
+  /** Gets up from lying: through sitting (or pushing up from the front), kneeling, to the host's stance. */
+  getUp(): void {
+    if (!this.lying) return;
+    this.lying = false;
+    this.getUpRun = true;
   }
 
-  /**
-   * A foot caught while walking or running: the body pitches forward, the arms go out and quick
-   * steps catch it; with `fall` it goes down on its front.
-   */
-  trip(fall = false): void {
-    if (this.stance !== 'stand' || this.stanceP < 1 || this.downState) return;
-    const f = qrotate(this.rootRot(), [0, 1, 0]);
-    const push = 0.6 + 0.35 * Math.hypot(this.velocity[0], this.velocity[1]);
-    this.reactions.knockback[0] += f[0] * push;
-    this.reactions.knockback[1] += f[1] * push;
-    this.play('trip');
-    if (fall) this.fallIn = 0.3;
+  /** Progress of a stance transition 0..1 (1: settled). */
+  get stanceProgress(): number {
+    return this.stanceP;
   }
 
-  /** Flinching from something close by (a round, a blast): head down, shoulders up. */
-  flinch(): void {
-    if (this.stance !== 'stand' || this.stanceP < 1 || this.downState || this.busy) return;
-    this.play('flinch');
-  }
-
-  /** Knockback displacement for this frame (world, m): hosts move the root by it. */
-  takeKnockback(dt: number): V3 {
-    return this.reactions.takeKnockback(dt);
-  }
-
-  /** The bone nearest to a world point (by bone segments). */
-  nearestBone(p: Readonly<V3>): number {
-    let best: number = H.chest, bd = Infinity;
-    const w = this.world;
-    for (let b = 1; b < this.skeleton.count; b++) {
-      if (b === H.weapon || b === H.toeL || b === H.toeR) continue;
-      const a = w.p[b]!;
-      const t = w.tail(b);
-      const ab = vsub(t, a);
-      const l2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
-      const ap = vsub(p, a);
-      const u = l2 > 0 ? clamp((ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / l2, 0, 1) : 0;
-      const d = vdist(p, vadd(a, vscale(ab, u)));
-      if (d < bd) {
-        bd = d;
-        best = b;
-      }
-    }
-    return best;
-  }
-
-  private nominalFoot(f: Foot, root: Readonly<V3>, yaw: number, out: V3): V3 {
-    const c = this.crouchS.x;
-    const x = f.side * this.footX * this.style.width * (1 + 0.45 * c);
-    const o = qrotate(qz(yaw - Math.PI / 2), [x, -0.02 * this.k, 0]);
-    out[0] = root[0] + o[0];
-    out[1] = root[1] + o[1];
-    out[2] = root[2];
-    return out;
-  }
-
-  private ground(x: number, y: number, zRef: number, fallback: number): number {
-    const g = this.collision.groundHeight(x, y, zRef + 0.6 * this.k, zRef - 0.9 * this.k);
-    return g ?? fallback;
+  /** The stance being blended to. */
+  get stanceTarget(): Stance {
+    return this.stanceTo;
   }
 
   // ---- stances ------------------------------------------------------------------------------
@@ -574,20 +518,17 @@ export class HumanoidAnimator {
         this.stance = this.stanceTo;
         const next = this.stanceQueue.shift();
         if (next) this.beginTransition(next);
+        else this.getUpRun = false;
       }
       return;
     }
-    // knocked down: lie, then get up to what the host wants
-    if (this.stance === 'down') {
-      this.downTimer -= dt;
-      if (this.downTimer > 0) return;
-    }
+    if (this.lying) return;
     let want = this.input.stance;
     if (want === 'sit' && !this.input.seat) want = 'stand';
-    if (want === 'down') want = this.stance;
-    if (want === this.stance && this.stanceQueue.length === 0) this.downState = false;
+    if (want === 'down') want = 'stand';
     if (want !== this.stance) {
-      const route = stanceRoute(this.stance, want);
+      // up from lying: sit up (on the back) or push up (face down), then kneel
+      const route = this.stance === 'down' ? [this.downBack ? ('ground' as Stance) : ('prone' as Stance), ...stanceRoute(this.downBack ? 'ground' : 'prone', want)] : stanceRoute(this.stance, want);
       const first = route.shift();
       if (first) {
         this.stanceQueue.push(...route);
@@ -597,6 +538,7 @@ export class HumanoidAnimator {
   }
 
   private weightOf(s: Stance): number {
+    // (falling accelerates; the rest ease in and out)
     const e = this.stanceTo === 'down' ? this.stanceP * this.stanceP : this.stanceP * this.stanceP * (3 - 2 * this.stanceP);
     if (this.stanceP >= 1) return s === this.stance ? 1 : 0;
     return (s === this.stanceTo ? e : 0) + (s === this.stance ? 1 - e : 0);
@@ -622,7 +564,8 @@ export class HumanoidAnimator {
         return sitSample(d, { pos, backrest: seat?.backrest ?? false, desk: desk !== null && desk !== undefined ? desk + (this.visZ.x - this.rootPos[2]) : null, variant }, this.time + this.seed, out);
       }
       case 'ground':
-        return groundSample(d, this.input.groundVariant, this.time + this.seed, out);
+        // (getting up from the back: sitting up with the knees drawn in)
+        return groundSample(d, this.getUpRun ? 'kneesUp' : this.input.groundVariant, this.time + this.seed, out);
       case 'down':
         return downSample(d, this.downBack, this.time, out);
     }
@@ -635,6 +578,7 @@ export class HumanoidAnimator {
     this.prevWorld.copyFrom(this.world);
     this.time += dt;
     const inp = this.input;
+    const ctl = this.control;
     const k = this.k;
     const st = this.style;
 
@@ -656,13 +600,7 @@ export class HumanoidAnimator {
     if (Math.abs(this.rootPos[2] - this.visZ.x) > 0.6 * k) this.visZ.x = this.rootPos[2];
     this.visZ.update(this.rootPos[2], dt);
 
-    // ---- reactions, stance, actions --------------------------------------------------------
-    const R = this.reactions;
-    R.update(dt);
-    if (this.fallIn >= 0) {
-      this.fallIn -= dt;
-      if (this.fallIn < 0) this.knockDown(false);
-    }
+    // ---- stance, actions --------------------------------------------------------------------
     this.updateStance(dt);
     this.updateActions(dt);
     const chP = this.poseAct && !this.poseAct.done ? this.chPose : null;
@@ -670,9 +608,22 @@ export class HumanoidAnimator {
     const wP = chP ? this.poseAct!.weight : 0;
     const wA = chA ? this.act!.weight : 0;
     const add = (c: keyof ChannelFrame, i: number): number => (chP?.[c]?.[i] ?? 0) * wP + (chA?.[c]?.[i] ?? 0) * wA;
+    // the limbs the actions drive, and those that strike
+    for (let i = 0; i < 4; i++) {
+      const side = i % 2 === 0 ? 'L' : 'R';
+      const hand = i < 2;
+      const w = (ch: ChannelFrame | null, wt: number): number => {
+        if (!ch) return 0;
+        if (hand) return ch[`hand${side}`] ? (ch[`hand${side}w`]?.[0] ?? 1) * wt : 0;
+        return (ch[`foot${side}w`]?.[0] ?? 0) * wt;
+      };
+      this.effort[i] = clamp(Math.max(w(chP, wP), w(chA, wA)), 0, 1);
+      const sc = hand ? chA?.[`strike${side}`] : chA?.[`strikeFoot${side}`];
+      this.striking[i] = !!sc && wA > 0.1;
+    }
 
     const crouchIn = inp.mood === 'cower' ? 1 : inp.crouch;
-    this.crouchS.update(clamp(crouchIn + add('crouch', 0), 0, 1), dt);
+    this.crouchS.update(clamp(crouchIn + add('crouch', 0) + ctl.crouch, 0, 1), dt);
     const crouch = clamp(this.crouchS.x, 0, 1);
     const vel = this.velocity;
     const speed = Math.hypot(vel[0], vel[1]);
@@ -699,8 +650,8 @@ export class HumanoidAnimator {
     let g = gaitFor(speed, crouch, k);
     // personal style, the tactical walk while aiming, a limp, pain
     const tactical = clamp(aimMove, 0, 1) * (1 - g.run);
-    const limpL = R.limp[0], limpR = R.limp[1];
-    const pain = R.pain;
+    const limpL = ctl.limp[0], limpR = ctl.limp[1];
+    const pain = ctl.pain;
     g = {
       ...g,
       freq: g.freq / Math.pow(st.stride * (1 - 0.15 * tactical), 0.7),
@@ -714,47 +665,29 @@ export class HumanoidAnimator {
       lean: g.lean * (1 + 0.4 * st.heavy) + 0.05 * tactical,
     };
     this.gait = g;
-    const moving = speed > 0.12 && !inp.airborne && standW > 0.99;
-    let prevPhase = this.phase;
+    const feet = this.feetPlanner;
+    feet.collision = this.collision;
+    const moving = speed > 0.12 && !inp.airborne && standW > 0.99 && !ctl.holdFeet;
     const bodyYaw = this.rootYaw + this.lowerYaw.x;
+    let prevPhase = feet.phase;
+    const hips: [V3, V3] = [this.world.p[H.thighL]!, this.world.p[H.thighR]!];
+    const fctx = { root: this.rootPos, bodyYaw, vel, speed, gait: g, moving, airborne: inp.airborne, crouch, style: st, hips, care: ctl.care, groundZ: this.rootPos[2] };
     if (standW < 0.999) {
       // another stance: the feet wait at the standing stance's spots
-      this.resetFeet(bodyYaw);
-      this.stepping = false;
-    } else if (moving) {
-      if (!this.stepping) {
-        const dir = vnorm([vel[0], vel[1], 0]);
-        const d0 = (this.feet[0].pos[0] - this.rootPos[0]) * dir[0] + (this.feet[0].pos[1] - this.rootPos[1]) * dir[1];
-        const d1 = (this.feet[1].pos[0] - this.rootPos[0]) * dir[0] + (this.feet[1].pos[1] - this.rootPos[1]) * dir[1];
-        const lead = d0 <= d1 ? this.feet[0] : this.feet[1];
-        if (this.feet[0].planted && this.feet[1].planted) {
-          this.phase = fract(g.duty - 0.02 - lead.offset);
-          prevPhase = this.phase;
-        }
-        this.stepping = true;
+      feet.reset(this.rootPos, bodyYaw, crouch, st);
+      feet.stepping = false;
+    } else {
+      if (!ctl.holdFeet || feet.feet[0].forced || feet.feet[1].forced) prevPhase = feet.advanceClock(dt, fctx, ctl.limp);
+      feet.update(dt, fctx, prevPhase);
+      // footfall: the body settles onto the leg (heavier characters and faster gaits more), the
+      // head nods with it unless it is held still
+      for (let i = 0; i < 2; i++) {
+        if (!feet.landed[i]) continue;
+        const sp = moving ? Math.min(1.4, speed / 2.5) : 0.3;
+        this.impact.kick(-(0.18 + 0.4 * st.heavy) * sp);
+        this.nod.kick(-0.5 * sp * (1 - st.headStill));
       }
-      // a limp hurries the step off the wounded leg
-      const inStanceL = fract(this.phase) < g.duty;
-      const inStanceR = fract(this.phase + 0.5) < g.duty;
-      const hurry = 1 + 0.9 * (inStanceL ? limpL : 0) + 0.9 * (inStanceR ? limpR : 0);
-      this.phase = fract(this.phase + g.freq * hurry * dt);
-    } else if (!inp.airborne) {
-      let need = false;
-      for (const f of this.feet) {
-        if (f.held) continue;
-        if (!f.planted) need = true;
-        else {
-          const nom = this.nominalFoot(f, this.rootPos, bodyYaw, [0, 0, 0]);
-          const err = Math.hypot(nom[0] - f.pos[0], nom[1] - f.pos[1]);
-          const yawErr = Math.abs(wrapAngle(bodyYaw - f.side * st.toeOut - f.yaw));
-          if (err > 0.16 * k || yawErr > 0.42 || (this.stepping && err > 0.07 * k)) need = true;
-        }
-      }
-      // (turning on the spot and settling: unhurried steps)
-      if (need) this.phase = fract(this.phase + 1.15 * dt);
-      else this.stepping = false;
     }
-    if (standW >= 0.999) this.updateFeet(dt, g, prevPhase, moving, speed, bodyYaw, vel);
 
     // crawling clock (prone)
     this.crawlPhase = fract(this.crawlPhase + dt * Math.min(1.2, speed / 0.35));
@@ -762,7 +695,7 @@ export class HumanoidAnimator {
     // ---- the standing sample -----------------------------------------------------------------
     const origin: V3 = [this.rootPos[0], this.rootPos[1], this.visZ.x];
     const toModel = (w: Readonly<V3>): V3 => qrotate(inv, vsub(w, origin));
-    const ph = this.phase;
+    const ph = feet.phase;
     const D = g.duty;
     const run = g.run;
     const moveAmt = smoothstep(0.1, 0.9, speed);
@@ -774,11 +707,13 @@ export class HumanoidAnimator {
     this.moodKind = inp.mood;
     this.moodW.update(inp.mood === 'normal' ? 0 : 1, dt);
     this.airW.update(inp.airborne ? 1 : 0, dt);
-    const breathe = Math.sin(this.time * 1.9 + this.seed);
+    const breathe = Math.sin(this.time * (1.9 + 1.2 * pain) + this.seed);
     // idle weight shift (contrapposto): the hips settle over one leg, the free knee bends
     const shiftTarget = idle > 0.5 && !aiming && !inp.guard ? (Math.floor((this.time + this.seed * 3.7) / (5 + 4 * (1 - st.fidget))) % 2 === 0 ? 1 : -1) : 0;
-    this.shift.update(shiftTarget, dt);
-    const shiftX = this.shift.x * 0.035 * k * idle;
+    // (a hurt leg carries no weight: the hips settle over the good one)
+    const favour = limpL - limpR;
+    this.shift.update(Math.abs(favour) > 0.15 ? Math.sign(favour) : shiftTarget, dt);
+    const shiftX = this.shift.x * 0.035 * k * Math.max(idle, Math.min(1, Math.abs(favour) * 2));
     hipRoll += this.shift.x * 0.07 * idle;
     const crouchDrop = crouch * 0.4 * k;
     // limp: the pelvis dips over the wounded leg while it bears weight
@@ -787,11 +722,10 @@ export class HumanoidAnimator {
     // the hips: standing, they stay with the planted feet (the trunk and the head turn first,
     // the feet follow with steps); walking, they turn towards the motion
     let hipsWant = this.lowerYaw.x;
-    // (a stepping foot's yaw turns through its step, so the hips turn with the steps)
-    const onFeet = !this.feet[0].held && !this.feet[1].held;
+    const onFeet = !feet.feet[0].held && !feet.feet[1].held;
     if (!moving && onFeet && !inp.airborne && standW > 0.99) {
       let sx = 0, cy = 0;
-      for (const f of this.feet) {
+      for (const f of feet.feet) {
         const rel = f.yaw + f.side * st.toeOut - this.rootYaw;
         sx += Math.sin(rel);
         cy += Math.cos(rel);
@@ -800,9 +734,8 @@ export class HumanoidAnimator {
     }
     this.hipsYaw.update(hipsWant, dt);
     const pelvisYaw = this.hipsYaw.x + hipYawOsc;
-    // banking into the turns of the path (its lateral acceleration, not the body's yaw: a
-    // soldier walking straight while turning to a target does not bank) and a spring-loaded
-    // lean into (de)acceleration
+    // banking into the turns of the path (its lateral acceleration, not the body's yaw) and a
+    // spring-loaded lean into (de)acceleration
     this.bank.update(clamp(aLocal[0] * 0.025, -0.12, 0.12) * moveAmt, dt);
     this.trunkLean.omega = lerp(7.5, 5, st.heavy);
     this.trunkLean.update(clamp(aLocal[1] * (0.03 + 0.02 * st.heavy), -0.2, 0.24), dt);
@@ -810,7 +743,7 @@ export class HumanoidAnimator {
     const px = swayX + shiftX;
     const py = -0.07 * crouch * k;
     const lowest = this.restPelvisZ - 0.2 * k - crouchDrop;
-    for (const f of this.feet) {
+    for (const f of feet.feet) {
       const a = toModel(f.ankle);
       const hipOff = qrotate(pelvisRot, vsub(this.skeleton.restHead[f.thigh]!, this.skeleton.restHead[H.pelvis]!));
       const dx = px + hipOff[0] - a[0];
@@ -824,20 +757,22 @@ export class HumanoidAnimator {
     if (inp.airborne) pz = this.restPelvisZ - 0.04 * k;
     this.pelvisZ.update(pz, dt);
     this.impact.update(0, dt);
+    this.nod.update(0, dt);
+    this.recoil.update(0, dt);
     const pzS = Math.min(this.pelvisZ.x, pz + 0.01 * k);
     const S0 = this.sA;
     S0.pelvisPos = [px, py, pzS];
     S0.pelvisRot = pelvisRot;
     const lean = g.lean + this.trunkLean.x + crouch * 0.38 + (this.moodKind === 'panic' ? this.moodW.x * 0.12 : 0) + (this.moodKind === 'cower' ? this.moodW.x * 0.25 : 0);
-    // posture: slouched (chest and neck forward) .. upright (chest up)
-    const posture = st.posture * 0.07;
+    // posture: slouched (chest and neck forward) .. upright (chest up); pain hunches
+    const posture = st.posture * 0.07 - pain * 0.12;
     const counter = -hipYawOsc * 1.6 * (1 - 0.8 * tactical);
     S0.spine = qeuler(-lean * 0.5 + (0.1 * crouch + 0.05 * g.lean) + posture, -hipRoll * 0.6 - this.bank.x * 0.3, counter * 0.4);
     S0.chest = qeuler(-lean * 0.45 + 0.02 * breathe * (1 - 0.5 * moveAmt) + posture * 0.8, -hipRoll * 0.4 - this.bank.x * 0.2, counter * 0.6);
     S0.neck = qx(posture * 0.6);
     S0.head = qx(0);
     for (let i = 0; i < 2; i++) {
-      const f = this.feet[i]!;
+      const f = feet.feet[i]!;
       const fp = S0.feet[i]!;
       fp.ankle = toModel(f.ankle);
       const fy = wrapAngle(f.yaw - this.rootYaw);
@@ -854,11 +789,9 @@ export class HumanoidAnimator {
     if (standW < 0.999) {
       const other = this.stanceP >= 1 ? this.stance : this.stance === 'stand' ? this.stanceTo : this.stanceTo === 'stand' ? this.stance : null;
       if (other && other !== 'stand') {
-        // stand <-> other
         const so = this.sampleStance(other, this.sB, S0, toModel);
         S = blendSamples(S0, so, 1 - standW, this.sOut);
       } else {
-        // between two non-standing stances
         const a = this.sampleStance(this.stance, this.sB, S0, toModel);
         const b = this.sampleStance(this.stanceTo, this.sC, S0, toModel);
         S = blendSamples(a, b, this.weightOf(this.stanceTo), this.sOut);
@@ -874,10 +807,8 @@ export class HumanoidAnimator {
     // ---- pose: pelvis and trunk ------------------------------------------------------------------
     const pose = this.pose;
     pose.reset();
-    const shiftR = R.shift.x;
     const impactZ = this.impact.x;
     // a strike at a target out of reach steps into it: the pelvis drives forward with the blow
-    // (a punch also leans the trunk in, a kick thrusts the hips)
     let lunge = 0;
     let lungeLean = 0;
     const lungeDir: V3 = [0, 0, 0];
@@ -897,14 +828,22 @@ export class HumanoidAnimator {
     }
     vcopy(
       [
-        S.pelvisPos[0] + add('pelvis', 0) * k + shiftR[0] + lungeDir[0] * lunge,
-        S.pelvisPos[1] + add('pelvis', 1) * k + shiftR[1] + lungeDir[1] * lunge,
-        S.pelvisPos[2] + add('pelvis', 2) * k + shiftR[2] + impactZ - lunge * 0.15,
+        S.pelvisPos[0] + add('pelvis', 0) * k + lungeDir[0] * lunge,
+        S.pelvisPos[1] + add('pelvis', 1) * k + lungeDir[1] * lunge,
+        S.pelvisPos[2] + add('pelvis', 2) * k + impactZ - lunge * 0.15,
       ],
       pose.t[H.pelvis],
     );
     const pr: V3 = [add('pelvisRot', 0), add('pelvisRot', 1), add('pelvisRot', 2)];
     pose.r[H.pelvis] = qmul(S.pelvisRot, qeuler(pr[0] * DEG, pr[1] * DEG, pr[2] * DEG));
+    // the pelvis where the physics has it (the body reacting, falling, lying)
+    if (ctl.pelvisPos && ctl.pelvisWeight > 0) {
+      const w = clamp(ctl.pelvisWeight, 0, 1);
+      const pm = toModel(ctl.pelvisPos);
+      if (!ctl.pelvisHeight) pm[2] = pose.t[H.pelvis]![2];
+      vlerp(pose.t[H.pelvis]!, pm, w, pose.t[H.pelvis]);
+      pose.r[H.pelvis] = qnlerp(pose.r[H.pelvis]!, qmul(inv, ctl.pelvisRot), w);
+    }
 
     // aim and look: yaw and pitch of the target seen from the chest (model space)
     let wantYaw = 0;
@@ -928,21 +867,17 @@ export class HumanoidAnimator {
     // reaches the handguard)
     const blade = aw * (rifle ? (inp.carry === 'aim' ? 0.3 : inp.carry === 'hip' ? 0.5 : 0) : 0);
     const turn = S.turn;
-    // the trunk turns from the hips to the target (or to the facing), as far as a spine twists
     const toward = (aiming || (tgt && inp.carry !== 'relaxed')) && tgt ? this.aimYaw.x - blade : 0;
     const trunkYaw = clamp(toward - this.hipsYaw.x * standW, -0.95, 0.95) * turn;
     const trunkPitch = (tgt && (aiming || inp.carry !== 'relaxed') ? this.aimPitch.x * lerp(0.55, 0.75, aw) : 0) * turn;
-    // peeking: the trunk leans out sideways (the head stays upright)
     const peek = this.leanS.x * 0.3;
-    const fold = R.fold.x * 0.8;
-    const sp: V3 = [add('spine', 0) * DEG, add('spine', 1) * DEG, add('spine', 2) * DEG];
-    const ch: V3 = [add('chest', 0) * DEG, add('chest', 1) * DEG, add('chest', 2) * DEG];
+    const fold = ctl.fold + pain * 0.12;
+    const sp: V3 = [add('spine', 0) * DEG + ctl.spine[0], add('spine', 1) * DEG + ctl.spine[1], add('spine', 2) * DEG + ctl.spine[2]];
+    const ch: V3 = [add('chest', 0) * DEG + ctl.chest[0] - this.recoil.x * 0.1, add('chest', 1) * DEG + ctl.chest[1], add('chest', 2) * DEG + ctl.chest[2]];
     pose.r[H.spine] = qmul(qmul(qeuler(trunkPitch * 0.3 - fold * 0.55 - lungeLean * 0.5 * lungeDir[1], peek * 0.55 + lungeLean * 0.5 * lungeDir[0], trunkYaw * 0.35), S.spine), qeuler(sp[0], sp[1], sp[2]));
     pose.r[H.chest] = qmul(qmul(qeuler(trunkPitch * 0.45 - fold * 0.45 - lungeLean * 0.5 * lungeDir[1], peek * 0.45 + lungeLean * 0.5 * lungeDir[0], trunkYaw * 0.45), S.chest), qeuler(ch[0], ch[1], ch[2]));
     if (inp.lean !== 0 || Math.abs(this.leanS.x) > 0.01) pose.t[H.pelvis]![0] += this.leanS.x * 0.07 * k;
     this.fk.update(pose, 0);
-    // hit reactions of the trunk (model-space springs)
-    for (const b of [H.pelvis, H.spine, H.chest]) this.applyReaction(b);
 
     // ---- head ---------------------------------------------------------------------------------
     const lookW = clamp(chA?.look?.[0] !== undefined ? lerp(1, chA.look[0]!, wA) : chP?.look?.[0] !== undefined ? lerp(1, chP.look[0]!, wP) : 1, 0, 1);
@@ -958,6 +893,15 @@ export class HumanoidAnimator {
       lookYaw = Math.sin(this.time * 2.7 + this.seed) * 0.7;
     }
     if (this.moodKind === 'cower') lookPitch = lerp(lookPitch, -0.7, this.moodW.x);
+    // a behaviour's look (a wound, a threat) takes over
+    this.lookW.update(ctl.look ? clamp(ctl.lookWeight, 0, 1) : 0, dt);
+    if (ctl.look) {
+      const m = toModel(ctl.look);
+      const dd = vsub(m, [0, 0, chestRest[2] + 0.3 * k]);
+      const w = this.lookW.x;
+      lookYaw = lerp(lookYaw, clamp(Math.atan2(-dd[0], dd[1]), -1.9, 1.9), w);
+      lookPitch = lerp(lookPitch, clamp(Math.atan2(dd[2], Math.hypot(dd[0], dd[1])), -1.2, 1.1), w);
+    }
     // saccades: the head turns fast to a new target, then settles
     const far = Math.abs(lookYaw - this.headYaw.x) > 0.5;
     this.headYaw.omega = far ? 8 : 5;
@@ -969,18 +913,15 @@ export class HumanoidAnimator {
     const chestPitchNow = Math.asin(clamp(chestFwd[2], -1, 1));
     const relYaw = clamp(wrapAngle(this.headYaw.x - chestYawNow), -1.3, 1.3) * lookW;
     const relPitch = clamp(this.headPitch.x - chestPitchNow, -0.9, 0.8) * lookW;
-    const nk: V3 = [add('neck', 0) * DEG, add('neck', 1) * DEG, add('neck', 2) * DEG];
-    const hd: V3 = [add('head', 0) * DEG, add('head', 1) * DEG, add('head', 2) * DEG];
-    pose.r[H.neck] = qmul(qmul(qeuler(relPitch * 0.4, -peek * 0.4, relYaw * 0.4), S.neck), qeuler(nk[0], nk[1], nk[2]));
+    const nk: V3 = [add('neck', 0) * DEG + ctl.neck[0], add('neck', 1) * DEG + ctl.neck[1], add('neck', 2) * DEG + ctl.neck[2]];
+    const hd: V3 = [add('head', 0) * DEG + ctl.head[0] + this.nod.x * 0.12, add('head', 1) * DEG + ctl.head[1], add('head', 2) * DEG + ctl.head[2]];
+    pose.r[H.neck] = qmul(qmul(qeuler(relPitch * 0.4 + this.nod.x * 0.06, -peek * 0.4, relYaw * 0.4), S.neck), qeuler(nk[0], nk[1], nk[2]));
     pose.r[H.head] = qmul(qmul(qeuler(relPitch * 0.6, -0.12 * aw * (rifle ? 1 : 0) - peek * 0.4, relYaw * 0.6), S.head), qeuler(hd[0], hd[1], hd[2]));
-    this.fk.update(pose, H.neck);
-    this.applyReaction(H.neck);
-    this.applyReaction(H.head);
     this.fk.update(pose, H.neck);
 
     // ---- legs (last: every pelvis motion bends the knees, the feet stay) ---------------------
     for (let i = 0; i < 2; i++) {
-      const f = this.feet[i]!;
+      const f = feet.feet[i]!;
       const fp = S.feet[i]!;
       let target = fp.ankle;
       let rot = fp.rot;
@@ -1014,32 +955,64 @@ export class HumanoidAnimator {
     this.fk.update(pose, H.clavicleL);
     // stance hands (seated on the thighs, prone on the elbows...)
     this.restHands(S, 1 - standW);
+    // the support hand lets go of the weapon when a behaviour needs it
+    this.taskW[0].update(ctl.arms[0] ? clamp(ctl.arms[0].weight, 0, 1) : 0, dt);
+    this.taskW[1].update(ctl.arms[1] ? clamp(ctl.arms[1].weight, 0, 1) : 0, dt);
+    const freeLeft = this.taskW[0].x > 0.35;
     let heldProp = false;
     if (this.weapon && this.weapon.kind !== 'knife') {
-      heldProp = this.holdWeapon(dt, aiming, run, moving, toModel, chP, chA, wP, wA);
-    } else this.weaponRot = qmul(rootRot, [0, 0, 0, 1]);
-    const freeHands = !heldProp;
-    if (freeHands && this.moodW.x > 0.01 && this.moodKind !== 'normal') this.moodArms(this.moodW.x);
+      heldProp = this.hold.hold(dt, this.arms, this.weapon, {
+        carry: inp.carry,
+        aimAt: inp.aimAt ? toModel(inp.aimAt) : null,
+        aiming,
+        moving,
+        run,
+        phase: feet.phase,
+        aimW: aw,
+        k,
+        chP,
+        wP,
+        chA,
+        wA,
+        freeLeft,
+      });
+    }
+    if (!heldProp && this.moodW.x > 0.01 && this.moodKind !== 'normal') this.moodArms(this.moodW.x, feet.phase);
     // action hands: the posture layer, then one-shots on top
     if (chP && wP > 0) this.actionHands(chP, wP, this.poseAct!, toModel, heldProp);
     if (chA && wA > 0) this.actionHands(chA, wA, this.act!, toModel, heldProp);
     // clavicle channels (shrugs)
-    for (const [c, b] of [['clavR', H.clavicleR], ['clavL', H.clavicleL]] as const) {
-      const e: V3 = [add(c, 0) * DEG, add(c, 1) * DEG, add(c, 2) * DEG];
+    for (const [c, b, s] of [
+      ['clavR', H.clavicleR, 1],
+      ['clavL', H.clavicleL, -1],
+    ] as const) {
+      const e: V3 = [add(c, 0) * DEG, add(c, 1) * DEG - s * ctl.shrug * 0.35, add(c, 2) * DEG];
       if (e[0] !== 0 || e[1] !== 0 || e[2] !== 0) {
         pose.rotateLocal(b, qeuler(e[0], e[1], e[2]));
         this.fk.updateSubtree(pose, b);
       }
     }
-    this.clutchHand(dt, heldProp);
-    for (const b of [H.clavicleL, H.clavicleR, H.upperarmL, H.upperarmR, H.forearmL, H.forearmR]) this.applyReaction(b);
+    // behaviour tasks on top (a hand to a wound, on a wall, out to break a fall)
+    for (let i = 0; i < 2; i++) {
+      const task = ctl.arms[i];
+      const w = this.taskW[i]!.x;
+      if (!task || w < 0.01) continue;
+      const side: Side = i === 0 ? 'L' : 'R';
+      // (a right hand holding a long gun takes the gun with it: the gun is let go of meanwhile)
+      const chestQn = this.fk.q[H.chest]!;
+      const pole = task.pole ? qrotate(inv, task.pole) : qrotate(chestQn, vnorm([side === 'R' ? 0.8 : -0.8, -0.35, -0.5]));
+      this.arms.handIK(side, toModel(task.target), task.rot ? qmul(inv, task.rot) : null, pole, clamp(w, 0, 1));
+    }
     this.fk.update(pose, H.clavicleL);
 
     // ---- props, world, events ---------------------------------------------------------------------
     this.world.compute(pose, origin, rootRot);
+    this.weaponInHand = false;
     if (this.weapon) {
-      if (this.weapon.kind === 'knife' || (this.weapon.kind === 'pistol' && !heldProp)) this.propInHand(H.handR);
-      else {
+      if (this.weapon.kind === 'knife' || !heldProp || this.taskW[1].x > 0.5) {
+        this.propInHand(H.handR);
+        this.weaponInHand = true;
+      } else {
         vcopy(this.world.p[H.weapon]!, this.weaponPos);
         this.weaponRot = [...this.world.q[H.weapon]!] as Quat;
       }
@@ -1047,204 +1020,12 @@ export class HumanoidAnimator {
     this.flushEvents();
   }
 
-  /** Applies bone b's reaction spring as a model-space rotation on top of its pose. */
-  private applyReaction(b: number): void {
-    const o = this.reactions.offset(b);
-    if (!o || (o[0] === 0 && o[1] === 0 && o[2] === 0)) return;
-    if (Math.abs(o[0]) + Math.abs(o[1]) + Math.abs(o[2]) < 1e-5) return;
-    setModelRotation(this.pose, this.fk, b, qmul(qexp(o), this.fk.q[b]!));
-    this.fk.updateSubtree(this.pose, b);
-  }
-
-  // ---- locomotion ---------------------------------------------------------------------------
-
-  private updateFeet(dt: number, g: GaitParams, prevPhase: number, moving: boolean, speed: number, bodyYaw: number, vel: V3): void {
-    const inp = this.input;
-    const k = this.k;
-    const st = this.style;
-    if (this.wasAirborne && !inp.airborne) {
-      for (const f of this.feet) {
-        this.nominalFoot(f, this.rootPos, bodyYaw, f.pos);
-        f.pos[2] = this.ground(f.pos[0], f.pos[1], this.rootPos[2], this.rootPos[2]);
-        f.yaw = bodyYaw - f.side * st.toeOut;
-        f.planted = true;
-      }
-      this.impact.kick(-1.6);
-    }
-    this.wasAirborne = inp.airborne;
-    const D = g.duty;
-    const freq = moving ? g.freq : 1.5;
-    const stanceT = D / freq;
-    const moveAmt = smoothstep(0.1, 0.9, speed);
-    for (const f of this.feet) {
-      if (f.held) {
-        // an action has the foot: when it lets go the foot lands where it is
-        f.planted = false;
-        f.swingRate = 0;
-        const a = this.fk.p[f.foot]!;
-        const w = vadd(qrotate(this.rootRot(), a), [this.rootPos[0], this.rootPos[1], this.visZ.x]);
-        f.pos = [w[0], w[1], this.ground(w[0], w[1], this.rootPos[2], this.rootPos[2])];
-        f.ankle = [w[0], w[1], w[2]];
-        continue;
-      }
-      if (!f.planted && f.swingRate === 0) {
-        // released after an action: plant now
-        f.planted = true;
-        f.pos[2] = this.ground(f.pos[0], f.pos[1], this.rootPos[2], this.rootPos[2]);
-        this.ankleFromPlant(f.pos, f.yaw, 0, f.ankle);
-        continue;
-      }
-      const p0 = fract(prevPhase + f.offset);
-      const p1 = fract(this.phase + f.offset);
-      const advanced = this.phase !== prevPhase;
-      if (inp.airborne) f.planted = false;
-      else if (f.planted) {
-        const wrapped = p1 < p0;
-        const crossedLift = advanced && ((!wrapped && p0 < D && p1 >= D) || (wrapped && p0 < D));
-        // a foot still down late in its swing phase (it landed late) goes now, so the feet keep
-        // alternating
-        const missedLift = moving && advanced && p1 > D + 0.08 && p1 < 0.9;
-        // a foot left behind out of reach pushes off early (a long running stride shortens the
-        // ground contact; a shove, a sudden start); it still lands on the gait's beat below
-        const far = Math.hypot(f.pos[0] - this.rootPos[0], f.pos[1] - this.rootPos[1]) > 0.62 * this.legLen;
-        if (crossedLift || missedLift || far) {
-          f.planted = false;
-          vcopy(f.pos, f.lift);
-          vcopy(this.rootPos, f.liftRoot);
-          f.liftYaw = f.yaw;
-          f.swing = 0;
-          // land when the gait says this foot lands (phase 1), however it left the ground
-          f.swingRate = crossedLift ? freq / (1 - D) : moving ? 1 / clamp((1 - p1) / freq, 0.12, 1 / freq) : 1 / 0.2;
-        }
-      }
-      if (!inp.airborne && !f.planted) {
-        f.swing = Math.min(1, f.swing + f.swingRate * dt);
-        const remain = (1 - f.swing) / f.swingRate;
-        const pred: V3 = [this.rootPos[0] + vel[0] * remain, this.rootPos[1] + vel[1] * remain, this.rootPos[2]];
-        const tgt = this.nominalFoot(f, pred, bodyYaw, [0, 0, 0]);
-        const reach = lerp(0.52, 0.34, g.run) * this.legLen;
-        const ahead = stanceT * lerp(0.5, 0.36, g.run);
-        let hx = vel[0] * ahead, hy = vel[1] * ahead;
-        const hl = Math.hypot(hx, hy);
-        if (hl > reach) {
-          hx *= reach / hl;
-          hy *= reach / hl;
-        }
-        tgt[0] += hx;
-        tgt[1] += hy;
-        tgt[2] = this.ground(tgt[0], tgt[1], this.rootPos[2], this.rootPos[2]);
-        vcopy(tgt, f.target);
-        // turning on the spot: a step opens the foot at most ~43 degrees past the other one
-        // (a big turn takes a few steps, the legs never scissor)
-        let heading = bodyYaw;
-        if (!moving) {
-          const o = this.feet[f === this.feet[0] ? 1 : 0]!;
-          const oh = o.yaw + o.side * st.toeOut;
-          heading = oh + clamp(wrapAngle(bodyYaw - oh), -0.75, 0.75);
-        }
-        f.targetYaw = heading - f.side * st.toeOut;
-        if (f.swing >= 1) {
-          f.planted = true;
-          vcopy(f.target, f.pos);
-          f.yaw = f.targetYaw;
-          // footfall: the body settles onto the leg (heavier characters and faster gaits more),
-          // the head nods with it unless it is held still
-          if (moving) {
-            const sp = Math.min(1.4, speed / 2.5);
-            this.impact.kick(-(0.18 + 0.4 * st.heavy) * sp);
-            this.reactions.springs.get(H.head)?.kick([1, 0, 0], -0.5 * sp * (1 - st.headStill));
-            this.reactions.springs.get(H.neck)?.kick([1, 0, 0], -0.25 * sp * (1 - st.headStill));
-          }
-        }
-      }
-      if (inp.airborne) {
-        const nom = this.nominalFoot(f, this.rootPos, bodyYaw, [0, 0, 0]);
-        nom[2] = this.visZ.x + 0.12 * k + (f.side < 0 ? 0.05 : 0) * k;
-        vcopy(nom, f.ankle);
-        f.pitch = -0.3;
-        f.yaw = bodyYaw;
-        vcopy(nom, f.pos);
-        f.pos[2] -= this.ankleH;
-        f.lift = vcopy(f.pos);
-        vcopy(this.rootPos, f.liftRoot);
-        continue;
-      }
-      if (f.planted) {
-        const gz = this.ground(f.pos[0], f.pos[1], f.pos[2] + 0.2 * k, f.pos[2]);
-        if (gz < f.pos[2] - 0.01) f.pos[2] = Math.max(gz, f.pos[2] - 3 * dt);
-        const u = p1 < D ? p1 / D : 0.3;
-        let pitch = 0;
-        if (moving) {
-          const hs = lerp(0.28, 0.1, g.run) * moveAmt;
-          const to = lerp(0.45, 0.65, g.run) * moveAmt;
-          pitch = hs * (1 - smoothstep(0, 0.18, u)) - to * smoothstep(0.5, 1.0, u);
-        }
-        f.pitch = pitch;
-        this.ankleFromPlant(f.pos, f.yaw, pitch, f.ankle);
-      } else {
-        const s = f.swing;
-        const sh = lerp(s, Math.pow(s, 1.6), g.run);
-        const eh = sh * sh * (3 - 2 * sh);
-        // the foot leaves the ground moving with the body (a runner's heel kicks up and comes
-        // through under the hip; a walker's foot peels off more slowly)
-        const carry = moving ? lerp(0.35, 1, g.run) * (1 - eh) : 0;
-        const from: V3 = [f.lift[0] + (this.rootPos[0] - f.liftRoot[0]) * carry, f.lift[1] + (this.rootPos[1] - f.liftRoot[1]) * carry, f.lift[2]];
-        const hz = vlerp(from, f.target, eh);
-        const peak = Math.sin(Math.PI * Math.pow(s, lerp(1, 0.62, g.run)));
-        const lift = (moving ? g.lift : 0.06 * k) * peak + Math.max(0, f.target[2] - f.lift[2]) * 0.3 * peak;
-        hz[2] += lift;
-        const e = s * s * (3 - 2 * s);
-        const yaw = angleLerp(f.liftYaw, f.targetYaw, e);
-        const to = moving ? lerp(0.45, 0.65, g.run) * moveAmt : 0.15;
-        const hs = moving ? lerp(0.28, 0.1, g.run) * moveAmt : 0.05;
-        f.pitch = lerp(-to, hs, smoothstep(0.15, 0.95, s));
-        f.ankle[0] = hz[0];
-        f.ankle[1] = hz[1];
-        f.ankle[2] = hz[2] + this.ankleH;
-        // within the leg's reach of the hip: a foot left behind rises (the heel kicks up)
-        const hip = this.world.p[f.thigh]!;
-        const reach = 0.97 * this.legLen;
-        const dx = f.ankle[0] - hip[0], dy = f.ankle[1] - hip[1];
-        const hd = Math.hypot(dx, dy);
-        if (hd < reach) f.ankle[2] = Math.max(f.ankle[2], hip[2] - Math.sqrt(reach * reach - hd * hd));
-        else {
-          f.ankle[0] = hip[0] + (dx / hd) * reach * 0.95;
-          f.ankle[1] = hip[1] + (dy / hd) * reach * 0.95;
-          f.ankle[2] = Math.max(f.ankle[2], hip[2] - reach * 0.31);
-        }
-        f.yaw = yaw;
-      }
-    }
-  }
-
-  /** Ankle position (world) of a foot planted at `plant` with heading `yaw` and pitch. */
-  private ankleFromPlant(plant: Readonly<V3>, yaw: number, pitch: number, out: V3): V3 {
-    const fwd: V3 = [Math.cos(yaw), Math.sin(yaw), 0];
-    let dy = 0;
-    let dz = this.ankleH;
-    if (pitch < 0) {
-      const c = Math.cos(pitch), s = Math.sin(pitch);
-      const by = -this.ballFwd, bz = this.ankleH;
-      dy = this.ballFwd + by * c - bz * s;
-      dz = by * s + bz * c;
-    } else if (pitch > 0) {
-      const c = Math.cos(pitch), s = Math.sin(pitch);
-      const by = this.heelBack, bz = this.ankleH;
-      dy = -this.heelBack + by * c - bz * s;
-      dz = by * s + bz * c;
-    }
-    out[0] = plant[0] + fwd[0] * dy;
-    out[1] = plant[1] + fwd[1] * dy;
-    out[2] = plant[2] + dz;
-    return out;
-  }
-
   // ---- actions ------------------------------------------------------------------------------
 
   private updateActions(dt: number): void {
     const inp = this.input;
     const speed = Math.hypot(this.velocity[0], this.velocity[1]);
-    const free = this.stance === 'stand' && this.stanceP >= 1 && inp.mood === 'normal';
+    const free = this.stance === 'stand' && this.stanceP >= 1 && inp.mood === 'normal' && !this.control.busy;
     const armed = this.weapon !== null && this.weapon.kind !== 'knife';
     // (a pause with the weapon down: standing still, not aiming)
     this.armedIdle = armed && free && speed < 0.15 && inp.carry !== 'aim' && inp.carry !== 'hip' ? this.armedIdle + dt : 0;
@@ -1266,7 +1047,7 @@ export class HumanoidAnimator {
     }
     if (want) this.setPoseAction(actionDef(want));
     else if (this.poseAct && !this.poseAct.done) this.poseAct.stop();
-    // one-shots the animator starts itself: gestures and nods in conversation, fidgets
+    // one-shots the plan starts itself: gestures and nods in conversation, fidgets
     if (!this.busy && free) {
       if (inp.talk === 'speak') {
         this.nextGesture -= dt;
@@ -1311,12 +1092,6 @@ export class HumanoidAnimator {
     if (this.act?.done) this.act = null;
   }
 
-  private idleChoice: string | null = null;
-  private armedIdle = 0;
-  /** Seconds until a trip turns into a fall (negative: none pending). */
-  private fallIn = -1;
-  private readonly pendingEvents: { e: { name: string; limb?: Limb }; p: ActionPlayer }[] = [];
-
   /** An idle posture that suits the character (stable per character). */
   private idlePoseFor(listening: boolean): string {
     const r = new Rng(this.seed * 131 + (listening ? 7 : Math.floor(this.time / 15)));
@@ -1327,12 +1102,12 @@ export class HumanoidAnimator {
   private flushEvents(): void {
     for (const { e, p } of this.pendingEvents) {
       const pos = this.limbPos(e.limb);
-      this.events.push({ name: e.name, action: p.def.name, ...(e.limb ? { limb: e.limb } : {}), pos, target: p.target ? [...p.target] as V3 : null });
+      this.events.push({ name: e.name, action: p.def.name, ...(e.limb ? { limb: e.limb } : {}), pos, target: p.target ? ([...p.target] as V3) : null });
     }
     this.pendingEvents.length = 0;
   }
 
-  /** World position of a limb's striking point. */
+  /** World position of a limb's striking point (in the plan's pose). */
   limbPos(limb?: Limb, out: V3 = [0, 0, 0]): V3 {
     const w = this.world;
     const sk = this.skeleton;
@@ -1359,7 +1134,7 @@ export class HumanoidAnimator {
   /** Arms with the gait (or relaxed), as local joint rotations; mirrored for the right side. */
   private armSwing(dt: number, g: GaitParams, moving: boolean, speed: number, breathe: number, idle: number): void {
     const pose = this.pose;
-    const ph = this.phase;
+    const ph = this.feetPlanner.phase;
     const run = g.run;
     // the swing dies out over a few swings when stopping (inertia), rather than at once
     this.swingAmp.update(moving ? g.armSwing : 0, dt);
@@ -1394,54 +1169,8 @@ export class HumanoidAnimator {
       if (!h) continue;
       const side = i === 0 ? 'L' : 'R';
       const pole: V3 = qrotate(this.fk.q[H.chest]!, vnorm([i === 0 ? -0.8 : 0.8, -0.5, -0.5]));
-      this.handIK(side, h, null, pole, w);
+      this.arms.handIK(side, h, null, pole, w);
     }
-  }
-
-  /**
-   * Puts a hand's palm at `target` (model space), oriented `rot` (model, the canonical fist
-   * frame) or left as is, elbow towards `pole`, blending the arm by w.
-   */
-  private handIK(side: 'L' | 'R', target: V3, rot: Quat | null, pole: V3, w: number): void {
-    const pose = this.pose;
-    const fk = this.fk;
-    const ua = side === 'L' ? H.upperarmL : H.upperarmR;
-    const fa = side === 'L' ? H.forearmL : H.forearmR;
-    const hand = side === 'L' ? H.handL : H.handR;
-    const saved = w < 0.999 ? [[...pose.r[ua]!], [...pose.r[fa]!], [...pose.r[hand]!]] as Quat[] : null;
-    const handQ = rot ? qmul(rot, this.canonical(side)) : fk.q[hand]!;
-    const palm = qrotate(handQ, this.palmOffset(side));
-    solveTwoBone(pose, fk, ua, fa, hand, vsub(target, palm), pole, 0.03);
-    if (rot) setModelRotation(pose, fk, hand, handQ);
-    if (saved) {
-      pose.r[ua] = qnlerp(saved[0]!, pose.r[ua]!, w);
-      pose.r[fa] = qnlerp(saved[1]!, pose.r[fa]!, w);
-      pose.r[hand] = qnlerp(saved[2]!, pose.r[hand]!, w);
-    }
-    fk.updateSubtree(pose, ua);
-  }
-
-  /** Rotation from a hand's rest frame to the canonical fist frame (knuckles +y, palm -z). */
-  private canonical(side: 'L' | 'R'): Quat {
-    const cached = side === 'L' ? this.canonL : this.canonR;
-    if (cached) return cached;
-    const sk = this.skeleton;
-    const b = side === 'L' ? H.handL : H.handR;
-    const dir = vsub(sk.restTail[b]!, sk.restHead[b]!);
-    const q = frameRotation(dir, [side === 'L' ? 1 : -1, 0, 0], [0, 1, 0], [0, 0, -1]);
-    if (side === 'L') this.canonL = q;
-    else this.canonR = q;
-    return q;
-  }
-
-  private canonL: Quat | null = null;
-  private canonR: Quat | null = null;
-
-  /** Palm centre relative to the wrist in rest space. */
-  private palmOffset(side: 'L' | 'R'): V3 {
-    const sk = this.skeleton;
-    const b = side === 'L' ? H.handL : H.handR;
-    return vscale(vsub(sk.restTail[b]!, sk.restHead[b]!), 0.42);
   }
 
   /** Hand channels of an action layer. */
@@ -1464,28 +1193,12 @@ export class HumanoidAnimator {
       const rot = r ? qmul(chestQ, qeuler(r[0]! * DEG, r[1]! * DEG, r[2]! * DEG)) : null;
       const pc = ch[`elbow${side}`];
       const pole = qrotate(chestQ, vnorm(pc ? [pc[0]!, pc[1]!, pc[2]!] : [side === 'R' ? 0.7 : -0.7, -0.3, -0.7]));
-      this.handIK(side, palm, rot, pole, ww);
+      this.arms.handIK(side, palm, rot, pole, ww);
     }
   }
 
-  /** A free hand pressed to a wound for a while. */
-  private clutchHand(dt: number, heldProp: boolean): void {
-    const c = this.reactions.clutch;
-    this.clutchW.update(c && this.stance === 'stand' ? 1 : 0, dt);
-    if (!c || this.clutchW.x < 0.02) return;
-    const side = heldProp ? 'L' : c.hand;
-    const b = c.bone;
-    // the wound's point in model space, a little out from the body
-    const q = this.fk.q[b]!;
-    const p = vadd(this.fk.p[b]!, qrotate(q, vsub(c.rest, this.skeleton.restHead[b]!)));
-    const chestQ = this.fk.q[H.chest]!;
-    const out = qrotate(chestQ, [0, 0.05 * this.k, 0]);
-    const pole = qrotate(chestQ, vnorm([side === 'R' ? 0.9 : -0.9, -0.2, -0.5]));
-    this.handIK(side, vadd(p, out), qmul(chestQ, qeuler(-20 * DEG, side === 'R' ? 100 * DEG : -100 * DEG, 0)), pole, clamp(this.clutchW.x, 0, 1) * 0.9);
-  }
-
   /** Mood arm poses by IK (blended over the swing pose by weight w). */
-  private moodArms(w: number): void {
+  private moodArms(w: number, phase: number): void {
     const fk = this.fk;
     const k = this.k;
     const headP = fk.p[H.head]!;
@@ -1507,160 +1220,27 @@ export class HumanoidAnimator {
         pole = qrotate(chestQ, vnorm([side, -0.2, -0.4]));
         rot = qmul(chestQ, qeuler(90 * DEG, 0, 0));
       } else {
-        const b = Math.sin(TAU * this.phase + (side < 0 ? 0 : Math.PI)) * 0.06 * k;
+        const b = Math.sin(TAU * phase + (side < 0 ? 0 : Math.PI)) * 0.06 * k;
         target = vadd(headP, qrotate(chestQ, [side * 0.16 * k, 0.1 * k, 0.12 * k + b]));
         pole = qrotate(chestQ, vnorm([side, 0.2, -0.5]));
         rot = qmul(chestQ, qeuler(70 * DEG, side * -90 * DEG, 0));
       }
-      this.handIK(side < 0 ? 'L' : 'R', target, rot, pole, w);
+      this.arms.handIK(side < 0 ? 'L' : 'R', target, rot, pole, w);
     }
   }
 
-  // ---- weapons ------------------------------------------------------------------------------
-
-  /**
-   * Places the weapon socket in the carry pose and puts the hands on the prop. Returns true
-   * when the prop is held in the socket (both hands, or the gun hand, busy with it).
-   */
-  private holdWeapon(
-    dt: number,
-    aiming: boolean,
-    run: number,
-    moving: boolean,
-    toModel: (w: Readonly<V3>) => V3,
-    chP: ChannelFrame | null,
-    chA: ChannelFrame | null,
-    wP: number,
-    wA: number,
-  ): boolean {
-    const prop = this.weapon!;
-    const pose = this.pose;
-    const fk = this.fk;
-    const k = this.k;
-    const inp = this.input;
-    const pistol = prop.kind === 'pistol';
-    this.readyW.update(inp.carry === 'relaxed' ? 0 : 1, dt);
-    this.hipW.update(inp.carry === 'hip' ? 1 : 0, dt);
-    this.sprintW.update(moving && !aiming ? run : 0, dt);
-    this.kickBack.update(0, dt);
-    this.kickPitch.update(0, dt);
-    // a lowered pistol hangs in the hand
-    if (pistol && this.readyW.x < 0.05 && !aiming) return false;
-    const chestQ = fk.q[H.chest]!;
-    const chestP = fk.p[H.chest]!;
-    const shoulder = fk.p[H.upperarmR]!;
-    const pocket = vadd(shoulder, qrotate(chestQ, [-0.06 * k, 0.07 * k, -0.035 * k]));
-    const cf = qrotate(chestQ, [0, 1, 0]);
-    const chestYawQ = frameRotation([0, 1, 0], [0, 0, 1], vnorm([cf[0], cf[1], 0]), [0, 0, 1]);
-    const eyes = vadd(fk.p[H.head]!, qrotate(fk.q[H.head]!, [0, 0.09 * k, 0.1 * k]));
-    let aimDir: V3 = vnorm([cf[0], cf[1], 0]);
-    if (inp.aimAt) aimDir = vnorm(vsub(toModel(inp.aimAt), pistol ? eyes : pocket));
-    const aimRot = frameRotation([0, 1, 0], [0, 0, 1], aimDir, [0, 0, 1]);
-    const rw = clamp(this.readyW.x, 0, 1);
-    const aw = clamp(this.aimW.x, 0, 1);
-    const hw = clamp(this.hipW.x, 0, 1);
-    let rot: Quat;
-    let pos: V3;
-    let twoHanded = true;
-    if (pistol) {
-      // lowered (in the hand) -> low ready (two hands, muzzle down) -> aimed (two hands at eye
-      // level) or one-handed (arm out at the target)
-      const readyRot = qmul(aimRot, qeuler(-0.7, 0, 0));
-      const readyGrip = vadd(chestP, qrotate(chestYawQ, [0.03 * k, 0.34 * k, 0.02 * k]));
-      const aimGrip = vadd(eyes, vadd(vscale(aimDir, 0.47 * k), [0, 0, -0.07 * k]));
-      const oneGrip = vadd(shoulder, vscale(aimDir, 0.56 * k));
-      rot = qnlerp(readyRot, aimRot, aw);
-      pos = vlerp(readyGrip, vlerp(aimGrip, oneGrip, hw), aw);
-      twoHanded = hw < 0.5;
-    } else {
-      const relaxedRot = qmul(chestYawQ, qeuler(-0.95, 0.15, 0.55));
-      const relaxedGrip = vadd(chestP, qrotate(chestYawQ, [0.13 * k, 0.2 * k, -0.2 * k]));
-      // (a heavy machine gun is carried across the body, lower)
-      const heavy = prop.kind === 'lmg';
-      const readyRot = qmul(aimRot, qeuler(heavy ? -0.32 : -0.5, 0, heavy ? 0.45 : 0.3));
-      const readyStock = vadd(pocket, qrotate(chestQ, heavy ? [0.01 * k, -0.12 * k, -0.1 * k] : [0.01 * k, 0.0, -0.05 * k]));
-      const readyGrip = vsub(readyStock, qrotate(readyRot, prop.stock));
-      const aimGrip = vsub(pocket, qrotate(aimRot, prop.stock));
-      // hip fire: stock under the arm, level at the target (machine guns on the move)
-      const hipRot = qnlerp(aimRot, frameRotation([0, 1, 0], [0, 0, 1], vnorm([aimDir[0], aimDir[1], aimDir[2] * 0.5]), [0, 0, 1]), 0.5);
-      const hipGrip = vadd(chestP, qrotate(chestYawQ, [0.13 * k, 0.2 * k, -0.2 * k]));
-      const portRot = qmul(chestYawQ, frameRotation([0, 1, 0], [0, 0, 1], vnorm([-0.55, 0.3, 0.78]), vnorm([0.1, 1, 0.1])));
-      const portGrip = vadd(chestP, qrotate(chestYawQ, [0.12 * k, 0.2 * k, -0.08 * k]));
-      rot = qnlerp(relaxedRot, readyRot, rw);
-      pos = vlerp(relaxedGrip, readyGrip, rw);
-      const sw = clamp(this.sprintW.x, 0, 1) * (1 - aw);
-      rot = qnlerp(rot, portRot, sw);
-      pos = vlerp(pos, portGrip, sw);
-      const aimR = qnlerp(aimRot, hipRot, hw);
-      const aimP = vlerp(aimGrip, hipGrip, hw);
-      rot = qnlerp(rot, aimR, aw);
-      pos = vlerp(pos, aimP, aw);
-    }
-    // recoil, weapon sway, a hit on the arm knocking the aim off
-    const fwd = qrotate(rot, [0, 1, 0]);
-    pos = vadd(pos, vscale(fwd, -(pistol ? 0.03 : 0.035) * this.kickBack.x));
-    rot = qmul(rot, qx((pistol ? 0.07 : 0.05) * this.kickPitch.x - 0.25 * this.reactions.aimOff.x));
-    const bob = moving ? Math.sin(TAU * 2 * this.phase) * 0.008 * k * (1 - aw * 0.7) : 0;
-    pos = vadd(pos, this.sway.update([0, 0, bob], dt));
-    // action offsets of the weapon (reloads, a rifle jab)
-    for (const [ch, w] of [
-      [chP, wP],
-      [chA, wA],
-    ] as const) {
-      if (!ch || w <= 0) continue;
-      const wr = ch.weaponRot, wpos = ch.weaponPos;
-      if (wr) rot = qmul(rot, qeuler(wr[0]! * DEG * w, wr[1]! * DEG * w, wr[2]! * DEG * w));
-      if (wpos) pos = vadd(pos, qrotate(chestQ, [wpos[0]! * k * w, wpos[1]! * k * w, wpos[2]! * k * w]));
-    }
-    pose.t[H.weapon] = [pos[0], pos[1], pos[2]];
-    pose.r[H.weapon] = rot;
-    fk.updateBone(pose, H.weapon);
-
-    // hands on the prop
-    const grip = pos;
-    const handR = qmul(rot, this.gripR(pistol));
-    const wristR = vsub(grip, qrotate(handR, this.palmOffset('R')));
-    const poleR = qrotate(chestQ, vnorm(pistol ? [0.5, -0.2, -0.9] : [0.7, -0.3, -0.75]));
-    pose.r[H.clavicleR] = qeuler(0, 0, (pistol ? 0.08 : 0.12) * rw);
-    pose.r[H.clavicleL] = qeuler(0, 0, -(pistol ? 0.08 : 0.18) * rw);
-    fk.update(pose, H.clavicleL);
-    solveTwoBone(pose, fk, H.upperarmR, H.forearmR, H.handR, wristR, poleR, 0.02);
-    setModelRotation(pose, fk, H.handR, handR);
-    if (twoHanded) {
-      const support = vadd(pos, qrotate(rot, prop.support));
-      const handL = qmul(rot, this.gripL(pistol));
-      const wristL = vsub(support, qrotate(handL, this.palmOffset('L')));
-      const poleL = qrotate(chestQ, vnorm(pistol ? [-0.5, -0.2, -0.9] : [-0.7, 0.1, -0.8]));
-      solveTwoBone(pose, fk, H.upperarmL, H.forearmL, H.handL, wristL, poleL, 0.04);
-      setModelRotation(pose, fk, H.handL, handL);
-    }
-    return true;
-  }
-
-  // grip frames (hand rotation relative to the prop)
-  private gripR(pistol: boolean): Quat {
-    const sk = this.skeleton;
-    const dir = vsub(sk.restTail[H.handR]!, sk.restHead[H.handR]!);
-    return frameRotation(dir, [-1, 0, 0], vnorm(pistol ? [0, -0.2, -1] : [0, -0.3, -1]), [-1, 0, 0]);
-  }
-
-  private gripL(pistol: boolean): Quat {
-    const sk = this.skeleton;
-    const dir = vsub(sk.restTail[H.handL]!, sk.restHead[H.handL]!);
-    // a pistol's support hand wraps the gun hand from the left
-    if (pistol) return frameRotation(dir, [1, 0, 0], vnorm([0.4, -0.1, -1]), vnorm([1, 0.2, 0.1]));
-    return frameRotation(dir, [1, 0, 0], vnorm([0.35, 0.8, 0.1]), vnorm([0.3, 0, 1]));
-  }
+  // ---- props ------------------------------------------------------------------------------
 
   /** A prop held in the hand (a knife, a lowered pistol): along the knuckles, grip in the palm. */
   private propInHand(b: number): void {
     const w = this.world;
     const side = b === H.handL ? 'L' : 'R';
-    const q = qmul(w.q[b]!, qconj(this.canonical(side)));
-    const palm = vadd(w.p[b]!, qrotate(w.q[b]!, this.palmOffset(side)));
+    const q = qmul(w.q[b]!, qconj(this.arms.canonical(side)));
+    const palm = vadd(w.p[b]!, qrotate(w.q[b]!, this.arms.palmOffset(side)));
     vcopy(palm, this.weaponPos);
-    // a knife points out of the fist along the knuckles; a pistol hangs muzzle down-forward
-    this.weaponRot = this.weapon?.kind === 'pistol' ? qmul(q, qx(-0.3)) : q;
+    // a knife points out of the fist along the knuckles; a pistol hangs muzzle down-forward; a
+    // long gun hangs from the hand
+    this.weaponRot = this.weapon?.kind === 'pistol' ? qmul(q, qx(-0.3)) : this.weapon?.kind === 'knife' ? q : qmul(q, qx(-0.9));
   }
 
   /** World position of a point on the held prop (prop space), e.g. its muzzle. */
@@ -1674,15 +1254,19 @@ export class HumanoidAnimator {
   }
 
   /** The feet (world), for debugging and tests. */
-  footState(): { planted: boolean; pos: V3; ankle: V3; yaw: number }[] {
-    return this.feet.map((f) => ({ planted: f.planted, pos: [...f.pos] as V3, ankle: [...f.ankle] as V3, yaw: f.yaw }));
+  footState(): { planted: boolean; pos: V3; ankle: V3; yaw: number; forced: boolean }[] {
+    return this.feetPlanner.state();
   }
 
-  /** World position between the eyes (line of sight, muzzle-less aiming). */
+  /** World position between the eyes (in the plan's pose). */
   eyes(out: V3 = [0, 0, 0]): V3 {
     const h = this.skeleton.restHead[H.head]!;
     return this.world.pointOf(H.head, [h[0], h[1] + 0.09 * this.k, h[2] + 0.12 * this.k], out);
   }
+
+  /** The palm of a hand (world, in the plan's pose). */
+  palm(side: Side, out: V3 = [0, 0, 0]): V3 {
+    const b = side === 'L' ? H.handL : H.handR;
+    return this.world.pointOf(b, vadd(this.skeleton.restHead[b]!, this.arms.palmOffset(side)), out);
+  }
 }
-
-

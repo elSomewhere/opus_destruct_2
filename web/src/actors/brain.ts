@@ -10,7 +10,7 @@
  * and hunt the last known position when they lose sight.
  *
  * Civilians live their day: they stroll at their own pace, some jog, they wait about (the
- * animator's idle postures and fidgets), pair up and talk, sit on benches, at café tables or on
+ * motion plan's idle postures and fidgets), pair up and talk, sit on benches, at café tables or on
  * the ground, and look at people and at what happens. Fear builds from gunfire, impacts, explosions, screams
  * and bodies: they run (panicking when very scared), cower when it is right on them, put
  * their hands up when the player aims at them close by; the armed ones shoot back. Now and
@@ -198,7 +198,7 @@ export class SoldierBrain implements Brain {
             }
             a.lookAt = p;
             this.lookTimer = rnd(1.8, 3.4);
-            if (chance(0.2)) a.char.animator.play('lookAround');
+            if (chance(0.2)) a.char.motion.play('lookAround');
           }
         } else a.face = null;
         if (this.alertTime > 14) {
@@ -227,7 +227,7 @@ export class SoldierBrain implements Brain {
         }
         // close in for a blow
         this.meleeCool -= dt;
-        if (dist < 1.6 && this.meleeCool <= 0 && !a.char.animator.busy) {
+        if (dist < 1.6 && this.meleeCool <= 0 && !a.char.motion.busy) {
           this.meleeCool = rnd(1.2, 2.2);
           a.stance = 'stand';
           w.melee(a, this.target, longGun ? 'riflePush' : chance(0.5) ? 'cross' : 'jab');
@@ -263,7 +263,7 @@ export class SoldierBrain implements Brain {
         const unseen = w.time - this.seenAt;
         if (this.breather <= 0 && !moving && ((this.burstDone && chance(0.18)) || (unseen > 1.2 && unseen < 1.35 && chance(0.5)))) {
           this.breather = rnd(1.2, 2.6);
-          if (chance(0.45)) a.char.animator.play('catchBreath');
+          if (chance(0.45)) a.char.motion.play('catchBreath');
         }
         this.burstDone = false;
         if (this.breather > 0) {
@@ -272,7 +272,7 @@ export class SoldierBrain implements Brain {
         }
         // a half-empty magazine is topped up in a lull
         const gunKind = a.char.weapon?.kind;
-        if (gunKind && gunKind !== 'knife' && !a.reloading && a.mag < WEAPON_STATS[gunKind].mag * 0.5 && (this.breather > 0 || unseen > 1.5) && !a.char.animator.busy) w.reload(a);
+        if (gunKind && gunKind !== 'knife' && !a.reloading && a.mag < WEAPON_STATS[gunKind].mag * 0.5 && (this.breather > 0 || unseen > 1.5) && !a.char.motion.busy) w.reload(a);
         const up = this.popUp && this.shotTimer > -0.6;
         a.stance = moving || up ? 'stand' : this.hold === 'kneel' ? 'kneel' : this.hold === 'prone' ? 'prone' : 'stand';
         a.crouch = !up && this.hold === 'crouch' ? 1 : moving && this.hold === 'crouch' ? 0.7 : 0;
@@ -304,9 +304,9 @@ export class SoldierBrain implements Brain {
     this.reaction -= dt;
     this.aimTime = a.carry === 'aim' || a.carry === 'hip' ? this.aimTime + dt : 0;
     this.shotTimer -= dt;
-    const an = a.char.animator;
+    const an = a.char.motion;
     if (!this.seen || w.time - this.seenAt > 0.3 || this.reaction > 0 || this.aimTime < 0.35 || !targetAlive(w, this.target)) return;
-    if (an.transitioning || an.knockedDown || (an.busy && an.actionName !== null && !an.actionName.startsWith('reload'))) return;
+    if (an.transitioning || a.char.controlled || (an.busy && an.actionName !== null && !an.actionName.startsWith('reload'))) return;
     if (a.reloading || this.breather > 0) return;
     if (this.burst <= 0) {
       this.pause -= dt;
@@ -319,7 +319,7 @@ export class SoldierBrain implements Brain {
     const d = vdist(a.pos, target);
     const moving = Math.hypot(a.vel[0], a.vel[1]) > 0.4 ? 1 : 0;
     const steady = Math.min(1, this.aimTime / 1.5);
-    const braced = a.char.animator.stance === 'prone' ? 0.02 : a.char.animator.stance === 'kneel' ? 0.012 : a.crouch * 0.01;
+    const braced = a.char.motion.stance === 'prone' ? 0.02 : a.char.motion.stance === 'kneel' ? 0.012 : a.crouch * 0.01;
     const spread = Math.max(0.006, 0.04 + 0.035 * moving + 0.012 * (d / 20) - 0.028 * steady - braced) * w.spreadOf(a);
     if (w.fireAt(a, target, spread)) {
       this.burst--;
@@ -509,7 +509,7 @@ export class CivilianBrain implements Brain {
         if (this.fear > 0.4) return this.startFlee(a, w);
         if (this.timer <= 0) {
           a.stance = 'stand';
-          if (!a.char.animator.transitioning && a.char.animator.stance === 'stand') this.choose(a, w);
+          if (!a.char.motion.transitioning && a.char.motion.stance === 'stand') this.choose(a, w);
         }
         break;
       case 'sit': {
@@ -531,7 +531,7 @@ export class CivilianBrain implements Brain {
           } else if (a.stuck > 2) this.choose(a, w);
         } else if (this.timer <= 0) {
           a.stance = 'stand';
-          if (!a.char.animator.transitioning && a.char.animator.stance === 'stand') this.choose(a, w);
+          if (!a.char.motion.transitioning && a.char.motion.stance === 'stand') this.choose(a, w);
         }
         break;
       }
@@ -550,8 +550,8 @@ export class CivilianBrain implements Brain {
           if (w.arrived(a) || (a.goal && vdist(a.goal, p.pos) > 1.8)) w.goTo(a, spot(), pd > 4 ? this.pace : Math.min(this.pace, 1.2));
         } else if (!w.arrived(a)) w.stop(a);
         const close = pd < 1.6;
-        a.face = pd < 4 ? p.char.animator.eyes() : null;
-        a.lookAt = p.char.animator.eyes();
+        a.face = pd < 4 ? p.char.eyes() : null;
+        a.lookAt = p.char.eyes();
         this.turnTimer -= dt;
         if (this.turnTimer <= 0) {
           this.turnTimer = rnd(2.5, 6);
@@ -586,7 +586,7 @@ export class CivilianBrain implements Brain {
         w.endBrawl(a);
         const o = this.opponent;
         this.opponent = null;
-        if (a.char.knockedOut || a.char.animator.knockedDown) {
+        if (a.char.knockedOut || a.char.down) {
           // still on the ground: flee once up
           this.fear = 0.6;
           this.startFlee(a, w);
@@ -618,7 +618,7 @@ export class CivilianBrain implements Brain {
           return this.startFlee(a, w);
         }
         a.carry = 'aim';
-        a.face = t.char.animator.eyes();
+        a.face = t.char.eyes();
         a.aimTarget = [t.pos[0], t.pos[1], t.pos[2] + 1.2];
         a.stance = 'stand';
         a.crouch = 0.4;
@@ -681,8 +681,8 @@ export class CivilianBrain implements Brain {
     if (this.glanceAt && w.time < this.glanceUntil && this.state !== 'brawl' && this.state !== 'flee') a.lookAt = this.glanceAt;
     if (this.state !== 'defend' || !this.defendTarget) return;
     this.shotTimer -= dt;
-    const an = a.char.animator;
-    if (an.transitioning || an.knockedDown || a.reloading || this.shotTimer > 0) return;
+    const an = a.char.motion;
+    if (an.transitioning || a.char.controlled || a.reloading || this.shotTimer > 0) return;
     const t = this.defendTarget;
     const chest: V3 = [t.pos[0], t.pos[1], t.pos[2] + 1.25];
     if (!w.canSee(a, chest)) return;

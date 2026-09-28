@@ -1,7 +1,7 @@
 /**
  * Retro animation: Doom-style state sequences baked from the smooth procedural animation.
  *
- * For each state (walk, run, fire, pain, ...) a fresh HumanoidAnimator is driven on flat ground
+ * For each state (walk, run, fire, pain, ...) a fresh MotionPlan is driven on flat ground
  * until its gait is steady, and a handful of frames are sampled (walk and run: four frames
  * across one gait cycle, Doom's A B C D) and re-voxelized into whole-body voxel models
  * (bake.ts). Playback steps through them in Doom tics (35 Hz), holding each frame for a few tics,
@@ -10,9 +10,9 @@
  */
 import { WorldPose } from '../core/skeleton.ts';
 import type { Prop, PropKind } from '../characters/props.ts';
-import { HumanoidAnimator, type Carry, type Mood } from '../humanoid/animator.ts';
+import { MotionPlan, type Carry, type Mood } from '../motion/plan.ts';
 import { H } from '../humanoid/rig.ts';
-import type { GroundVariant, Stance } from '../humanoid/stances.ts';
+import type { GroundVariant, Stance } from '../motion/stances.ts';
 import { qconj, qmul, qrotate, type Quat } from '../math/quat.ts';
 import { vsub, type V3 } from '../math/vec.ts';
 import { FlatGround } from '../physics/collision.ts';
@@ -197,7 +197,7 @@ export function bakeRetroSet(model: VoxelModel, opts: { weapon?: Prop | null; vo
   const mw = new WorldPose(model.skeleton);
   const weapon = opts.weapon ?? null;
   const kind = weapon?.kind ?? null;
-  const frameOf = (an: HumanoidAnimator, state: RetroState, index: number): VoxelModel => {
+  const frameOf = (an: MotionPlan, state: RetroState, index: number): VoxelModel => {
     // the local pose recomputed at an identity root: model space, root at the origin
     mw.compute(an.pose, [0, 0, 0], IDENTITY);
     const props: BakeProp[] = [];
@@ -212,7 +212,7 @@ export function bakeRetroSet(model: VoxelModel, opts: { weapon?: Prop | null; vo
   for (const state of opts.states ?? RETRO_STATES) {
     const spec = SPECS[state];
     if (!fits(spec.needs, kind)) continue;
-    const an = new HumanoidAnimator(model.skeleton, new FlatGround(0), 1);
+    const an = new MotionPlan(model.skeleton, new FlatGround(0), 1);
     an.weapon = weapon;
     const inp = an.input;
     inp.idle = false; // clean poses: no idle postures or fidgets of their own
@@ -269,10 +269,20 @@ export function bakeRetroSet(model: VoxelModel, opts: { weapon?: Prop | null; vo
     } else {
       const times = spec.times!;
       if (spec.action === 'fire') an.fire();
-      if (spec.action === 'hit') an.hit([0, -1, 0], 1, 0.7);
-      if (spec.action === 'down' || spec.action === 'getUp') an.knockDown(true);
+      if (spec.action === 'hit') {
+        // struck in the chest: the trunk rocks back, the head lags, the shoulders come up
+        const c = an.control;
+        c.chest[0] = 0.32;
+        c.spine[0] = 0.12;
+        c.neck[0] = 0.28;
+        c.shrug = 0.6;
+        c.crouch = 0.15;
+      }
+      if (spec.action === 'down' || spec.action === 'getUp') an.fall(true);
       if (spec.action === 'getUp') {
-        // lie until the get-up has sat the body up (the stance reaches 'ground'), then sample
+        // lie, get up, and sample once the get-up has sat the body up (the stance reaches 'ground')
+        for (let i = 0; i < 240; i++) step(1 / 120);
+        an.getUp();
         for (let i = 0; i < 720 && an.stance !== 'ground'; i++) step(1 / 120);
       }
       if (spec.play) {
@@ -406,18 +416,18 @@ export interface RetroFacts {
   firing: boolean;
   mood: Mood;
   pain: boolean;
-  /** The animator's settled stance (HumanoidAnimator.stance). */
+  /** The plan's settled stance (MotionPlan.stance). */
   stance?: Stance;
   talk?: 'speak' | 'listen' | null;
   guard?: boolean;
-  /** The running one-shot action (HumanoidAnimator.actionName; a '.m' mirror suffix is ignored). */
+  /** The running one-shot action (MotionPlan.actionName; a '.m' mirror suffix is ignored). */
   action?: string | null;
   /** The kind of the held prop. */
   weapon?: PropKind | null;
   carry?: Carry;
   /** Peeking (HumanoidInput.lean). */
   lean?: number;
-  /** HumanoidAnimator.knockedDown / .transitioning. */
+  /** Down (MotionPlan.down, Character.down) / MotionPlan.transitioning. */
   knockedDown?: boolean;
   transitioning?: boolean;
   /** Sitting at a desk. */

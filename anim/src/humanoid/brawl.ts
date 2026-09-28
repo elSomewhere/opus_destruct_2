@@ -3,17 +3,17 @@
  * range and circling, choosing strikes by distance (jabs, crosses, hooks, uppercuts, front and
  * roundhouse kicks; stabs and slashes with a knife), combinations, blocking what the opponent
  * throws, backing off a downed opponent, and resolving what lands: a strike event of the
- * animator becomes a hit where the fist, foot or blade met the opponent's body, with a force by
+ * motion plan becomes a hit where the fist, foot or blade met the opponent's body, with a force by
  * strike (a jab stings, a roundhouse to the head drops people).
  *
  * The host moves the fighters: `move` is the desired velocity (world, m/s) and `yaw` the
- * facing; the host adds each character's knockback.
+ * facing; while a fighter's body leads (knocked back, down) the host follows its root motion.
  */
 import type { Character, WoundResult } from '../character.ts';
 import { Rng } from '../math/random.ts';
 import { clamp, vdist, vnorm, vsub, type V3 } from '../math/vec.ts';
-import { KNIFE_ATTACKS } from './actions.ts';
-import type { AnimEvent } from './animator.ts';
+import { KNIFE_ATTACKS } from '../motion/actions.ts';
+import type { AnimEvent } from '../motion/plan.ts';
 import { H } from './rig.ts';
 
 export interface BrawlerOptions {
@@ -81,7 +81,7 @@ export class Brawler {
 
   update(dt: number): void {
     const me = this.self;
-    const a = me.animator;
+    const a = me.motion;
     const o = this.opponent;
     this.move[0] = 0;
     this.move[1] = 0;
@@ -89,13 +89,13 @@ export class Brawler {
       a.input.guard = false;
       return;
     }
-    const d = vdist(a.rootPos, o.animator.rootPos);
-    const to = vsub(o.animator.rootPos, a.rootPos);
+    const d = vdist(a.rootPos, o.motion.rootPos);
+    const to = vsub(o.motion.rootPos, a.rootPos);
     this.yaw = Math.atan2(to[1], to[0]);
-    const oDown = !o.alive || o.animator.knockedDown;
+    const oDown = !o.alive || o.down;
     a.input.guard = !oDown || d < 2.5;
-    a.input.lookAt = o.animator.eyes();
-    if (a.knockedDown) return;
+    a.input.lookAt = o.eyes();
+    if (me.controlled) return;
     const want = oDown ? 1.7 : this.knife ? 0.82 : this.lastStrike === 'frontKick' || this.lastStrike === 'roundhouse' ? 1.08 : 0.92;
     // close or open the distance, circle to the side
     this.circleT -= dt;
@@ -109,7 +109,7 @@ export class Brawler {
     this.move[0] = n[0] * radial - n[1] * lateral;
     this.move[1] = n[1] * radial + n[0] * lateral;
     // react to what the opponent throws
-    const theirs = o.animator.actionName;
+    const theirs = o.motion.actionName;
     if (theirs && theirs !== this.reacted && FORCE[theirs.replace('.m', '')] && !a.busy) {
       this.reacted = theirs;
       const r = this.rng.next();
@@ -151,14 +151,14 @@ export class Brawler {
       const base = e.action.replace('.m', '');
       const kind = base === 'stab' || base === 'slash' || base === 'gutStab' || base === 'forehandSlash' ? 'blade' : 'blunt';
       // where the limb is against the opponent's body
-      const bone = o.animator.nearestBone(e.pos);
+      const bone = o.nearestBone(e.pos);
       const bp = o.pose.p[bone]!;
       const tail = o.pose.tail(bone);
       const mid: V3 = [(bp[0] + tail[0]) / 2, (bp[1] + tail[1]) / 2, (bp[2] + tail[2]) / 2];
       const reach = e.limb === 'footR' || e.limb === 'footL' ? 0.38 : 0.3;
       if (vdist(e.pos, mid) > reach + (bone === H.chest || bone === H.spine ? 0.12 : 0)) continue;
-      const dir = vnorm(vsub(e.target ?? mid, this.self.animator.world.p[H.chest]!));
-      const blocking = o.animator.actionName === 'block' && (bone === H.head || bone === H.neck || bone === H.chest || (bone >= H.upperarmL && bone <= H.handR));
+      const dir = vnorm(vsub(e.target ?? mid, this.self.pose.p[H.chest]!));
+      const blocking = o.motion.actionName === 'block' && (bone === H.head || bone === H.neck || bone === H.chest || (bone >= H.upperarmL && bone <= H.handR));
       const force = (FORCE[base] ?? 1) * (blocking ? 0.3 : 1);
       const result = o.melee(e.pos, dir, blocking ? 'blunt' : kind, force);
       out.push({ attacker: this.self, victim: o, point: [...e.pos] as V3, dir, kind, blocked: blocking, result });

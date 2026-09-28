@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { FlatGround, H, HumanoidAnimator, humanoidSkeleton, makeRifle, vdist, type V3 } from '../src/index.ts';
+import { FlatGround, H, MotionPlan, humanoidSkeleton, makeRifle, vdist, type V3 } from '../src/index.ts';
 
 function walk(speed: number, seconds: number, opts: { crouch?: number; rifle?: boolean; aim?: boolean } = {}) {
   const sk = humanoidSkeleton();
-  const an = new HumanoidAnimator(sk, new FlatGround(0), 7);
+  const an = new MotionPlan(sk, new FlatGround(0), 7);
   if (opts.rifle) an.weapon = makeRifle();
   an.input.crouch = opts.crouch ?? 0;
   if (opts.aim) {

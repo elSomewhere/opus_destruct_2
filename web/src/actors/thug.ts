@@ -66,7 +66,7 @@ export class ThugBrain implements Brain {
     this.timer = rnd(2.5, 6);
     a.face = null;
     a.aimTarget = null;
-    a.char.animator.input.guard = false;
+    a.char.motion.input.guard = false;
     const p = w.nav.randomPoint(a.pos, 4, 14);
     if (p) w.goTo(a, p, rnd(1.0, 1.3));
   }
@@ -75,7 +75,7 @@ export class ThugBrain implements Brain {
     this.state = 'flee';
     this.timer = rnd(8, 14);
     a.face = null;
-    a.char.animator.input.guard = false;
+    a.char.motion.input.guard = false;
     w.holster(a);
     const p = w.nav.randomPoint(a.pos, 14, 30, from) ?? w.nav.randomPoint(a.pos, 8, 18);
     if (p) w.goTo(a, p, rnd(4.2, 5.2));
@@ -115,7 +115,7 @@ export class ThugBrain implements Brain {
         if (!tp || this.timer <= 0) return this.loiter(a, w);
         const d = vdist(a.pos, tp);
         const t = this.target!;
-        a.lookAt = t.kind === 'player' ? w.player.eye() : t.actor.char.animator.eyes();
+        a.lookAt = t.kind === 'player' ? w.player.eye() : t.actor.char.eyes();
         // close enough to mean it: the knife comes out, a shout, then a charge
         if (d < 8) {
           w.drawWeapon(a);
@@ -161,15 +161,15 @@ export class ThugBrain implements Brain {
         w.drawWeapon(a);
         a.face = pl.eye();
         a.lookAt = pl.eye();
-        a.char.animator.input.guard = true;
+        a.char.motion.input.guard = true;
         if (d > 1.25 || d < 0.7 || (w.arrived(a) && chance(0.15))) {
           const dir = vnorm([a.pos[0] - pl.feet[0], a.pos[1] - pl.feet[1], 0]);
           const side = chance(0.5) ? 0.5 : -0.5;
           const p: V3 = [pl.feet[0] + (dir[0] - dir[1] * side) * 0.95, pl.feet[1] + (dir[1] + dir[0] * side) * 0.95, pl.feet[2]];
           w.goTo(a, p, 2.2);
         }
-        const an = a.char.animator;
-        if (d < 1.45 && this.strikeCool <= 0 && !an.busy && !an.knockedDown) {
+        const an = a.char.motion;
+        if (d < 1.45 && this.strikeCool <= 0 && !an.busy && !a.char.controlled) {
           const knife = a.char.weapon?.kind === 'knife';
           const pick = knife ? KNIFE_ATTACKS[Math.floor(Math.random() * KNIFE_ATTACKS.length)]! : FISTS[Math.floor(Math.random() * FISTS.length)]!;
           w.melee(a, { kind: 'player' }, pick);

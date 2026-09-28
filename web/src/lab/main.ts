@@ -28,6 +28,7 @@ import {
   makeRifle,
   makeSoldier,
   makeThug,
+  H,
   meshPart,
   ModelMesher,
   qrotate,
@@ -162,7 +163,7 @@ async function main(): Promise<void> {
   const spawn = (s: Spec, index: number): Actor => {
     const variant = s.variant();
     const char = new Character({ model: variant.model, palette: variant.palette, collision, weapon: s.prop, seed: index + 1 });
-    char.animator.style = randomStyle(index * 17 + 3, variant.spec.name.startsWith('soldier') ? 'soldier' : variant.spec.name.startsWith('thug') ? 'thug' : variant.spec.female ? 'civilianFemale' : 'civilian');
+    char.motion.style = randomStyle(index * 17 + 3, variant.spec.name.startsWith('soldier') ? 'soldier' : variant.spec.name.startsWith('thug') ? 'thug' : variant.spec.female ? 'civilianFemale' : 'civilian');
     const pos: V3 = [s.pos[0], s.pos[1], groundAt(s.pos[0], s.pos[1], 1)];
     char.place(pos, s.yaw);
     const a: Actor = { name: s.name, group: s.group, variant, prop: s.prop, char, palette: cc.palette(variant.palette), script: s.script, pos, yaw: s.yaw, vel: [0, 0], yawRate: 0, cool: 0, brawler: null, own: null, propSkin: new Float32Array(16), stepSkin: new Float32Array(char.skin.length) };
@@ -208,7 +209,7 @@ async function main(): Promise<void> {
       if (moveTo(a, p[0], p[1], speed, dt)) i++;
     };
   };
-  const inp = (a: Actor) => a.char.animator.input;
+  const inp = (a: Actor) => a.char.motion.input;
   const face = (a: Actor, p: V3, dt: number, rate = 2.6): void => {
     turnTo(a, Math.atan2(p[1] - a.pos[1], p[0] - a.pos[0]), dt, rate);
   };
@@ -241,7 +242,7 @@ async function main(): Promise<void> {
         const sp = byName(talkers[speaker]!);
         const next = byName(talkers[(i + 1) % 3]!);
         inp(a).talk = speaker === i ? 'speak' : 'listen';
-        inp(a).lookAt = speaker === i ? (next ? next.char.animator.eyes() : null) : sp ? sp.char.animator.eyes() : null;
+        inp(a).lookAt = speaker === i ? (next ? next.char.eyes() : null) : sp ? sp.char.eyes() : null;
       },
     });
   });
@@ -259,7 +260,7 @@ async function main(): Promise<void> {
         inp(a).seat = { pos: s.seat, backrest: p.f.backrest, deskHeight: p.f.deskHeight ?? null, ...(variant ? { variant } : {}) };
         // now and then look at the passers-by
         const w = byName('stroller');
-        inp(a).lookAt = w && Math.sin(t * 0.3 + seed) > 0.2 ? w.char.animator.eyes() : null;
+        inp(a).lookAt = w && Math.sin(t * 0.3 + seed) > 0.2 ? w.char.eyes() : null;
       },
     });
   };
@@ -344,7 +345,7 @@ async function main(): Promise<void> {
     script: (a, t, dt) => {
       inp(a).stance = 'prone';
       inp(a).carry = 'ready';
-      if (a.char.animator.transitioning) return;
+      if (a.char.motion.transitioning) return;
       waypoints([[-6.5, -14.2], [-12, -14.2]], 0.45)(a, t, dt);
     },
   });
@@ -421,8 +422,8 @@ async function main(): Promise<void> {
     script: (a, t, dt) => {
       inp(a).carry = 'aim';
       inp(a).aimAt = [-8.5, 5, 1.4];
-      if (!a.char.animator.busy) {
-        if (Math.floor(t / 5) !== Math.floor((t - dt) / 5)) a.char.animator.play('reloadRifle');
+      if (!a.char.motion.busy) {
+        if (Math.floor(t / 5) !== Math.floor((t - dt) / 5)) a.char.motion.play('reloadRifle');
         else if (Math.sin(t * 2) > 0.6) shoot(a, dt, 0.11, false, t);
       }
     },
@@ -459,7 +460,7 @@ async function main(): Promise<void> {
         const b = a.brawler!;
         b.opponent = byName(other)?.char ?? null;
         b.update(dt);
-        if (!a.char.animator.transitioning && !a.char.animator.knockedDown) {
+        if (!a.char.motion.transitioning && !a.char.controlled) {
           a.pos[0] += b.move[0] * dt;
           a.pos[1] += b.move[1] * dt;
           a.pos[2] = groundAt(a.pos[0], a.pos[1], a.pos[2]);
@@ -479,49 +480,81 @@ async function main(): Promise<void> {
   fighter('rifleman', 'thug fists', 15.5, -13.2, Math.PI, 77, props.rifle, true);
 
   // ---- balance, reflexes and a soldier's pauses ------------------------------------------------
-  // pushed by pretend blasts: staggers, and every third time off its feet
+  // pretend rounds smacking in: a puff of dust, and whoever is close flinches
+  const impact = (p: V3): void => {
+    renderer.particles.spawn({ pos: p, vel: [0, 0, 1.2], life: 0.35, size: 0.12, grow: 0.8, color: [0.55, 0.5, 0.42, 0.8], gravity: 0 });
+    renderer.particles.spawn({ pos: p, vel: [0, 0, 0], life: 0.05, size: 0.08, color: [3, 2.2, 1, 1], additive: true, gravity: 0 });
+    for (const b of actors) if (b.char.alive) b.char.perceive({ point: p, strength: 1, kind: 'impact' });
+  };
+  // shoved by pretend blasts, harder each time: a step, a stagger, off its feet (it gets up)
   add({
     name: 'stumbler',
     group: 'reactions',
     variant: () => makeCivilian(82),
     prop: null,
-    pos: [-1.5, 4.8, 0],
+    pos: [-10, 3.5, 0],
     yaw: -Math.PI / 2,
     script: (a, t, dt) => {
-      const k = Math.floor(t / 4.5);
-      if (Math.floor((t - dt) / 4.5) !== k && k > 0) {
+      const k = Math.floor(t / 5);
+      if (Math.floor((t - dt) / 5) !== k && k > 0) {
         const ang = k * 2.1;
-        a.char.animator.stumble([Math.cos(ang), Math.sin(ang), 0], k % 3 === 0 ? 2.1 : 1.1);
+        a.char.push([Math.cos(ang), Math.sin(ang), 0], [0.9, 1.5, 2.2, 3.2][k % 4]!);
       }
-      // walk back to the spot between pushes
-      if (!a.char.animator.knockedDown && !a.char.animator.busy) moveTo(a, -1.5, 4.8, 0.8, dt, true, true);
+      // walk back to the spot between shoves
+      if (!a.char.motion.busy) moveTo(a, -10, 3.5, 0.8, dt, true, true);
     },
   });
-  // walking to and fro: now and then a foot catches (and every so often it goes down)
+  // running across beams and a kerb in a panic: a foot that does not clear them catches, and the
+  // body stumbles over it (or goes down); every third pass a foot catches regardless
   add({
     name: 'tripper',
     group: 'reactions',
     variant: () => makeCivilian(83),
     prop: null,
-    pos: [-3, 6.4, 0],
+    pos: [-3.5, 6.4, 0],
     yaw: 0,
     script: (() => {
-      const walk = waypoints([[3, 6.4], [-3, 6.4]], 1.6);
-      let next = 3;
-      let count = 0;
+      const run = waypoints([[3.8, 6.4], [-3.5, 6.4]], 3.4);
+      let passes = 0;
+      let lastX = -3.5;
       return (a: Actor, t: number, dt: number): void => {
-        const an = a.char.animator;
-        if (an.knockedDown || an.transitioning) return;
-        walk(a, t, dt);
-        if (t > next) {
-          next = t + 3.5 + Math.random() * 2;
-          count++;
-          an.trip(count % 3 === 0);
+        inp(a).mood = 'panic';
+        run(a, t, dt);
+        if (Math.sign(a.pos[0] - 0.2) !== Math.sign(lastX - 0.2)) {
+          passes++;
+          if (passes % 3 === 0) a.char.trip();
         }
+        lastX = a.pos[0];
       };
     })(),
   });
-  // a soldier at ease: fidgets by itself; now and then a breath, a reload, a flinch
+  // rounds landing around two people: they flinch away from each, a hand up, ducking
+  for (const [name, x, soldier] of [
+    ['under fire', -3.2, false],
+    ['under fire 2', -4.4, true],
+  ] as const) {
+    add({
+      name,
+      group: 'reactions',
+      variant: () => (soldier ? makeSoldier(16) : makeCivilian(84)),
+      prop: soldier ? props.rifle : null,
+      pos: [x, 2.8, 0],
+      yaw: -Math.PI / 2 + 0.3,
+      script: (() => {
+        let next = 2;
+        return (a: Actor, t: number): void => {
+          if (soldier) inp(a).carry = 'ready';
+          if (t > next && !soldier) {
+            next = t + 0.8 + Math.random() * 1.6;
+            const ang = Math.random() * Math.PI * 2;
+            const r = 0.5 + Math.random() * 1.1;
+            impact([x - 0.6 + Math.cos(ang) * r, 2.8 + Math.sin(ang) * r, Math.random() < 0.4 ? 0.02 : 0.4 + Math.random() * 1.2]);
+          }
+        };
+      })(),
+    });
+  }
+  // a soldier at ease: fidgets by itself; now and then a breath, a reload, a look round
   add({
     name: 'soldier at ease',
     group: 'reactions',
@@ -534,12 +567,79 @@ async function main(): Promise<void> {
       let k = 0;
       return (a: Actor, t: number): void => {
         inp(a).carry = 'ready';
-        const an = a.char.animator;
+        const an = a.char.motion;
         if (t > next && !an.busy) {
           next = t + 5 + Math.random() * 3;
-          const what = ['catchBreath', 'reloadRifle', 'flinch', 'lookAround'][k++ % 4]!;
-          if (what === 'flinch') an.flinch();
-          else an.play(what);
+          const what = ['catchBreath', 'reloadRifle', 'lookAround'][k++ % 3]!;
+          an.play(what);
+        }
+      };
+    })(),
+  });
+  // along the wall (the long wall with the doorway, y = 8):
+  // shoved towards the wall: a hand goes out to it and takes the weight
+  add({
+    name: 'wall bracer',
+    group: 'reactions',
+    variant: () => makeCivilian(85),
+    prop: null,
+    pos: [-10.2, 7.25, 0],
+    yaw: 0,
+    script: (a, t, dt) => {
+      const k = Math.floor(t / 5);
+      if (Math.floor((t - dt) / 5) !== k && k > 0) a.char.push([0.25, 1, 0], k % 2 === 0 ? 1.4 : 2.0);
+      if (!a.char.motion.busy) moveTo(a, -10.2, 7.25, 0.7, dt, false, true);
+      turnTo(a, 0, dt);
+    },
+  });
+  // a wounded leg: limping to and fro along the wall, a hand on it, resting against it
+  add({
+    name: 'wounded',
+    group: 'reactions',
+    variant: () => makeCivilian(86),
+    prop: null,
+    pos: [-11.6, 7.45, 0],
+    yaw: 0,
+    init: (a) => a.char.addInjury(H.thighL, 0.75),
+    script: (() => {
+      let leg = 0;
+      let wait = 0;
+      const spots: [number, number][] = [[-8.6, 7.45], [-11.6, 7.45]];
+      return (a: Actor, _t: number, dt: number): void => {
+        if (wait > 0) {
+          wait -= dt;
+          return;
+        }
+        const p = spots[leg % 2]!;
+        if (moveTo(a, p[0], p[1], 0.9, dt, true, true)) {
+          leg++;
+          wait = 3.5;
+        }
+      };
+    })(),
+  });
+  // shot dead with the wall behind: the body falls back against it and slides down (it stands
+  // up again after a while)
+  add({
+    name: 'wall slump',
+    group: 'reactions',
+    variant: () => makeSoldier(17),
+    prop: props.rifle,
+    pos: [-7.8, 7.5, 0],
+    yaw: -Math.PI / 2,
+    script: (() => {
+      let at = 3;
+      return (a: Actor, t: number): void => {
+        inp(a).carry = 'ready';
+        if (t > at && a.char.alive) {
+          at = Infinity;
+          const c = a.char.pose.p[H.chest]!;
+          const hit = a.char.raycast([c[0], c[1] - 3, c[2] + 0.05], [0, 1, 0], 6);
+          if (hit) {
+            const r = a.char.wound(hit, [0, 1, 0], 45);
+            bleed(a, hit.point, [0, 1, 0], r.removed);
+          }
+          if (a.char.alive) a.char.die(a.char.pose.p[H.chest]!, [0, 1.2, 0], 1.1);
         }
       };
     })(),
@@ -700,6 +800,10 @@ async function main(): Promise<void> {
 
   // panel
   const ui = document.querySelector<HTMLElement>('#ui')!;
+  const hud = document.createElement('div');
+  hud.id = 'hud';
+  hud.style.cssText = 'position:absolute;bottom:10px;left:50%;transform:translateX(-50%);background:rgba(0,0,0,.55);padding:4px 10px;border-radius:5px;font:13px system-ui;color:#e6e8eb;pointer-events:none;white-space:nowrap';
+  document.body.append(hud);
   const panel = document.createElement('div');
   panel.style.cssText = 'position:absolute;top:8px;left:8px;pointer-events:auto;background:rgba(0,0,0,.55);padding:8px 10px;border-radius:6px;font:12px system-ui;color:#e6e8eb;max-width:300px;line-height:1.5;max-height:calc(100vh - 16px);overflow:auto';
   panel.innerHTML = `<b>svx_anim lab</b><br>drag: orbit · wheel: zoom · click: shoot · shift-click: rocket<br>
@@ -756,16 +860,21 @@ async function main(): Promise<void> {
     if (retroTick) retroClock %= 4 / 35;
     for (const a of actors) {
       if (a.char.alive) {
-        a.script(a, simT, dt);
-        // knockback from hits moves the character (the feet stumble after it)
-        const kb = a.char.animator.takeKnockback(dt);
-        a.pos[0] += kb[0];
-        a.pos[1] += kb[1];
+        // while the body leads (staggering, down, getting up) the character follows it
+        const rm = a.char.takeRootMotion();
+        if (a.char.controlled) {
+          a.pos[0] += rm[0];
+          a.pos[1] += rm[1];
+          a.pos[2] += rm[2];
+          a.yaw = a.char.motion.rootYaw;
+          a.vel = [0, 0];
+          a.yawRate = 0;
+        } else a.script(a, simT, dt);
         a.char.setRoot(a.pos, a.yaw);
       }
       a.char.update(dt);
       if (style === 'smooth' || a.char.retroFrame || retroTick) a.stepSkin.set(a.char.skin);
-      const events = a.char.animator.takeEvents();
+      const events = a.char.takeEvents();
       if (a.brawler) {
         for (const blow of a.brawler.resolve(events)) {
           const v = actors.find((x) => x.char === blow.victim)!;
@@ -774,6 +883,15 @@ async function main(): Promise<void> {
           if (blow.result.killed) killed(v);
         }
       }
+    }
+    // the dead of the reactions come back after a while
+    for (let i = 0; i < actors.length; i++) {
+      const a = actors[i]!;
+      if (a.group !== 'reactions' || a.char.alive || a.char.deadTime < 7) continue;
+      const si = specs.findIndex((x) => x.name === a.name);
+      if (si < 0) continue;
+      if (a.own?.mesh) cc.releaseMesh(a.own.mesh);
+      actors[i] = spawn(specs[si]!, si);
     }
     // a fight that ended starts again after a while
     const fightDone = actors.some((a) => a.group === 'fights' && !a.char.alive);
@@ -832,19 +950,24 @@ async function main(): Promise<void> {
         } else mesh = meshOf(ch.model);
         cc.add(mesh, a.stepSkin, ch.model.skeleton.count, a.palette, { center: b.center, radius: b.radius + 0.3, tint });
         if (ch.weapon && ch.alive) {
-          ch.animator.writePropSkin(a.propSkin);
-          cc.add(meshOf(ch.weapon.model), a.propSkin, 1, a.palette, { center: ch.animator.weaponPos, radius: 0.8 });
+          ch.writePropSkin(a.propSkin);
+          cc.add(meshOf(ch.weapon.model), a.propSkin, 1, a.palette, { center: ch.weaponPos, radius: 0.8 });
         }
       }
-      if (ch.alive && ch.animator.stance === 'stand') cc.decal([a.pos[0], a.pos[1], ch.animator.rootPos[2] + 0.004], [0, 0, 1], 0.42, [0, 0, 0, 0.5], 0);
+      if (ch.alive && ch.motion.stance === 'stand') cc.decal([a.pos[0], a.pos[1], ch.motion.rootPos[2] + 0.004], [0, 0, 1], 0.42, [0, 0, 0, 0.5], 0);
     }
     for (const [g, m] of gibMeshes) cc.add(m.mesh, m.skin, 1, m.palette, { center: g.pos, radius: g.radius + 0.05 });
     gibs.forEachDrop((p, size, c) => cc.bit(p, size, [0, 0, 0, 1], c));
     gibs.forEachStain((p, n, size, age, c) => cc.decal(p, n, Math.max(0.045, size * 2.4), [c[0] * 0.8, c[1] * 0.8, c[2] * 0.8, Math.min(0.92, 0.5 + age)], 1));
     if (cam.follow >= 0 && actors[cam.follow]) {
-      const p = actors[cam.follow]!.char.pose.p[1]!;
+      const f = actors[cam.follow]!;
+      const p = f.char.pose.p[1]!;
       cam.target = [p[0], p[1], p[2] + 0.1];
-    }
+      // what the followed body is doing
+      const b = f.char.behaviours;
+      const inj = b.injuries;
+      hud.textContent = `${f.name}: ${b.mode}${b.physical ? '' : ' (plan only)'} · balance ${b.balanceError.toFixed(2)} m · steps ${b.steps}${b.lostWhy ? ' · fell: ' + b.lostWhy : ''}${b.brace ? ' · brace ' + b.brace.why + (b.brace.holding ? ' (holding)' : '') : ''}${inj.pain > 0.05 ? ' · pain ' + inj.pain.toFixed(2) : ''}${f.char.motion.stance !== 'stand' ? ' · ' + f.char.motion.stance : ''}`;
+    } else hud.textContent = '';
     const { eye, fwd } = view();
     renderer.render({ camera: { eye, forward: fwd, fovY: FOV, near: 0.05 }, timeS: tMs / 1000, debugView: DebugView.None, flashPos: [0, 0, 0], flashIntensity: 0, voxelSize: LAB_H });
     requestAnimationFrame(frame);

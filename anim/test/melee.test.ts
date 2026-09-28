@@ -6,7 +6,7 @@ import {
   Character,
   FlatGround,
   H,
-  HumanoidAnimator,
+  MotionPlan,
   KNIFE_ATTACKS,
   humanoidSkeleton,
   makeCivilian,
@@ -22,20 +22,19 @@ import {
 
 const DT = 1 / 60;
 
-function standing(yaw = Math.PI / 2, seed = 5): HumanoidAnimator {
-  const a = new HumanoidAnimator(humanoidSkeleton(), new FlatGround(0), seed);
+function standing(yaw = Math.PI / 2, seed = 5): MotionPlan {
+  const a = new MotionPlan(humanoidSkeleton(), new FlatGround(0), seed);
   a.place([0, 0, 0], yaw);
   return a;
 }
 
-/** Runs the animator with the host moving the root by the knockback (as games do). */
-function live(a: HumanoidAnimator, seconds: number, speed = 0, each?: (a: HumanoidAnimator, t: number) => void): void {
+/** Runs the plan with the host moving the root (as games do). */
+function live(a: MotionPlan, seconds: number, speed = 0, each?: (a: MotionPlan, t: number) => void): void {
   const pos: V3 = [a.rootPos[0], a.rootPos[1], a.rootPos[2]];
   const f: V3 = [Math.cos(a.rootYaw), Math.sin(a.rootYaw), 0];
   for (let i = 0; i < Math.round(seconds * 60); i++) {
-    const kb = a.takeKnockback(DT);
-    pos[0] += f[0] * speed * DT + kb[0];
-    pos[1] += f[1] * speed * DT + kb[1];
+    pos[0] += f[0] * speed * DT;
+    pos[1] += f[1] * speed * DT;
     a.setRoot(pos, a.rootYaw);
     a.update(DT);
     each?.(a, (i + 1) * DT);
@@ -82,7 +81,7 @@ test('knife: a thug with a knife cuts a civilian in a fight, with a variety of a
   const v = makeCivilian(8);
   const thug = new Character({ model: t.model, palette: t.palette, collision: g, weapon: makeKnife(), seed: 3 });
   const civ = new Character({ model: v.model, palette: v.palette, collision: g, seed: 8 });
-  thug.animator.style = randomStyle(3, 'thug');
+  thug.motion.style = randomStyle(3, 'thug');
   thug.place([0, 0, 0], 0);
   civ.place([1, 0, 0], Math.PI);
   const f = [
@@ -97,19 +96,19 @@ test('knife: a thug with a knife cuts a civilian in a fight, with a variety of a
     for (const x of f) {
       x.br.update(DT);
       if (x.c.alive) {
-        const an = x.c.animator;
-        if (!an.transitioning && !an.knockedDown) {
+        const rm = x.c.takeRootMotion();
+        if (x.c.controlled) {
+          x.pos[0] += rm[0];
+          x.pos[1] += rm[1];
+        } else if (!x.c.motion.transitioning) {
           x.pos[0] += x.br.move[0] * DT;
           x.pos[1] += x.br.move[1] * DT;
         }
-        const kb = an.takeKnockback(DT);
-        x.pos[0] += kb[0];
-        x.pos[1] += kb[1];
         x.c.setRoot(x.pos, x.br.yaw);
       }
       x.c.update(DT);
-      if (x.c === thug && thug.animator.actionName) attacks.add(thug.animator.actionName.replace('.m', ''));
-      blows.push(...x.br.resolve(x.c.animator.takeEvents()));
+      if (x.c === thug && thug.motion.actionName) attacks.add(thug.motion.actionName.replace('.m', ''));
+      blows.push(...x.br.resolve(x.c.takeEvents()));
     }
   }
   const cuts = blows.filter((b) => b.attacker === thug && b.kind === 'blade');
@@ -117,65 +116,6 @@ test('knife: a thug with a knife cuts a civilian in a fight, with a variety of a
   assert.ok(civ.health < civ.maxHealth * 0.8 || !civ.alive, `civilian health ${civ.health}`);
   const used = [...attacks].filter((n) => (KNIFE_ATTACKS as readonly string[]).includes(n));
   assert.ok(used.length >= 2, `knife attacks used: ${used.join(', ')}`);
-});
-
-// ---- balance -------------------------------------------------------------------------------------
-
-test('balance: a stumble pushes the body its way and the feet catch it', () => {
-  const a = standing();
-  live(a, 0.5);
-  const x0 = a.rootPos[0];
-  a.stumble([1, 0, 0], 1);
-  assert.equal(a.actionName, 'stumble');
-  live(a, 2.5);
-  assert.ok(a.rootPos[0] - x0 > 0.35, `pushed ${(a.rootPos[0] - x0).toFixed(2)} m`);
-  assert.ok(!a.knockedDown && a.stance === 'stand', 'still standing');
-  assert.ok(a.footState().every((f) => f.planted), 'both feet down again');
-  assert.ok(a.world.p[H.pelvis]![2] > 0.85, 'upright');
-});
-
-test('balance: a strong push fells the body the way it is pushed, and it gets up', () => {
-  const a = standing();
-  live(a, 0.5);
-  a.stumble([0, -1, 0], 2.2);
-  let down = false;
-  live(a, 1.2, 0, (b) => {
-    if (b.knockedDown) down = true;
-  });
-  assert.ok(down, 'knocked down');
-  live(a, 7);
-  assert.ok(!a.knockedDown && a.stance === 'stand', 'back on its feet');
-});
-
-test('balance: a trip pitches a walker forward; it catches itself or falls on its front', () => {
-  const a = standing();
-  live(a, 1, 1.5);
-  a.trip(false);
-  assert.equal(a.actionName, 'trip');
-  live(a, 2, 1.5);
-  assert.ok(!a.knockedDown && a.stance === 'stand', 'caught itself');
-  const b = standing();
-  live(b, 1, 3);
-  const y0 = b.rootPos[1];
-  b.trip(true);
-  let down = false;
-  live(b, 1, 0, (x) => {
-    if (x.knockedDown) down = true;
-  });
-  assert.ok(down, 'fell');
-  assert.ok(b.rootPos[1] > y0, 'forwards');
-});
-
-test('balance: a flinch is quick and does not interrupt an action already running', () => {
-  const a = standing();
-  live(a, 0.5);
-  a.flinch();
-  assert.equal(a.actionName, 'flinch');
-  live(a, 1);
-  assert.ok(!a.busy, 'over within a second');
-  a.play('wave');
-  a.flinch();
-  assert.equal(a.actionName, 'wave');
 });
 
 // ---- a soldier's pauses ------------------------------------------------------------------------

@@ -7,9 +7,12 @@
  *  - movement: paths (nav.ts, budgeted per frame), steering with separation, the player's box
  *    collision with step-up on the engine's occupancy, gravity, the knockback of hits (the
  *    feet stumble after it), slower with a limp; no walking while sitting, kneeling or down;
- *  - animation: svx_anim Characters (procedural locomotion with personal styles, stances,
- *    actions, weapon handling, hit reactions by location), ragdolls when they die, gibs and
- *    blood (GibSystem);
+ *  - animation: svx_anim Characters: a motion plan (procedural locomotion with personal styles,
+ *    stances, actions, weapon handling) carried out by a physical body with muscles, and
+ *    behaviours that keep it balanced and reacting (hits and shoves by where they land,
+ *    staggering, falling and getting up, flinching from rounds landing close, holding wounds,
+ *    bracing on walls, dying); the nearest bodies are simulated when calm too (a budget), the
+ *    rest only while something happens to them; gibs and blood (GibSystem);
  *  - the city: benches and café tables placed around (seats taken and freed), conversations
  *    (pairs), brawls
  *    (Brawler: fists, kicks, knives) that bystanders stop to watch;
@@ -176,6 +179,8 @@ interface GibUser {
 const DEFAULT_SETTINGS: ActorSettings = { ai: true, retro: false, retroVoxel: 1 / 32, maxCorpses: 40, playerDamage: true, roundCarve: 1, light: 1 };
 const BLOOD: [number, number, number] = [0.3, 0.012, 0.01];
 const RETRO_STEP = 4 / 35;
+/** Calm characters simulated physically (the nearest). */
+const PHYSICS_BUDGET = 12;
 const MELEE_FORCE: Record<string, number> = { riflePush: 1.4, cross: 1.2, jab: 0.8, hook: 1.45, uppercut: 1.5, frontKick: 1.8, roundhouse: 2.2, stab: 1.1, slash: 0.9, gutStab: 1.2, forehandSlash: 0.95 };
 const BLADE_ACTIONS = new Set(['stab', 'slash', 'gutStab', 'forehandSlash']);
 
@@ -226,7 +231,7 @@ export class ActorWorld {
     // soldiers hold their weapon; civilians keep theirs out of sight until they need it
     const held = faction === 'soldier' ? weapon : null;
     const char = new Character({ model: look.model, palette: look.palette, collision: this.env, weapon: held, health: faction === 'soldier' ? 100 : faction === 'thug' ? 90 : 70, seed });
-    char.animator.style = look.style;
+    char.motion.style = look.style;
     char.place(pos, yaw);
     const a: Actor = {
       id: this.nextId++,
@@ -378,7 +383,7 @@ export class ActorWorld {
   }
 
   eyes(a: Actor): V3 {
-    return a.char.animator.eyes();
+    return a.char.eyes();
   }
 
   canSee(a: Actor, p: Readonly<V3>): boolean {
@@ -409,7 +414,7 @@ export class ActorWorld {
     // draw the holstered gun
     if (!a.char.weapon && a.weapon && a.weapon.kind !== 'knife') {
       a.char.weapon = a.weapon;
-      a.char.animator.weapon = a.weapon;
+      a.char.motion.weapon = a.weapon;
     }
   }
 
@@ -421,7 +426,7 @@ export class ActorWorld {
     for (const b of this.actors) {
       if (b === a || !b.hostile || !b.char.alive || b.opacity < 0.5 || b.faction === a.faction) continue;
       const d = vdist(a.pos, b.pos);
-      if (d >= bd || !this.env.lineOfSight(eye, b.char.animator.eyes())) continue;
+      if (d >= bd || !this.env.lineOfSight(eye, b.char.eyes())) continue;
       bd = d;
       best = b;
     }
@@ -432,7 +437,7 @@ export class ActorWorld {
   drawWeapon(a: Actor): void {
     if (!a.char.weapon && a.weapon) {
       a.char.weapon = a.weapon;
-      a.char.animator.weapon = a.weapon;
+      a.char.motion.weapon = a.weapon;
     }
   }
 
@@ -440,7 +445,7 @@ export class ActorWorld {
   holster(a: Actor): void {
     if (a.faction === 'soldier' || !a.char.weapon) return;
     a.char.weapon = null;
-    a.char.animator.weapon = null;
+    a.char.motion.weapon = null;
   }
 
   /** Something worth a glance for `a`: the player close by, people near, a fight (eyes). */
@@ -460,7 +465,7 @@ export class ActorWorld {
         best = b;
       }
     }
-    return best ? best.char.animator.eyes() : null;
+    return best ? best.char.eyes() : null;
   }
 
   /** A civilian free to talk within r of a. */
@@ -525,7 +530,7 @@ export class ActorWorld {
       x.brawler.opponent = y.char;
       if (x.weapon?.kind === 'knife') {
         x.char.weapon = x.weapon;
-        x.char.animator.weapon = x.weapon;
+        x.char.motion.weapon = x.weapon;
       }
       if (x.faction === 'civilian') (x.brain as CivilianBrain).brawl(x, y);
       else if (x.faction === 'thug') (x.brain as ThugBrain).brawl(x, y);
@@ -548,10 +553,10 @@ export class ActorWorld {
     this.fights.splice(i, 1);
     for (const x of [f.a, f.b]) {
       x.brawler = null;
-      x.char.animator.input.guard = false;
+      x.char.motion.input.guard = false;
       if (x.faction === 'civilian' && x.char.weapon?.kind === 'knife') {
         x.char.weapon = null;
-        x.char.animator.weapon = null;
+        x.char.motion.weapon = null;
       }
     }
   }
@@ -559,7 +564,7 @@ export class ActorWorld {
   /** A melee blow from `a` at a target (the player or a character). */
   melee(a: Actor, t: Target, action: string): void {
     const chest = t.kind === 'player' ? this.player.chest() : t.actor.char.pose.p[3]!;
-    if (a.char.animator.play(action, [chest[0], chest[1], chest[2]])) a.meleeTarget = t;
+    if (a.char.motion.play(action, [chest[0], chest[1], chest[2]])) a.meleeTarget = t;
   }
 
   /** A soldier or armed civilian fires one round at `target` with angular spread. */
@@ -599,7 +604,7 @@ export class ActorWorld {
   reload(a: Actor): void {
     const gun = a.char.weapon;
     if (!gun || a.reloading) return;
-    if (a.char.animator.play(gun.kind === 'pistol' ? 'reloadPistol' : 'reloadRifle')) a.reloading = true;
+    if (a.char.motion.play(gun.kind === 'pistol' ? 'reloadPistol' : 'reloadRifle')) a.reloading = true;
   }
 
   /**
@@ -625,19 +630,39 @@ export class ActorWorld {
       }
       this.hooks.impact(p, faceNormal(p, dir, this.env.h));
       // a round smacking in close by makes people flinch
-      for (const b of this.actors) if (b !== shooter && b.char.alive && vdist(b.char.pose.p[3]!, p) < 1.6 && Math.random() < 0.7) b.char.animator.flinch();
+      for (const b of this.actors) if (b !== shooter && b.char.alive && vdist(b.char.pose.p[3]!, p) < 3.5) b.char.perceive({ point: p, strength: 1, kind: 'impact' });
       this.noise({ pos: p, radius: 10, kind: 'impact', source: shooter });
+      this.whiz(origin, p, shooter, null);
       return p;
     }
     if (playerT <= best && playerT < Infinity && shooter) {
       if (this.settings.playerDamage) this.hooks.hurtPlayer(damage * (0.28 + Math.random() * 0.12), origin);
-      return vadd(origin, vscale(dir, playerT));
+      const end = vadd(origin, vscale(dir, playerT));
+      this.whiz(origin, end, shooter, null);
+      return end;
     }
     if (actorHit) {
+      this.whiz(origin, actorHit.hit.point, shooter, actorHit.actor);
       this.wound(actorHit.actor, actorHit.hit, dir, damage, shooter ? shooter.pos : null, 0.045, shooter);
       return actorHit.hit.point;
     }
-    return vadd(origin, vscale(dir, maxDist));
+    const end = vadd(origin, vscale(dir, maxDist));
+    this.whiz(origin, end, shooter, null);
+    return end;
+  }
+
+  /** A round passing close to people's heads makes them flinch (the crack of a near miss). */
+  private whiz(from: V3, to: V3, shooter: Actor | null, hit: Actor | null): void {
+    const d = vsub(to, from);
+    const l2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if (l2 < 1e-6) return;
+    for (const b of this.actors) {
+      if (b === shooter || b === hit || !b.char.alive || b.opacity < 0.5) continue;
+      const e = b.char.eyes();
+      const t = Math.max(0, Math.min(1, ((e[0] - from[0]) * d[0] + (e[1] - from[1]) * d[1] + (e[2] - from[2]) * d[2]) / l2));
+      const c: V3 = [from[0] + d[0] * t, from[1] + d[1] * t, from[2] + d[2] * t];
+      if (vdist(c, e) < 1.1) b.char.perceive({ point: c, strength: 0.9, kind: 'whiz' });
+    }
   }
 
   // ---- damage -------------------------------------------------------------------------------
@@ -675,11 +700,13 @@ export class ActorWorld {
   }
 
   blast(pos: V3, radius: number, strength = 1): void {
+    const thrown = new Set<Actor>();
     for (const a of this.actors) {
       if (a.opacity < 0.5) continue;
       const wasAlive = a.char.alive;
       const r = a.char.blast(pos, radius, strength);
       if (r.damage <= 0 && !r.gibbed) continue;
+      thrown.add(a);
       if (r.gibbed) {
         const c = a.char.bounds().center;
         this.gibs.spray(c, [0, 0, 1], 60, 5, 1.2);
@@ -695,17 +722,17 @@ export class ActorWorld {
       if (wasAlive && !a.char.alive) this.onDeath(a, vnorm(vsub(a.pos, pos)));
       else if (wasAlive && this.settings.ai) a.brain.hurt(a, pos, this, null);
     }
-    // the blast's push: the living stagger away from it (thrown down when close; the hurt are
-    // already reeling from the hit), those further off flinch
+    // the blast's push: the living stagger away from it (those it hurt were thrown by it
+    // already), everyone flinches from it
     for (const a of this.actors) {
-      if (!a.char.alive || a.opacity < 0.5 || a.char.animator.knockedDown) continue;
+      if (!a.char.alive || a.opacity < 0.5) continue;
       const c = a.char.pose.p[3]!;
       const d = vdist(c, pos);
       const reach = radius * 4 + 2;
       if (d > reach * 1.5) continue;
-      const push = strength * 2.3 * (1 - d / reach);
-      if (push > 0.3) a.char.animator.stumble([c[0] - pos[0], c[1] - pos[1], 0], push);
-      else a.char.animator.flinch();
+      const push = strength * 2.6 * (1 - d / reach);
+      a.char.perceive({ point: pos, strength: 1.2 * strength, kind: 'blast' });
+      if (push > 0.3 && !thrown.has(a) && !a.char.down) a.char.push([c[0] - pos[0], c[1] - pos[1], 0], push);
     }
     this.gibs.impulse(pos, radius * 4, 11 * strength);
     this.noise({ pos, radius: 70, kind: 'explosion', source: null });
@@ -755,8 +782,9 @@ export class ActorWorld {
     this.planPaths(3);
     this.crushByDebris(dt);
     this.updateFights(dt);
+    this.assignPhysics();
     for (const a of this.actors) {
-      const an = a.char.animator;
+      const an = a.char.motion;
       if (a.char.alive) {
         if (this.settings.ai) {
           a.thinkAcc += dt;
@@ -768,11 +796,12 @@ export class ActorWorld {
           a.brawler?.update(dt);
         }
         this.move(a, dt);
-        // now and then a foot catches: more often running, most when panicking (rarely a soldier)
+        // now and then a foot catches (besides what the feet really catch on): running in a
+        // panic most, rarely otherwise, hardly ever a soldier
         const hs = Math.hypot(a.vel[0], a.vel[1]);
-        if (hs > 1.2 && a.onGround && !an.busy && an.stance === 'stand' && !a.brawler && !an.knockedDown) {
-          const perSecond = hs > 2.6 ? (a.mood === 'panic' ? 1 / 30 : 1 / 80) : 1 / 400;
-          if (Math.random() < (a.faction === 'soldier' ? 0.2 : 1) * perSecond * dt) an.trip(hs > 2.6 && Math.random() < 0.4);
+        if (hs > 1.2 && a.onGround && !an.busy && an.stance === 'stand' && !a.brawler && !a.char.controlled) {
+          const perSecond = hs > 2.6 ? (a.mood === 'panic' ? 1 / 35 : 1 / 150) : 1 / 600;
+          if (Math.random() < (a.faction === 'soldier' ? 0.15 : 1) * perSecond * dt) a.char.trip();
         }
         const inp = an.input;
         inp.crouch = a.crouch;
@@ -794,7 +823,7 @@ export class ActorWorld {
         const w = a.char.weapon;
         if (!a.char.retro || a.char.retro.weapon !== (w?.kind ?? null) || a.char.retro.voxelSize !== this.settings.retroVoxel) a.char.retro = this.cast.retroSet(a.look.model, w, this.settings.retroVoxel) ?? a.char.retro;
       } else if (!this.settings.retro) a.char.retro = null;
-      if (!(!a.char.alive && a.char.ragdoll?.asleep && a.char.deadTime > 3)) a.char.update(dt);
+      if (!(a.char.asleep && a.char.deadTime > 3)) a.char.update(dt);
       if (!this.settings.retro || a.char.retroFrame || retroTick) a.drawSkin.set(a.char.skin);
       this.handleEvents(a);
       if (a.reloading && !an.busy) {
@@ -852,7 +881,7 @@ export class ActorWorld {
 
   /** Animation events: reloads done, blows landing. */
   private handleEvents(a: Actor): void {
-    const events = a.char.animator.takeEvents();
+    const events = a.char.takeEvents();
     if (events.length === 0) return;
     for (const e of events) {
       if (e.name === 'reloaded') {
@@ -887,7 +916,7 @@ export class ActorWorld {
         }
       } else {
         const v = t.actor;
-        const bone = v.char.animator.nearestBone(e.pos);
+        const bone = v.char.nearestBone(e.pos);
         const bp = v.char.pose.p[bone]!;
         if (vdist(e.pos, bp) < 0.45) {
           const blade = BLADE_ACTIONS.has(e.action.replace('.m', '')) && a.char.weapon?.kind === 'knife';
@@ -931,10 +960,12 @@ export class ActorWorld {
   }
 
   private move(a: Actor, dt: number): void {
-    const an = a.char.animator;
+    const an = a.char.motion;
     const settled = an.stance;
+    // the body leads (staggering, falling, down, getting up): the character follows it
+    const led = a.char.controlled;
     // the body cannot walk while sitting, kneeling, down or getting up; prone crawls
-    const locked = an.transitioning || an.knockedDown || settled === 'sit' || settled === 'ground' || settled === 'kneel' || settled === 'down' || a.stance !== 'stand' && a.stance !== 'prone';
+    const locked = led || an.transitioning || settled === 'sit' || settled === 'ground' || settled === 'kneel' || settled === 'down' || a.stance !== 'stand' && a.stance !== 'prone';
     // where to go and how fast: along the path, aiming a little ahead (corners are cut, not
     // turned on the spot), braking into the goal; a fighter's footwork from the Brawler
     let wantDir: [number, number] | null = null;
@@ -953,8 +984,9 @@ export class ActorWorld {
       const d = Math.hypot(point[0] - a.pos[0], point[1] - a.pos[1]);
       if (remaining < 0.3) a.goal = null;
       else if (d > 1e-3) {
-        const limp = Math.max(an.reactions.limp[0], an.reactions.limp[1]);
-        let s = a.speed * (1 - 0.45 * limp) * (1 - 0.3 * an.reactions.pain) * a.pace;
+        const inj = a.char.behaviours.injuries;
+        const limp = Math.max(inj.legL, inj.legR);
+        let s = a.speed * (1 - 0.5 * limp) * (1 - 0.3 * inj.pain) * a.pace;
         if (settled === 'prone') s = Math.min(s, 0.45);
         // arriving: slow down to stop on the spot
         s = Math.min(s, Math.sqrt(2 * 3.6 * 0.8 * Math.max(0, remaining - 0.2)) + 0.15);
@@ -977,7 +1009,12 @@ export class ActorWorld {
       sepX += (ox / d) * push;
       sepY += (oy / d) * push;
     }
-    if (a.onGround) {
+    // the body's move this frame when it leads
+    const rm = a.char.takeRootMotion();
+    if (led) {
+      a.vel[0] = dt > 0 ? rm[0] / dt : 0;
+      a.vel[1] = dt > 0 ? rm[1] / dt : 0;
+    } else if (a.onGround) {
       // the body's own momentum: it speeds up, brakes and changes heading within limits
       const v = steer([a.vel[0], a.vel[1]], wantDir ?? [Math.cos(a.yaw), Math.sin(a.yaw)], wantDir ? wantSpeed : 0, dt, steerOptions(a.brawler ? 3 : wantSpeed || a.speed));
       const k = 1 - Math.exp(-6 * dt);
@@ -990,9 +1027,7 @@ export class ActorWorld {
     const r = 0.24;
     const min: V3 = [a.pos[0] - r, a.pos[1] - r, a.pos[2]];
     const max: V3 = [a.pos[0] + r, a.pos[1] + r, a.pos[2] + height];
-    // the knockback of hits moves the body (the feet stumble after it)
-    const kb = an.takeKnockback(dt);
-    const want: V3 = [a.vel[0] * dt + kb[0], a.vel[1] * dt + kb[1], a.vel[2] * dt];
+    const want: V3 = led ? [rm[0], rm[1], a.vel[2] * dt] : [a.vel[0] * dt, a.vel[1] * dt, a.vel[2] * dt];
     const lift = this.env.occupancy.ready ? this.env.occupancy.depenetrate(min, max, 1) : 0;
     if (lift !== null && lift > 0) {
       a.pos[2] += lift;
@@ -1030,7 +1065,11 @@ export class ActorWorld {
     let maxRate = 3.2;
     let accel = 9;
     const hsNow = Math.hypot(a.vel[0], a.vel[1]);
-    if (a.brawler) {
+    if (led) {
+      // (the body's heading)
+      a.yaw = a.char.motion.rootYaw;
+      a.yawRate = 0;
+    } else if (a.brawler) {
       wantYaw = a.brawler.yaw;
       maxRate = 5;
       accel = 18;
@@ -1053,6 +1092,24 @@ export class ActorWorld {
       a.char.die();
       a.opacity = 0;
     }
+  }
+
+  /**
+   * Physics for the calm, by distance to the player: the nearest bodies in view are simulated
+   * all the time (their secondary motion, ready to be hit), the rest run on their motion plans
+   * until something happens to them (a hit, a shove, a fall, death wake the body at once).
+   */
+  private assignPhysics(): void {
+    const feet = this.player.feet;
+    const near: { a: Actor; d: number }[] = [];
+    for (const a of this.actors) {
+      if (!a.char.alive) continue;
+      const d = vdist(a.pos, feet);
+      if (d < 32) near.push({ a, d });
+      else a.char.physics = false;
+    }
+    near.sort((x, y) => x.d - y.d);
+    near.forEach((n, i) => (n.a.char.physics = i < PHYSICS_BUDGET));
   }
 
   private crushByDebris(dt: number): void {
@@ -1078,7 +1135,7 @@ export class ActorWorld {
           this.gibs.spray(c, [0, 0, 1], 25, 3, 1.2);
           this.hooks.bloodMist(c, [0, 0, 1], 2);
           this.onDeath(a, vnorm(v));
-        } else a.char.ragdoll?.hit(c, vscale(v, 0.5));
+        } else a.char.impulse(c, vscale(v, 0.5));
       }
       this.gibs.impulse(pos, isl.radius + 0.5, speed * 0.4);
     }
@@ -1122,12 +1179,12 @@ export class ActorWorld {
       } else {
         cc.add(this.meshOf(a), a.drawSkin, ch.model.skeleton.count, a.look.paletteId, { center: b.center, radius: b.radius + 0.3, tint, opacity: a.opacity, light });
         if (ch.weapon && ch.alive) {
-          ch.animator.writePropSkin(a.propSkin);
-          cc.add(this.cast.mesh(ch.weapon.model), a.propSkin, 1, a.look.paletteId, { center: ch.animator.weaponPos, radius: 0.7, opacity: a.opacity, light });
+          ch.writePropSkin(a.propSkin);
+          cc.add(this.cast.mesh(ch.weapon.model), a.propSkin, 1, a.look.paletteId, { center: ch.weaponPos, radius: 0.7, opacity: a.opacity, light });
         }
       }
-      if (ch.alive && ch.animator.stance === 'stand') cc.decal([a.pos[0], a.pos[1], a.pos[2] + 0.004], [0, 0, 1], 0.4, [0, 0, 0, 0.5 * a.opacity], 0);
-      else if (!ch.alive && ch.ragdoll?.asleep && a.opacity > 0.5) {
+      if (ch.alive && ch.motion.stance === 'stand') cc.decal([a.pos[0], a.pos[1], a.pos[2] + 0.004], [0, 0, 1], 0.4, [0, 0, 0, 0.5 * a.opacity], 0);
+      else if (ch.asleep && a.opacity > 0.5) {
         const p = ch.pose.p[3]!;
         const grow = Math.min(1, (ch.deadTime - 1) / 8);
         const g = this.env.groundHeight(p[0], p[1], p[2] + 0.3, p[2] - 0.8);
@@ -1162,7 +1219,7 @@ export class ActorWorld {
       else if (a.faction === 'thug') thugs++;
       else civilians++;
       if (a.char.alive && a.talk) talking++;
-      if (a.char.alive && a.char.animator.stance === 'sit') sitting++;
+      if (a.char.alive && a.char.motion.stance === 'sit') sitting++;
     }
     return { civilians, soldiers, thugs, dead, gibs: this.gibs.gibs.length, stains: this.gibs.stains.length, bakes: this.cast.pendingBakes, fights: this.fights.length, talking, sitting };
   }
