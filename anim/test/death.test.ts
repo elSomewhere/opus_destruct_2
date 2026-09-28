@@ -109,3 +109,29 @@ test('deaths: the head rests turned within the range of the neck (face down it l
     assert.ok(r.headTurn < 92, `${JSON.stringify(o)}: the head rests turned ${r.headTurn.toFixed(0)} deg from the chest`);
   }
 });
+
+test('deaths: a body that tips over collapses; it never pivots on its hips and swings its legs up over itself', () => {
+  let flips = 0;
+  for (const seed of [1, 2, 4, 6]) {
+    for (const [dx, dy] of [[0, -1], [0, 1]] as const) {
+      const s = makeSoldier(seed);
+      const c = new Character({ model: s.model, palette: s.palette, collision: new FlatGround(0), seed });
+      c.place([0, 0, 0], Math.PI / 2);
+      for (let i = 0; i < 30; i++) c.update(DT);
+      // a round low in the belly (or the back) at little health left: the dying fold over it
+      c.health = 15;
+      const p = c.pose.p[H.spine]!;
+      const hit = c.raycast([p[0] - dx * 3, p[1] - dy * 3, p[2] + 0.05], [dx, dy, 0], 6);
+      assert.ok(hit, 'the round finds the body');
+      c.wound(hit!, [dx, dy, 0], 40);
+      let over = 0;
+      for (let i = 0; i < 300; i++) {
+        c.update(DT);
+        const P = c.pose.p;
+        if (P[H.head]![2] < 0.35 && Math.max(P[H.footL]![2], P[H.footR]![2]) - P[H.pelvis]![2] > 0.25) over++;
+      }
+      if (over > 10) flips++;
+    }
+  }
+  assert.equal(flips, 0, `${flips} of 8 bodies swung their legs up over themselves`);
+});

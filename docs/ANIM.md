@@ -543,7 +543,7 @@ Other calls: `hitAt(info)` (a blow without a wound), `impulse(point, dv)`, `knoc
 ## 9. Tests and checks
 
 ```bash
-cd anim && npm install && npm test          # 83 unit tests: rigid joints, the body, tracking, hits,
+cd anim && npm install && npm test          # 84 unit tests: rigid joints, the body, tracking, hits,
                                             # balance, trips, flinches, bracing, knockouts, dying,
                                             # bodies among bodies, motion, strikes, brawls, damage,
                                             # gibs, retro
