@@ -645,6 +645,9 @@ async function main(): Promise<void> {
     })(),
   });
 
+  // a lone subject in the open, for trying things on (shots, shoves, trips)
+  add({ name: 'subject', group: 'reactions', variant: () => makeCivilian(87), prop: null, pos: [7.5, 11.5, 0], yaw: -Math.PI / 2, script: () => {} });
+
   // ---- reactions line-up ---------------------------------------------------------------------
   const lineup: [string, () => HumanVariant, Prop | null][] = [
     ['target soldier', () => makeSoldier(13), props.rifle],

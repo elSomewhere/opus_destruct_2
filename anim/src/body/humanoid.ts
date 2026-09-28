@@ -110,6 +110,10 @@ export class HumanoidBody {
   readonly baseDamping = new Float32Array(BODY_COUNT);
   /** Inertia each joint moves (its subtree about the joint, kg m^2). */
   readonly inertiaAt = new Float32Array(BODY_COUNT);
+  /** The plan's relative angular acceleration per joint (parent frame, rad/s^2). */
+  private readonly targetAcc: V3[] = Array.from({ length: BODY_COUNT }, () => [0, 0, 0] as V3);
+  /** How much of the plan's acceleration the muscles supply ahead of the error (0..1). */
+  feedForward = 1;
   /** Centre of mass relative to the primary bone's head, per body (rest model space). */
   readonly comLocal: V3[] = [];
   readonly totalMass: number;
@@ -490,12 +494,20 @@ export class HumanoidBody {
         qmul(qconj(pa, this.tmpQ), ch, j.target);
         // R = qA^-1 qB turns at w (in A's frame) when R(t + dt) = exp(w dt) R(t)
         const d = qerror(j.target, prevRel);
-        j.targetVel[0] = clampV(d[0] / dt, 30);
-        j.targetVel[1] = clampV(d[1] / dt, 30);
-        j.targetVel[2] = clampV(d[2] / dt, 30);
+        const vx = clampV(d[0] / dt, 30), vy = clampV(d[1] / dt, 30), vz = clampV(d[2] / dt, 30);
+        // the plan's angular acceleration at the joint (smoothed: frame differences are noisy)
+        const acc = this.targetAcc[i]!;
+        const a = 1 - Math.exp(-dt * 25);
+        acc[0] += (clampV((vx - j.targetVel[0]) / dt, 200) - acc[0]) * a;
+        acc[1] += (clampV((vy - j.targetVel[1]) / dt, 200) - acc[1]) * a;
+        acc[2] += (clampV((vz - j.targetVel[2]) / dt, 200) - acc[2]) * a;
+        j.targetVel[0] = vx;
+        j.targetVel[1] = vy;
+        j.targetVel[2] = vz;
       } else {
         qmul(qconj(pa, this.tmpQ), ch, j.target);
         j.targetVel[0] = j.targetVel[1] = j.targetVel[2] = 0;
+        this.targetAcc[i]!.fill(0);
       }
     }
     // shoulders move with the clavicles
@@ -550,21 +562,29 @@ export class HumanoidBody {
       cz[p]! += cz[i]!;
     }
     const jp: V3 = [0, 0, 0];
+    const acc: V3 = [0, 0, 0];
     for (let i = 1; i < BODY_COUNT; i++) {
       const j = this.joints[i]!;
-      const hw = this.holdWeight[i]! * Math.min(1, Math.max(0, this.tone[i]!));
-      if (hw <= 0) {
-        j.feed[0] = j.feed[1] = j.feed[2] = 0;
-        continue;
+      const tone = Math.min(1, Math.max(0, this.tone[i]!));
+      const hw = this.holdWeight[i]! * tone;
+      j.feed[0] = j.feed[1] = j.feed[2] = 0;
+      // the torque that swings the limb along the plan: I alpha, in the world
+      const ff = this.feedForward * tone * this.inertiaAt[i]!;
+      if (ff > 0) {
+        const a = this.targetAcc[i]!;
+        qrotate(j.a.q, a, acc);
+        j.feed[0] = acc[0] * ff;
+        j.feed[1] = acc[1] * ff;
+        j.feed[2] = acc[2] * ff;
       }
+      if (hw <= 0) continue;
       parts[i]!.point(j.anchorB, jp);
       const mm = m[i]!;
       const rx = cx[i]! / mm - jp[0], ry = cy[i]! / mm - jp[1];
       // torque on B that cancels gravity's: r x (0, 0, m g)
       const f = mm * g * hw;
-      j.feed[0] = ry * f;
-      j.feed[1] = -rx * f;
-      j.feed[2] = 0;
+      j.feed[0] += ry * f;
+      j.feed[1] += -rx * f;
     }
   }
 

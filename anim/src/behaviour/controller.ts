@@ -70,6 +70,11 @@ interface Brace {
 }
 
 const G = 9.81;
+let ARMS_AT_EASE = 0.62;
+/** (tuning) */
+export function setArmsAtEase(t: number): void {
+  ARMS_AT_EASE = t;
+}
 const PARENT_OF: readonly number[] = [-1, B.pelvis, B.spine, B.chest, B.chest, B.upperarmL, B.forearmL, B.chest, B.upperarmR, B.forearmR, B.pelvis, B.thighL, B.shinL, B.pelvis, B.thighR, B.shinR];
 const REGIONS: readonly Region[] = ['trunk', 'neck', 'armL', 'armR', 'legL', 'legR'];
 
@@ -1105,7 +1110,13 @@ export class Behaviours {
     let legs = 1, arms = 1, neck = 1, trunk = 1;
     switch (mode) {
       case 'animated':
+        // at ease the arms and the head are carried loosely (they swing and settle with the
+        // body's motion); what an action moves is firmer (see limbT)
+        arms = ARMS_AT_EASE;
+        neck = 0.8;
+        break;
       case 'reacting':
+        arms = 0.8;
         break;
       case 'falling':
         // (braced for the ground, not fighting it)
