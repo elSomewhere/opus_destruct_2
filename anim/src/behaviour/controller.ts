@@ -320,9 +320,24 @@ export class Behaviours {
     if (!this.alive || !this.conscious) return;
     const eyes = this.plan.eyes();
     const d = Math.hypot(p.point[0] - eyes[0], p.point[1] - eyes[1], p.point[2] - eyes[2]);
-    const reach = p.kind === 'blast' ? 12 : p.kind === 'whiz' ? 1.6 : 3.2;
-    const amount = clamp(p.strength * (1 - d / reach) * (1 + 0.6 * this.nerves), 0, 1.3);
+    const reach = p.kind === 'blast' ? 12 : p.kind === 'whiz' ? 1.8 : 4.5;
+    const amount = clamp(p.strength * Math.pow(Math.max(0, 1 - d / reach), 0.6) * (1 + 0.6 * this.nerves), 0, 1.3);
     if (amount < 0.08) return;
+    // a round smacking into the ground at the feet: a startled step away from it
+    if (p.kind === 'impact' && this.mode === 'animated' && this.physical && this.time > this.startleAt + 0.8) {
+      const plan = this.plan;
+      const pel = plan.world.p[H.pelvis]!;
+      const dx = pel[0] - p.point[0], dy = pel[1] - p.point[1];
+      const dh = Math.hypot(dx, dy);
+      const fs = plan.feetPlanner.feet;
+      if (dh < 1.6 && dh > 0.05 && p.point[2] - this.groundZ < 0.5 && plan.stance === 'stand' && !plan.busy && fs[0].planted && fs[1].planted) {
+        this.startleAt = this.time;
+        const i = Math.hypot(fs[0].pos[0] - p.point[0], fs[0].pos[1] - p.point[1]) < Math.hypot(fs[1].pos[0] - p.point[0], fs[1].pos[1] - p.point[1]) ? 0 : 1;
+        const f = fs[i]!;
+        const step = (0.22 + 0.2 * (1 - dh / 1.6)) * this.k;
+        plan.feetPlanner.step(i, [f.pos[0] + (dx / dh) * step, f.pos[1] + (dy / dh) * step, f.pos[2]], 0.18);
+      }
+    }
     this.threats.push({ point: [...p.point], amount, age: 0, hold: 0.1 + 0.25 * amount });
     if (this.threats.length > 4) this.threats.shift();
     this.nerves = Math.min(1, this.nerves + 0.12 * amount);
@@ -384,6 +399,8 @@ export class Behaviours {
   }
 
   private forceReact = false;
+  /** When the last startled step was taken. */
+  private startleAt = -99;
   /** The flinch as one smoothed response: how much, from where, which side, how long under fire. */
   private flinchI = 0;
   private flinchDir: V3 = [0, 1, 0];
@@ -1203,7 +1220,7 @@ export class Behaviours {
     // duck and turn away
     ctl.look = vadd(head, vadd(vscale(away, 2), [0, 0, -1.2 - 0.8 * cover]));
     ctl.lookWeight = Math.max(ctl.lookWeight, 0.8 * clamp(w, 0, 1));
-    ctl.neck[0] += (0.35 + 0.2 * cover) * w;
+    ctl.neck[0] += (0.45 + 0.2 * cover) * w;
     ctl.head[1] += sideOf * 0.2 * w * (1 - 0.5 * cover);
     // (the face turns from it at once, before the eyes have found anything to look at)
     ctl.neck[2] += sideOf * 0.35 * w * (1 - 0.5 * cover);
@@ -1211,7 +1228,7 @@ export class Behaviours {
     ctl.shrug = Math.max(ctl.shrug, clamp(w, 0, 1));
     ctl.spine[0] -= (0.14 + 0.12 * cover) * w;
     ctl.chest[0] -= (0.1 + 0.1 * cover) * w;
-    ctl.crouch += (0.3 + 0.35 * cover) * w;
+    ctl.crouch += (0.42 + 0.3 * cover) * w;
     // a hand up between the face and the danger (a two-handed gun: the body hunches over it);
     // under fire both arms cover the head
     const longGun = plan.weapon && plan.weapon.kind !== 'knife' && plan.weapon.kind !== 'pistol';
