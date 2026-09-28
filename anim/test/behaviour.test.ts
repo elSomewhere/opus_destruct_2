@@ -321,7 +321,7 @@ test('knockout: a heavy blow drops the body; it stays down, then gets up', () =>
 });
 
 test('down: the plan lies as the body lies (front or back), and a badly hurt body face down crawls away', () => {
-  for (const seed of [2, 4]) {
+  for (const seed of [2, 4, 1, 3, 5, 6, 7]) {
     const c = civilian(new FlatGround(0), seed);
     host(c, 0.3);
     c.addInjury(H.thighL, 0.8);

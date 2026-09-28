@@ -1465,7 +1465,7 @@ export class Behaviours {
     }
 
     // writhing on the back: the pain rolls the body from side to side about its length
-    if (mode === 'lying' && this.writhing && this.alive && this.conscious) {
+    if (mode === 'lying' && this.writhing && this.alive && this.conscious && plan.lyingOnBack) {
       const t = this.time + this.writheSeed;
       const spasm = Math.pow(0.5 + 0.5 * Math.sin(t * 0.9) * Math.sin(t * 0.31 + 1), 1.5);
       const pel = body.parts[B.pelvis]!, ch = body.parts[B.chest]!;
@@ -1488,7 +1488,7 @@ export class Behaviours {
     const bdv = bump / body.totalMass;
     if (bdv > 0.12 && this.alive && (mode === 'animated' || mode === 'reacting')) {
       this.upset = Math.max(this.upset, Math.min(0.5, 2.5 * bdv));
-      if (bdv > 0.3) this.forceReact = true;
+      if (bdv > 0.22) this.forceReact = true;
     }
     this.detectTrips(out, dt);
     // the dead settle (a body at rest does not keep rocking on its contacts) and sleep

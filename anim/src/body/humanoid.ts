@@ -112,8 +112,12 @@ export class HumanoidBody {
   readonly inertiaAt = new Float32Array(BODY_COUNT);
   /** The plan's relative angular acceleration per joint (parent frame, rad/s^2). */
   private readonly targetAcc: V3[] = Array.from({ length: BODY_COUNT }, () => [0, 0, 0] as V3);
-  /** How much of the plan's acceleration the muscles supply ahead of the error (0..1). */
-  feedForward = 1;
+  /**
+   * How much of the plan's acceleration the muscles supply ahead of the error (0..1). Off:
+   * differentiated twice from frame to frame (and from a plan the physics feeds back into), it
+   * is mostly noise, and the body trembles with it.
+   */
+  feedForward = 0;
   /** Centre of mass relative to the primary bone's head, per body (rest model space). */
   readonly comLocal: V3[] = [];
   readonly totalMass: number;

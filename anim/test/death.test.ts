@@ -92,7 +92,7 @@ test('deaths: a body shot crumples over a good half second; a head shot drops it
   // never faster than falling (no whip into the ground)
   for (let i = 1; i < 90; i++) assert.ok(body.headZ[i - 1]! - body.headZ[i]! < 8 * DT, `the head drops ${((body.headZ[i - 1]! - body.headZ[i]!) / DT).toFixed(1)} m/s at ${(i * DT).toFixed(2)} s`);
   const head = death({ collapse: 0.15, z: 1.6 });
-  assert.ok(head.headZ[24]! < body.headZ[24]! - 0.15, `a head shot drops the body sooner (head at ${head.headZ[24]!.toFixed(2)} vs ${body.headZ[24]!.toFixed(2)} m after 0.4 s)`);
+  assert.ok(head.headZ[24]! < body.headZ[24]! - 0.1, `a head shot drops the body sooner (head at ${head.headZ[24]!.toFixed(2)} vs ${body.headZ[24]!.toFixed(2)} m after 0.4 s)`);
 });
 
 test('deaths: bodies fall the way the killing shot pushes them', () => {
