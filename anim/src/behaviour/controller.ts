@@ -1451,10 +1451,15 @@ export class Behaviours {
     // ---- step ----
     body.system.step(dt);
     body.writePose(out);
-    // bumped into (by) someone, something: the balance has to answer it
+    // bumped into (by) someone, something: the balance has to answer it (a brush in passing
+    // is nothing; being barged moves the body)
     let bump = 0;
-    for (const p of body.parts) if (p.bumped > bump) bump = p.bumped;
-    if (bump > 6 && this.alive && (mode === 'animated' || mode === 'reacting')) this.upset = Math.max(this.upset, 0.3);
+    for (const p of body.parts) bump += p.bumped;
+    const bdv = bump / body.totalMass;
+    if (bdv > 0.08 && this.alive && (mode === 'animated' || mode === 'reacting')) {
+      this.upset = Math.max(this.upset, Math.min(0.5, 2.5 * bdv));
+      if (bdv > 0.3) this.forceReact = true;
+    }
     this.detectTrips(out, dt);
     // the dead settle (a body at rest does not keep rocking on its contacts) and sleep
     if (mode === 'dead') {

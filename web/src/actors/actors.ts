@@ -802,6 +802,12 @@ export class ActorWorld {
     // bodies bump into each other, feet catch on the dead and on loose pieces lying about
     this.debrisSpheres.length = 0;
     for (const g of this.gibs.gibs) if (g.radius < 0.35) this.debrisSpheres.push({ c: g.pos, r: g.radius * 0.7 });
+    // the player's body: people walked into give way, stumble, or go down when run into hard
+    const pl = this.player;
+    if (pl.alive && pl.threat) {
+      const f = pl.feet;
+      for (const z of [0.58, 0.95, 1.3]) this.debrisSpheres.push({ c: [f[0], f[1], f[2] + z], r: 0.28 });
+    }
     gatherObstacles(this.actors.filter((a) => a.opacity >= 0.5).map((a) => a.char), 2.2, this.debrisSpheres);
     for (const a of this.actors) {
       const an = a.char.motion;

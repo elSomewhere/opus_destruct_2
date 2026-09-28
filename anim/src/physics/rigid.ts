@@ -59,7 +59,10 @@ export class RigidBody {
   readonly contactPoint: V3 = [0, 0, 0];
   /** Largest contact impulse of the last step (N s): how hard it hit something. */
   impact = 0;
-  /** The same against obstacles (other bodies, debris). */
+  /**
+   * How hard obstacles (other bodies, debris, the player) pushed it sideways over the last
+   * step: the horizontal impulse they gave it (N s; resting on them does not count).
+   */
   bumped = 0;
   /**
    * Passes through other bodies (not the world): a limb that strikes, whose blow the host
@@ -1082,6 +1085,7 @@ export class RigidSystem {
     B.applyPos(l * n[0], l * n[1], l * n[2], rx, ry, rz);
     k.lambda = l;
     if (k.other) k.took += Math.min(l / this.substep, 40);
+    if (k.obstacle) B.bumped += Math.min(l / this.substep, 40) * Math.hypot(n[0], n[1]);
     // static friction: the contact point does not slide within the friction cone
     const loc = rotInv(B.q, rx, ry, rz, J1);
     const p0 = rot(B.pq, loc[0], loc[1], loc[2], J2);
@@ -1129,7 +1133,7 @@ export class RigidSystem {
       const jn = -vn / wn;
       B.applyImpulse(jn * n[0], jn * n[1], jn * n[2], rx, ry, rz);
       if (jn > B.impact) B.impact = jn;
-      if (k.obstacle && jn > B.bumped) B.bumped = jn;
+      if (k.obstacle) B.bumped += jn * Math.hypot(n[0], n[1]);
       if (k.other) k.took += jn;
     }
   }
@@ -1153,7 +1157,7 @@ const J4q: Quat = [0, 0, 0, 1];
 const J5q: Quat = [0, 0, 0, 1];
 
 /** How fast an overlap with another body is undone (m/s): an approach is met in full, a body found deep inside another leaves it without being flung. */
-const DEEP_SPEED = 5;
+const DEEP_SPEED = 3;
 const MAX_SPEED = 60;
 const MAX_SPIN = 80;
 

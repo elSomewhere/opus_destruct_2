@@ -437,7 +437,8 @@ The retro look is a function of the modern animation, not separate content (`ret
   everyone around flinch. Now and then a hurrying foot catches: more often running, most when
   panicking, rarely a soldier. Characters collide with each other, with corpses and with small
   debris. A body that leads (staggering, down, getting up) moves the actor, and AI waits for
-  it to be back on its feet.
+  it to be back on its feet. The player's body counts too: people walked into give way with
+  a stumble, and those run into go down.
 - **Combat.** A round (theirs or the player's) hits the first thing on its line:
   - a character, voxel-exact: a wound, and a reaction by where it hit;
   - the player's capsule (health, a red vignette, respawn after death);
@@ -477,7 +478,7 @@ from scripts, frame by frame:
   one-handed pistol, machine gun from the hip, reloading, crouch-walk, patrol, sprint;
 - **fights:** two brawlers, a knife against an unarmed fighter, a thug with a knife on a
   civilian, a thug with his fists on a rifleman (they reset after a while);
-- **reactions:** a line-up to shoot at, a stumbler (pushed by pretend blasts, felled every third
+- **reactions:** a runner barging through a pedestrian, a line-up to shoot at, a stumbler (pushed by pretend blasts, felled every third
   time), a tripper (walking to and fro, now and then falling), beams and a kerb across a
   running lane that catch feet, a wall bracer (shoved towards a wall: a hand takes the weight),
   a wounded walker limping along a wall, a soldier shot dead against a wall (he slumps down
@@ -539,7 +540,7 @@ Other calls: `hitAt(info)` (a blow without a wound), `impulse(point, dv)`, `knoc
 ## 9. Tests and checks
 
 ```bash
-cd anim && npm install && npm test          # 82 unit tests: rigid joints, the body, tracking, hits,
+cd anim && npm install && npm test          # 83 unit tests: rigid joints, the body, tracking, hits,
                                             # balance, trips, flinches, bracing, knockouts, dying,
                                             # bodies among bodies, motion, strikes, brawls, damage,
                                             # gibs, retro

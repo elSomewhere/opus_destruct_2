@@ -649,6 +649,35 @@ async function main(): Promise<void> {
     })(),
   });
 
+  // a hurrying runner barging through a pedestrian in the way (every 7 s): bodies among bodies
+  add({ name: 'pedestrian', group: 'reactions', variant: () => makeCivilian(88), prop: null, pos: [8, -0.9, 0], yaw: Math.PI / 2, script: (a, _t, dt) => {
+    if (!a.char.motion.busy && !a.char.controlled) moveTo(a, 8, -0.9, 0.8, dt, false, true);
+  } });
+  add({
+    name: 'barger',
+    group: 'reactions',
+    variant: () => makeCivilian(89),
+    prop: null,
+    pos: [3.5, -0.85, 0],
+    yaw: 0,
+    script: (() => {
+      let wait = 1;
+      let leg = 0;
+      return (a: Actor, _t: number, dt: number): void => {
+        inp(a).mood = 'panic';
+        if (wait > 0) {
+          wait -= dt;
+          return;
+        }
+        const x = leg % 2 === 0 ? 12 : 3.5;
+        if (moveTo(a, x, -0.85, 4.5, dt)) {
+          leg++;
+          wait = 5;
+        }
+      };
+    })(),
+  });
+
   // a lone subject in the open, for trying things on (shots, shoves, trips)
   add({ name: 'subject', group: 'reactions', variant: () => makeCivilian(87), prop: null, pos: [7.5, 11.5, 0], yaw: -Math.PI / 2, script: () => {} });
 

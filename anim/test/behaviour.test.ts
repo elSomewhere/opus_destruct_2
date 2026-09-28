@@ -399,6 +399,24 @@ test('bodies: a body shoved into a bystander knocks into it, and the bystander g
   assert.ok(b.pose.p[H.pelvis]![0] - a.pose.p[H.pelvis]![0] > 0.2, 'they stay apart');
 });
 
+test('bodies: walked into, a body gives way with a stumble; run into, it goes down', () => {
+  for (const [speed, falls] of [[1.5, false], [5, true]] as const) {
+    const c = civilian(new FlatGround(0), 2);
+    // (from the side: something the body cannot move, the player's capsule at knee, hip and
+    // chest height)
+    const pl: V3 = [-1.5, 0.1, 0];
+    let fell = false, reacted = false;
+    host(c, 3, 0, (x) => {
+      pl[0] += speed * DT;
+      gatherObstacles([x], 2.2, [0.58, 0.95, 1.3].map((z) => ({ c: [pl[0], pl[1], z] as V3, r: 0.28 })));
+      reacted ||= x.behaviours.mode === 'reacting';
+      fell ||= x.behaviours.mode === 'falling';
+    });
+    assert.ok(reacted, `${speed} m/s: no stumble`);
+    assert.equal(fell, falls, `${speed} m/s: ${fell ? 'fell' : 'stayed up'}`);
+  }
+});
+
 test('bodies: a runner catches a foot on a body lying across the way', () => {
   let tripped = 0;
   for (const seed of [1, 2, 3]) {
