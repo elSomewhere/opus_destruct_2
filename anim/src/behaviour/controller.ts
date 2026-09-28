@@ -1247,7 +1247,10 @@ export class Behaviours {
         // the knees go first, the arms drop, the trunk and the neck keep their shape longest
         const u = clamp(this.modeTime / this.dyingFor, 0, 1);
         base = this.dyingHead ? 0.02 : 0.9 * Math.pow(1 - u, 0.8) + 0.02;
-        legs = Math.pow(1 - u, 1.2) * 0.75;
+        // (and a body tipping over goes limp in the legs: it collapses, it does not fall like
+        // a plank and swing its legs up over itself)
+        const upZ = qrotate(this.body.parts[B.chest]!.q, [0, 0, 1])[2];
+        legs = Math.pow(1 - u, 1.2) * 0.75 * smoothstep(0.35, 0.8, upZ);
         arms = Math.pow(1 - u, 0.7) * 0.8;
         break;
       }
@@ -1341,8 +1344,10 @@ export class Behaviours {
       this.centreOfPressure(legsS);
     } else if (mode === 'dying') {
       const u = clamp(this.modeTime / this.dyingFor, 0, 1);
-      // (the legs hold at first, then give all at once)
-      const hold = this.dyingHead ? 0 : 1 - u * u;
+      // (the legs hold at first, then give all at once; a trunk tipping over is not held up
+      // by its hips - the body would pivot on them and swing its legs up)
+      const upZ = qrotate(this.body.parts[B.chest]!.q, [0, 0, 1])[2];
+      const hold = this.dyingHead ? 0 : (1 - u * u) * smoothstep(0.45, 0.85, upZ);
       if (hold > 0.02) {
         // the knees buckle: the legs hold less and less, lower and lower
         sup.enabled = true;
