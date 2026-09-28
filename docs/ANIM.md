@@ -420,7 +420,8 @@ The retro look is a function of the modern animation, not separate content (`ret
     to look;
   - once they see the player (or a hostile) they react, keep a combat range (advance, back
     off, strafe), and fight from positions: standing, kneeling, prone, crouched behind cover
-    popping up, or leaning out from a corner to fire;
+    popping up, or leaning out from a corner to fire. Rounds coming close rattle them (their
+    nerves): they flinch harder, crouch, and pick lower positions;
   - they fire bursts whose spread tightens while they hold their aim, wider when firing on the
     move or from the hip; machine gunners fire from the hip on the move; they reload (the
     magazine refills when the reload action says so) and don't fire with a friend in the line;
@@ -599,8 +600,7 @@ Measured on an M5 Pro:
 - **Bodies.** Other bodies are obstacles pushed back one frame late, not bodies solved
   together, so a pile of bodies is soft. Hands grip walls, weapons and wounds, not other
   people. Bodies do not collide with the
-  engine's rigid debris pieces (only with small gibs and the voxel world). Suppression
-  (nerves) makes people flinch harder but does not yet change what soldiers do.
+  engine's rigid debris pieces (only with small gibs and the voxel world).
 - **Retro.** Frames are baked per geometry and held item. Staggers and deaths in retro mode are
   stepped physics, not baked sequences.
 - **More content** would come as more rigs (quadrupeds, Doom-like monsters) on the same core: the

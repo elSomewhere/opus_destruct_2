@@ -248,13 +248,15 @@ export class SoldierBrain implements Brain {
             this.hold = 'stand';
           } else if (chance(0.55)) {
             w.stop(a);
-            // hold a position: prone at range, kneeling, crouched, or standing
-            const r = Math.random();
+            // hold a position: prone at range, kneeling, crouched, or standing (lower the more
+            // rounds have been coming close: suppressed)
+            const r = Math.random() * (1 - 0.5 * a.char.behaviours.nerves);
             this.hold = longGun && dist > 16 && r < 0.3 ? 'prone' : longGun && r < 0.6 ? 'kneel' : this.crouchy && r < 0.8 ? 'crouch' : 'stand';
           } else {
             const p = w.nav.randomPoint(a.pos, 2, 5);
             if (p) w.goTo(a, p, rnd(1.0, 1.4));
-            this.hold = this.crouchy && chance(0.35) ? 'crouch' : 'stand';
+            const nerves = a.char.behaviours.nerves;
+            this.hold = (this.crouchy || nerves > 0.4) && chance(0.35 + 0.5 * nerves) ? 'crouch' : 'stand';
           }
         }
         const moving = !w.arrived(a);
