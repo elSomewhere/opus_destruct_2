@@ -249,7 +249,8 @@ Reflexes run on top of any mode:
 
 - **Flinching** from what lands close (`perceive`: impacts, rounds whizzing past, blasts, blows
   coming): the head turns away and ducks, the shoulders come up, and a hand comes up between
-  the face and the danger. Nerves build up over time and make the next flinch bigger.
+  the face and the danger; once it has passed, a look back at what it was. Nerves build up
+  over time and make the next flinch bigger.
 - **Holding a wound:** a hand goes to it and stays for seconds (longer for the gut and chest).
   The posture of injuries follows: a limp, a weak arm, a hunch. After the flinch and a glance
   at the wound, the head turns to look for where the blow came from.

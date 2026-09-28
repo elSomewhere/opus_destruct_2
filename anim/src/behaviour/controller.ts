@@ -1102,6 +1102,16 @@ export class Behaviours {
         best = t;
       }
     }
+    // once the flinch has passed: a look back at what it was
+    for (const t of this.threats) {
+      const after = t.age - 0.07 - t.hold - 0.2;
+      if (after <= 0 || after > 1.1 || t.amount < 0.2) continue;
+      if (!ctl.look || ctl.lookWeight < 0.3) {
+        ctl.look = t.point;
+        ctl.lookWeight = 0.75 * smoothstep(0, 0.25, after) * (1 - smoothstep(0.7, 1.1, after));
+      }
+      break;
+    }
     if (!best || bw < 0.02) return;
     const w = clamp(bw, 0, 1.2);
     this.tension = Math.max(this.tension, w);
