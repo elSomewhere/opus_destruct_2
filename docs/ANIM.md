@@ -251,7 +251,8 @@ Reflexes run on top of any mode:
   coming): the head turns away and ducks, the shoulders come up, and a hand comes up between
   the face and the danger. Nerves build up over time and make the next flinch bigger.
 - **Holding a wound:** a hand goes to it and stays for seconds (longer for the gut and chest).
-  The posture of injuries follows: a limp, a weak arm, a hunch.
+  The posture of injuries follows: a limp, a weak arm, a hunch. After the flinch and a glance
+  at the wound, the head turns to look for where the blow came from.
 - **Stun and shock:** a struck part and its parent go slack for a moment, and the whole body
   dips with the shock of a hit.
 - **Trips:** a swinging foot that touches something is lifted higher at once (the stumble

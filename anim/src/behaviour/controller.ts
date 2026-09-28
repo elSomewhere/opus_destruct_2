@@ -126,6 +126,9 @@ export class Behaviours {
   /** The shock of a hit (0..1): the whole body slack for a moment. */
   private shock = 0;
   private downUntil = 0;
+  /** Where the last blow came from, and when (the head turns to look for it). */
+  private hitFrom: V3 | null = null;
+  private hitAt = -99;
   /** How long the body has been beyond saving (reacting). */
   private lostFor = 0;
   private dyingFor = 0.6;
@@ -269,6 +272,10 @@ export class Behaviours {
     // the blow itself has shown
     this.threats.push({ point: vsub(info.point, vscale(d, 0.6)), amount: clamp(0.25 + 0.15 * f, 0, 0.7), age: -0.18, hold: 0.1 });
     this.plan.interrupt(f > 0.8);
+    // then a look for where it came from
+    this.hitFrom = vsub(info.point, vscale(d, 6));
+    this.hitFrom[2] = Math.max(this.hitFrom[2], info.point[2]);
+    this.hitAt = this.time;
     this.upset = 0.4;
     // knocked off the plan: a blow that moves the whole body (a blow to the head mostly snaps
     // the head), a leg that gives, a daze
@@ -623,6 +630,12 @@ export class Behaviours {
       this.bracing(dt, pose);
       if (this.conscious) this.flinch(dt, pose);
       this.holdWound(dt, pose);
+      // after the flinch and a glance at the wound: where did that come from?
+      const since = this.time - this.hitAt;
+      if (this.hitFrom && this.conscious && this.alive && !ctl.look && since > 0.45 && since < 3) {
+        ctl.look = this.hitFrom;
+        ctl.lookWeight = 0.85 * smoothstep(0.45, 0.8, since) * (1 - smoothstep(2.2, 3, since));
+      }
     }
   }
 
