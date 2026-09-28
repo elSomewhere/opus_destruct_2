@@ -297,12 +297,15 @@ async function main(): Promise<void> {
     prop: null,
     pos: [-14.5, 9.3, 0],
     yaw: 0,
-    script: (a, t, dt) => {
-      waypoints([[-1.8, 9.3], [-1.8, 10.8], [-14.5, 10.8], [-14.5, 9.3]], 1.0)(a, t, dt);
-      // looks at the conversation while passing
-      const d = Math.hypot(a.pos[0] - talkC[0], a.pos[1] - talkC[1]);
-      inp(a).lookAt = d < 5 ? [talkC[0], talkC[1], 1.6] : null;
-    },
+    script: (() => {
+      const route = waypoints([[-1.8, 9.3], [-1.8, 10.8], [-14.5, 10.8], [-14.5, 9.3]], 1.0);
+      return (a: Actor, t: number, dt: number): void => {
+        route(a, t, dt);
+        // looks at the conversation while passing
+        const d = Math.hypot(a.pos[0] - talkC[0], a.pos[1] - talkC[1]);
+        inp(a).lookAt = d < 5 ? [talkC[0], talkC[1], 1.6] : null;
+      };
+    })(),
   });
   add({ name: 'commuter', group: 'city', variant: () => makeCivilian(61), prop: null, pos: [-2, 9.6, 0], yaw: Math.PI, script: waypoints([[-14.5, 9.6], [-14.5, 11.2], [-2, 11.2], [-2, 9.6]], 1.6) });
   const perimeter: [number, number][] = [[-15.2, -15.2], [15.2, -15.2], [15.2, 15.3], [-15.2, 15.3]];

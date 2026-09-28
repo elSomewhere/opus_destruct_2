@@ -62,6 +62,12 @@ export function buildLabLevel(): LabLevel {
   box(-1.3, 5.7, 0, -1.175, 7.1, 0.125, Block.Rubble);
   box(0.5, 5.7, 0, 0.75, 7.1, 0.25, Block.Concrete);
   box(2.0, 5.8, 0, 2.125, 7.0, 0.125, Block.Rubble);
+  // a low wall round the edge (nothing staggers, rolls or is thrown off the course)
+  const e = (N / 2) * h - 0.2;
+  box(-e - 0.25, -e - 0.25, 0, e + 0.25, -e, 0.5, Block.Brick);
+  box(-e - 0.25, e, 0, e + 0.25, e + 0.25, 0.5, Block.Brick);
+  box(-e - 0.25, -e - 0.25, 0, -e, e + 0.25, 0.5, Block.Brick);
+  box(e, -e - 0.25, 0, e + 0.25, e + 0.25, 0.5, Block.Brick);
   // uneven rubble field
   for (let k = 0; k < 90; k++) {
     const x = 5 + ((k * 37) % 50) / 10;
