@@ -523,6 +523,11 @@ export class MotionPlan {
     return this.stanceP;
   }
 
+  /** Lying (or last lay) on the back rather than face down. */
+  get lyingOnBack(): boolean {
+    return this.downBack;
+  }
+
   /** The stance being blended to. */
   get stanceTarget(): Stance {
     return this.stanceTo;

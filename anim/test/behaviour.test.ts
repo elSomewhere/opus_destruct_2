@@ -270,6 +270,39 @@ test('knockout: a heavy blow drops the body; it stays down, then gets up', () =>
   assert.ok(!c.knockedOut);
 });
 
+test('down: the plan lies as the body lies (front or back), and a badly hurt body face down crawls away', () => {
+  for (const seed of [2, 4]) {
+    const c = civilian(new FlatGround(0), seed);
+    host(c, 0.3);
+    c.addInjury(H.thighL, 0.8);
+    c.health = 26;
+    const ch = c.pose.p[H.chest]!;
+    c.hitAt({ point: [ch[0], ch[1] - 0.1, ch[2]], dir: [0, 1, 0], force: 3, kind: 'blast', bone: H.chest });
+    c.push([0, 1, 0], 3);
+    c.behaviours.collapse(10);
+    let crawled = false;
+    const h = host(c, 6, 0, (x) => {
+      if (x.behaviours.mode === 'lying') {
+        // the pelvis's forward points up on the back, down face down
+        const f = qrotate(x.pose.q[H.pelvis]!, [0, 1, 0]);
+        if (Math.abs(f[2]) > 0.8) assert.equal(x.motion.lyingOnBack, f[2] > 0, 'the plan lies the way the body does');
+        if (!x.motion.lyingOnBack) x.motion.input.stance = 'prone';
+      }
+      crawled ||= x.behaviours.mode === 'animated' && x.motion.stance === 'prone';
+    });
+    if (!crawled) continue;
+    // crawling: the host moves it slowly, the body stays low and goes with it
+    const p0 = [...c.pose.p[H.pelvis]!];
+    host(c, 4, 0.35, undefined, h);
+    const p1 = c.pose.p[H.pelvis]!;
+    const along = (p1[0] - p0[0]!) * Math.cos(h.yaw) + (p1[1] - p0[1]!) * Math.sin(h.yaw);
+    assert.ok(c.pose.p[H.head]![2] < 0.45, `crawling low: head at ${c.pose.p[H.head]![2].toFixed(2)}`);
+    assert.ok(along > 0.8, `crawled ${along.toFixed(2)} m`);
+    return;
+  }
+  assert.fail('no body face down crawled away');
+});
+
 test('dying: the muscles fade, the body goes down within a couple of seconds and comes to rest', () => {
   const c = soldier();
   host(c, 0.5);

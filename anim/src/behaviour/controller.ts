@@ -730,8 +730,11 @@ export class Behaviours {
         break;
       }
       case 'lying': {
+        this.alignLying(pose, true);
         if (!this.conscious && this.time >= this.downUntil) this.conscious = true;
-        if (this.alive && this.conscious && this.modeTime > 0.8 && this.time >= this.downUntil) this.setMode('rising');
+        // (face down and hurting, a host that wants it away has it crawl off: the struggle of it)
+        const crawl = this.writhing && !plan.lyingOnBack && plan.input.stance === 'prone' && this.modeTime > 1.5;
+        if (this.alive && this.conscious && this.modeTime > 0.8 && (this.time >= this.downUntil || crawl)) this.setMode('rising');
         break;
       }
       case 'rising': {
@@ -740,7 +743,8 @@ export class Behaviours {
         const inj = this.injuries;
         const hurt = clamp(inj.pain + 0.6 * Math.max(inj.legL, inj.legR) + 0.5 * this.daze, 0, 1);
         if (this.modeTime > 0.3 + 0.5 * hurt && plan.down && plan.stance === 'down' && plan.stanceProgress >= 1) plan.getUp(lerp(1.45, 0.7, hurt));
-        if (this.modeTime > 0.6 && !plan.down && plan.stance === 'stand' && plan.stanceProgress >= 1) this.setMode('animated');
+        // (up to the host's stance: standing, or prone to crawl away)
+        if (this.modeTime > 0.6 && !plan.down && plan.stance !== 'down' && plan.stance === plan.stanceTarget && plan.stanceProgress >= 1) this.setMode('animated');
         break;
       }
       case 'dying': {
@@ -766,8 +770,22 @@ export class Behaviours {
 
   private enterLying(pose: WorldPose): void {
     this.setMode('lying');
+    this.alignLying(pose);
+    if (this.downUntil < this.time) this.downUntil = this.time + 1.2 + this.rng.next() * 1.4 + 2 * this.injuries.pain;
+  }
+
+  /**
+   * The plan lies as the body lies (on the back or face down, the head's way); a body that
+   * rolled over or slid on after lying down is followed.
+   */
+  private alignLying(pose: WorldPose, onlyIfChanged = false): void {
     const pq = pose.q[H.pelvis]!;
     const fwd = qrotate(pq, [0, 1, 0]);
+    if (onlyIfChanged) {
+      const flipped = this.plan.lyingOnBack ? fwd[2] < -0.5 : fwd[2] > 0.5;
+      const pp = pose.p[H.pelvis]!, r = this.plan.rootPos;
+      if (!flipped && Math.hypot(pp[0] - r[0], pp[1] - r[1]) < 0.35 * this.k) return;
+    }
     const back = fwd[2] > 0;
     // the plan's lying pose: on the back the feet point along +y from the head, face down the head does
     const head = vsub(pose.p[H.chest]!, pose.p[H.pelvis]!);
@@ -780,7 +798,6 @@ export class Behaviours {
     this.rootMotion[0] += r[0] - before[0];
     this.rootMotion[1] += r[1] - before[1];
     this.rootMotion[2] += r[2] - before[2];
-    if (this.downUntil < this.time) this.downUntil = this.time + 1.2 + this.rng.next() * 1.4 + 2 * this.injuries.pain;
   }
 
   private legStrength(): number {

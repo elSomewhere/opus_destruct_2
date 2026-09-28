@@ -231,7 +231,8 @@ the blow.
   and the head is kept off the ground.
 - **lying:** limp but alive, for a while (longer the more it hurts). Knocked out, until it
   comes to. Badly hurt, it writhes: knees drawn up, the trunk curling and twisting, clutching
-  the wound.
+  the wound. Face down, a host that wants it away (`input.stance = 'prone'`) has it crawl
+  off on its elbows. The plan follows the body if it rolls over.
 - **rising:** gathers, then gets up through sitting or pushing up from the front, kneeling and
   standing, with the legs taking the weight back. It is brisk unhurt (about 2 s) and slower
   hurt.
@@ -396,7 +397,8 @@ The retro look is a function of the modern animation, not separate content (`ret
   - a fight draws a crowd: passers-by stop and watch, sitters and talkers look over; the winner
     walks off, the loser gets away once back on their feet, and a killer runs;
   - fear builds from gunfire, impacts, screams and bodies; frightened, they run, panicking and
-    screaming when very scared, which spreads the fear. They cower next to explosions and put
+    screaming when very scared, which spreads the fear. Badly hurt and down on their front,
+    they crawl away, then lie where they got to. They cower next to explosions and put
     their hands up when the player aims at them from close by (not while the player
     spectates in noclip). Armed civilians may draw and shoot back at soldiers firing nearby
     (then soldiers treat them as hostile).
@@ -529,7 +531,7 @@ Other calls: `hitAt(info)` (a blow without a wound), `impulse(point, dv)`, `knoc
 ## 9. Tests and checks
 
 ```bash
-cd anim && npm install && npm test          # 79 unit tests: rigid joints, the body, tracking, hits,
+cd anim && npm install && npm test          # 80 unit tests: rigid joints, the body, tracking, hits,
                                             # balance, trips, flinches, bracing, knockouts, dying,
                                             # bodies among bodies, motion, strikes, brawls, damage,
                                             # gibs, retro
@@ -589,7 +591,7 @@ Measured on an M5 Pro:
   only with the rifle butt. Fighters do not clinch or grab.
 - **Bodies.** Other bodies are obstacles pushed back one frame late, not bodies solved
   together, so a pile of bodies is soft. Hands grip walls, weapons and wounds, not other
-  people. The badly wounded writhe but do not crawl away. Bodies do not collide with the
+  people. Bodies do not collide with the
   engine's rigid debris pieces (only with small gibs and the voxel world). Suppression
   (nerves) makes people flinch harder but does not yet change what soldiers do.
 - **Retro.** Frames are baked per geometry and held item. Staggers and deaths in retro mode are

@@ -378,6 +378,9 @@ export class CivilianBrain implements Brain {
   /** Something that draws the eye for a while (a fight nearby). */
   private glanceAt: V3 | null = null;
   private glanceUntil = 0;
+  /** Crawling away (badly hurt), and for how much longer. */
+  private crawling = false;
+  private crawlFor = 0;
   private burst = 0;
   private shotTimer = 0;
 
@@ -628,19 +631,37 @@ export class CivilianBrain implements Brain {
         }
         break;
       }
-      case 'flee':
+      case 'flee': {
         a.mood = this.fear > 0.8 ? 'panic' : 'normal';
         a.face = null;
-        a.stance = 'stand';
+        // badly hurt and down on the front, it will not stand on it: it crawls away, then lies
+        // where it got to
+        const c = a.char;
+        const inj = c.behaviours.injuries;
+        const bad = c.health < c.maxHealth * 0.35 || Math.max(inj.legL, inj.legR) > 0.65;
+        if (!this.crawling && bad && c.behaviours.mode === 'lying' && !c.motion.lyingOnBack) {
+          this.crawling = true;
+          this.crawlFor = rnd(8, 16);
+        }
+        a.stance = this.crawling ? 'prone' : 'stand';
+        if (this.crawling) {
+          a.mood = 'normal';
+          if (c.motion.stance === 'prone') this.crawlFor -= dt;
+          if (this.crawlFor <= 0) {
+            w.stop(a);
+            break;
+          }
+        }
         if (this.fear > 0.9 && w.time - this.screamed > 4) {
           this.screamed = w.time;
           w.noise({ pos: a.pos, radius: 14, kind: 'scream', source: a });
         }
         if (w.arrived(a) || a.stuck > 1.2) {
-          if (this.fear > 0.35) this.startFlee(a, w);
+          if (this.fear > 0.35 || this.crawling) this.startFlee(a, w);
           else this.choose(a, w);
         }
         break;
+      }
       case 'cower':
         a.mood = 'cower';
         if (this.timer <= 0) {
@@ -663,6 +684,7 @@ export class CivilianBrain implements Brain {
   }
 
   private startFlee(a: Actor, w: ActorWorld): void {
+    if (this.crawling && this.crawlFor <= 0) return;
     this.leave(a, w);
     a.talk = null;
     this.state = 'flee';
