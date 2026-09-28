@@ -178,7 +178,7 @@ try {
   const life = await waitFor(page, () => {
     const w = window.__structvox.actorWorld();
     const s = w.stats();
-    return s.talking >= 2 && s.sitting >= 1 ? { talking: s.talking, sitting: s.sitting, ground: w.actors.filter((a) => a.char.animator.stance === 'ground').length } : null;
+    return s.talking >= 2 && s.sitting >= 1 ? { talking: s.talking, sitting: s.sitting, ground: w.actors.filter((a) => a.char.motion.stance === 'ground').length } : null;
   }, null, 60000, 'civilians talk and sit on benches');
   if (life) check(true, `city life: ${life.talking} talking, ${life.sitting} on benches, ${life.ground} on the ground`);
   await page.screenshot({ path: `${outDir}/05-city-life.png` });

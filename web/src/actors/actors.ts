@@ -771,7 +771,20 @@ export class ActorWorld {
 
   // ---- simulation ---------------------------------------------------------------------------
 
+  /** Time the last updates took (ms, smoothed), and how many bodies were simulated. */
+  updateMs = 0;
+  bodies = 0;
+
   update(dt: number): void {
+    const t0 = performance.now();
+    this.updateInner(dt);
+    this.updateMs += (performance.now() - t0 - this.updateMs) * 0.05;
+    let n = 0;
+    for (const a of this.actors) if (a.char.behaviours.physical && !a.char.asleep) n++;
+    this.bodies = n;
+  }
+
+  private updateInner(dt: number): void {
     this.time += dt;
     this.retroClock += dt;
     let retroTick = false;

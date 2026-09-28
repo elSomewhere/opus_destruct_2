@@ -116,6 +116,8 @@ export class Behaviours {
   private readonly stun = new Float32Array(BODY_COUNT);
   /** Whole-body daze (0..1). */
   private daze = 0;
+  /** The shock of a hit (0..1): the whole body slack for a moment. */
+  private shock = 0;
   private downUntil = 0;
   private dyingFor = 0.6;
   private dyingHead = false;
@@ -209,7 +211,7 @@ export class Behaviours {
       const al = vlen(ax);
       if (al > 1e-4) {
         const trunkHit = part === B.pelvis || part === B.spine || part === B.chest;
-        const rate = (trunkHit ? 2.4 : part === B.head ? 3.2 : 4) * Math.min(f, 2.5) * (info.kind === 'blade' ? 0.4 : 1) * clamp(al / 0.12, 0.3, 1.2);
+        const rate = (trunkHit ? 3.2 : part === B.head ? 3.6 : 4) * Math.min(f, 2.5) * (info.kind === 'blade' ? 0.4 : 1) * clamp(al / 0.12, 0.3, 1.2);
         for (let hop = 0, q = part; hop < 2 && q >= 0; hop++, q = PARENT_OF[q]!) {
           const w = this.body.parts[q]!.w;
           const k2 = (hop === 0 ? 1 : 0.55) * rate / al;
@@ -226,8 +228,11 @@ export class Behaviours {
     // the struck part and its neighbours go slack for a moment
     // (the trunk less: it carries the body)
     const trunkPart = part === B.pelvis || part === B.spine || part === B.chest;
-    const s = clamp(0.35 + 0.3 * f, 0, trunkPart ? 0.45 : 0.95);
+    const s = clamp(0.35 + 0.3 * f, 0, trunkPart ? 0.65 : 0.95);
     this.stunPart(part, s);
+    // the whole body goes slack for a moment with the shock of it (it answers the blow with
+    // its own weight: the arms swing, the head lolls), then the muscles take over again
+    this.shock = Math.max(this.shock, clamp(0.3 + 0.25 * f, 0, 0.8) * (info.kind === 'blade' ? 0.5 : 1));
     if (part > 0) this.stunPart(PARENT_OF[part]!, s * 0.5);
     // a blow to the head dazes (hard ones knock out)
     if (zone === 'head' && info.kind === 'blunt') this.daze = Math.max(this.daze, clamp(0.25 * f, 0, 0.9));
@@ -482,6 +487,7 @@ export class Behaviours {
     this.injuries.update(dt);
     for (let i = 0; i < BODY_COUNT; i++) this.stun[i] = Math.max(0, this.stun[i]! - dt * (0.9 + 0.8 * this.stun[i]!));
     this.daze = Math.max(0, this.daze - dt * (this.conscious ? 0.9 : 0));
+    this.shock = Math.max(0, this.shock - dt * 2.2);
     this.nerves = Math.max(0, this.nerves - dt * 0.05);
     this.upset = Math.max(0, this.upset - dt);
     this.stepCooldown = Math.max(0, this.stepCooldown - dt);
@@ -1115,7 +1121,7 @@ export class Behaviours {
         base = 0;
         break;
     }
-    const dz = 1 - 0.85 * this.daze;
+    const dz = (1 - 0.85 * this.daze) * (1 - 0.6 * this.shock);
     const tense = 1 + 0.35 * this.tension;
     const regionT: Record<Region, number> = {
       trunk: base * trunk * dz * tense * (1 - 0.3 * inj.trunk),

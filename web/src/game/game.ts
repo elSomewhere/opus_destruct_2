@@ -418,7 +418,7 @@ export class Game {
 
   private actorLine(): string {
     const s = this.actors.stats();
-    return `actors ${s.civilians} civilians  ${s.soldiers} soldiers  ${s.thugs} thugs  ${s.dead} dead  ${s.gibs} gibs  ${s.stains} stains  ${this.actors.shotsFired} rounds fired  health ${Math.max(0, Math.round(this.playerHealth))}${this.charState.god ? ' (god)' : ''}${s.bakes > 0 ? `  baking ${s.bakes}` : ''}`;
+    return `actors ${s.civilians} civilians  ${s.soldiers} soldiers  ${s.thugs} thugs  ${s.dead} dead  ${s.gibs} gibs  ${s.stains} stains  ${this.actors.bodies} bodies  ${this.actors.updateMs.toFixed(1)} ms  ${this.actors.shotsFired} rounds fired  health ${Math.max(0, Math.round(this.playerHealth))}${this.charState.god ? ' (god)' : ''}${s.bakes > 0 ? `  baking ${s.bakes}` : ''}`;
   }
 
   private applyCharState(): void {
