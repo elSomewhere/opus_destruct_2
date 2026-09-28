@@ -235,7 +235,7 @@ the blow.
   loose (legs bent, trunk curled), the hands go out to break the fall and lock where they land,
   and the head is kept off the ground.
 - **lying:** limp but alive, for a while (longer the more it hurts). Knocked out, until it
-  comes to. Badly hurt, it writhes: knees drawn up, the trunk curling and twisting, clutching
+  comes to. Badly hurt, it writhes: knees drawn up, rolling from side to side, clutching
   the wound. Face down, a host that wants it away (`input.stance = 'prone'`) has it crawl
   off on its elbows. The plan follows the body if it rolls over.
 - **rising:** gathers, then gets up through sitting or pushing up from the front, kneeling and

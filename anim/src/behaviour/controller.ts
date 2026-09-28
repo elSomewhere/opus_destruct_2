@@ -1434,6 +1434,20 @@ export class Behaviours {
       turn.damping = 1.5 * grip;
     }
 
+    // writhing on the back: the pain rolls the body from side to side about its length
+    if (mode === 'lying' && this.writhing && this.alive && this.conscious) {
+      const t = this.time + this.writheSeed;
+      const spasm = Math.pow(0.5 + 0.5 * Math.sin(t * 0.9) * Math.sin(t * 0.31 + 1), 1.5);
+      const pel = body.parts[B.pelvis]!, ch = body.parts[B.chest]!;
+      const ax = vnorm(vsub(ch.x, pel.x));
+      const roll = 55 * spasm * Math.sin(t * 0.75 + 0.6);
+      for (const b of [pel, ch]) {
+        b.torque[0] += ax[0] * roll;
+        b.torque[1] += ax[1] * roll;
+        b.torque[2] += ax[2] * roll;
+      }
+    }
+
     // ---- step ----
     body.system.step(dt);
     body.writePose(out);
