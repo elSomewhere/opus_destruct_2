@@ -1536,7 +1536,10 @@ export class Behaviours {
       const sx = f.target[0] - f.lift[0], sy = f.target[1] - f.lift[1];
       const sl = Math.hypot(sx, sy) || 1;
       const n = fb.contactNormal;
-      const blocked = fb.contact && (n[0] * sx + n[1] * sy) / sl < -0.35;
+      // (the foot, or the shin: a body lying in the way catches a runner at the knee)
+      const sb = this.body.parts[i === 0 ? B.shinL : B.shinR]!;
+      const sn = sb.contactNormal;
+      const blocked = (fb.contact && (n[0] * sx + n[1] * sy) / sl < -0.35) || (sb.bumped > 1.5 && (sn[0] * sx + sn[1] * sy) / sl < -0.35);
       // (blocked by something in the way; merely scuffing the ground is not a trip unless the
       // foot is hopelessly behind)
       if ((blocked && lag > 0.05 * k) || (fb.contact && lag > 0.4 * k)) {
