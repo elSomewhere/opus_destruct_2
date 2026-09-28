@@ -1006,7 +1006,10 @@ export class ActorWorld {
       else if (d > 1e-3) {
         const inj = a.char.behaviours.injuries;
         const limp = Math.max(inj.legL, inj.legR);
-        let s = a.speed * (1 - 0.5 * limp) * (1 - 0.3 * inj.pain) * a.pace;
+        // (people slow down on stairs, more going up than down)
+        const sl = an.slope;
+        const climb = sl > 0 ? Math.min(1, sl / 0.33) * 0.5 : Math.min(1, -sl / 0.33) * 0.3;
+        let s = a.speed * (1 - 0.5 * limp) * (1 - 0.3 * inj.pain) * a.pace * (1 - climb);
         if (settled === 'prone') s = Math.min(s, 0.45);
         // arriving: slow down to stop on the spot
         s = Math.min(s, Math.sqrt(2 * 3.6 * 0.8 * Math.max(0, remaining - 0.2)) + 0.15);

@@ -223,6 +223,38 @@ export class FootPlanner {
     f.since = 0;
   }
 
+  /**
+   * Stairs and ledges: a foot lands flat on one tread, never across an edge, and a step rises
+   * or drops no more than a body takes in one (two stair steps up; a shorter stride when the
+   * landing would be higher or lower). Moves `tgt` back along the path from the lift-off.
+   */
+  private onTread(f: Foot, tgt: V3, yaw: number): void {
+    const k = this.dims.k;
+    const maxRise = 0.3 * k;
+    const lz = f.lift[2];
+    const fx = Math.cos(yaw), fy = Math.sin(yaw);
+    const fits = (x: number, y: number, z: number): boolean => {
+      if (Math.abs(z - lz) > maxRise) return false;
+      // (the toes a little short of the next riser, so they come off it cleanly)
+      const tf = this.dims.ballFwd * 1.2 + 0.05 * k;
+      const toe = this.ground(x + fx * tf, y + fy * tf, z, z - 1);
+      const heel = this.ground(x - fx * this.dims.heelBack, y - fy * this.dims.heelBack, z, z - 1);
+      return Math.abs(toe - z) < 0.03 * k && Math.abs(heel - z) < 0.03 * k;
+    };
+    if (fits(tgt[0], tgt[1], tgt[2])) return;
+    // (flat ground never gets here; only a landing across an edge or too far up or down)
+    const ax = f.lift[0], ay = f.lift[1];
+    for (let t = 0.95; t >= 0.3; t -= 0.05) {
+      const x = ax + (tgt[0] - ax) * t, y = ay + (tgt[1] - ay) * t;
+      const z = this.ground(x, y, lz + 0.4 * k, lz);
+      if (!fits(x, y, z)) continue;
+      tgt[0] = x;
+      tgt[1] = y;
+      tgt[2] = z;
+      return;
+    }
+  }
+
   /** Height to clear over the path from a to b (m above the higher end, with a margin by care). */
   clearance(a: Readonly<V3>, b: Readonly<V3>, care: number): number {
     const top = Math.max(a[2], b[2]);
@@ -391,6 +423,7 @@ export class FootPlanner {
           tgt[0] += hx;
           tgt[1] += hy;
           tgt[2] = this.ground(tgt[0], tgt[1], c.groundZ, c.groundZ);
+          this.onTread(f, tgt, c.bodyYaw);
           vcopy(tgt, f.target);
           // turning on the spot: a step opens the foot at most ~43 degrees past the other one
           let heading = c.bodyYaw;
@@ -446,15 +479,41 @@ export class FootPlanner {
         const carry = c.moving && !f.forced ? lerp(0.35, 1, run) * (1 - eh) : 0;
         const from: V3 = [f.lift[0] + (c.root[0] - f.liftRoot[0]) * carry, f.lift[1] + (c.root[1] - f.liftRoot[1]) * carry, f.lift[2]];
         const hz = vlerp(from, f.target, eh);
+        // (a step up is risen to early, before the toe meets its edge, and cleared with a
+        // margin; a step down is kept above until past its edge)
+        const rise = f.target[2] - from[2];
+        if (rise > 0.02 * k) hz[2] = from[2] + rise * smoothstep(0, 0.55, s);
+        else if (rise < -0.02 * k) hz[2] = from[2] + rise * smoothstep(0.35, 1, s);
         const peak = Math.sin(Math.PI * Math.pow(s, lerp(1, 0.62, run)));
         const baseLift = f.forced ? 0.07 * k : c.moving ? g.lift : 0.06 * k;
-        const lift = baseLift * peak + Math.max(0, f.target[2] - f.lift[2]) * 0.3 * peak + Math.max(0, f.clear) * Math.sin(Math.PI * clamp(s * 1.15, 0, 1));
+        const step = Math.abs(rise) > 0.04 * k ? 0.045 * k : 0;
+        const lift = (baseLift + step) * peak + Math.max(0, rise) * 0.15 * peak + Math.max(0, f.clear) * Math.sin(Math.PI * clamp(s * 1.15, 0, 1));
         hz[2] += lift;
+        // the sole keeps above what is under and just ahead of the foot on its way (a stair's
+        // edge, a kerb): the toe does not stub on it
+        if (step > 0 && s < 0.92) {
+          const dx = f.target[0] - from[0], dy = f.target[1] - from[1];
+          const dl = Math.hypot(dx, dy);
+          if (dl > 1e-3) {
+            const ux = dx / dl, uy = dy / dl;
+            const along = (hz[0] - from[0]) * ux + (hz[1] - from[1]) * uy;
+            let floor = -Infinity;
+            for (const a of [-d.heelBack, d.ballFwd * 1.3, d.ballFwd * 1.3 + 0.12 * k]) {
+              // (not past the landing: the foot comes down onto its tread)
+              if (along + a > dl + 0.02 * k) continue;
+              const gz = this.collision.groundHeight(hz[0] + ux * a, hz[1] + uy * a, hz[2] + 0.5 * k, hz[2] - 0.8 * k);
+              if (gz !== null && gz > floor) floor = gz;
+            }
+            if (floor > -Infinity) hz[2] = Math.max(hz[2], floor + 0.05 * k);
+          }
+        }
         const e = s * s * (3 - 2 * s);
         const yaw = f.liftYaw + wrapAngle(f.targetYaw - f.liftYaw) * e;
         const to = c.moving ? lerp(0.45, 0.65, run) * moveAmt : 0.15;
         const hs = c.moving ? lerp(0.28, 0.1, run) * moveAmt : 0.05;
         f.pitch = lerp(-to, hs, smoothstep(0.15, 0.95, s));
+        // (up a step the toes come up at once, clear of its edge)
+        if (rise > 0.04 * k) f.pitch = lerp(f.pitch, 0.15, smoothstep(0, 0.25, s));
         f.ankle[0] = hz[0];
         f.ankle[1] = hz[1];
         f.ankle[2] = hz[2] + d.ankleH;

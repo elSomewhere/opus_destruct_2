@@ -259,6 +259,8 @@ export class MotionPlan {
   private readonly impact = new Spring(15, 0.45);
   private readonly trunkLean = new Spring(6, 0.55);
   private readonly bank = new Spring(6, 0.8);
+  /** The ground's rise ahead along the motion (smoothed, rise over run; stairs up ~0.33). */
+  private readonly slopeS = new Spring(5, 1);
   private readonly swingAmp = new Spring(5, 1);
   private readonly aimW = new Spring(8, 1);
   private readonly moodW = new Spring(6, 1);
@@ -523,6 +525,14 @@ export class MotionPlan {
     return this.stanceP;
   }
 
+  /**
+   * The ground's rise ahead along the motion (rise over run, smoothed; about 0.33 up a
+   * flight of stairs, negative down one). Hosts slow down on it as people do.
+   */
+  get slope(): number {
+    return this.slopeS.x;
+  }
+
   /** Lying (or last lay) on the back rather than face down. */
   get lyingOnBack(): boolean {
     return this.downBack;
@@ -655,11 +665,24 @@ export class MotionPlan {
       this.striking[i] = !!sc && wA > 0.1;
     }
 
-    const crouchIn = inp.mood === 'cower' ? 1 : inp.crouch;
-    this.crouchS.update(clamp(crouchIn + add('crouch', 0) + ctl.crouch, 0, 1), dt);
-    const crouch = clamp(this.crouchS.x, 0, 1);
     const vel = this.velocity;
     const speed = Math.hypot(vel[0], vel[1]);
+    // the ground ahead: a climb (stairs, a ramp) is leaned into on bent knees
+    {
+      let want = 0;
+      if (speed > 0.3 && !inp.airborne) {
+        const run = 0.7 * k;
+        const g0 = this.collision.groundHeight(this.rootPos[0], this.rootPos[1], this.rootPos[2] + 0.4 * k, this.rootPos[2] - 0.6 * k) ?? this.rootPos[2];
+        const ax = this.rootPos[0] + (vel[0] / speed) * run, ay = this.rootPos[1] + (vel[1] / speed) * run;
+        const g1 = this.collision.groundHeight(ax, ay, g0 + 0.6 * k, g0 - 0.6 * k);
+        if (g1 !== null) want = clamp((g1 - g0) / run, -0.6, 0.6);
+      }
+      this.slopeS.update(want, dt);
+    }
+    const climb = clamp(this.slopeS.x, -0.6, 0.6);
+    const crouchIn = inp.mood === 'cower' ? 1 : inp.crouch;
+    this.crouchS.update(clamp(crouchIn + add('crouch', 0) + ctl.crouch + Math.max(0, climb) * 0.35, 0, 1), dt);
+    const crouch = clamp(this.crouchS.x, 0, 1);
     const rootRot = this.rootRot();
     const inv = qconj(rootRot);
     const vLocal = qrotate(inv, vel);
@@ -796,7 +819,7 @@ export class MotionPlan {
     const S0 = this.sA;
     S0.pelvisPos = [px, py, pzS];
     S0.pelvisRot = pelvisRot;
-    const lean = g.lean + this.trunkLean.x + crouch * 0.38 + (this.moodKind === 'panic' ? this.moodW.x * 0.12 : 0) + (this.moodKind === 'cower' ? this.moodW.x * 0.25 : 0);
+    const lean = g.lean + this.trunkLean.x + crouch * 0.38 + climb * 0.35 + (this.moodKind === 'panic' ? this.moodW.x * 0.12 : 0) + (this.moodKind === 'cower' ? this.moodW.x * 0.25 : 0);
     // posture: slouched (chest and neck forward) .. upright (chest up); pain hunches
     const posture = st.posture * 0.07 - pain * 0.12;
     const counter = -hipYawOsc * 1.6 * (1 - 0.8 * tactical);

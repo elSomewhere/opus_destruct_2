@@ -194,6 +194,26 @@ test('trips: a foot caught mid-stride pitches the body forward; it catches itsel
   }
 });
 
+test('stairs: walking and running up a flight of voxel stairs and off the landing, nobody trips', () => {
+  // 6 steps of 0.125 m (0.375 m treads) from x = 4 up to a landing at 0.75 m that ends in a drop
+  const h = 0.125;
+  const top = (x: number): number => (x >= 4 && x < 6.25 ? Math.floor((x - 4) / 0.375) + 1 : x >= 6.25 && x < 9 ? 6 : 0);
+  const world = new VoxelCollision(h, (i, _j, k) => k <= top(i * h));
+  for (const speed of [1.4, 3.5]) {
+    for (const seed of [1, 3]) {
+      const c = civilian(world, seed, 0, [1, 0, 0.0625]);
+      const h0: Host = { pos: [1, 0, 0.0625], yaw: 0, v: speed };
+      host(c, (11 - 1) / speed, 0, (x, _t, hh) => {
+        assert.equal(x.behaviours.mode, 'animated', `${speed} m/s, seed ${seed}: ${x.behaviours.mode} at x = ${hh.pos[0].toFixed(2)}`);
+        if (!x.controlled) {
+          hh.pos[0] += speed * DT;
+          hh.pos[2] = world.groundHeight(hh.pos[0], hh.pos[1], hh.pos[2] + 0.7, hh.pos[2] - 1.5) ?? hh.pos[2];
+        }
+      }, h0);
+    }
+  }
+});
+
 test('trips: running over a beam without lifting the feet catches a foot on it', () => {
   // a 15 cm beam across the way at y = 3
   const h = 0.125;

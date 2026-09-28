@@ -182,6 +182,9 @@ async function main(): Promise<void> {
     const dx = x - a.pos[0], dy = y - a.pos[1];
     const d = Math.hypot(dx, dy);
     if (d < (stop ? 0.08 : 0.35)) return true;
+    // (slower on stairs, as the game's actors are)
+    const sl = a.char.motion.slope;
+    speed *= 1 - (sl > 0 ? Math.min(1, sl / 0.33) * 0.5 : Math.min(1, -sl / 0.33) * 0.3);
     const want = stop ? Math.min(speed, Math.sqrt(2 * 3.6 * 0.8 * Math.max(0, d - 0.05)) + 0.1) : speed;
     a.vel = steer(a.vel, [dx / d, dy / d], want, dt, steerOptions(speed));
     a.pos[0] += a.vel[0] * dt;

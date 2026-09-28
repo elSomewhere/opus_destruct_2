@@ -704,7 +704,7 @@ export class Behaviours {
         this.lostFor = beyond ? this.lostFor + dt : 0;
         const gone = beyond && (this.lostFor > 0.14 || tilt > 1.3 || this.balanceError > 1.8 * reach);
         // (thrown up off the feet: no step catches that)
-        const thrown = this.airborne && this.comVel[2] > 1.3;
+        const thrown = this.airborne && this.comVel[2] - Math.max(0, this.planPelvisVel[2]) > 1.3;
         const lost = gone || thrown || legs < 0.25 || this.steps > 12 || this.reactT > 6 || this.daze > 0.75 || !this.conscious;
         if (lost) {
           this.lostWhy = thrown ? 'thrown' : tilt > 0.9 ? 'tilt' : this.balanceError > reach ? 'reach' : legs < 0.25 ? 'legs' : this.steps > 12 ? 'steps' : this.reactT > 6 ? 'time' : 'daze';
@@ -1381,9 +1381,11 @@ export class Behaviours {
         turn.damping = 6;
       } else {
         // (the leg's muscles swing it; this only guides the foot to its spot, gently, so the
-        // whole body is not dragged by it and an obstacle can stop it)
-        pin.stiffness = fm * 500;
-        pin.maxForce = mode === 'reacting' ? 90 : 45;
+        // whole body is not dragged by it and an obstacle can stop it; up a stair the knee is
+        // lifted with a will)
+        const up = clamp((f.target[2] - f.lift[2]) / (0.25 * k), 0, 1);
+        pin.stiffness = fm * (500 + 1500 * up);
+        pin.maxForce = (mode === 'reacting' ? 90 : 45) + 250 * up;
         pin.damping = fm * 40;
         const pa = prevT.p[footBone]!;
         pin.targetVel[0] = (a[0] - pa[0]) * idt;
@@ -1499,7 +1501,8 @@ export class Behaviours {
     const k = this.k;
     for (let i = 0; i < 2; i++) {
       const f = feet[i]!;
-      if (f.planted || f.held || f.swing < 0.12 || f.swing > 0.85) continue;
+      // (still rolling off its toes, a foot against a riser is not caught: it lifts)
+      if (f.planted || f.held || f.swing < 0.2 || f.swing > 0.85) continue;
       const fb = this.body.parts[i === 0 ? B.footL : B.footR]!;
       const planned = this.plan.world.p[i === 0 ? H.footL : H.footR]!;
       const actual = pose.p[i === 0 ? H.footL : H.footR]!;
