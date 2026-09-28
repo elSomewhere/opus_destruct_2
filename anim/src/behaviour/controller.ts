@@ -549,9 +549,9 @@ export class Behaviours {
       this.carryRoot();
     }
     if (this.mode === 'lying' || this.mode === 'rising') ctl.holdFeet = true;
-    if (this.mode === 'falling' || this.mode === 'dead' || (this.mode === 'dying' && this.modeTime > this.dyingFor * 0.5)) {
+    if (this.mode === 'falling') {
       // the legs carry nothing now: loose, bent; the trunk curls a little
-      ctl.relaxLegs = this.mode === 'falling' ? smoothstep(0.05, 0.35, this.modeTime) : 1;
+      ctl.relaxLegs = smoothstep(0.05, 0.35, this.modeTime);
       ctl.fold += 0.15;
     }
 
@@ -653,8 +653,10 @@ export class Behaviours {
         const pelvisH = pose.p[H.pelvis]![2] - this.groundZ;
         const slow = Math.hypot(this.comVel[0], this.comVel[1], this.comVel[2]) < 0.7;
         this.lowFor = pelvisH < 0.42 * k && slow ? this.lowFor + dt : 0;
-        // (down and not going anywhere much: lying, whatever still rolls)
-        if (this.lowFor > 0.3 || (this.modeTime > 1.4 && pelvisH < 0.45 * k) || this.modeTime > 3) this.enterLying(pose);
+        // (down - the hips and the chest on the ground - is lying, whatever still slides)
+        const chestH = pose.p[H.chest]![2] - this.groundZ;
+        const down = pelvisH < 0.38 * k && chestH < 0.42 * k;
+        if (this.lowFor > 0.3 || (this.modeTime > 0.3 && down) || (this.modeTime > 1.4 && pelvisH < 0.45 * k) || this.modeTime > 3) this.enterLying(pose);
         break;
       }
       case 'lying': {
