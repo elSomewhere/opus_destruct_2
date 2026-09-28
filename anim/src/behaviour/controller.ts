@@ -385,7 +385,7 @@ export class Behaviours {
     if (this.physical) {
       const px = this.com[0], py = this.com[1], pz = this.com[2];
       this.body.com(this.com);
-      if (this.senseDt > 0 && this.hadCom) {
+      if (this.senseDt > 0 && this.hadCom && this.upset < 0.35) {
         // (from the frame's motion: the last substep's velocities carry the contacts' jitter)
         const a = 1 - Math.exp(-this.senseDt * 30);
         this.comVel[0] += ((this.com[0] - px) / this.senseDt - this.comVel[0]) * a;
@@ -549,6 +549,11 @@ export class Behaviours {
       this.carryRoot();
     }
     if (this.mode === 'lying' || this.mode === 'rising') ctl.holdFeet = true;
+    if (this.mode === 'falling' || this.mode === 'dead' || (this.mode === 'dying' && this.modeTime > this.dyingFor * 0.5)) {
+      // the legs carry nothing now: loose, bent; the trunk curls a little
+      ctl.relaxLegs = this.mode === 'falling' ? smoothstep(0.05, 0.35, this.modeTime) : 1;
+      ctl.fold += 0.15;
+    }
 
     // ---- reflexes and behaviours ----
     if (alive || this.mode === 'dying') {
@@ -648,7 +653,8 @@ export class Behaviours {
         const pelvisH = pose.p[H.pelvis]![2] - this.groundZ;
         const slow = Math.hypot(this.comVel[0], this.comVel[1], this.comVel[2]) < 0.7;
         this.lowFor = pelvisH < 0.42 * k && slow ? this.lowFor + dt : 0;
-        if (this.lowFor > 0.35 || this.modeTime > 3.5) this.enterLying(pose);
+        // (down and not going anywhere much: lying, whatever still rolls)
+        if (this.lowFor > 0.3 || (this.modeTime > 1.4 && pelvisH < 0.45 * k) || this.modeTime > 3) this.enterLying(pose);
         break;
       }
       case 'lying': {
@@ -768,9 +774,10 @@ export class Behaviours {
       return [tx, ty, this.groundZ];
     };
     if (swinging >= 0) {
-      // re-aim the swing
+      // re-aim the swing (and hurry it if things got worse)
       const f = feet[swinging]!;
-      const left = (1 - f.swing) / Math.max(1e-3, f.swingRate);
+      const urgency = clamp(err / (0.3 * k), 0, 1);
+      const left = Math.min((1 - f.swing) / Math.max(1e-3, f.swingRate), (1 - f.swing) * lerp(0.3, 0.14, urgency) / Math.max(0.6, legs));
       fp.step(swinging, plannedStep(swinging, left), left);
     } else if (err > margin && this.stepCooldown <= 0 && this.time >= this.snagUntil[0] && this.time >= this.snagUntil[1]) {
       // (a snagged foot: the other one has the weight and cannot go; the snag frees first)
@@ -814,10 +821,11 @@ export class Behaviours {
       if (i === 1 && plan.weapon && plan.weapon.kind !== 'knife' && plan.weapon.kind !== 'pistol') continue;
       const side = i === 0 ? -1 : 1;
       const sh = wp.p[i === 0 ? H.upperarmL : H.upperarmR]!;
+      // out to the side, a little forward, circling (no higher than the shoulder)
       const ph = this.time * 7 + i * 1.7;
-      const circle: V3 = [0, Math.cos(ph) * 0.12 * k * w, Math.sin(ph) * 0.12 * k * w];
-      const off = qrotate(chestQ, [side * 0.46 * k, 0.1 * k + circle[1], 0.05 * k + circle[2] + 0.12 * k * w]);
-      this.plan.control.arms[i] = { target: vadd(sh, off), rot: qmul(chestQ, qeuler(0, side * 1.4, 0)), pole: qrotate(chestQ, [side * 0.3, -0.5, -0.8]), weight: w * 0.9 };
+      const circle: V3 = [0, Math.cos(ph) * 0.1 * k * w, Math.sin(ph) * 0.08 * k * w];
+      const off = qrotate(chestQ, [side * 0.44 * k, 0.12 * k + circle[1], -0.08 * k + circle[2]]);
+      this.plan.control.arms[i] = { target: vadd(sh, off), rot: qmul(chestQ, qeuler(0, side * 1.4, 0)), pole: qrotate(chestQ, [side * 0.3, -0.5, -0.8]), weight: w * 0.8 };
     }
   }
 
@@ -1098,9 +1106,11 @@ export class Behaviours {
       case 'reacting':
         break;
       case 'falling':
-        legs = 0.45;
-        trunk = 0.75;
-        neck = 0.9;
+        // (braced for the ground, not fighting it)
+        legs = 0.35;
+        trunk = 0.55;
+        neck = 0.8;
+        arms = 0.9;
         break;
       case 'lying':
         base = this.conscious ? 0.22 : 0.06;

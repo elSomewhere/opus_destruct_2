@@ -145,6 +145,8 @@ export class PlanControl {
   pelvisHeight = false;
   /** No gait steps: the feet move only by balance steps. */
   holdFeet = false;
+  /** Legs loose (0..1): bent at hip and knee rather than reaching for the feet. */
+  relaxLegs = 0;
   /** How much care the steps get (obstacle clearance), 0..1. */
   care = 1;
   /** No idle picks (postures, fidgets) of the plan's own. */
@@ -162,6 +164,7 @@ export class PlanControl {
     this.pelvisWeight = 0;
     this.pelvisHeight = false;
     this.holdFeet = false;
+    this.relaxLegs = 0;
     this.care = 1;
     this.busy = false;
   }
@@ -947,6 +950,16 @@ export class MotionPlan {
       solveTwoBone(pose, this.fk, f.thigh, f.shin, f.foot, target, pole, 0.02, KNEE_REST);
       setModelRotation(pose, this.fk, f.foot, rot);
       pose.r[f.toe] = qx(fp.toe);
+      if (ctl.relaxLegs > 0) {
+        // legs that carry nothing (falling, thrown): loosely bent at hip and knee, whatever the
+        // feet were doing
+        const w = clamp(ctl.relaxLegs, 0, 1);
+        const sway = f.side * 0.12;
+        pose.r[f.thigh] = qnlerp(pose.r[f.thigh]!, qeuler(0.55, sway, -sway), w);
+        pose.r[f.shin] = qnlerp(pose.r[f.shin]!, qx(-1.0), w);
+        pose.r[f.foot] = qnlerp(pose.r[f.foot]!, qx(0.35), w);
+        this.fk.updateSubtree(pose, f.thigh);
+      }
       this.fk.updateBone(pose, f.toe);
     }
 
