@@ -376,3 +376,71 @@ TEST_CASE("fire: an extinguisher cools the sphere of a long piece, not all of it
   CHECK(f.w.piece_layer(id, f.fire->heat_layer(), {15, 1, 25}) <= 15);
   CHECK(f.w.piece_layer(id, f.fire->heat_layer(), {2, 1, 25}) >= 90);
 }
+
+TEST_CASE("fire: a turned timber wall (an oriented grid) burns as one of the world's, and sets the world's on fire") {
+  // a plank wall 3 m x 3 m of a grid turned 30 degrees, on the rock plate; beside it, a plank wall
+  // of the world grid its flames reach
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-40, -40, -4}, {40, 40, 0}, kRock);
+  box(g, {-12, 3, 0}, {12, 4, 24}, kWood);  // (the world's wall, 0.4 m from the grid's)
+  g.compact();
+  Fire f(std::move(g));
+  VoxelGrid wall;
+  wall.h = kH;
+  box(wall, {-12, 0, 0}, {12, 1, 24}, kWood);
+  wall.compact();
+  const f64 t = 0.5 * 30.0 * 3.14159265358979323846 / 180.0;
+  const GridId id = f.w.add_grid(GridFrame{V3{0.0, 0.0, 0.0}, Quat{0.0, 0.0, std::sin(t), std::cos(t)}}, std::move(wall));
+  REQUIRE(id != 0);
+  const i64 n0 = f.w.grid(id)->solid_count();
+  // lit at its foot
+  f.fire->ignite(f.w, f.w.grid_to_world(id, V3{0.0, 0.0, kH}), 0.3);
+  f.run(20.0);
+  const FireSystem::Stats s = f.fire->stats();
+  i64 burnt = 0, charred_high = 0;
+  const VoxelGrid& G = *f.w.grid(id);
+  for (i32 x = -12; x < 12; ++x)
+    for (i32 z = 0; z < 24; ++z) {
+      if (G.layer(f.fire->burn_layer(), {x, 0, z})) ++burnt;
+      if (z > 12 && G.layer(f.fire->burn_layer(), {x, 0, z})) ++charred_high;
+    }
+  i64 world_burnt = 0;
+  for (i32 x = -12; x < 12; ++x)
+    for (i32 z = 0; z < 24; ++z) world_burnt += f.w.layer(f.fire->burn_layer(), {x, 3, z}) ? 1 : 0;
+  MESSAGE("turned timber wall after 20 s: " << burnt << " of " << n0 << " voxels burning or burnt (" << charred_high
+                                             << " above 1.5 m), " << n0 - G.solid_count() << " gone; the world's wall beside it: "
+                                             << world_burnt << " voxels caught; grid hot " << s.grid_hot << ", burning " << s.grid_burning);
+  CHECK(burnt > 40);
+  CHECK(charred_high > 0);  // (it climbed)
+  CHECK(world_burnt > 0);   // (across the lattices)
+  // and put out
+  f.fire->extinguish(f.w, f.w.grid_to_world(id, V3{0.0, 0.0, 1.5}), 4.0);
+  f.run(1.0);
+  CHECK(f.fire->stats().grid_burning == 0);
+}
+
+TEST_CASE("fire: a burning floor of the world sets a turned crate of a grid on it alight") {
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-40, -40, -4}, {40, 40, 0}, kRock);
+  box(g, {-16, -16, 0}, {16, 16, 1}, kWood);  // (a timber floor)
+  g.compact();
+  Fire f(std::move(g));
+  VoxelGrid crate;
+  crate.h = kH;
+  box(crate, {-4, -4, 0}, {4, 4, 8}, kWood);
+  crate.compact();
+  const f64 t = 0.5 * 20.0 * 3.14159265358979323846 / 180.0;
+  const GridId id = f.w.add_grid(GridFrame{V3{0.0, 0.0, kH}, Quat{0.0, 0.0, std::sin(t), std::cos(t)}}, std::move(crate));
+  REQUIRE(id != 0);
+  f.fire->ignite(f.w, V3{1.2, 0.0, 0.0}, 0.4);  // (the floor beside it)
+  f.run(15.0);
+  i64 caught = 0;
+  const VoxelGrid& G = *f.w.grid(id);
+  for (i32 x = -4; x < 4; ++x)
+    for (i32 y = -4; y < 4; ++y)
+      for (i32 z = 0; z < 8; ++z) caught += G.layer(f.fire->burn_layer(), {x, y, z}) ? 1 : 0;
+  MESSAGE("a crate of a turned grid on a burning floor: " << caught << " voxels caught");
+  CHECK(caught > 0);
+}

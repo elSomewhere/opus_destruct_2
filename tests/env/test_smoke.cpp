@@ -177,3 +177,36 @@ TEST_CASE("env: every setting by name reads back what was set, within its range;
   CHECK_FALSE(e2.set("water.loads", 0.0));
   CHECK(e2.set("fire.enabled", 0.0));
 }
+
+TEST_CASE("smoke: a turned roof (an oriented grid) holds the smoke of a fire under it") {
+  // A fire under a concrete roof slab of a grid turned 25 degrees (4 m square, 3 m up, on four
+  // columns): the smoke gathers under it rather than rising through it.
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-48, -48, -4}, {48, 48, 0}, make_vox(MaterialId::Rock, true));
+  box(g, {-2, -2, 0}, {2, 2, 2}, make_vox(MaterialId::Wood, false));  // (the fuel)
+  g.compact();
+  Setup s(std::move(g));
+  VoxelGrid roof;
+  roof.h = 0.125;
+  const Vox conc = make_vox(MaterialId::Concrete, false);
+  box(roof, {-16, -16, 24}, {16, 16, 26}, conc);
+  for (i32 cx : {-16, 13})
+    for (i32 cy : {-16, 13}) box(roof, {cx, cy, 0}, {cx + 3, cy + 3, 24}, conc);
+  roof.compact();
+  const f64 t = 0.5 * 25.0 * 3.14159265358979323846 / 180.0;
+  REQUIRE(s.w.add_grid(GridFrame{V3{0.0, 0.0, 0.0}, Quat{0.0, 0.0, std::sin(t), std::cos(t)}}, std::move(roof)) != 0);
+  s.w.bake();
+  s.env.fire()->ignite(s.w, V3{0.0, 0.0, 0.1}, 0.3);
+  s.run(12.0);
+  const SmokeSystem& sm = *s.env.smoke();
+  f64 under = 0.0, above = 0.0;
+  for (f64 x = -1.5; x <= 1.5; x += 0.5)
+    for (f64 y = -1.5; y <= 1.5; y += 0.5) {
+      under += sm.density(s.w, V3{x, y, 2.6});
+      above += sm.density(s.w, V3{x, y, 4.0});
+    }
+  MESSAGE("smoke under a turned roof: " << under << " below it, " << above << " above it");
+  CHECK(under > 0.0);
+  CHECK(above < 0.25 * under);
+}

@@ -48,6 +48,12 @@ export class Player {
   private stepSmooth = 0;
   /** Generation counter: results of requests sent before a respawn are ignored. */
   private generation = 0;
+  /**
+   * What the player stands on moves them (a lift, a turntable: a kinematic body's grid): its
+   * velocity under their feet and its turn, from the last sweep.
+   */
+  private groundVel: Vec3 = [0, 0, 0];
+  private groundSpin = 0;
 
   spawn(pos: Vec3, dir: Vec3): void {
     this.spawnPos = [...pos];
@@ -65,6 +71,8 @@ export class Player {
     this.onGround = false;
     this.stepSmooth = 0;
     this.unsentDt = 0;
+    this.groundVel = [0, 0, 0];
+    this.groundSpin = 0;
     this.generation++;
   }
 
@@ -125,7 +133,10 @@ export class Player {
     if (this.inFlight || !engine.alive) return;
     const t = this.unsentDt;
     this.unsentDt = 0;
-    const move: Vec3 = [this.vel[0] * t, this.vel[1] * t, this.vel[2] * t];
+    // (riding: carried by the ground's motion, and turned with it)
+    const ride: Vec3 = this.onGround ? [this.groundVel[0] * t, this.groundVel[1] * t, this.groundVel[2] * t] : [0, 0, 0];
+    if (this.onGround && this.groundSpin !== 0) this.yaw += this.groundSpin * t;
+    const move: Vec3 = [this.vel[0] * t + ride[0], this.vel[1] * t + ride[1], this.vel[2] * t + ride[2]];
     const hw = PLAYER.width / 2;
     const min: Vec3 = [this.pos[0] - hw, this.pos[1] - hw, this.pos[2]];
     const max: Vec3 = [this.pos[0] + hw, this.pos[1] + hw, this.pos[2] + PLAYER.height];
@@ -169,5 +180,7 @@ export class Player {
     }
     this.onGround = res.onGround;
     if (this.onGround && this.vel[2] < 0) this.vel[2] = 0;
+    this.groundVel = res.onGround && res.groundVelocity ? [...res.groundVelocity] : [0, 0, 0];
+    this.groundSpin = res.onGround && res.groundAngular ? res.groundAngular[2] : 0;
   }
 }

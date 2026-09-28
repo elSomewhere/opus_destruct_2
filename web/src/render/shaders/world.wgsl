@@ -8,7 +8,7 @@ struct TexInfo {
 
 struct Object {
   model: mat4x4f,
-  params: vec4f, // x = opacity (dithered), y = displaced by the fields (1/0), zw unused
+  params: vec4f, // x = opacity (dithered), y = displaced by the fields (1/0), z = its voxel size (0: the frame's), w unused
 };
 
 // Displacement fields of running physics bubbles (fields.ts; v1 engines, v2 sends none): per
@@ -45,6 +45,10 @@ struct VertexOut {
   @location(5) debugValue: f32,
   @location(6) @interpolate(flat) tex: u32,
   @location(7) @interpolate(flat) debugId: u32, // the debug byte, not interpolated (fragment ids)
+  // (the per-voxel variation: in the object's own frame and voxel size, so it stays on a moving grid's voxels)
+  @location(8) local: vec3f,
+  @location(9) localNormal: vec3f,
+  @location(10) @interpolate(flat) cell: f32,
 };
 
 // Normalized texture coordinates of p in field k (w = 1 inside the field's texel box).
@@ -92,6 +96,9 @@ fn vs(v: VertexIn) -> VertexOut {
   o.debugValue = f32(v.packed >> 24u);
   o.debugId = v.packed >> 24u;
   o.tex = v.packed & 0xffffu;
+  o.local = p;
+  o.localNormal = v.normalAo.xyz;
+  o.cell = select(frame.zenith.w, object.params.z, object.params.z > 0.0);
   return o;
 }
 
@@ -150,7 +157,7 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
     let slot = select(15u, min(i.tex & 0xffu, 15u), i.tex != 0xffffu);
     base = frame.palette[slot].rgb;
     // Faint per-voxel variation keeps the voxel scale readable on flat colours.
-    let cell = floor((i.world - n * 0.01) / frame.zenith.w);
+    let cell = floor((i.local - normalize(i.localNormal) * 0.01) / i.cell);
     base *= 0.88 + 0.12 * hash3(cell);
   }
 
@@ -189,7 +196,7 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
   // Glowing voxels (0xFE00 + material: burning wood, red-hot metal): embers under the flames,
   // flickering per voxel.
   if ((i.tex & 0xff00u) == 0xfe00u && view == 0u) {
-    let cell = floor((i.world - n * 0.01) / frame.zenith.w);
+    let cell = floor((i.local - normalize(i.localNormal) * 0.01) / i.cell);
     let r = hash3(cell);
     let flick = 0.6 + 0.4 * sin(frame.eye.w * (5.0 + 6.0 * r) + r * 40.0);
     color = color * 0.35 + vec3f(1.7, 0.42, 0.07) * flick * (0.55 + 0.45 * hash3(cell + vec3f(7.0)));

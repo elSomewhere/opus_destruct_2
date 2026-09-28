@@ -175,6 +175,9 @@ void FireSystem::attach(World& w) {
 
 void FireSystem::on_load(World& w) {
   hot_.clear();
+  grid_hot_.clear();
+  grid_in_.clear();
+  grid_glow_changes_.clear();
   flames_.clear();
   glow_changes_.clear();
   piece_changes_.clear();
@@ -188,6 +191,17 @@ void FireSystem::on_load(World& w) {
   for (const auto& [k, c] : w.grid().chunks())
     if (!c.layer[size_t(heat_)].empty()) chunks.push_back(k);
   track_heat(w, chunks);
+}
+
+std::vector<GridChunk> FireSystem::take_grid_glow_changes() {
+  std::vector<GridChunk> out;
+  out.swap(grid_glow_changes_);
+  std::sort(out.begin(), out.end(), [](const GridChunk& a, const GridChunk& b) {
+    return a.grid != b.grid ? a.grid < b.grid : key3(a.chunk[0], a.chunk[1], a.chunk[2]) < key3(b.chunk[0], b.chunk[1], b.chunk[2]);
+  });
+  out.erase(std::unique(out.begin(), out.end(), [](const GridChunk& a, const GridChunk& b) { return a.grid == b.grid && a.chunk == b.chunk; }),
+            out.end());
+  return out;
 }
 
 void FireSystem::on_generated(World& w, const std::vector<u64>& chunks) {
@@ -325,6 +339,24 @@ void FireSystem::fire_step(World& w, f64 dt) {
   // pieces: their own fires, and heat across between them and the world
   std::vector<V3> heat_world;
   step_pieces(w, dt, heat_world);
+  // the oriented grids: their own fires; the world's and the pieces' flames reach into them (at
+  // the next step), theirs into the world (now) and each other (the next step)
+  if (!grid_hot_.empty() || !grid_in_.empty() || !w.grids().empty()) {
+    const size_t pieces_end = heat_world.size();
+    std::vector<V3> into;
+    for (const Flame& f : flames_) {
+      if (f.piece != 0) continue;
+      for (const Reach& r : kFlame) {
+        into.push_back(V3{f.pos.x + h * r.dx, f.pos.y + h * r.dy, f.pos.z + h * r.dz});
+        into.push_back(V3{f.heat, cfg_.flame_reach * r.w, 0.0});
+      }
+    }
+    into.insert(into.end(), heat_world.begin(), heat_world.begin() + static_cast<long>(pieces_end));
+    step_grids(w, dt, heat_world);
+    // (the grids' flames reach each other at the next step, the world's and the pieces' too)
+    into.insert(into.end(), heat_world.begin() + static_cast<long>(pieces_end), heat_world.end());
+    grid_in_.swap(into);
+  }
   for (size_t i = 0; i + 1 < heat_world.size(); i += 2) {
     const IVec3 p = voxel_at(heat_world[i], h);
     if (!in_voxel_range(p) || !vox_solid(g.vox(p))) continue;
@@ -579,6 +611,180 @@ void FireSystem::step_pieces(World& w, f64 dt, std::vector<V3>& heat_world) {
   if (piece_changes_.size() > 65536) piece_changes_.clear();  // (nobody takes them)
 }
 
+void FireSystem::step_grids(World& w, f64 dt, std::vector<V3>& heat_world) {
+  const f64 h = w.voxel_size();
+  const u8 quantum = static_cast<u8>(cfg_.damage_quantum);
+  const u8 glow = glow_units();
+  const std::vector<GridId> ids = w.grids();
+  st_.grid_hot = 0;
+  st_.grid_burning = 0;
+  // (the grids gone: their heat with them)
+  for (auto it = grid_hot_.begin(); it != grid_hot_.end();)
+    it = std::binary_search(ids.begin(), ids.end(), it->first) ? std::next(it) : grid_hot_.erase(it);
+  // the flames of the last step that reach into the grids (the static world's)
+  std::map<GridId, std::unordered_map<u64, f64>> in;
+  for (size_t i = 0; i + 1 < grid_in_.size(); i += 2) {
+    GridId g;
+    IVec3 v;
+    if (!w.in_range(grid_in_[i]) || !w.grid_voxel_at(grid_in_[i], &g, &v)) continue;
+    const f64 Tflame = grid_in_[i + 1].x, reach = grid_in_[i + 1].y;
+    const f64 Tq = w.layer(g, heat_, v) * kUnit;
+    if (Tq < Tflame) in[g][vkey(v)] += reach * dt * (Tflame - Tq);
+  }
+  grid_in_.clear();
+  Look world{w.grid()};
+  for (GridId gid : ids) {
+    auto hit = grid_hot_.find(gid);
+    auto iit = in.find(gid);
+    if ((hit == grid_hot_.end() || hit->second.empty()) && iit == in.end()) continue;
+    std::vector<u64>& hot = grid_hot_[gid];
+    const VoxelGrid& G = *w.grid(gid);
+    const f64 hg = G.h;
+    GridFrame fr;
+    w.grid_frame(gid, &fr);
+    Look g{G};
+    // "up" in the lattice: its axis nearest the world's
+    const V3 up = rotate_inv(fr.rot, V3{0, 0, 1});
+    int ua = 0;
+    for (int a = 1; a < 3; ++a)
+      if (std::abs(up[a]) > std::abs(up[ua])) ua = a;
+    const int us = up[ua] >= 0 ? 1 : -1;
+    auto world_of = [&](const IVec3& p) { return w.grid_to_world(gid, V3{hg * p[0], hg * p[1], hg * p[2]}); };
+    auto temp = [&](const IVec3& p) { return g.layer(heat_, p) * kUnit; };
+    std::unordered_map<u64, f64> D;
+    if (iit != in.end()) D = std::move(iit->second);
+    std::vector<LayerEdit> burn_edits, damage_edits;
+    std::vector<VoxelEdit> gone;
+    std::vector<u64> burning_keys;
+    auto damage = [&](const IVec3& p, f64 d01) {
+      const u8 d = static_cast<u8>(std::lround(254.0 * std::clamp(d01, 0.0, 1.0)));
+      const u8 cur = g.layer(World::kDamageLayer, p);
+      if (d > cur && (d - cur >= quantum || d == 254)) damage_edits.push_back({p, d});
+    };
+    for (u64 key : hot) {
+      const IVec3 p = unkey3(key);
+      const Vox v = g.vox(p);
+      if (!vox_solid(v)) continue;
+      const FireMaterial& m = mats_[size_t(vox_mat(v)) & 0x7F];
+      const f64 T = temp(p);
+      const V3 X = world_of(p);
+      if (w.in_range(X) && world.wet(water_, voxel_at(X, h))) {  // (quenched: the world's water there)
+        if (T > cfg_.quench_c) D[key] += cfg_.quench_c - T;
+        continue;
+      }
+      const u8 burnt = g.layer(burn_, p);
+      const bool burning = m.combustible && T >= ignition(m, key) && g.exposed(p);
+      f64 Tsrc = T;
+      f64 d01 = m.weaken_c > 0.0 && T > m.weaken_c ? (T - m.weaken_c) / std::max(1.0, m.gone_c - m.weaken_c) : 0.0;
+      if (burning) {
+        ++st_.grid_burning;
+        burning_keys.push_back(key);
+        if (!burnt) ++st_.ignited;
+        D[key] += m.flame_c - T;
+        Tsrc = m.flame_c;
+        const u32 b = std::max<u32>(1, burnt + dither(255.0 * dt / burn_time(m, key), key));
+        if (b >= 255) {
+          gone.push_back({p, kAir});
+          ++st_.burnt_out;
+        } else {
+          burn_edits.push_back({p, static_cast<u8>(b)});
+          d01 = std::max(d01, m.char_damage * b / 255.0);
+        }
+        flames_.push_back({X, static_cast<f32>(m.flame_c), 0});
+        // its flame: the lattice's exposed solids above it, and the other lattices' there
+        for (const Reach& r : kFlame) {
+          int o[3];
+          o[ua] = us * r.dz;
+          o[(ua + 1) % 3] = r.dx;
+          o[(ua + 2) % 3] = r.dy;
+          const IVec3 q{p[0] + o[0], p[1] + o[1], p[2] + o[2]};
+          if (!vox_solid(g.vox(q))) continue;
+          const f64 Tq = temp(q);
+          if (Tq >= m.flame_c || !g.exposed(q)) continue;
+          D[vkey(q)] += cfg_.flame_reach * r.w * dt * (m.flame_c - Tq);
+        }
+        for (const Reach& r : kFlame) {
+          heat_world.push_back(V3{X.x + h * r.dx, X.y + h * r.dy, X.z + h * r.dz});
+          heat_world.push_back(V3{m.flame_c, cfg_.flame_reach * r.w, 0.0});
+        }
+      } else {
+        D[key] -= std::min(T, cooling(m, T, dt));
+      }
+      for (const auto& f : kFace) {
+        const IVec3 q{p[0] + f[0], p[1] + f[1], p[2] + f[2]};
+        const Vox vq = g.vox(q);
+        if (!vox_solid(vq)) continue;
+        const f64 Tq = temp(q);
+        if (Tq >= Tsrc) continue;
+        const f64 k = 0.5 * std::min(m.conduct, mats_[size_t(vox_mat(vq)) & 0x7F].conduct) * dt * (Tsrc - Tq);
+        D[vkey(q)] += k;
+        if (!burning) D[key] -= k;
+      }
+      if (d01 > 0.0 && !(burning && !gone.empty() && gone.back().p == p)) damage(p, d01);
+    }
+    // new temperatures (in key order)
+    std::vector<u64> keys;
+    keys.reserve(D.size());
+    for (const auto& [k, d] : D) keys.push_back(k);
+    std::sort(keys.begin(), keys.end());
+    std::vector<u64> all;
+    all.reserve(keys.size() + hot.size());
+    std::merge(keys.begin(), keys.end(), hot.begin(), hot.end(), std::back_inserter(all));
+    all.erase(std::unique(all.begin(), all.end()), all.end());
+    std::sort(gone.begin(), gone.end(), [](const VoxelEdit& a, const VoxelEdit& b) { return vkey(a.p) < vkey(b.p); });
+    auto burnt_away = [&](u64 k) {
+      const auto it = std::lower_bound(gone.begin(), gone.end(), k, [](const VoxelEdit& e, u64 v) { return vkey(e.p) < v; });
+      return it != gone.end() && vkey(it->p) == k;
+    };
+    std::vector<LayerEdit> heat_edits;
+    std::vector<std::pair<u8, u64>> next;
+    for (u64 k : all) {
+      const IVec3 p = unkey3(k);
+      const auto it = D.find(k);
+      const u8 old = g.layer(heat_, p);
+      const f64 T = old * kUnit + (it == D.end() ? 0.0 : it->second);
+      const bool solid = vox_solid(g.vox(p)) && !burnt_away(k);
+      const u8 u = solid ? dither(std::max(0.0, T) / kUnit, k ^ (static_cast<u64>(gid) << 40)) : 0;
+      if (u != old) {
+        heat_edits.push_back({p, u});
+        if ((old >= glow) != (u >= glow)) grid_glow_changes_.push_back(GridChunk{gid, chunk_of(p)});
+      }
+      if (u) next.push_back({u, k});
+    }
+    // (budget: a grid keeps its hottest max_hot)
+    if (static_cast<i64>(next.size()) > cfg_.max_hot) {
+      std::sort(burning_keys.begin(), burning_keys.end());
+      auto rank = [&](const std::pair<u8, u64>& e) {
+        const bool b = std::binary_search(burning_keys.begin(), burning_keys.end(), e.second);
+        return std::make_tuple(b ? 1 : 0, e.first, mix(e.second));
+      };
+      const size_t keep = static_cast<size_t>(cfg_.max_hot);
+      std::nth_element(next.begin(), next.begin() + static_cast<long>(keep), next.end(), [&](const auto& a, const auto& b) { return rank(a) > rank(b); });
+      for (size_t i = keep; i < next.size(); ++i) heat_edits.push_back({unkey3(next[i].second), 0});
+      st_.dropped += static_cast<i64>(next.size() - keep);
+      next.resize(keep);
+    }
+    hot.clear();
+    for (const auto& [u, k] : next) hot.push_back(k);
+    std::sort(hot.begin(), hot.end());
+    st_.grid_hot += static_cast<i32>(hot.size());
+    std::sort(heat_edits.begin(), heat_edits.end(), [](const LayerEdit& a, const LayerEdit& b) { return vkey(a.p) < vkey(b.p); });
+    w.set_layer(gid, heat_, heat_edits);
+    w.set_layer(gid, burn_, burn_edits);
+    w.set_layer(gid, World::kDamageLayer, damage_edits);
+    // burnt out: gone, chunk by chunk
+    std::sort(gone.begin(), gone.end(), [](const VoxelEdit& a, const VoxelEdit& b) { return ckey(a.p) < ckey(b.p) || (ckey(a.p) == ckey(b.p) && vkey(a.p) < vkey(b.p)); });
+    for (size_t i = 0; i < gone.size();) {
+      size_t j = i + 1;
+      while (j < gone.size() && ckey(gone[j].p) == ckey(gone[i].p)) ++j;
+      w.set_voxels(gid, std::vector<VoxelEdit>(gone.begin() + static_cast<long>(i), gone.begin() + static_cast<long>(j)));
+      i = j;
+    }
+    if (hot.empty()) grid_hot_.erase(gid);
+  }
+  if (grid_glow_changes_.size() > 65536) grid_glow_changes_.clear();  // (nobody takes them)
+}
+
 void FireSystem::admit(std::vector<std::pair<f64, u64>>& cand) {
   // (nearest first, while the budget has room)
   std::sort(cand.begin(), cand.end());
@@ -631,6 +837,34 @@ void FireSystem::heat_sphere(World& w, const V3& pos, f64 radius, f64 celsius, b
   for (const auto& [d, k] : cand) in.insert(k);
   edits.erase(std::remove_if(edits.begin(), edits.end(), [&](const LayerEdit& e) { return !in.count(vkey(e.p)); }), edits.end());
   w.set_layer(heat_, edits);
+  // the oriented grids' voxels in the sphere (a sphere in a grid's lattice too)
+  for (GridId gid : w.grids()) {
+    const VoxelGrid& G = *w.grid(gid);
+    const f64 hg = G.h;
+    const V3 L = w.world_to_grid(gid, pos);
+    const i32 Rg = std::min(kMaxReach * 4, static_cast<i32>(std::ceil(radius / hg)));
+    const IVec3 cg = voxel_at(L, hg);
+    std::vector<LayerEdit> ge;
+    std::vector<u64>& hot = grid_hot_[gid];
+    const size_t before = hot.size();
+    for (i32 x = cg[0] - Rg; x <= cg[0] + Rg; ++x)
+      for (i32 y = cg[1] - Rg; y <= cg[1] + Rg; ++y)
+        for (i32 z = cg[2] - Rg; z <= cg[2] + Rg; ++z) {
+          if (norm(V3{hg * x, hg * y, hg * z} - L) > radius) continue;
+          const Vox v = G.get(x, y, z);
+          if (!vox_solid(v)) continue;
+          const u8 u = target(v);
+          if (G.layer(heat_, {x, y, z}) < u) ge.push_back({{x, y, z}, u});
+          hot.push_back(key3(x, y, z));
+        }
+    if (hot.size() == before) {
+      if (hot.empty()) grid_hot_.erase(gid);
+      continue;
+    }
+    std::sort(hot.begin(), hot.end());
+    hot.erase(std::unique(hot.begin(), hot.end()), hot.end());
+    w.set_layer(gid, heat_, ge);
+  }
   // pieces in the sphere
   for (const PieceState& ps : w.pieces()) {
     const Body* b = w.piece(ps.id);
@@ -662,6 +896,18 @@ void FireSystem::extinguish(World& w, const V3& pos, f64 radius) {
     if (w.layer(heat_, p) > u) edits.push_back({p, u});
   }
   w.set_layer(heat_, edits);
+  // the oriented grids' hot voxels in the sphere
+  for (const auto& [gid, hot] : grid_hot_) {
+    const VoxelGrid* G = w.grid(gid);
+    if (!G) continue;
+    std::vector<LayerEdit> ge;
+    for (u64 k : hot) {
+      const IVec3 p = unkey3(k);
+      if (norm(w.grid_to_world(gid, V3{G->h * p[0], G->h * p[1], G->h * p[2]}) - pos) > radius) continue;
+      if (G->layer(heat_, p) > u) ge.push_back({p, u});
+    }
+    w.set_layer(gid, heat_, ge);
+  }
   for (const PieceState& ps : w.pieces()) {
     const Body* b = w.piece(ps.id);
     if (norm(ps.pos - pos) > radius + b->radius) continue;
@@ -701,14 +947,20 @@ std::vector<i64> FireSystem::take_piece_changes() {
 }
 
 i64 FireSystem::memory_bytes() const {
-  return static_cast<i64>(hot_.capacity() * sizeof(u64) + flames_.capacity() * sizeof(Flame) + glow_changes_.capacity() * sizeof(u64) +
-                          piece_changes_.capacity() * sizeof(i64) + sizeof(*this));
+  i64 grids = static_cast<i64>(grid_in_.capacity() * sizeof(V3) + grid_glow_changes_.capacity() * sizeof(GridChunk));
+  for (const auto& [g, hot] : grid_hot_) grids += static_cast<i64>(hot.capacity() * sizeof(u64) + 64);
+  return grids + static_cast<i64>(hot_.capacity() * sizeof(u64) + flames_.capacity() * sizeof(Flame) + glow_changes_.capacity() * sizeof(u64) +
+                                  piece_changes_.capacity() * sizeof(i64) + sizeof(*this));
 }
 
 u64 FireSystem::state_hash() const {
   u64 hsh = 1469598103934665603ull;
   auto add = [&](u64 v) { hsh = (hsh ^ v) * 1099511628211ull; };
   for (u64 k : hot_) add(k);
+  for (const auto& [g, hot] : grid_hot_) {
+    add(0x47524944ull ^ g);
+    for (u64 k : hot) add(k);
+  }
   add(static_cast<u64>(steps_));
   u64 cb;
   std::memcpy(&cb, &clock_, sizeof cb);

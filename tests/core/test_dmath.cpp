@@ -5,7 +5,7 @@
 #include <cstdio>
 
 #include "doctest.h"
-#include "svx/game/dmath.hpp"
+#include "svx/base/dmath.hpp"
 
 using namespace svx;
 

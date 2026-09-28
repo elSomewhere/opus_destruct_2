@@ -3,7 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
-#include "svx/game/dmath.hpp"
+#include "svx/base/dmath.hpp"
 
 namespace svx::doom {
 

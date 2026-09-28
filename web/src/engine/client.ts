@@ -25,6 +25,9 @@ import type { EngineKind } from './select.ts';
 export interface CollideResult {
   move: Vec3;
   onGround: boolean;
+  /** (onGround) the grid it stands on (0 the world grid) and its velocity under the box. */
+  ground?: number;
+  groundVelocity?: Vec3;
 }
 
 interface Pending<T> {
@@ -190,7 +193,10 @@ export class EngineClient {
     } else if (data.type === 'collideResult') {
       const p = this.collides.get(data.id);
       this.collides.delete(data.id);
-      p?.resolve({ move: data.move, onGround: data.onGround });
+      const r: CollideResult = { move: data.move, onGround: data.onGround };
+      if (data.ground !== undefined) r.ground = data.ground;
+      if (data.groundVelocity) r.groundVelocity = data.groundVelocity;
+      p?.resolve(r);
     } else if (data.type === 'error' && data.fatal) {
       this.fail(new Error(data.message), data);
       return;

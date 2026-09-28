@@ -5,17 +5,21 @@
  * Bind groups: group 0 = frame uniforms + texture atlas + displacement fields (shared by all
  * pipelines); group 1 = per-object uniforms (model matrix, opacity, displaced flag) with
  * dynamic offsets: slot 0 is the identity used by chunks (displaced by the fields), slots
- * 1..MAX_ISLANDS belong to islands (each keeps its slot; only changed slots are uploaded).
+ * 1..MAX_ISLANDS belong to islands and the next MAX_GRIDS to the oriented grids (each keeps its
+ * slot; only changed slots are uploaded).
  */
+import type { GridFrames } from '../engine/gridframes.ts';
 import type { TextureInfo, Vec3 } from '../engine/protocol.ts';
 import { DebugView, Material, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { GpuAtlas } from './atlas.ts';
 import { ChunkStore } from './chunks.ts';
 import { FIELD_UNIFORM_FLOATS, FieldStore, MAX_FIELDS } from './fields.ts';
 import { initWebGpu, type GpuContext } from './gpu.ts';
+import { GridRenderer } from './grids.ts';
 import { IslandRenderer } from './islands.ts';
 import { cross, frustumPlanes, mat4, mat4LookDir, mat4Multiply, mat4PerspectiveReversedInfinite, normalize } from './math.ts';
 import { ParticleSystem } from './particles.ts';
+import { RopeRenderer } from './ropes.ts';
 import frameWgsl from './shaders/frame.wgsl?raw';
 import particlesWgsl from './shaders/particles.wgsl?raw';
 import skyWgsl from './shaders/sky.wgsl?raw';
@@ -29,6 +33,8 @@ const FRAME_FLOATS = 16 + 8 * 4 + 16 * 4;
 const OBJECT_BYTES = 80; // mat4 + vec4
 /** Detached pieces drawn at once (the engine keeps up to ~3000 rigid pieces plus fading ones). */
 const MAX_ISLANDS = 4096;
+/** Oriented grids drawn at once (docs/GRIDS.md): each has a slot of its own. */
+const MAX_GRIDS = 1024;
 const MAX_VIEW_DISTANCE = 600;
 
 export interface Camera {
@@ -48,11 +54,16 @@ export interface FrameInputs {
   flashIntensity: number;
   /** Voxel pitch in metres (drives the untextured per-voxel variation). */
   voxelSize: number;
+  /** The oriented grids' frames (their chunks are drawn with them), placed for this frame. */
+  gridFrames?: GridFrames;
 }
 
 export interface RenderStats {
   chunksDrawn: number;
   chunksTotal: number;
+  /** The oriented grids' chunks drawn and held. */
+  gridChunksDrawn: number;
+  gridChunks: number;
   triangles: number;
   islands: number;
   islandsDrawn: number;
@@ -93,6 +104,8 @@ export class Renderer {
   /** Water surface meshes (the engine's water), drawn translucent after the opaque world. */
   readonly water: ChunkStore;
   readonly islands: IslandRenderer;
+  readonly grids: GridRenderer;
+  readonly ropes: RopeRenderer;
   readonly particles: ParticleSystem;
   readonly fields: FieldStore;
   private readonly canvas: HTMLCanvasElement;
@@ -139,9 +152,9 @@ export class Renderer {
       size: FRAME_FLOATS * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    // one slot per object at the dynamic-offset alignment: (1 + MAX_ISLANDS) x 256 B = 1 MB
+    // one slot per object at the dynamic-offset alignment: (1 + MAX_ISLANDS + MAX_GRIDS) x 256 B
     this.objectStride = Math.max(256, device.limits.minUniformBufferOffsetAlignment);
-    this.objectData = new Float32Array(((1 + MAX_ISLANDS) * this.objectStride) / 4);
+    this.objectData = new Float32Array(((1 + MAX_ISLANDS + MAX_GRIDS) * this.objectStride) / 4);
     this.objectBuffer = device.createBuffer({
       label: 'object uniforms',
       size: this.objectData.byteLength,
@@ -312,6 +325,8 @@ export class Renderer {
     this.chunks = new ChunkStore(device);
     this.water = new ChunkStore(device);
     this.islands = new IslandRenderer(device, MAX_ISLANDS);
+    this.grids = new GridRenderer(device, 1 + MAX_ISLANDS, MAX_GRIDS);
+    this.ropes = new RopeRenderer(device);
     this.particles = new ParticleSystem(device);
   }
 
@@ -336,6 +351,8 @@ export class Renderer {
     this.chunks.clear();
     this.water.clear();
     this.islands.clear();
+    this.grids.clear();
+    this.ropes.clear();
     this.particles.clear();
     this.fields.clear();
   }
@@ -430,6 +447,19 @@ export class Renderer {
       lo = Math.min(lo, isl.slot);
       hi = Math.max(hi, isl.slot);
     }
+    // (the grids' slots: their frames, and their voxel size for the per-voxel variation)
+    if (input.gridFrames) this.grids.update(input.gridFrames);
+    for (const g of this.grids.list) {
+      if (!g.dirty) continue;
+      g.dirty = false;
+      const base = g.slot * stride;
+      o.set(g.model, base);
+      o[base + 16] = 1;
+      o[base + 17] = 0;
+      o[base + 18] = g.h;
+      lo = Math.min(lo, g.slot);
+      hi = Math.max(hi, g.slot);
+    }
     if (hi >= lo) this.device.queue.writeBuffer(this.objectBuffer, lo * this.objectStride, o, lo * stride, (hi - lo + 1) * stride);
 
     const particleCount = this.particles.upload();
@@ -465,7 +495,12 @@ export class Renderer {
     const fields = this.fields;
     const drawn = this.chunks.draw(pass, this.planes, cam.eye, MAX_VIEW_DISTANCE, fields.count > 0 ? (mn, mx) => fields.inflation(mn, mx) : undefined);
     const pieces = this.islands.draw(pass, this.objectBindGroup, this.objectStride, this.planes, cam.eye, MAX_VIEW_DISTANCE);
-    let triangles = drawn.triangles + pieces.triangles;
+    const grids = this.grids.draw(pass, this.objectBindGroup, this.objectStride, this.planes, cam.eye, MAX_VIEW_DISTANCE);
+    let triangles = drawn.triangles + pieces.triangles + grids.triangles;
+    if (this.ropes.count > 0) {
+      pass.setBindGroup(1, this.objectBindGroup, [0]);
+      triangles += this.ropes.draw(pass);
+    }
     if (this.water.count > 0) {
       pass.setPipeline(this.waterPipeline);
       triangles += this.water.draw(pass, this.planes, cam.eye, MAX_VIEW_DISTANCE, undefined, true).triangles;
@@ -482,11 +517,13 @@ export class Renderer {
     return {
       chunksDrawn: drawn.drawn,
       chunksTotal: this.chunks.count,
+      gridChunksDrawn: grids.drawn,
+      gridChunks: this.grids.count,
       triangles,
       islands: this.islands.count,
       islandsDrawn: pieces.drawn,
       particles: particleCount,
-      gpuMB: (this.chunks.bytes + this.water.bytes + this.atlas.bytes) / (1024 * 1024),
+      gpuMB: (this.chunks.bytes + this.grids.bytes + this.water.bytes + this.atlas.bytes) / (1024 * 1024),
       width,
       height,
     };

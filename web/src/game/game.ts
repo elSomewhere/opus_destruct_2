@@ -3,6 +3,7 @@
  * loop (input -> player -> weapons -> effects -> render -> HUD) and owns the UI.
  */
 import type { EngineClient } from '../engine/client.ts';
+import { GridFrames } from '../engine/gridframes.ts';
 import type { DebugView, EngineEvent, EngineParams, EngineStats, ProceduralKind, Vec3, WorldInfo } from '../engine/protocol.ts';
 import type { Renderer, RenderStats } from '../render/renderer.ts';
 import { Hud } from '../ui/hud.ts';
@@ -36,6 +37,8 @@ export class Game {
   private readonly input: Input;
   private readonly player = new Player();
   private readonly occupancy = new OccupancyStore();
+  /** The oriented grids' places: drawn and felt where they are (interpolated when they move). */
+  private readonly gridFrames = new GridFrames();
   private readonly effects: Effects;
   private readonly weapons: Weapons;
   private readonly hud: Hud;
@@ -87,6 +90,7 @@ export class Game {
           .catch((err: unknown) => this.overlay.toast(`Could not read ${file.name}: ${String(err)}`, 'error'));
       },
     });
+    this.occupancy.setFrames(this.gridFrames);
     this.input = new Input(opts.canvas, (locked) => {
       this.overlay.setPrompt(!locked && this.info !== null);
       this.settings.setVisible(!locked);
@@ -123,6 +127,7 @@ export class Game {
     // keeps the view clean if one does not.
     this.renderer.clearWorld();
     this.occupancy.clear();
+    this.gridFrames.clear();
     this.effects.setFlames(new Float32Array(0));
     this.effects.setSmoke(new Float32Array(0));
     this.overlay.setLoading(text, 0.05);
@@ -152,14 +157,25 @@ export class Game {
       this.overlay.setPrompt(!this.input.locked);
     });
     e.on('chunkMeshes', (msg) => {
-      for (const m of msg.meshes) this.renderer.chunks.upsert(m);
+      for (const m of msg.meshes) {
+        if (m.grid !== undefined) this.renderer.grids.upsert(m);
+        else this.renderer.chunks.upsert(m);
+      }
       if (msg.fields) this.renderer.fields.set(msg.fields);
       if (this.info && this.meshesSinceReady === 0) this.overlay.setLoading(null);
       this.meshesSinceReady += msg.meshes.length;
     });
     e.on('chunkRemoved', (msg) => {
-      for (const k of msg.keys) this.renderer.chunks.remove(k);
+      for (const k of msg.keys) if (!this.renderer.grids.remove(k)) this.renderer.chunks.remove(k);
     });
+    e.on('grids', (msg) => {
+      this.gridFrames.apply(msg.frames, msg.removed, performance.now() / 1000);
+      for (const id of msg.removed) {
+        this.renderer.grids.removeGrid(id);
+        this.occupancy.removeGrid(id);
+      }
+    });
+    e.on('joints', (msg) => this.renderer.ropes.set(msg.joints));
     e.on('events', (msg) => this.handleEvents(msg.list));
     e.on('occupancy', (msg) => this.occupancy.apply(msg));
     e.on('debris', (msg) => this.renderer.islands.applyDebris(msg.poses, performance.now() / 1000));
@@ -244,6 +260,8 @@ export class Game {
       this.player.look(dx, dy);
       this.handleKeys();
     }
+    // (the moving grids where they are drawn: the player feels them there too)
+    this.gridFrames.advance(t / 1000);
     this.player.update(dt, this.input, this.engine, this.occupancy);
     if (this.info && this.player.pos[2] < this.info.bounds.min[2] - 30) this.player.respawn(); // kill plane
 
@@ -274,6 +292,7 @@ export class Game {
       flashPos: this.effects.flashPos,
       flashIntensity: this.effects.flashIntensity,
       voxelSize: this.voxelSize,
+      gridFrames: this.gridFrames,
     });
     this.hud.setMuzzleFlash(this.effects.muzzle > 0);
     if (t - this.lastHud > HUD_INTERVAL_MS) {

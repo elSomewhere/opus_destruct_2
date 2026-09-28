@@ -417,3 +417,167 @@ TEST_CASE("capi: an oriented grid on the world grid, its events, pieces of two s
   CHECK(s.grids == 0);
   svxc_destroy(w);
 }
+
+TEST_CASE("capi: grids of their own voxel size and priority, moved; a kinematic lift carrying a box a controller rides") {
+  svxc_world* w = svxc_create(0.125);
+  // the level: 8 m of rock ground, a lift (a 2 m deck held by its drive, 0.25 m up)
+  std::vector<uint8_t> g(64 * 64 * 4, svxc_vox(SVXC_ROCK, 1));
+  svxc_load_box(w, g.data(), 64, 64, 4, -32, -32, -4);
+  const double p0[3] = {0.0, 0.0, 0.25}, q0[4] = {0, 0, 0, 1};
+  const uint32_t lift = svxc_add_kinematic(w, p0, q0, 1);
+  REQUIRE(lift != 0);
+  std::vector<uint8_t> deck(16 * 16 * 2, svxc_vox(SVXC_STEEL, 1));
+  svxc_grid_desc dd{};
+  dd.rot[3] = 1.0;
+  dd.body = lift;
+  dd.base = 1;
+  const uint32_t dg = svxc_add_grid_desc(w, deck.data(), 16, 16, 2, -8, -8, 0, &dd);
+  REQUIRE(dg != 0);
+  CHECK(svxc_grid_body(w, dg) == lift);
+  CHECK(svxc_bake(w) == 1);
+  // a fine grid (0.0625 m) of priority 2, of this session
+  std::vector<uint8_t> blk(8 * 8 * 8, svxc_vox(SVXC_STEEL, 1));
+  svxc_grid_desc d{};
+  d.origin[0] = 2.0;
+  d.origin[2] = 0.5;
+  d.rot[3] = 1.0;
+  d.voxel_size = 0.0625;
+  d.priority = 2;
+  d.base = 0;
+  const uint32_t fine = svxc_add_grid_desc(w, blk.data(), 8, 8, 8, 0, 0, 0, &d);
+  REQUIRE(fine != 0);
+  CHECK(svxc_grid_voxel_size(w, fine) == 0.0625);
+  CHECK(svxc_grid_priority(w, fine) == 2);
+  CHECK(svxc_grid_body(w, fine) == 0);
+  const double o2[3] = {3.0, 0.0, 0.5}, r2[4] = {0, 0, 0, 1};
+  CHECK(svxc_set_grid_frame(w, fine, o2, r2) == 1);
+  double at[3], rot[4];
+  REQUIRE(svxc_grid_frame(w, fine, at, rot) == 1);
+  CHECK(at[0] == 3.0);
+  int moved = 0;
+  for (int i = 0, n = svxc_poll_events(w); i < n; ++i) {
+    svxc_event e;
+    svxc_event_at(w, i, &e);
+    moved += e.kind == SVXC_GRID_MOVED && e.id == fine ? 1 : 0;
+  }
+  CHECK(moved == 1);
+  uint32_t ids[4];
+  CHECK(svxc_kinematics(w, ids, 4) == 1);
+  CHECK(ids[0] == lift);
+  const double up[3] = {0.0, 0.0, 0.5}, none[3] = {0, 0, 0};
+  REQUIRE(svxc_set_kinematic_velocity(w, lift, up, none) == 1);
+  for (int t = 0; t < 60; ++t) svxc_tick(w);
+  double kp[3], kv[3];
+  REQUIRE(svxc_kinematic(w, lift, kp, nullptr, kv, nullptr) == 1);
+  CHECK(kp[2] == doctest::Approx(0.75).epsilon(1e-9));
+  CHECK(kv[2] == doctest::Approx(0.5).epsilon(1e-9));
+  double gv[3];
+  const double pt[3] = {0.5, 0.0, 0.9};
+  svxc_grid_velocity(w, dg, pt, gv);
+  CHECK(gv[2] == doctest::Approx(0.5).epsilon(1e-9));
+  // a controller's box standing on the deck: it rides it
+  const double mn[3] = {-0.2, -0.2, 0.75 + 0.1875 + 0.01}, mx[3] = {0.2, 0.2, 0.75 + 0.1875 + 1.8}, fall[3] = {0.0, 0.0, -0.1};
+  svxc_collision c;
+  svxc_collide_ex(w, mn, mx, fall, &c);
+  CHECK(c.on_ground == 1);
+  CHECK(c.ground == dg);
+  CHECK(c.ground_velocity[2] == doctest::Approx(0.5).epsilon(1e-9));
+  svxc_sweep_hit sh;
+  REQUIRE(svxc_sweep_ex(w, mn, mx, fall, &sh) == 1);
+  CHECK(sh.grid == dg);
+  CHECK(sh.velocity[2] == doctest::Approx(0.5).epsilon(1e-9));
+  // saved and restored with its motion (the level makes the lift again)
+  size_t n = 0;
+  const uint8_t* bytes = svxc_save_delta(w, &n);
+  const std::vector<uint8_t> delta(bytes, bytes + n);
+  svxc_world* w2 = svxc_create(0.125);
+  svxc_load_box(w2, g.data(), 64, 64, 4, -32, -32, -4);
+  REQUIRE(svxc_add_kinematic(w2, p0, q0, 1) == lift);
+  REQUIRE(svxc_add_grid_desc(w2, deck.data(), 16, 16, 2, -8, -8, 0, &dd) == dg);
+  CHECK(svxc_bake(w2) == 1);
+  REQUIRE(svxc_load_delta(w2, delta.data(), delta.size()) == 0);
+  double kp2[3], kv2[3];
+  REQUIRE(svxc_kinematic(w2, lift, kp2, nullptr, kv2, nullptr) == 1);
+  CHECK(kp2[2] == kp[2]);
+  CHECK(kv2[2] == kv[2]);
+  CHECK(svxc_grid_voxel_size(w2, fine) == 0.0625);
+  CHECK(svxc_state_hash(w2) == svxc_state_hash(w));
+  svxc_destroy(w2);
+  // released, it falls as a piece
+  REQUIRE(svxc_remove_kinematic(w, lift, 1) == 1);
+  CHECK(svxc_kinematics(w, ids, 4) == 0);
+  CHECK(svxc_poll_pieces(w) == 1);
+  svxc_destroy(w);
+}
+
+TEST_CASE("capi: joints - a hinged block swinging, its state, a motor, breaking") {
+  svxc_world* w = svxc_create(0.125);
+  std::vector<uint8_t> g(64 * 64 * 4, svxc_vox(SVXC_ROCK, 1));
+  svxc_load_box(w, g.data(), 64, 64, 4, -32, -32, -4);
+  CHECK(svxc_bake(w) == 1);
+  // a 0.5 m wooden block of this session, hinged at its edge to the world about x
+  std::vector<uint8_t> blk(4 * 4 * 4, svxc_vox(SVXC_WOOD, 0));
+  const double o[3] = {0.0, 0.0, 3.0}, r[4] = {0, 0, 0, 1};
+  const uint32_t bg = svxc_add_grid(w, blk.data(), 4, 4, 4, -2, 0, -2, o, r, 0);
+  REQUIRE(bg != 0);
+  svxc_joint_desc d;
+  svxc_joint_defaults(&d);
+  CHECK(d.length == -1.0);
+  d.type = SVXC_JOINT_HINGE;
+  d.a.kind = SVXC_ANCHOR_WORLD;
+  d.b.kind = SVXC_ANCHOR_GRID;
+  d.b.id = bg;
+  for (int k = 0; k < 3; ++k) d.a.point[k] = d.b.point[k] = 0.0;
+  d.a.point[1] = d.b.point[1] = -0.0625;
+  d.a.point[2] = d.b.point[2] = 3.0;
+  d.axis[0] = 1.0;
+  d.axis[2] = 0.0;
+  const uint32_t j = svxc_add_joint(w, &d);
+  REQUIRE(j != 0);
+  uint32_t ids[4];
+  CHECK(svxc_joints(w, ids, 4) == 1);
+  for (int t = 0; t < 30; ++t) svxc_tick(w);
+  svxc_joint_state s;
+  REQUIRE(svxc_joint(w, j, &s) == 1);
+  CHECK(s.type == SVXC_JOINT_HINGE);
+  CHECK(s.piece_b != 0);
+  CHECK(std::abs(s.value) > 0.2);  // (it swung down about its hinge)
+  // a motor holds it level against its weight
+  CHECK(svxc_set_joint_motor(w, j, 1, 0.0, 1e5) == 1);
+  for (int t = 0; t < 30; ++t) svxc_tick(w);
+  svxc_joint_state s2;
+  REQUIRE(svxc_joint(w, j, &s2) == 1);
+  for (int t = 0; t < 30; ++t) svxc_tick(w);
+  svxc_joint_state s3;
+  REQUIRE(svxc_joint(w, j, &s3) == 1);
+  CHECK(std::abs(s3.value - s2.value) < 0.02);
+  CHECK(svxc_remove_joint(w, j) == 1);
+  CHECK(svxc_joints(w, ids, 4) == 0);
+  // a rope too weak for it: it breaks (an event)
+  svxc_joint_defaults(&d);
+  d.type = SVXC_JOINT_DISTANCE;
+  d.a.kind = SVXC_ANCHOR_WORLD;
+  d.a.point[0] = 0.0;
+  d.a.point[1] = 0.0;
+  d.a.point[2] = 5.0;
+  svxc_piece pc;
+  REQUIRE(svxc_poll_pieces(w) == 1);
+  REQUIRE(svxc_piece_at(w, 0, &pc) == 1);
+  d.b.kind = SVXC_ANCHOR_PIECE;
+  d.b.id = static_cast<uint64_t>(pc.id);
+  for (int k = 0; k < 3; ++k) d.b.point[k] = pc.pos[k];
+  d.break_force = 50.0;
+  const uint32_t rope = svxc_add_joint(w, &d);
+  REQUIRE(rope != 0);
+  int broke = 0;
+  for (int t = 0; t < 120 && !broke; ++t) {
+    svxc_tick(w);
+    for (int i = 0, n = svxc_poll_events(w); i < n; ++i) {
+      svxc_event e;
+      svxc_event_at(w, i, &e);
+      broke += e.kind == SVXC_JOINT_BROKEN && e.id == rope ? 1 : 0;
+    }
+  }
+  CHECK(broke == 1);
+  svxc_destroy(w);
+}

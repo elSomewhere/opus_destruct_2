@@ -87,13 +87,14 @@ struct Fluid {
     m |= bit;
     return true;
   }
-  // 0: closed (solid, or not resident yet), 1: open, 2: below the world (water there is gone)
+  // 0: closed (solid - the world grid's, or an oriented grid's there -, or not resident yet),
+  // 1: open, 2: below the world (water there is gone)
   int open(const IVec3& p) {
     if (p[2] < lo_z) return 2;
     const Buf& b = buf(p);
     if (!b.resident) return 0;
-    if (!b.c) return 1;
-    return vox_solid(b.c->uniform ? b.c->value : b.c->v[size_t(chunk_index(p))]) ? 0 : 1;
+    if (b.c && vox_solid(b.c->uniform ? b.c->value : b.c->v[size_t(chunk_index(p))])) return 0;
+    return w.grid_solid(p) ? 0 : 1;
   }
 };
 
@@ -121,15 +122,15 @@ bool held(const World& w, int L, const Chunk& c, const IVec3& cc, i32 i) {
   const std::vector<u8>& a = c.layer[size_t(L)];
   for (const auto& d : kHold) {
     const IVec3 q{l[0] + d[0], l[1] + d[1], l[2] + d[2]};
+    const IVec3 p{cc[0] * kChunk + q[0], cc[1] * kChunk + q[1], cc[2] * kChunk + q[2]};
     if (q[0] >= 0 && q[0] < kChunk && q[1] >= 0 && q[1] < kChunk && q[2] >= 0 && q[2] < kChunk) {
       const i32 j = (q[0] * kChunk + q[1]) * kChunk + q[2];
-      if (!(vox_solid(c.uniform ? c.value : c.v[size_t(j)]) || a[size_t(j)] == 255)) return false;
+      if (!(vox_solid(c.uniform ? c.value : c.v[size_t(j)]) || a[size_t(j)] == 255 || w.grid_solid(p))) return false;
       continue;
     }
-    const IVec3 p{cc[0] * kChunk + q[0], cc[1] * kChunk + q[1], cc[2] * kChunk + q[2]};
     if (d[2] < 0 && p[2] < w.grid().lo[2] - 2 * kChunk) return false;  // (below the world: it goes)
     if (!w.chunk_resident(chunk_of(p))) continue;
-    if (!(vox_solid(w.grid().get(p)) || w.layer(L, p) == 255)) return false;
+    if (!(vox_solid(w.grid().get(p)) || w.layer(L, p) == 255 || w.grid_solid(p))) return false;
   }
   return true;
 }
@@ -247,7 +248,7 @@ void WaterSystem::pour(World& w, const V3& pos, f64 radius) {
     for (i32 y = c[1] - R; y <= c[1] + R; ++y)
       for (i32 z = c[2] - R; z <= c[2] + R; ++z) {
         if (norm(V3{h * x, h * y, h * z} - pos) > radius) continue;
-        if (vox_solid(w.grid().get(x, y, z)) || !w.chunk_resident(chunk_of({x, y, z}))) continue;
+        if (vox_solid(w.grid().get(x, y, z)) || !w.chunk_resident(chunk_of({x, y, z})) || w.grid_solid({x, y, z})) continue;
         edits.push_back({{x, y, z}, 255});
         wake_.push_back(key3(x, y, z));
       }
@@ -474,11 +475,13 @@ void WaterSystem::chunk_loads(const World& w, const IVec3& cc, std::vector<Voxel
   // The pressure of the chunk's water on the free solids next to it (sideways and below).
   const Chunk* c = w.grid().chunk(cc);
   if (!c || c->layer[size_t(water_)].empty()) return;
-  bool free_near = c->free_count() > 0;
+  // (free solids it may press on: the world grid's, or an oriented grid's there)
+  bool free_near = c->free_count() > 0 || w.grid_solids(cc);
   for (const auto& d : kFace) {
     if (free_near) break;
-    const Chunk* n = w.grid().chunk({cc[0] + d[0], cc[1] + d[1], cc[2] + d[2]});
-    free_near = n && n->free_count() > 0;
+    const IVec3 nc{cc[0] + d[0], cc[1] + d[1], cc[2] + d[2]};
+    const Chunk* n = w.grid().chunk(nc);
+    free_near = (n && n->free_count() > 0) || w.grid_solids(nc);
   }
   if (!free_near) return;
   const f64 h = w.voxel_size(), rg = cfg_.density * kG;
@@ -486,12 +489,19 @@ void WaterSystem::chunk_loads(const World& w, const IVec3& cc, std::vector<Voxel
   for (i32 i = 0; i < kChunkVox; ++i) {
     if (!a[size_t(i)]) continue;
     const IVec3 p{cc[0] * kChunk + i / (kChunk * kChunk), cc[1] * kChunk + (i / kChunk) % kChunk, cc[2] * kChunk + i % kChunk};
-    // (free solids beside or below it: those it presses on)
+    // (free solids beside or below it: those it presses on - an oriented grid's where the world
+    // grid's voxel there is air)
     bool any = false;
     bool free_at[5];
+    GridId gat[5] = {kWorldGrid, kWorldGrid, kWorldGrid, kWorldGrid, kWorldGrid};
+    IVec3 gv[5];
     for (int s = 0; s < 5; ++s) {
       const int* d = s < 4 ? kFace[s] : kFace[5];
-      free_at[s] = vox_free(w.grid().get({p[0] + d[0], p[1] + d[1], p[2] + d[2]}));
+      const IVec3 q{p[0] + d[0], p[1] + d[1], p[2] + d[2]};
+      const Vox vq = w.grid().get(q);
+      free_at[s] = vox_free(vq);
+      if (!vox_solid(vq) && w.grid_solid(q) && w.grid_voxel_at(V3{h * q[0], h * q[1], h * q[2]}, &gat[s], &gv[s]))
+        free_at[s] = vox_free(w.grid(gat[s])->get(gv[s]));
       any = any || free_at[s];
     }
     if (!any) continue;
@@ -511,7 +521,8 @@ void WaterSystem::chunk_loads(const World& w, const IVec3& cc, std::vector<Voxel
       const f64 depth = s < 4 ? h * (above + 0.5 * fill) : h * (above + fill);
       const f64 area = s < 4 ? h * h * fill : h * h;
       const f64 F = rg * depth * area;
-      out.push_back({q, V3{d[0] * F, d[1] * F, d[2] * F}});
+      if (gat[s] != kWorldGrid) out.push_back({gv[s], V3{d[0] * F, d[1] * F, d[2] * F}, gat[s]});
+      else out.push_back({q, V3{d[0] * F, d[1] * F, d[2] * F}});
     }
   }
 }

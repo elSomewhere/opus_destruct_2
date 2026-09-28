@@ -116,7 +116,9 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
         const MaterialId mid = host_of(i, x, y, z);
         const Material& M = material(mid);
         const i64 gx = base[0] + x, gy = base[1] + y, gz = base[2] + z;
-        const f64 sp[3] = {M.frag_x, M.frag_y, M.frag_z};  // (the registry keeps them >= 1)
+        f64 sp[3] = {M.frag_x, M.frag_y, M.frag_z};  // (the registry keeps them >= 1)
+        if (par.scale != 1.0)
+          for (f64& v : sp) v = std::max(1.0, v * par.scale);
         const f64 q[3] = {gx / sp[0], gy / sp[1], gz / sp[2]};
         const i64 c0[3] = {floor_div(q[0]), floor_div(q[1]), floor_div(q[2])};
         const u64 msalt = par.salt ^ (static_cast<u64>(mid) * 0x9E3779B97F4A7C15ull);
@@ -182,7 +184,9 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
 
   // 3. merge tiny components into the same-material neighbour they share the most faces with
   UF uf(ncomp);
-  if (par.min_voxels > 1) {
+  const i32 min_voxels =
+      par.scale == 1.0 ? par.min_voxels : std::max<i32>(1, static_cast<i32>(std::lround(par.min_voxels * par.scale * par.scale * par.scale)));
+  if (min_voxels > 1) {
     std::vector<std::vector<std::pair<i32, i32>>> nb(static_cast<size_t>(ncomp));  // (other comp, faces)
     for (int i = 0; i < kChunkVox; ++i) {
       const i32 ci = comp[static_cast<size_t>(i)];
@@ -196,12 +200,12 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
         if ((broken_at(i) >> a) & 1) continue;
         const MaterialId mi = vox_mat(vox_at(i)), mj = vox_mat(vox_at(j));
         if (mi != mj && !material(mi).reinforcement && !material(mj).reinforcement) continue;
-        if (comp_count[static_cast<size_t>(ci)] < par.min_voxels) nb[static_cast<size_t>(ci)].push_back({cj, 1});
-        if (comp_count[static_cast<size_t>(cj)] < par.min_voxels) nb[static_cast<size_t>(cj)].push_back({ci, 1});
+        if (comp_count[static_cast<size_t>(ci)] < min_voxels) nb[static_cast<size_t>(ci)].push_back({cj, 1});
+        if (comp_count[static_cast<size_t>(cj)] < min_voxels) nb[static_cast<size_t>(cj)].push_back({ci, 1});
       }
     }
     for (i32 c = 0; c < ncomp; ++c) {
-      if (comp_count[static_cast<size_t>(c)] >= par.min_voxels) continue;
+      if (comp_count[static_cast<size_t>(c)] >= min_voxels) continue;
       auto& list = nb[static_cast<size_t>(c)];
       if (list.empty()) continue;
       std::sort(list.begin(), list.end());

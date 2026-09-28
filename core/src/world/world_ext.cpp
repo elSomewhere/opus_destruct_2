@@ -26,6 +26,11 @@ int World::add_layer(const LayerSpec& spec) {
   return i;
 }
 
+std::vector<u64> World::take_layer_changes(GridId grid, int L) {
+  const i32 g = slot_of(grid);
+  return g < 0 ? std::vector<u64>{} : vg(static_cast<u16>(g)).take_layer_dirty(L);
+}
+
 u8 World::layer(GridId grid, int L, const IVec3& p) const {
   const i32 g = slot_of(grid);
   return g < 0 ? 0 : vg(static_cast<u16>(g)).layer(L, p);
@@ -109,7 +114,7 @@ bool World::remove_piece_voxels(i64 id, i32 shape, const std::vector<IVec3>& vox
   if (!bp || shape < 0 || shape >= static_cast<i32>(bp->shapes.size())) return false;
   Body& b = *bp;
   BodyShape& S = b.shapes[size_t(shape)];
-  const f64 h = grid_.h;
+  const f64 h = S.h;
   V3 at;
   i32 removed = 0;
   for (const IVec3& p : voxels) {
@@ -167,15 +172,18 @@ void World::refresh_strengths(const std::vector<GVox>& voxels) {
       }
       // (free voxels of other grids around it: its junctions)
       if (oriented_ > 0) {
-        const V3 X = voxel_centre(p);
-        const f64 r = (0.5 + std::clamp(cfg_.junction_reach, 0.0, 2.0)) * grid_.h;
+        const f64 hp = G.h;
+        const V3 X = lxf_of(p.grid).to(V3{hp * p.p[0], hp * p.p[1], hp * p.p[2]});  // (in its body's frame)
         const IVec3 cc = chunk_of(p.p);
         for (u16 o : near_grids(p.grid, key3(cc[0], cc[1], cc[2]))) {
-          const V3 L = o == 0 ? X : xf_of(o).from(X);
-          for (int c = 0; c < 8; ++c) {
-            const IVec3 q = voxel_of(L + V3{(c & 1) ? r : -r, (c & 2) ? r : -r, (c & 4) ? r : -r}, grid_.h);
-            if (vox_free(vg(o).get(q))) mark(GVox{q, o});
-          }
+          const f64 ho = h_of(o), r = (0.5 + std::clamp(cfg_.junction_reach, 0.0, 2.0)) * std::max(hp, ho);
+          const V3 L = o == 0 ? X : lxf_of(o).from(X);
+          // (every voxel of o in the box of half side r around it)
+          const IVec3 vlo = voxel_of(L - V3{r, r, r}, ho), vhi = voxel_of(L + V3{r, r, r}, ho);
+          for (i32 x = vlo[0]; x <= vhi[0]; ++x)
+            for (i32 y = vlo[1]; y <= vhi[1]; ++y)
+              for (i32 z = vlo[2]; z <= vhi[2]; ++z)
+                if (vox_free(vg(o).get(x, y, z))) mark(GVox{{x, y, z}, o});
         }
       }
     }
@@ -304,12 +312,13 @@ void World::add_external_loads() {
       if (!s || !nodes || fi >= static_cast<i32>(nodes->size())) continue;
       const i32 i = (*nodes)[size_t(fi)];
       if (i < 0) continue;
-      const V3 p = voxel_centre(GVox{l.voxel, static_cast<u16>(g)});
-      const V3 M = cross(p - s->P.nodes[size_t(i)].c, l.force);
+      V3 p = voxel_centre(GVox{l.voxel, static_cast<u16>(g)}), F = l.force;
+      to_body(s->body, &F, &p);
+      const V3 M = cross(p - s->P.nodes[size_t(i)].c, F);
       f64* a = &s->acc[6 * size_t(i)];
-      a[0] += l.force.x;
-      a[1] += l.force.y;
-      a[2] += l.force.z;
+      a[0] += F.x;
+      a[1] += F.y;
+      a[2] += F.z;
       a[3] += M.x;
       a[4] += M.y;
       a[5] += M.z;
@@ -341,7 +350,18 @@ void World::finish_tick_changes() {
   // oriented grids' to the host only)
   for (size_t g = 1; g < grids_.size(); ++g) {
     if (!grids_[g]) continue;
-    for (u64 k : grids_[g]->g.take_dirty()) grid_dirty_.push_back(GridChunk{grids_[g]->id, unkey3(k)});
+    for (u64 k : grids_[g]->g.take_dirty()) {
+      grid_dirty_.push_back(GridChunk{grids_[g]->id, unkey3(k)});
+      // (the world's lattice sees a static grid's voxels too: the systems of it hear of them)
+      if (grids_[g]->body == 0 && !systems_.empty()) {
+        const GridState& st = *grids_[g];
+        const f64 h = st.g.h;
+        const IVec3 c = unkey3(k);
+        const V3 lo{h * (c[0] * kChunk - 0.5), h * (c[1] * kChunk - 0.5), h * (c[2] * kChunk - 0.5)};
+        const V3 hi{lo.x + h * kChunk, lo.y + h * kChunk, lo.z + h * kChunk};
+        world_chunks_of(st.xf, lo, hi, sys_changed_);
+      }
+    }
   }
   if (grid_dirty_.size() > 65536) {
     // (nobody takes them: every chunk of every grid is reported instead)

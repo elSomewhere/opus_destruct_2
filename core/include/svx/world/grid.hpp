@@ -129,6 +129,7 @@ class VoxelGrid {
   // bonds (it, or the whole face, broke), and breaking one (sub kJunctionFace: the whole face).
   bool junction_broken(const IVec3& p, int face, int sub) const;
   void break_junction(const IVec3& p, int face, int sub);
+  void clear_junction_breaks();  // (every chunk's: a grid placed anew bonds afresh)
 
   // Layers: add_layer returns a layer's index (the existing one for a name already added).
   int add_layer(const LayerSpec& spec);
@@ -148,6 +149,8 @@ class VoxelGrid {
   void fill_column(i32 x, i32 y, i32 z0, i32 z1, Vox v);
   void compact();
   void mark_all_dirty();
+  // Changes whenever any of its voxels do (a cache of what it holds is stale when it differs).
+  u32 revision() const { return vox_seq_; }
 
   // chunk access
   const Chunk* chunk(const IVec3& c) const;

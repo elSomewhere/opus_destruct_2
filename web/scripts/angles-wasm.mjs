@@ -96,9 +96,10 @@ try {
       [-2 * n[0], -2 * n[1], 0],
     );
     const moved = r ? Math.hypot(r.move[0], r.move[1]) : NaN;
-    // (its corner touches when the centre is 0.1875 + 0.3 sqrt(2) = 0.61 m from the centre line:
-    // a move of 0.39 m, give or take the occupancy's voxel)
-    check('box stops at the 45 degree wall', r !== null && moved > 0.15 && moved < 0.6, `moved ${moved.toFixed(3)} m of 2`);
+    // (its corner touches when the centre is 0.1875 + 0.3 sqrt(2) = 0.612 m from the centre line,
+    // 0.388 m closer; the sweep goes along x first, which closes on the wall at sqrt(1/2) of its
+    // move: 0.549 m along x, then nothing along y. The turned cubes exactly.)
+    check('box stops at the 45 degree wall', r !== null && Math.abs(moved - 0.388 * Math.SQRT2) < 0.01, `moved ${moved.toFixed(3)} m of 2 (${(0.388 * Math.SQRT2).toFixed(3)} expected)`);
   }
   // the player lands on the ramp (grid origin (40, 60, -1), pitched 15 degrees, 3 voxels thick:
   // its top at grid x' = 36 is the grid's point (36, 0, 2.5))

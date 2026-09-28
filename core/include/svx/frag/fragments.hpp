@@ -47,6 +47,10 @@ struct FragParams {
   f64 jitter_lo = 0.25, jitter_span = 0.5;  // seed position within its lattice cell
   f64 noise_scale = 0.5;           // seam noise (x the material's)
   u64 salt = 0x5EEDF4A6ull;        // seam pattern
+  // The materials' rubble sizes (voxels of the world grid) in this grid's voxels: the world's voxel
+  // size / this grid's (1: the world grid, or a grid of its voxel size), so a grid's rubble has the
+  // world's size in metres. Small components merge by the same measure.
+  f64 scale = 1.0;
 };
 
 // Fragments of chunk cc of the grid (uses its voxels, broken faces and h).

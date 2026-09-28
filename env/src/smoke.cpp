@@ -121,7 +121,30 @@ const SmokeSystem::Solid& SmokeSystem::solid(const World& w, const IVec3& cc) {
   if (!m.stale) return m;
   m.stale = false;
   const Chunk* ch = w.grid().chunk(cc);
-  if (!ch || ch->uniform) {
+  // (the oriented grids' solids there count as the world grid's: a turned wall holds smoke)
+  const u8* gs = w.grid_solids(cc);
+  m.grids = w.grid_solids_stamp(cc);
+  if (gs && (!ch || ch->uniform) && !(ch && vox_solid(ch->value))) {
+    std::vector<u8> n(size_t(kCells) * 3 * kCell, 0);
+    std::array<u8, kCells> total{};
+    for (i32 x = 0; x < kChunk; ++x)
+      for (i32 y = 0; y < kChunk; ++y)
+        for (i32 z = 0; z < kChunk; ++z) {
+          const i32 v = (x * kChunk + y) * kChunk + z;
+          if (!((gs[v >> 3] >> (v & 7)) & 1)) continue;
+          const size_t c = size_t(((x / kCell) * kSide + y / kCell) * kSide + z / kCell);
+          ++total[c];
+          ++n[(c * 3 + 0) * kCell + size_t(x % kCell)];
+          ++n[(c * 3 + 1) * kCell + size_t(y % kCell)];
+          ++n[(c * 3 + 2) * kCell + size_t(z % kCell)];
+        }
+    constexpr i32 kPlane = kCell * kCell, kWall = kPlane * 3 / 4;
+    for (i32 i = 0; i < kCells; ++i) {
+      bool closed = total[size_t(i)] * 2 > kPlane * kCell;
+      for (size_t q = 0; q < 3 * kCell && !closed; ++q) closed = n[size_t(i) * 3 * kCell + q] >= kWall;
+      m.s[size_t(i)] = closed ? 1 : 0;
+    }
+  } else if (!ch || ch->uniform) {
     m.s.fill(ch && vox_solid(ch->value) ? 1 : 0);
   } else {
     // A cell is closed if it is mostly solid, or holds a wall: a voxel plane across it (along
@@ -131,7 +154,8 @@ const SmokeSystem::Solid& SmokeSystem::solid(const World& w, const IVec3& cc) {
     for (i32 x = 0; x < kChunk; ++x)
       for (i32 y = 0; y < kChunk; ++y)
         for (i32 z = 0; z < kChunk; ++z) {
-          if (!vox_solid(ch->v[size_t((x * kChunk + y) * kChunk + z)])) continue;
+          const i32 v = (x * kChunk + y) * kChunk + z;
+          if (!vox_solid(ch->v[size_t(v)]) && !(gs && ((gs[v >> 3] >> (v & 7)) & 1))) continue;
           const size_t c = size_t(((x / kCell) * kSide + y / kCell) * kSide + z / kCell);
           ++total[c];
           ++n[(c * 3 + 0) * kCell + size_t(x % kCell)];
@@ -228,6 +252,9 @@ void SmokeSystem::step(World& w, f64 dt) {
 void SmokeSystem::smoke_step(World& w, f64 dt) {
   ++st_.steps;
   const f64 h = w.voxel_size(), cm = h * kCell;
+  // (masks made with oriented grids that changed since, or that grids reach now: made again)
+  for (auto& [k, m] : solid_)
+    if (!m.stale && m.grids != w.grid_solids_stamp(unkey3(k))) m.stale = true;
   // sources
   if (fire_)
     for (const auto& f : fire_->flames()) add_at(w, f.pos + V3{0.0, 0.0, h}, cfg_.per_flame * dt);

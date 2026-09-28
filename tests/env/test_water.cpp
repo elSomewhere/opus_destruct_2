@@ -429,3 +429,41 @@ TEST_CASE("water: water on a streamed structure (also archived and back) does no
   run(false);
   run(true);
 }
+
+TEST_CASE("water: a turned wall (an oriented grid) holds water back, and its pressure loads the wall") {
+  // A pond: a concrete rim of the world grid around 5 m x 5 m, split by a stone wall of a grid
+  // turned 20 degrees, bonded to the rock below; water poured on one side stays there.
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-40, -40, -4}, {40, 40, 0}, kRock);
+  box(g, {-22, -22, 0}, {22, 22, 16}, kConc);
+  box(g, {-20, -20, 0}, {20, 20, 16}, kAir);
+  g.compact();
+  Setup s(std::move(g));
+  VoxelGrid wall;
+  wall.h = kH;
+  box(wall, {-24, -1, 0}, {24, 2, 16}, kStone);  // (long enough to cut the pond in two: its ends in the rim)
+  wall.compact();
+  const f64 t = 0.5 * 20.0 * 3.14159265358979323846 / 180.0;
+  const GridId id = s.w.add_grid(GridFrame{V3{0.0, 0.0, 0.0}, Quat{0.0, 0.0, std::sin(t), std::cos(t)}}, std::move(wall));
+  REQUIRE(id != 0);
+  s.w.bake();
+  // (which side of the wall a world voxel is on: its lattice y)
+  auto side = [&](i32 x, i32 y) { return s.w.world_to_grid(id, V3{kH * x, kH * y, 0.5}).y; };
+  for (int k = 0; k < 5; ++k) s.water().pour(s.w, at({0, -12, 6 + 3 * k}), 0.5);
+  s.run(10.0);
+  i64 near = 0, far = 0;
+  const int L = s.water().water_layer();
+  for (i32 x = -20; x < 20; ++x)
+    for (i32 y = -20; y < 20; ++y)
+      for (i32 z = 0; z < 16; ++z) {
+        const u8 a = s.w.layer(L, {x, y, z});
+        if (!a) continue;
+        (side(x, y) < 0.0 ? near : far) += a;
+      }
+  MESSAGE("water behind a turned wall: " << near << " units on the poured side, " << far << " beyond it");
+  CHECK(near > 0);
+  CHECK(far < near / 100);
+  // and it presses on the wall: its structure carries the load
+  CHECK(s.w.probe_utilization(id, IVec3{0, 0, 2}) > 0.0);
+}

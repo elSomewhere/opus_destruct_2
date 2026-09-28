@@ -3,10 +3,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstring>
 #include <vector>
 
 #include "doctest.h"
 #include "svx/base/parallel.hpp"
+#include "svx/material/material.hpp"
 #include "svx/world/world.hpp"
 
 using namespace svx;
@@ -684,4 +686,212 @@ TEST_CASE("grids: junction breaks are saved and restored with the voxels they be
   CHECK(level(b) == id);
   REQUIRE(b.load_delta(delta));
   CHECK(marks(b) == ma);
+}
+
+TEST_CASE("grids: a grid of a voxel size of its own carries its load as one of the world's") {
+  // The same 3 m concrete cantilever cast 0.25 m into an anchored pier: in a grid of the world's
+  // voxel size, and in one of half of it (8 x the voxels). The same mass, and (its rubble keeps
+  // the world's size in metres, so its bonds do too) a utilization of the same order, over
+  // placements of the beam in its lattice (the grid moved back: the rubble's layout changes).
+  // (Its root is 0.25 m into the pier, whose voxels its own displaced: the pier's surface is up to
+  // half of the pier's voxel away from its faces, which the junctions reach.)
+  auto mean_phi = [&](f64 hg, f64 yaw_deg, f64* mass) {
+    f64 sum = 0.0;
+    i32 n = 0;
+    const i32 k = static_cast<i32>(std::lround(0.125 / hg));  // (voxels per world voxel)
+    for (i32 ox : {0, 3, 7, 11})
+      for (i32 oy : {0, 5, 13}) {
+        World w;
+        VoxelGrid g = ground();
+        box(g, {-16, -16, 0}, {0, 16, 32}, make_vox(MaterialId::Rock, true));
+        g.compact();
+        w.load(std::move(g));
+        const i32 X = ox * k, Y = oy * k;
+        VoxelGrid beam;
+        beam.h = hg;
+        box(beam, {-2 * k + X, -2 * k + Y, 16 * k}, {24 * k + X, 2 * k + Y, 22 * k}, make_vox(MaterialId::Concrete, false));
+        beam.compact();
+        GridDesc d;
+        const Quat q = yaw(yaw_deg);
+        d.frame = GridFrame{rotate(q, V3{-hg * X, -hg * Y, 0.0}), q};
+        d.voxel_size = hg;
+        const GridId id = w.add_grid(d, std::move(beam));
+        REQUIRE(id != 0);
+        CHECK(w.grid(id)->h == hg);
+        *mass = static_cast<f64>(w.grid(id)->solid_count()) * hg * hg * hg * material(MaterialId::Concrete).rho;
+        sum += w.probe_utilization(id, IVec3{20 * k + X, Y, 18 * k});
+        ++n;
+      }
+    return sum / n;
+  };
+  for (f64 a : {0.0, 20.0}) {
+    f64 m1 = 0, m2 = 0;
+    const f64 coarse = mean_phi(0.125, a, &m1), fine = mean_phi(0.0625, a, &m2);
+    MESSAGE("cantilever at yaw " << a << ", mean max utilization at 0.125 m: " << coarse << ", at 0.0625 m: " << fine << " (mass " << m1
+                                 << " / " << m2 << " kg)");
+    CHECK(m2 == doctest::Approx(m1).epsilon(0.01));
+    CHECK(coarse > 0.5);
+    CHECK(fine / coarse > 0.8);
+    CHECK(fine / coarse < 1.35);
+  }
+}
+
+TEST_CASE("grids: where grids overlap, the one of higher priority keeps its voxels and the mass counts once") {
+  const f64 h = 0.125;
+  auto column_and_bar = [&](i32 bar_priority, i64* column_left, i64* bar_left) {
+    World w;
+    w.load(ground());
+    // a steel bar placed first, a concrete column cast around it (added later)
+    VoxelGrid bar;
+    bar.h = h;
+    box(bar, {-1, -1, 0}, {1, 1, 40}, make_vox(MaterialId::Steel, false));
+    bar.compact();
+    GridDesc bd;
+    bd.frame = GridFrame{V3{0.0, 0.0, 0.0}, yaw(10.0)};
+    bd.priority = bar_priority;
+    const GridId b = w.add_grid(bd, std::move(bar));
+    VoxelGrid col;
+    col.h = h;
+    box(col, {-4, -4, 0}, {4, 4, 32}, make_vox(MaterialId::Concrete, false));
+    col.compact();
+    const GridId c = w.add_grid(GridFrame{V3{0.0, 0.0, 0.0}, yaw(-5.0)}, std::move(col));
+    REQUIRE(b != 0);
+    REQUIRE(c != 0);
+    CHECK(w.grid_priority(b) == bar_priority);
+    *column_left = w.grid(c)->solid_count();
+    *bar_left = w.grid(b)->solid_count();
+  };
+  i64 col0, bar0, col1, bar1;
+  column_and_bar(0, &col0, &bar0);  // (the column is newer: it keeps its voxels, the bar is cut where it is in it)
+  column_and_bar(1, &col1, &bar1);  // (the bar has the priority: the column is cast around it)
+  MESSAGE("column " << col0 << " / bar " << bar0 << " voxels (newer wins), column " << col1 << " / bar " << bar1 << " (the bar's priority)");
+  CHECK(col0 == 8 * 8 * 32);
+  CHECK(bar0 < 2 * 2 * 40);
+  CHECK(bar0 >= 2 * 2 * 7);       // (what sticks out of the column)
+  CHECK(bar1 == 2 * 2 * 40);
+  CHECK(col1 < 8 * 8 * 32);
+  CHECK(col1 >= 8 * 8 * 32 - 2 * 2 * 32 - 8);  // (the bar's place, give or take its steps)
+  // the voxels written into the bar's place go too (priority holds for edits)
+  World w;
+  w.load(ground());
+  VoxelGrid bar;
+  bar.h = h;
+  box(bar, {-1, -1, 0}, {1, 1, 40}, make_vox(MaterialId::Steel, false));
+  bar.compact();
+  GridDesc bd;
+  bd.priority = 1;
+  const GridId b = w.add_grid(bd, std::move(bar));
+  std::vector<VoxelEdit> fill;
+  for (i32 z = 0; z < 8; ++z) fill.push_back({{0, 0, z}, make_vox(MaterialId::Concrete, false)});
+  w.set_voxels(fill);  // (the world grid, where the bar is)
+  i32 kept = 0;
+  for (i32 z = 0; z < 8; ++z) kept += vox_solid(w.grid().get(0, 0, z)) ? 1 : 0;
+  CHECK(kept == 0);
+  CHECK(w.grid(b)->solid_count() == 2 * 2 * 40);
+}
+
+TEST_CASE("grids: a grid placed anew keeps its changes, lets go of where it was and bonds where it is") {
+  const f64 h = 0.125;
+  World w;
+  VoxelGrid g = ground();
+  // two pairs of columns, 4 m apart
+  for (i32 y : {-16, 16})
+    for (i32 x : {-20, 12}) box(g, {x, y - 3, 0}, {x + 8, y + 3, 16}, make_vox(MaterialId::Concrete, false));
+  g.compact();
+  w.load(std::move(g));
+  VoxelGrid beam;
+  beam.h = h;
+  box(beam, {-20, -3, 0}, {20, 3, 4}, make_vox(MaterialId::Concrete, false));
+  beam.compact();
+  const GridId id = w.add_grid(GridFrame{V3{0.0, h * -16, h * 16}, yaw(0.0)}, std::move(beam));
+  w.bake();
+  for (int t = 0; t < 20; ++t) w.tick();
+  CHECK(w.pieces().empty());
+  w.carve(w.grid_to_world(id, V3{0.0, 0.0, h * 3}), 0.2);  // (a notch in its top: a change)
+  for (int t = 0; t < 20; ++t) w.tick();
+  const i64 notched = w.grid(id)->solid_count();
+  CHECK(notched < 40 * 6 * 4);
+  // onto the other pair of columns
+  REQUIRE(w.set_grid_frame(id, GridFrame{V3{0.0, h * 16, h * 16}, yaw(0.0)}));
+  bool moved = false;
+  for (const WorldEvent& e : w.take_events()) moved = moved || (e.kind == WorldEvent::Kind::GridMoved && e.id == static_cast<i64>(id));
+  CHECK(moved);
+  for (int t = 0; t < 60; ++t) w.tick();
+  CHECK(w.pieces().empty());
+  CHECK(w.grid(id)->solid_count() == notched);
+  CHECK(w.probe_utilization(id, IVec3{0, 0, 1}) > 0.0);
+  // (the first columns carry nothing now; a notch through the new ones' tops brings it down)
+  const f64 phi_free = w.probe_utilization(IVec3{-16, -16, 8});
+  CHECK(phi_free >= 0.0);
+  // saved and restored where it is
+  const std::vector<u8> delta = w.save_delta();
+  World b;
+  VoxelGrid g2 = ground();
+  for (i32 y : {-16, 16})
+    for (i32 x : {-20, 12}) box(g2, {x, y - 3, 0}, {x + 8, y + 3, 16}, make_vox(MaterialId::Concrete, false));
+  g2.compact();
+  b.load(std::move(g2));
+  VoxelGrid beam2;
+  beam2.h = h;
+  box(beam2, {-20, -3, 0}, {20, 3, 4}, make_vox(MaterialId::Concrete, false));
+  beam2.compact();
+  CHECK(b.add_grid(GridFrame{V3{0.0, h * -16, h * 16}, yaw(0.0)}, std::move(beam2)) == id);
+  b.bake();
+  REQUIRE(b.load_delta(delta));
+  GridFrame f;
+  REQUIRE(b.grid_frame(id, &f));
+  CHECK(f.origin.y == doctest::Approx(h * 16));
+  CHECK(b.grid(id)->solid_count() == notched);
+}
+
+TEST_CASE("grids: voxel size, priority and session grids are saved; a version 1 delta still loads") {
+  World a;
+  a.load(ground());
+  VoxelGrid fine;
+  fine.h = 0.0625;
+  box(fine, {-8, -8, 0}, {8, 8, 8}, make_vox(MaterialId::Rock, true));
+  fine.compact();
+  GridDesc d;
+  d.frame = GridFrame{V3{1.0, 2.0, 0.0}, yaw(15.0)};
+  d.voxel_size = 0.0625;
+  d.priority = 3;
+  d.base = false;
+  const GridId id = a.add_grid(d, std::move(fine));
+  REQUIRE(id != 0);
+  const std::vector<u8> delta = a.save_delta();
+  World b;
+  b.load(ground());
+  REQUIRE(b.load_delta(delta));
+  REQUIRE(b.grid(id));
+  CHECK(b.grid(id)->h == 0.0625);
+  CHECK(b.grid_priority(id) == 3);
+  CHECK(b.grid(id)->solid_count() == a.grid(id)->solid_count());
+  // a version 1 trailer (the world grid's records, then a session grid of the world's voxel size)
+  std::vector<u8> v1 = World{}.save_delta();
+  {
+    World e;
+    e.load(ground());
+    v1 = e.save_delta();
+  }
+  auto put32 = [&](u32 v) {
+    for (int i = 0; i < 4; ++i) v1.push_back(static_cast<u8>(v >> (8 * i)));
+  };
+  auto putf = [&](f64 x) {
+    u64 u;
+    std::memcpy(&u, &x, 8);
+    for (int i = 0; i < 8; ++i) v1.push_back(static_cast<u8>(u >> (8 * i)));
+  };
+  put32(0x47585653);  // "SVXG"
+  put32(1);
+  put32(0);  // (no removed grids)
+  put32(1);
+  put32(9);  // a grid of this session, id 9
+  v1.push_back(0);
+  for (f64 x : {0.5, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0}) putf(x);
+  put32(0);  // (no chunks)
+  World c;
+  c.load(ground());
+  REQUIRE(c.load_delta(v1));
+  REQUIRE(c.grid(9));
+  CHECK(c.grid(9)->h == c.voxel_size());
 }

@@ -189,6 +189,16 @@ bool VoxelGrid::junction_broken(const IVec3& p, int face, int sub) const {
          (sub != kJunctionFace && std::binary_search(c->jbroken.begin(), c->jbroken.end(), whole));
 }
 
+void VoxelGrid::clear_junction_breaks() {
+  for (auto& [k, c] : chunks_) {
+    if (c.jbroken.empty()) continue;
+    c.jbroken.clear();
+    c.jbroken.shrink_to_fit();
+    note_modified(unkey3(k));
+    note_voxels_modified(k);
+  }
+}
+
 void VoxelGrid::break_junction(const IVec3& p, int face, int sub) {
   // (like a broken bond: a voxel in no chunk, or in an all-air one, has no junction to break)
   const auto it = chunks_.find(key3(p[0] >> kChunkBits, p[1] >> kChunkBits, p[2] >> kChunkBits));

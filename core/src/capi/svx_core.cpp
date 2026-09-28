@@ -25,6 +25,12 @@ struct svxc_world {
   std::vector<u8> piece_vox;
 };
 
+static_assert(SVXC_REBAR == static_cast<int>(MaterialId::Rebar) && SVXC_WOOD == static_cast<int>(MaterialId::Wood),
+              "svx_core.h's materials are the registry's standard ones");
+static_assert(SVXC_JOINT_DISTANCE == static_cast<int>(JointType::Distance) && SVXC_ANCHOR_KINEMATIC == static_cast<int>(JointAnchor::Kind::Kinematic),
+              "svx_core.h's joints are the core's");
+static_assert(SVXC_JOINT_BROKEN == static_cast<int>(WorldEvent::Kind::JointBroken), "svx_core.h's events are the core's");
+
 namespace {
 
 // A streamed world's generator: the host's callback.
@@ -230,7 +236,77 @@ uint32_t svxc_add_grid(svxc_world* w, const uint8_t* voxels, int nx, int ny, int
   return w->w.add_grid(GridFrame{V3{origin[0], origin[1], origin[2]}, Quat{rot[0], rot[1], rot[2], rot[3]}}, std::move(g), base != 0);
 }
 
+uint32_t svxc_add_grid_desc(svxc_world* w, const uint8_t* voxels, int nx, int ny, int nz, int ox, int oy, int oz, const svxc_grid_desc* d) {
+  if (!w || !d) return 0;
+  VoxelGrid g;
+  const f64 h = d->voxel_size > 0.0 ? d->voxel_size : w->h;
+  if (!box_grid(h, voxels, nx, ny, nz, ox, oy, oz, &g)) return 0;
+  GridDesc desc;
+  desc.frame = GridFrame{V3{d->origin[0], d->origin[1], d->origin[2]}, Quat{d->rot[0], d->rot[1], d->rot[2], d->rot[3]}};
+  desc.voxel_size = d->voxel_size;
+  desc.priority = d->priority;
+  desc.body = d->body;
+  desc.base = d->base != 0;
+  return w->w.add_grid(desc, std::move(g));
+}
+
 int svxc_remove_grid(svxc_world* w, uint32_t id) { return w && w->w.remove_grid(id) ? 1 : 0; }
+
+int svxc_set_grid_frame(svxc_world* w, uint32_t id, const double origin[3], const double rot[4]) {
+  if (!w || !origin || !rot) return 0;
+  return w->w.set_grid_frame(id, GridFrame{V3{origin[0], origin[1], origin[2]}, Quat{rot[0], rot[1], rot[2], rot[3]}}) ? 1 : 0;
+}
+
+double svxc_grid_voxel_size(svxc_world* w, uint32_t id) {
+  const VoxelGrid* g = w ? w->w.grid(id) : nullptr;
+  return g ? g->h : 0.0;
+}
+
+int svxc_grid_priority(svxc_world* w, uint32_t id) { return w ? w->w.grid_priority(id) : 0; }
+
+uint32_t svxc_grid_body(svxc_world* w, uint32_t id) { return w ? w->w.grid_body(id) : 0; }
+
+void svxc_grid_velocity(svxc_world* w, uint32_t id, const double point[3], double vel[3]) {
+  if (!vel) return;
+  vel[0] = vel[1] = vel[2] = 0.0;
+  if (!w || !point) return;
+  put3(vel, w->w.grid_velocity(id, V3{point[0], point[1], point[2]}));
+}
+
+uint32_t svxc_add_kinematic(svxc_world* w, const double pos[3], const double rot[4], int base) {
+  if (!w || !pos || !rot) return 0;
+  return w->w.add_kinematic(Pose{V3{pos[0], pos[1], pos[2]}, Quat{rot[0], rot[1], rot[2], rot[3]}}, base != 0);
+}
+
+int svxc_remove_kinematic(svxc_world* w, uint32_t id, int release) { return w && w->w.remove_kinematic(id, release != 0) ? 1 : 0; }
+
+int svxc_drive_kinematic(svxc_world* w, uint32_t id, const double pos[3], const double rot[4]) {
+  if (!w || !pos || !rot) return 0;
+  return w->w.drive_kinematic(id, Pose{V3{pos[0], pos[1], pos[2]}, Quat{rot[0], rot[1], rot[2], rot[3]}}) ? 1 : 0;
+}
+
+int svxc_set_kinematic_velocity(svxc_world* w, uint32_t id, const double vel[3], const double ang[3]) {
+  if (!w || !vel || !ang) return 0;
+  return w->w.set_kinematic_velocity(id, V3{vel[0], vel[1], vel[2]}, V3{ang[0], ang[1], ang[2]}) ? 1 : 0;
+}
+
+int svxc_kinematic(svxc_world* w, uint32_t id, double pos[3], double rot[4], double vel[3], double ang[3]) {
+  KinematicState k;
+  if (!w || !w->w.kinematic(id, &k)) return 0;
+  if (pos) put3(pos, k.pose.pos);
+  if (rot) put4(rot, k.pose.rot);
+  if (vel) put3(vel, k.vel);
+  if (ang) put3(ang, k.ang);
+  return 1;
+}
+
+int svxc_kinematics(svxc_world* w, uint32_t* out, int max) {
+  if (!w) return 0;
+  const std::vector<KinematicId> ids = w->w.kinematics();
+  if (out)
+    for (int i = 0; i < std::min<int>(max, static_cast<int>(ids.size())); ++i) out[i] = ids[size_t(i)];
+  return static_cast<int>(ids.size());
+}
 
 int svxc_grids(svxc_world* w, uint32_t* out, int max) {
   if (!w) return 0;
@@ -602,6 +678,102 @@ int svxc_sweep(svxc_world* w, const double mn[3], const double mx[3], const doub
   out[0] = r.t;
   put3(out + 1, r.normal);
   out[4] = static_cast<double>(r.grid);
+  return 1;
+}
+
+void svxc_joint_defaults(svxc_joint_desc* d) {
+  if (!d) return;
+  *d = svxc_joint_desc{};
+  d->type = SVXC_JOINT_BALL;
+  d->axis[2] = 1.0;
+  d->length = -1.0;
+  d->rope = 1;
+}
+
+uint32_t svxc_add_joint(svxc_world* w, const svxc_joint_desc* d) {
+  if (!w || !d || d->type < SVXC_JOINT_BALL || d->type > SVXC_JOINT_DISTANCE) return 0;
+  auto anchor = [](const svxc_anchor& a, JointAnchor* out) {
+    if (a.kind < SVXC_ANCHOR_WORLD || a.kind > SVXC_ANCHOR_KINEMATIC) return false;
+    out->kind = static_cast<JointAnchor::Kind>(a.kind);
+    out->id = a.id;
+    out->point = V3{a.point[0], a.point[1], a.point[2]};
+    return true;
+  };
+  JointDesc j;
+  j.type = static_cast<JointType>(d->type);
+  if (!anchor(d->a, &j.a) || !anchor(d->b, &j.b)) return 0;
+  j.axis = V3{d->axis[0], d->axis[1], d->axis[2]};
+  j.length = d->length;
+  j.rope = d->rope != 0;
+  j.stiffness = d->stiffness;
+  j.damping = d->damping;
+  j.limited = d->limited != 0;
+  j.lower = d->lower;
+  j.upper = d->upper;
+  j.motor = d->motor != 0;
+  j.motor_speed = d->motor_speed;
+  j.motor_max = d->motor_max;
+  j.break_force = d->break_force;
+  j.break_torque = d->break_torque;
+  return w->w.add_joint(j);
+}
+
+int svxc_remove_joint(svxc_world* w, uint32_t id) { return w && w->w.remove_joint(id) ? 1 : 0; }
+
+int svxc_set_joint_motor(svxc_world* w, uint32_t id, int on, double speed, double max) {
+  return w && w->w.set_joint_motor(id, on != 0, speed, max) ? 1 : 0;
+}
+
+int svxc_set_joint_limits(svxc_world* w, uint32_t id, int on, double lower, double upper) {
+  return w && w->w.set_joint_limits(id, on != 0, lower, upper) ? 1 : 0;
+}
+
+int svxc_joint(svxc_world* w, uint32_t id, svxc_joint_state* out) {
+  JointState s;
+  if (!w || !out || !w->w.joint(id, &s)) return 0;
+  *out = svxc_joint_state{};
+  out->type = static_cast<int>(s.type);
+  put3(out->a, s.a);
+  put3(out->b, s.b);
+  put3(out->force, s.force);
+  put3(out->torque, s.torque);
+  out->value = s.value;
+  out->piece_a = s.piece_a;
+  out->piece_b = s.piece_b;
+  return 1;
+}
+
+int svxc_joints(svxc_world* w, uint32_t* out, int max) {
+  if (!w) return 0;
+  const std::vector<JointId> ids = w->w.joints();
+  if (out)
+    for (int i = 0; i < std::min<int>(max, static_cast<int>(ids.size())); ++i) out[i] = ids[size_t(i)];
+  return static_cast<int>(ids.size());
+}
+
+void svxc_collide_ex(svxc_world* w, const double mn[3], const double mx[3], const double move[3], svxc_collision* out) {
+  if (!out) return;
+  *out = svxc_collision{};
+  if (!w || !mn || !mx || !move) return;
+  const CollideResult r = w->w.collide({mn[0], mn[1], mn[2]}, {mx[0], mx[1], mx[2]}, {move[0], move[1], move[2]});
+  put3(out->move, r.move);
+  out->on_ground = r.on_ground ? 1 : 0;
+  out->ground = r.ground;
+  put3(out->ground_velocity, r.ground_velocity);
+}
+
+int svxc_sweep_ex(svxc_world* w, const double mn[3], const double mx[3], const double move[3], svxc_sweep_hit* out) {
+  if (!out) return 0;
+  *out = svxc_sweep_hit{};
+  out->t = 1.0;
+  if (!w || !mn || !mx || !move) return 0;
+  const SweepHit r = w->w.sweep({mn[0], mn[1], mn[2]}, {mx[0], mx[1], mx[2]}, {move[0], move[1], move[2]});
+  if (!r.hit) return 0;
+  out->hit = 1;
+  out->t = r.t;
+  put3(out->normal, r.normal);
+  out->grid = r.grid;
+  put3(out->velocity, r.velocity);
   return 1;
 }
 

@@ -51,10 +51,17 @@ is one byte: 0 air, else `1 + material` in the low 7 bits and bit 7 **anchored**
   broken (a bit per voxel face).
 
 **Grids.** Besides the world grid (its axes the world's), a world can hold **oriented grids**:
-voxel lattices of the same voxel size placed with a position and rotation of their own (a
-building at an angle, a diagonal brace, a ramp), simulated like the world grid in every respect.
-Where the voxels of two grids meet they are bonded by **junctions**, so structures and pieces
-span grids. See [`GRIDS.md`](GRIDS.md).
+voxel lattices placed with a position and rotation of their own and a voxel size of their own (a
+building at an angle, a diagonal brace, a ramp, a fine railing), simulated like the world grid in
+every respect. Where the voxels of two grids meet they are bonded by **junctions**, so structures
+and pieces span grids; where they overlap, the grid of higher priority keeps its voxels. A grid
+can be placed anew. See [`GRIDS.md`](GRIDS.md).
+
+**Motion.** A **kinematic body** is a rigid frame the host drives (a door, a lift, a drawbridge, a
+crane's jib): its grids move with it, push and carry pieces, and its structures are loaded by the
+motion. **Joints** hold pieces, grids' voxels, kinematic bodies and the world together (hinges,
+sliders, ropes, rods, welds; limits, motors, a breaking strength), and load what they hold on to.
+See [`MOTION.md`](MOTION.md).
 
 **Materials** live in a process-wide registry (`svx/material/material.hpp`): eleven presets
 (reinforced concrete, concrete, steel, masonry, soil, rock, indestructible bedrock, wood, stone,
@@ -133,7 +140,9 @@ for (;;) {
   - `Crack`: a bond broke (position, normal, utilization).
   - `Impact`: a blast or a heavy landing (energy).
   - `Dust`: crushed material, or a shard too small to be a piece.
-  - `GridAdded`, `GridRemoved`: an oriented grid came or went (streamed, removed, loaded).
+  - `GridAdded`, `GridRemoved`, `GridMoved`: an oriented grid came, went or was placed anew
+    (streamed, removed, moved, loaded).
+  - `JointBroken`: a joint gave way (its force), or lost its hold (its voxel is gone).
 
   Cosmetic events (cracks, dust, landings) are budgeted per tick. Piece events never are.
 - **Pieces** (`pieces()`, `piece(id)`): pose (centre of mass `pos`, rotation `rot` from the shape
@@ -147,8 +156,9 @@ for (;;) {
 - **Queries**:
   - `raycast` hits the grids and the pieces.
   - `collide` moves a box as far as the grids' voxels let it (a character controller's sweep;
-    pieces are not obstacles to it). `sweep` moves a box in any direction and returns the normal
-    of what stopped it (sliding along a turned wall).
+    pieces are not obstacles to it), and reports what it stands on and that surface's velocity
+    (a lift carries its rider). `sweep` moves a box in any direction and returns the normal and
+    velocity of what stopped it (sliding along a turned wall).
   - `debug_field` gives per-voxel utilization or fragment colours of a chunk.
   - `probe_utilization` solves the structure holding a voxel now.
 - **Stats and hashes**: `stats()`; `state_hash()` (voxels and broken bonds);
@@ -164,8 +174,9 @@ The core never meshes. A host can:
   opts)` gives each shape's vertices in its lattice; `shapes[k].xf.to(v)` puts them in the shape
   frame (the identity for the first). Draw it every frame at `pos + rot (s - com)`. A piece never
   changes shape: a new shape comes as a new piece (`Split`).
-- Mesh an oriented grid's changed chunks in its lattice and place them with its frame
-  ([`GRIDS.md`](GRIDS.md) §3).
+- Mesh an oriented grid's changed chunks in its lattice and draw them with its frame (a
+  kinematic body's grids: with its pose each frame; [`GRIDS.md`](GRIDS.md) §6).
+- Draw joints from `joint(id, &state)`: a rope between its ends.
 - Use `Crack`, `Dust` and `Impact` for particles, decals, sound and camera shake.
 
 The game harness (`game/src/game.cpp`) does exactly this. It also fades out culled pieces.
@@ -351,8 +362,11 @@ points, without touching the core. `svx_env` ([`ENV.md`](ENV.md)) is built on th
 - The extension points (§5) are there too: layers (`svxc_add_layer`, `svxc_set_layer`,
   `svxc_chunk_layer`, `svxc_poll_layer_changes`), piece layers and voxel removal, loads, piece
   forces, and systems with all their callbacks (`svxc_add_system_ex`).
-- Oriented grids (`svxc_add_grid`, `svxc_remove_grid`, voxels, layers and loads per grid,
-  pieces' shapes, `svxc_sweep`): [`GRIDS.md`](GRIDS.md) §6.
+- Oriented grids (`svxc_add_grid`, `svxc_add_grid_desc`, `svxc_set_grid_frame`,
+  `svxc_remove_grid`, voxels, layers and loads per grid, pieces' shapes, `svxc_sweep`,
+  `svxc_collide_ex`): [`GRIDS.md`](GRIDS.md) §10.
+- Kinematic bodies (`svxc_add_kinematic`, `svxc_drive_kinematic`, ...) and joints
+  (`svxc_add_joint`, ...): [`MOTION.md`](MOTION.md) §3.
 
 `examples/c_api/main.c` is a complete C host.
 

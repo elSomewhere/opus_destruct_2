@@ -82,8 +82,8 @@ export const DEBUG_VIEW_NAMES: Readonly<Record<DebugView, string>> = {
   [DebugView.Fragments]: 'fragments',
 };
 
-export type ProceduralKind = 'city' | 'rooms' | 'tower' | 'yard' | 'angles';
-export const PROCEDURAL_KINDS: readonly ProceduralKind[] = ['rooms', 'city', 'tower', 'yard', 'angles'];
+export type ProceduralKind = 'city' | 'rooms' | 'tower' | 'yard' | 'angles' | 'machines';
+export const PROCEDURAL_KINDS: readonly ProceduralKind[] = ['rooms', 'city', 'tower', 'yard', 'angles', 'machines'];
 
 // ---------------------------------------------------------------------------------------
 // Chunk mesh vertex format (28 bytes, interleaved, little-endian)
@@ -369,6 +369,11 @@ export interface ChunkMesh extends MeshData {
   key: string;
   /** World position of the chunk's minimum corner. Vertex positions are world, not local. */
   origin: Vec3;
+  /**
+   * (front-end extension) An oriented grid's chunk (docs/GRIDS.md): its vertices and origin are
+   * in the grid's lattice (metres), drawn where the grid's frame (`grids` messages) places it.
+   */
+  grid?: number;
 }
 
 /**
@@ -415,6 +420,11 @@ export interface ChunkOccupancy {
   chunk: [number, number, number];
   state: 0 | 1 | 2;
   bits?: ArrayBuffer;
+  /**
+   * (front-end extension) An oriented grid's chunk, in its lattice (placed by its frame: `grids`
+   * messages); absent: the world grid's.
+   */
+  grid?: number;
 }
 
 /**
@@ -518,6 +528,12 @@ export interface CollideResultMessage {
   id: number;
   move: Vec3;
   onGround: boolean;
+  /**
+   * (front-end extension) What the box stands on (onGround): the grid (0 the world grid) and its
+   * velocity under the box (a kinematic body's: a lift, a turntable; a rider adds it x dt).
+   */
+  ground?: number;
+  groundVelocity?: Vec3;
 }
 
 /**
@@ -704,6 +720,38 @@ export interface EnvMessage {
   smoke: Float32Array<ArrayBuffer>;
 }
 
+/**
+ * Doubles per grid in `GridsMessage.frames`: id, origin xyz, rotation xyzw (lattice -> world),
+ * voxel size, kinematic body (0: the static world), and the velocity field it moves with:
+ * velocity xyz, angular xyz, centre xyz (v + w x (X - c)).
+ */
+export const GRID_STRIDE = 19;
+
+/**
+ * (front-end extension) The oriented grids' places (docs/GRIDS.md): the grids that came, moved or
+ * move (a kinematic body's, every tick), and the grids gone. Their chunk meshes and occupancy are
+ * in their lattices.
+ */
+export interface GridsMessage {
+  type: 'grids';
+  /** GRID_STRIDE doubles per grid; transferred. */
+  frames: Float64Array<ArrayBuffer>;
+  removed: number[];
+}
+
+/**
+ * Doubles per joint in `JointsMessage.joints`: id, type (0 ball, 1 hinge, 2 slider, 3 fixed,
+ * 4 distance: a rope or a rod), end a xyz, end b xyz (world).
+ */
+export const JOINT_STRIDE = 8;
+
+/** (front-end extension) The joints (to draw ropes), sent after a tick while any exist (and once empty). */
+export interface JointsMessage {
+  type: 'joints';
+  /** JOINT_STRIDE doubles per joint; transferred. */
+  joints: Float64Array<ArrayBuffer>;
+}
+
 export interface StatsMessage {
   type: 'stats';
   stats: EngineStats;
@@ -753,7 +801,9 @@ export type WorkerMessage =
   | DebrisMessage
   | OccupancyMessage
   | EnvMessage
-  | WaterMessage;
+  | WaterMessage
+  | GridsMessage
+  | JointsMessage;
 
 export type WorkerMessageType = WorkerMessage['type'];
 export type WorkerMessageOf<T extends WorkerMessageType> = Extract<WorkerMessage, { type: T }>;
@@ -778,6 +828,8 @@ const WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set<WorkerMessageType>([
   'occupancy',
   'env',
   'water',
+  'grids',
+  'joints',
 ]);
 
 const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set<EngineCommandType>([
@@ -847,6 +899,12 @@ export function workerMessageTransferables(msg: WorkerMessage): ArrayBuffer[] {
       break;
     case 'debris':
       pushUnique(out, seen, msg.poses.buffer);
+      break;
+    case 'grids':
+      pushUnique(out, seen, msg.frames.buffer);
+      break;
+    case 'joints':
+      pushUnique(out, seen, msg.joints.buffer);
       break;
     case 'env':
       pushUnique(out, seen, msg.flames.buffer);

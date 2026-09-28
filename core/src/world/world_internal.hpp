@@ -117,16 +117,17 @@ struct SecAcc {
     jsg.push_back(static_cast<i8>(sign_from_a));
     jw.push_back(w);
   }
-  // xf(lattice) -> const LatticeXf&: the lattices in the frame the bond is made in (the world, a
-  // body's frame); S: junction samples per face edge. Faces of an unplaced lattice (the world
-  // grid's, a body's first shape) are measured exactly as they always were.
-  template <class Xf>
-  SBond finish(f64 h, Xf&& xf, i32 S, const V3& ca, const V3* cb, MaterialId ma, f64 strength_a) const {
-    if (js.empty() && xf(grid).identity) return finish_lattice(h, ca, cb, ma, strength_a);
-    return finish_general(h, xf, S, ca, cb, ma, strength_a);
+  // hx(lattice) -> its voxel size; xf(lattice) -> const LatticeXf&: the lattices in the frame the
+  // bond is made in (a body's frame: the static world's is the world); S: junction samples per
+  // face edge. Faces of an unplaced lattice (the world grid's, a body's first shape) are measured
+  // exactly as they always were.
+  template <class Hx, class Xf>
+  SBond finish(Hx&& hx, Xf&& xf, i32 S, const V3& ca, const V3* cb, MaterialId ma, f64 strength_a) const {
+    if (js.empty() && xf(grid).identity) return finish_lattice(hx(grid), ca, cb, ma, strength_a);
+    return finish_general(hx, xf, S, ca, cb, ma, strength_a);
   }
-  template <class Xf>
-  SBond finish_general(f64 h, Xf&& xf, i32 S, const V3& ca, const V3* cb, MaterialId ma, f64 strength_a) const;
+  template <class Hx, class Xf>
+  SBond finish_general(Hx&& hx, Xf&& xf, i32 S, const V3& ca, const V3* cb, MaterialId ma, f64 strength_a) const;
   SBond finish_lattice(f64 h, const V3& ca, const V3* cb, MaterialId ma, f64 strength_a) const {
     SBond B;
     B.a = a;
@@ -231,8 +232,8 @@ struct SecAcc {
 // The general case: faces of a lattice placed in the frame, and junction samples. Each face or
 // sample is a small square (side, area) at a point with a normal; the section is theirs
 // projected onto the plane normal to the bond (their mean normal).
-template <class Xf>
-SBond SecAcc::finish_general(f64 h, Xf&& xf, i32 S, const V3& ca, const V3* cb, MaterialId ma, f64 strength_a) const {
+template <class Hx, class Xf>
+SBond SecAcc::finish_general(Hx&& hx, Xf&& xf, i32 S, const V3& ca, const V3* cb, MaterialId ma, f64 strength_a) const {
   SBond B;
   B.a = a;
   B.b = b;
@@ -242,7 +243,8 @@ SBond SecAcc::finish_general(f64 h, Xf&& xf, i32 S, const V3& ca, const V3* cb, 
   B.faces = static_cast<i32>(ne);
   std::vector<V3> xs(ne), nk(ne);
   std::vector<f64> ar(ne), sd(ne);
-  const f64 A1 = h * h, sj = h / static_cast<f64>(std::max(1, S));
+  const f64 h = hx(grid);  // (the voxel size of its faces' lattice; each sample: its own lattice's)
+  const f64 A1 = h * h;
   if (nf) {
     const LatticeXf& X = xf(grid);
     for (size_t k = 0; k < nf; ++k) {
@@ -259,8 +261,9 @@ SBond SecAcc::finish_general(f64 h, Xf&& xf, i32 S, const V3& ca, const V3* cb, 
   for (size_t q = 0; q < nj; ++q) {
     const JSample& s = js[q];
     const LatticeXf& X = xf(s.vg);
+    const f64 hs = hx(s.vg), sj = hs / static_cast<f64>(std::max(1, S));
     const size_t k = nf + q;
-    xs[k] = X.to(junction_point(s.v, s.face, s.sub, S, h, 0.0));
+    xs[k] = X.to(junction_point(s.v, s.face, s.sub, S, hs, 0.0));
     nk[k] = X.dir_to(face_normal(s.face)) * static_cast<f64>(jsg[q]);
     ar[k] = sj * sj * static_cast<f64>(jw[q]);
     sd[k] = sj;
@@ -594,6 +597,11 @@ struct BodyGraph {
 
 struct World::Structure {
   i64 id = 0;
+  u16 body = 0;                    // its kinematic body's slot (0: the static world): its frame
+  // (a kinematic body's structure) the frame's acceleration field the solve in progress (or the
+  // last one) was given: uniform part (gravity less the frame's acceleration, in its frame), and
+  // its angular velocity and acceleration
+  V3 frame_g, frame_w, frame_alpha;
   StressProblem P;
   // Nodes are clusters of fragments (single fragments for small structures): node i holds
   // frags[fstart[i] .. fstart[i + 1]) (a retired node's entries are cleared, idx -1). A node's
@@ -639,21 +647,63 @@ struct World::Structure {
   }
 };
 
+// A kinematic body (docs/MOTION.md §1): a rigid frame the host drives, and its grids.
+struct World::KinState {
+  KinematicId id = 0;
+  bool base = true;
+  V3 x;                 // pose now: its frame's origin and rotation in the world
+  Quat q;
+  V3 v, w;              // velocity of the tick in progress (after it: of the last tick)
+  V3 a, alpha;          // acceleration of the last tick (its structures' inertial loads)
+  V3 x0, x1;            // (the tick in progress) pose at its start and its end
+  Quat q0, q1;
+  bool driven = false;  // drive_kinematic: (tx, tq) at the end of the next tick
+  V3 tx;
+  Quat tq;
+  bool hold = false;    // set_kinematic_velocity: keeps (cv, cw)
+  V3 cv, cw;
+  std::vector<u16> grids;  // its grids' slots (ascending)
+};
+
+// A joint's anchors (docs/MOTION.md §2): what each end holds on to. (Its solver state is
+// rigid_.joints, in the same order.)
+struct World::JointRec {
+  JointId id = 0;
+  struct End {
+    JointAnchor::Kind kind = JointAnchor::Kind::World;  // (a Piece anchor is held as a Grid one: its voxel)
+    GridId grid = 0;                   // (Grid) the grid of its voxel
+    IVec3 voxel{0, 0, 0};              // (Grid) that voxel
+    // the anchor, the axis and the reference direction: Grid: in the grid's lattice (m);
+    // Kinematic: in the body's frame; World: in the world
+    V3 point, axis{0, 0, 1}, ref{1, 0, 0};
+    KinematicId body = 0;              // (Kinematic)
+    i64 piece = 0;                     // (Grid) the piece its voxel went with (0: it is in its grid)
+    i32 shape = -1;                    // ... its shape of that grid
+  } a, b;
+};
+
 // A grid of the world (docs/GRIDS.md): its frame, voxels (oriented grids; the world grid's are
 // World::grid_) and what the world derives from them.
 struct World::GridState {
   GridId id = 0;
   bool base = true;                  // (oriented grids) part of the level: only its changes are saved
+  i32 priority = 0;                  // overlaps: the higher keeps its voxels (then the higher id)
+  LatticeXf local;                   // lattice -> its body's frame (structures, junctions)
   LatticeXf xf;                      // lattice -> world (the world grid: the identity)
   VoxelGrid g;                       // (oriented grids)
   std::unordered_map<u64, FragChunk> frags;         // chunk -> its fragments (cache)
   std::unordered_map<u64, std::vector<i64>> owner;  // chunk -> structure id per fragment (0 none)
   std::unordered_set<u64> undesigned;               // chunks generated and not designed yet
+  u16 body = 0;                      // its body's slot (0: the static world)
   V3 lo, hi;                         // (oriented grids) world box of its chunks
+  V3 blo, bhi;                       // (oriented grids) ... in its body's frame (junction candidates)
+  V3 llo, lhi;                       // (oriented grids) ... in its lattice (metres)
   bool any = false;                  // (oriented grids) it has chunks
   std::unordered_map<u64, std::vector<u16>> near;   // chunk -> other grids a junction sample may reach (cache)
   u64 near_epoch = 0;
   u64 home = ~0ull;                  // (streamed) the world chunk it came with
+  bool moved = false;                // placed anew since the level made it (saved in deltas)
+  u32 placement = 0;                 // times placed anew (its fragments' identities: warm starts, reference loads)
 };
 
 inline VoxelGrid& World::vg(u16 g) { return g == 0 ? grid_ : grids_[g]->g; }

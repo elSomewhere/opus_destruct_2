@@ -22,7 +22,7 @@ import type {
   WadOptions,
   WorldInfo,
 } from '../engine/protocol.ts';
-import { DEBRIS_STRIDE, DEFAULT_PARAMS, FLAME_STRIDE, SMOKE_STRIDE, TIMELINE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
+import { DEBRIS_STRIDE, DEFAULT_PARAMS, FLAME_STRIDE, GRID_STRIDE, JOINT_STRIDE, SMOKE_STRIDE, TIMELINE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { postToMain, reportError, serveCommands } from './host.ts';
 // Generated Emscripten ES module (see the header comment); typed by SvxModule below.
 import createSvxModule from '../wasm/svx_web.js';
@@ -86,9 +86,14 @@ interface SvxModule {
   _svx_removed_chunk(e: number, i: number, out3: number): void;
   _svx_poll_removed_grid(e: number): number;
   _svx_removed_grid_chunk(e: number, i: number, out4: number): void;
-  _svx_poll_occupancy(e: number): number;
-  _svx_occupancy_chunk(e: number, i: number, out3: number): void;
   _svx_chunk_occupancy(e: number, cx: number, cy: number, cz: number, out: number): number;
+  _svx_grid_chunk_occupancy(e: number, grid: number, cx: number, cy: number, cz: number, out: number): number;
+  _svx_poll_grids(e: number): number;
+  _svx_grid_info(e: number, i: number, out19: number): void;
+  _svx_poll_grids_removed(e: number): number;
+  _svx_grid_removed(e: number, i: number): number;
+  _svx_poll_joints(e: number): number;
+  _svx_joint_info(e: number, i: number, out8: number): void;
   _svx_poll_far(e: number): number;
   _svx_far_info(e: number, i: number, out: number): void;
   _svx_far_vertices(e: number, i: number): number;
@@ -124,6 +129,7 @@ const ENV_TICKS = 6;
 let mod: SvxModule | null = null;
 let eng = 0;
 let scratch = 0; // 64 doubles of call scratch space
+let jointsLive = false; // (the last joints message had some: one empty follows when they are gone)
 let config: InitConfig = { voxelSize: 0.125, threads: 1, memoryMB: 1024, params: { ...DEFAULT_PARAMS } };
 let params: EngineParams = { ...DEFAULT_PARAMS };
 let loaded = false;
@@ -191,7 +197,7 @@ function chunkKey(x: number, y: number, z: number): string {
   return `${x},${y},${z}`;
 }
 
-/** An oriented grid's chunk (its mesh is placed in the world by the engine: only its key differs). */
+/** An oriented grid's chunk (its mesh in the grid's lattice, placed by its frame: `grids`). */
 function gridChunkKey(grid: number, x: number, y: number, z: number): string {
   return `g${grid}:${x},${y},${z}`;
 }
@@ -266,10 +272,12 @@ function sendTextures(): boolean {
   return true;
 }
 
-function occupancyOf(cx: number, cy: number, cz: number): ChunkOccupancy {
+function occupancyOf(cx: number, cy: number, cz: number, grid = 0): ChunkOccupancy {
   const m = mod as SvxModule;
-  const state = m._svx_chunk_occupancy(eng, cx, cy, cz, occBuf) as 0 | 1 | 2;
-  return state === 2 ? { chunk: [cx, cy, cz], state, bits: copyOut(occBuf, 4096) } : { chunk: [cx, cy, cz], state };
+  const state = (grid === 0 ? m._svx_chunk_occupancy(eng, cx, cy, cz, occBuf) : m._svx_grid_chunk_occupancy(eng, grid, cx, cy, cz, occBuf)) as 0 | 1 | 2;
+  const o: ChunkOccupancy = state === 2 ? { chunk: [cx, cy, cz], state, bits: copyOut(occBuf, 4096) } : { chunk: [cx, cy, cz], state };
+  if (grid !== 0) o.grid = grid;
+  return o;
 }
 
 function flushMeshes(): void {
@@ -282,19 +290,20 @@ function flushMeshes(): void {
     const vc = f64(6);
     const ic = f64(7);
     const grid = f64(9);
-    // (a decoration-only mesh - charring, glow - leaves the chunk's occupancy as it was; an
-    // oriented grid's chunk changes the world chunks' occupancy, polled below)
-    if (grid === 0 && f64(8) === 0) occupancy.push(occupancyOf(f64(0), f64(1), f64(2)));
+    // (a decoration-only mesh - charring, glow - leaves the chunk's occupancy as it was)
+    if (f64(8) === 0) occupancy.push(occupancyOf(f64(0), f64(1), f64(2), grid));
     const key = grid === 0 ? chunkKey(f64(0), f64(1), f64(2)) : gridChunkKey(grid, f64(0), f64(1), f64(2));
     knownChunks.add(key);
-    meshes.push({
+    const mesh: ChunkMesh = {
       key,
       origin: [f64(3), f64(4), f64(5)],
       vertices: copyOut(m._svx_mesh_vertices(eng, i), vc * VERTEX_STRIDE),
       vertexCount: vc,
       indices: copyOut(m._svx_mesh_indices(eng, i), ic * 4),
       indexCount: ic,
-    });
+    };
+    if (grid !== 0) mesh.grid = grid;
+    meshes.push(mesh);
   }
   // far render tier (streamed worlds): coarse tile meshes under "far:x,y" keys
   const nfar = m._svx_poll_far(eng);
@@ -373,25 +382,52 @@ function flushMeshes(): void {
     }
     if (keys.length > 0) postToMain({ type: 'chunkRemoved', keys });
   }
-  // oriented grids: their emptied chunks, and the world chunks whose occupancy they changed
+  // oriented grids: their emptied chunks (their occupancy with them)
   const rg = m._svx_poll_removed_grid(eng);
   if (rg > 0) {
     const keys: string[] = [];
     for (let i = 0; i < rg; i++) {
       m._svx_removed_grid_chunk(eng, i, scratch);
       const b = scratch >> 2;
-      const key = gridChunkKey(m.HEAP32[b] ?? 0, m.HEAP32[b + 1] ?? 0, m.HEAP32[b + 2] ?? 0, m.HEAP32[b + 3] ?? 0);
+      const g = m.HEAP32[b] ?? 0;
+      const c: [number, number, number] = [m.HEAP32[b + 1] ?? 0, m.HEAP32[b + 2] ?? 0, m.HEAP32[b + 3] ?? 0];
+      const key = gridChunkKey(g, c[0], c[1], c[2]);
       if (knownChunks.delete(key)) keys.push(key);
+      occupancy.push({ chunk: c, state: 0, grid: g });
     }
     if (keys.length > 0) postToMain({ type: 'chunkRemoved', keys });
   }
-  const oc = m._svx_poll_occupancy(eng);
-  for (let i = 0; i < oc; i++) {
-    m._svx_occupancy_chunk(eng, i, scratch);
-    const b = scratch >> 2;
-    occupancy.push(occupancyOf(m.HEAP32[b] ?? 0, m.HEAP32[b + 1] ?? 0, m.HEAP32[b + 2] ?? 0));
-  }
   if (occupancy.length > 0) postToMain({ type: 'occupancy', voxelSize: config.voxelSize, chunks: occupancy });
+}
+
+/** The oriented grids' places (the ones that came, moved or move) and the grids gone. */
+function flushGrids(): void {
+  const m = mod as SvxModule;
+  const n = m._svx_poll_grids(eng);
+  const nr = m._svx_poll_grids_removed(eng);
+  if (n === 0 && nr === 0) return;
+  const frames = new Float64Array(n * GRID_STRIDE);
+  for (let i = 0; i < n; i++) {
+    m._svx_grid_info(eng, i, scratch);
+    frames.set(m.HEAPF64.subarray(scratch >> 3, (scratch >> 3) + GRID_STRIDE), i * GRID_STRIDE);
+  }
+  const removed: number[] = [];
+  for (let i = 0; i < nr; i++) removed.push(m._svx_grid_removed(eng, i) >>> 0);
+  postToMain({ type: 'grids', frames, removed });
+}
+
+/** The joints (ropes to draw), while any exist (and once empty after the last). */
+function flushJoints(): void {
+  const m = mod as SvxModule;
+  const n = m._svx_poll_joints(eng);
+  if (n === 0 && !jointsLive) return;
+  jointsLive = n > 0;
+  const joints = new Float64Array(n * JOINT_STRIDE);
+  for (let i = 0; i < n; i++) {
+    m._svx_joint_info(eng, i, scratch);
+    joints.set(m.HEAPF64.subarray(scratch >> 3, (scratch >> 3) + JOINT_STRIDE), i * JOINT_STRIDE);
+  }
+  postToMain({ type: 'joints', joints });
 }
 
 function flushEvents(): void {
@@ -620,7 +656,9 @@ async function finishLoad(texturesSent: boolean, label: string): Promise<void> {
   console.info(`[wasm] ${label}: bake ${baked ? 'done' : 'skipped (world too large)'} in ${(performance.now() - t0).toFixed(0)} ms`);
   postToMain({ type: 'progress', stage: `meshing ${label}`, done: 2, total: 3 });
   postToMain({ type: 'ready', info: worldInfo(texturesSent) });
+  flushGrids();
   flushMeshes();
+  flushJoints();
   loaded = true;
   postToMain({ type: 'progress', stage: 'ready', done: 3, total: 3 });
 }
@@ -631,6 +669,8 @@ function clearChunks(): void {
   fieldsLive = 0;
   fieldsKey = '';
   debrisLive = 0; // (the front end drops the old world's pieces when it requests a load)
+  if (jointsLive) postToMain({ type: 'joints', joints: new Float64Array(0) });
+  jointsLive = false;
   debrisSent = new Float64Array(0);
   // (the old world's flames and smoke go now: a message sent before the load may still be on
   // its way)
@@ -748,12 +788,16 @@ async function handle(cmd: EngineCommand): Promise<void> {
     case 'collide': {
       let move: Vec3 = [...cmd.move];
       let onGround = false;
+      let ground = 0;
+      let groundVelocity: Vec3 = [0, 0, 0];
       if (mod && loaded) {
         mod._svx_collide(eng, cmd.min[0], cmd.min[1], cmd.min[2], cmd.max[0], cmd.max[1], cmd.max[2], cmd.move[0], cmd.move[1], cmd.move[2], scratch);
         move = [f64(0), f64(1), f64(2)];
         onGround = f64(3) > 0;
+        ground = f64(4);
+        groundVelocity = [f64(5), f64(6), f64(7)];
       }
-      postToMain({ type: 'collideResult', id: cmd.id, move, onGround });
+      postToMain({ type: 'collideResult', id: cmd.id, move, onGround, ground, groundVelocity });
       break;
     }
     case 'setParams':
@@ -776,7 +820,9 @@ function loop(): void {
       flushEvents();
       flushDebris();
       flushEnv();
+      flushGrids();
       flushMeshes();
+      flushJoints();
       flushWater();
       sampleTimeline(t1 - t0, performance.now() - t1);
       if (now - lastStats >= STATS_MS) sendStats(now);

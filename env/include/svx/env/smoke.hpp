@@ -90,6 +90,7 @@ class SmokeSystem final : public WorldSystem {
   struct Solid {  // a chunk's cells that are mostly solid (1), or not resident (all 1)
     std::array<u8, kCells> s{};
     bool stale = true;
+    u64 grids = 0;  // (the oriented grids' solids it was made with: World::grid_solids_stamp)
   };
   void smoke_step(World& w, f64 dt);
   const Solid& solid(const World& w, const IVec3& chunk);  // (valid until the step ends: the cache is pruned after it)

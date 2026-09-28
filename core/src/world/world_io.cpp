@@ -186,11 +186,19 @@ void World::design_node(const Structure& s, i32 nd, u8 cls, i64* strengthened) {
 
 namespace {
 
-// The grids' part of a world delta, after the world grid's records: removed level grids, then
-// per grid its id, whether it is a level's (base: its changed chunks) or this session's (all of
-// it), its frame and its chunk records.
+// The grids' part of a world delta, after the world grid's records (docs/GRIDS.md §4):
+//   magic "SVXG" | version
+//   the level's grids that were removed: u32 count, their ids
+//   grid entries: u32 count, then per grid (a level's grid that changed or moved: its changed
+//     chunks; a grid of this session: all of it)
+//       v2: id u32 | flags u8 (1: a level's) | voxel size f64 | priority i32 | body u32 (its
+//           kinematic body; 0: the static world) | frame in its body (origin xyz, rot xyzw: 7 f64)
+//           | chunk records (u32 count; each: u32 size, the record)
+//       v1: id u32 | base u8 | frame (7 f64) | chunk records
+//   (v2) kinematic bodies: u32 count, then per body: id u32 | flags u8 (1: a level's) | pose (7
+//     f64) | velocity (v, w: 6 f64)
 constexpr u32 kGridsMagic = 0x47585653;  // "SVXG"
-constexpr u32 kGridsVersion = 1;
+constexpr u32 kGridsVersion = 2;
 
 void put32(std::vector<u8>& b, u32 v) {
   for (int i = 0; i < 4; ++i) b.push_back(static_cast<u8>(v >> (8 * i)));
@@ -249,10 +257,58 @@ size_t grid_part_end(const std::vector<u8>& bytes) {
 struct GridDelta {
   GridId id = 0;
   bool base = true;
+  f64 h = 0.0;
+  i32 priority = 0;
+  u32 body = 0;
   V3 origin;
   Quat rot;
   std::vector<std::vector<u8>> recs;
 };
+
+bool finite_q(const Quat& q) { return std::isfinite(q.x) && std::isfinite(q.y) && std::isfinite(q.z) && std::isfinite(q.w); }
+
+// One grid entry (a malformed one: false).
+bool read_grid_entry(Rd& in, u32 version, f64 world_h, GridDelta* d) {
+  d->id = in.u32_();
+  d->base = (in.u8_() & 1) != 0;
+  d->h = world_h;
+  if (version >= 2) {
+    d->h = in.f64_();
+    d->priority = static_cast<i32>(in.u32_());
+    d->body = in.u32_();
+  }
+  d->origin = V3{in.f64_(), in.f64_(), in.f64_()};
+  d->rot = Quat{in.f64_(), in.f64_(), in.f64_(), in.f64_()};
+  const u32 nc = in.u32_();
+  if (!in.ok || d->id == 0 || u64(nc) * 12 > in.b.size()) return false;
+  if (!std::isfinite(d->h) || !(d->h >= world_h / 64.0) || !(d->h <= world_h * 64.0)) return false;
+  if (!std::isfinite(d->origin.x) || !std::isfinite(d->origin.y) || !std::isfinite(d->origin.z) || !finite_q(d->rot)) return false;
+  for (u32 c = 0; c < nc && in.ok; ++c) {
+    const u32 sz = in.u32_();
+    if (!in.ok || !in.need(sz) || sz < 8) return false;
+    std::vector<u8> r(in.b.begin() + static_cast<long>(in.p), in.b.begin() + static_cast<long>(in.p + sz));
+    in.p += sz;
+    if (!VoxelGrid::check_record(r)) return false;
+    d->recs.push_back(std::move(r));
+  }
+  return in.ok;
+}
+
+std::vector<u8> write_grid_entry(const GridDelta& d) {
+  std::vector<u8> out;
+  put32(out, d.id);
+  out.push_back(d.base ? 1 : 0);
+  putf(out, d.h);
+  put32(out, static_cast<u32>(d.priority));
+  put32(out, d.body);
+  for (f64 x : {d.origin.x, d.origin.y, d.origin.z, d.rot.x, d.rot.y, d.rot.z, d.rot.w}) putf(out, x);
+  put32(out, static_cast<u32>(d.recs.size()));
+  for (const auto& r : d.recs) {
+    put32(out, static_cast<u32>(r.size()));
+    out.insert(out.end(), r.begin(), r.end());
+  }
+  return out;
+}
 
 }  // namespace
 
@@ -274,9 +330,10 @@ std::vector<u8> World::save_delta() const {
   std::vector<std::vector<u8>> gds;
   for (GridId id : grids()) {
     const u16 g = static_cast<u16>(slot_of(id));
-    if (gs(g).base && gs(g).g.modified_chunks().empty()) continue;  // (a level's grid as it was)
+    if (gs(g).base && gs(g).g.modified_chunks().empty() && !gs(g).moved) continue;  // (a level's grid as it was)
     gds.push_back(grid_entry(g));
   }
+  const std::vector<u8> kins = kinematic_entries();
   std::vector<GridId> removed = removed_base_;
   std::sort(removed.begin(), removed.end());
   removed.erase(std::unique(removed.begin(), removed.end()), removed.end());
@@ -286,7 +343,7 @@ std::vector<u8> World::save_delta() const {
     for (u64 k : archive_->keys())
       if (k >> 63) archived.push_back({k, archive_->get(k)});
   std::sort(archived.begin(), archived.end());
-  if (gds.empty() && removed.empty() && archived.empty()) return out;
+  if (gds.empty() && removed.empty() && archived.empty() && kins.size() <= 8) return out;
   put32(out, kGridsMagic);
   put32(out, kGridsVersion);
   put32(out, static_cast<u32>(removed.size()));
@@ -294,6 +351,7 @@ std::vector<u8> World::save_delta() const {
   put32(out, static_cast<u32>(gds.size() + archived.size()));
   for (const auto& e : gds) out.insert(out.end(), e.begin(), e.end());
   for (const auto& [k, rec] : archived) out.insert(out.end(), rec.begin(), rec.end());  // (archived: a whole grid entry)
+  out.insert(out.end(), kins.begin(), kins.end());
   return out;
 }
 
@@ -306,42 +364,73 @@ bool World::load_delta(const std::vector<u8>& bytes) {
   // the grids' part, checked whole before anything is applied
   std::vector<GridId> removed;
   std::vector<GridDelta> gds;
-  std::vector<std::vector<u8>> gd_raw;  // (each grid entry's bytes: archived as they are)
+  std::vector<KinematicId> kremoved;
+  std::vector<KinState> kds;
   {
     const size_t end = grid_part_end(bytes);
     if (end == 0) return false;
     if (end < bytes.size()) {
       Rd in{bytes};
       in.p = end;
-      if (in.u32_() != kGridsMagic || in.u32_() != kGridsVersion) return false;
+      if (in.u32_() != kGridsMagic) return false;
+      const u32 version = in.u32_();
+      if (version < 1 || version > kGridsVersion) return false;
       const u32 nr = in.u32_();
       if (!in.ok || u64(nr) * 4 > bytes.size()) return false;
       for (u32 k = 0; k < nr && in.ok; ++k) removed.push_back(in.u32_());
       const u32 ng = in.u32_();
       if (!in.ok || u64(ng) * 61 > bytes.size()) return false;
       for (u32 k = 0; k < ng && in.ok; ++k) {
-        const size_t start = in.p;
         GridDelta d;
-        d.id = in.u32_();
-        d.base = in.u8_() != 0;
-        d.origin = V3{in.f64_(), in.f64_(), in.f64_()};
-        d.rot = Quat{in.f64_(), in.f64_(), in.f64_(), in.f64_()};
-        const u32 nc = in.u32_();
-        if (!in.ok || d.id == 0 || u64(nc) * 12 > bytes.size()) return false;
-        if (!in_range(d.origin) || !std::isfinite(d.rot.x) || !std::isfinite(d.rot.y) || !std::isfinite(d.rot.z) || !std::isfinite(d.rot.w))
-          return false;
-        for (u32 c = 0; c < nc && in.ok; ++c) {
-          const u32 sz = in.u32_();
-          if (!in.ok || !in.need(sz) || sz < 8) return false;
-          std::vector<u8> r(bytes.begin() + static_cast<long>(in.p), bytes.begin() + static_cast<long>(in.p + sz));
-          in.p += sz;
-          if (!VoxelGrid::check_record(r)) return false;
-          d.recs.push_back(std::move(r));
-        }
-        if (!in.ok) return false;
-        gd_raw.emplace_back(bytes.begin() + static_cast<long>(start), bytes.begin() + static_cast<long>(in.p));
+        if (!read_grid_entry(in, version, grid_.h, &d) || !in_range(d.origin)) return false;
         gds.push_back(std::move(d));
       }
+      if (version >= 2) {
+        // the kinematic bodies (kinematic_entries)
+        const u32 nkr = in.u32_();
+        if (!in.ok || u64(nkr) * 4 > bytes.size()) return false;
+        for (u32 k = 0; k < nkr && in.ok; ++k) kremoved.push_back(in.u32_());
+        const u32 nk = in.u32_();
+        if (!in.ok || u64(nk) * 109 > bytes.size()) return false;
+        auto v3 = [&]() { return V3{in.f64_(), in.f64_(), in.f64_()}; };
+        auto q4 = [&]() { return Quat{in.f64_(), in.f64_(), in.f64_(), in.f64_()}; };
+        for (u32 k = 0; k < nk && in.ok; ++k) {
+          KinState d;
+          d.id = in.u32_();
+          const u8 flags = in.u8_();
+          d.base = (flags & 1) != 0;
+          d.hold = (flags & 2) != 0;
+          d.driven = (flags & 4) != 0;
+          d.x = v3();
+          d.q = q4();
+          d.v = v3();
+          d.w = v3();
+          if (d.hold) {
+            d.cv = v3();
+            d.cw = v3();
+          }
+          if (d.driven) {
+            d.tx = v3();
+            d.tq = q4();
+          }
+          const f64 qn = d.q.x * d.q.x + d.q.y * d.q.y + d.q.z * d.q.z + d.q.w * d.q.w;
+          if (!in.ok || d.id == 0 || (flags & ~7u) != 0 || !in_range(d.x) || !finite_q(d.q) || !(qn > 0.5 && qn < 2.0) || !finite3(d.v) ||
+              !finite3(d.w) || !finite3(d.cv) || !finite3(d.cw) || (d.driven && (!in_range(d.tx) || !finite_q(d.tq))))
+            return false;
+          kds.push_back(std::move(d));
+        }
+        for (size_t a = 0; a < kds.size(); ++a)
+          for (size_t b2 = a + 1; b2 < kds.size(); ++b2)
+            if (kds[a].id == kds[b2].id) return false;
+        // (a level's kinematic body must be there: the level made it)
+        for (const KinState& d : kds)
+          if (d.base && kin_slot_of(d.id) < 0) return false;
+      }
+      // (a grid's body must be there, or come with the delta)
+      for (const GridDelta& d : gds)
+        if (d.body != 0 && kin_slot_of(d.body) < 0 &&
+            std::none_of(kds.begin(), kds.end(), [&](const KinState& k) { return k.id == d.body; }))
+          return false;
       if (!in.ok || in.p != bytes.size()) return false;
       // (a level's grid must be there - the host added the level's grids - unless streamed and
       // not resident: its changes are archived until it comes)
@@ -353,7 +442,21 @@ bool World::load_delta(const std::vector<u8>& bytes) {
     }
   }
   std::vector<GKey> touched;
-  // the grids first: removed ones go, changed ones take their records, new ones are made
+  // the kinematic bodies first (the grids' bodies): the level's removed ones go (with their
+  // grids), the level's others placed as saved, this session's made
+  for (KinematicId id : kremoved)
+    if (kin_slot_of(id) > 0) remove_kinematic(id, false);
+  for (const KinState& d : kds) {
+    i32 ks = kin_slot_of(d.id);
+    if (ks < 0) {
+      next_kin_ = std::max(next_kin_, d.id);
+      const KinematicId made = add_kinematic_impl(Pose{d.x, d.q}, false, d.id);
+      if (made == 0) continue;
+      ks = kin_slot_of(made);
+    }
+    restore_kinematic(static_cast<u16>(ks), d);
+  }
+  // then the grids: removed ones go, changed ones take their records, new ones are made
   for (GridId id : removed) {
     const i32 sl = slot_of(id);
     if (sl > 0) {
@@ -367,15 +470,21 @@ bool World::load_delta(const std::vector<u8>& bytes) {
     if (sl < 0 && d.base) {
       // (a streamed grid not resident: its changes wait in the archive)
       const u64 key = (1ull << 63) | d.id;
-      archive_record(key, gd_raw[q], 0);
+      archive_record(key, write_grid_entry(d), 0);
       continue;
     }
     if (sl < 0) {
       // this session's grid: made again, with its id
       VoxelGrid g;
-      g.h = grid_.h;
+      g.h = d.h;
       next_grid_ = std::max(next_grid_, d.id);
-      const GridId made = add_grid(GridFrame{d.origin, d.rot}, std::move(g), false);
+      GridDesc desc;
+      desc.frame = GridFrame{d.origin, d.rot};
+      desc.voxel_size = d.h;
+      desc.priority = d.priority;
+      desc.base = false;
+      desc.body = d.body;
+      const GridId made = add_grid(desc, std::move(g));
       if (made == 0) continue;
       const i32 ms = slot_of(made);
       GridState& st = gs(static_cast<u16>(ms));
@@ -386,6 +495,13 @@ bool World::load_delta(const std::vector<u8>& bytes) {
       }
       next_grid_ = std::max(next_grid_, d.id + 1);
       sl = ms;
+    } else {
+      // a level's grid: where it was when saved (moved since the level placed it)
+      const GridState& st = gs(static_cast<u16>(sl));
+      const LatticeXf at = LatticeXf::make(d.origin, d.rot);
+      if (at.off.x != st.local.off.x || at.off.y != st.local.off.y || at.off.z != st.local.off.z || at.q.x != st.local.q.x ||
+          at.q.y != st.local.q.y || at.q.z != st.local.q.z || at.q.w != st.local.q.w)
+        set_grid_frame(d.id, GridFrame{d.origin, d.rot});
     }
     VoxelGrid& G = vg(static_cast<u16>(sl));
     for (const auto& r : d.recs) {
@@ -559,6 +675,20 @@ void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
     const Chunk* ch = grid_.chunk(cc);
     if (ch && ch->free_count() > 0) gs(0).undesigned.insert(key);
   }
+  // (the static grids resident here that own their overlaps with the world grid displace its
+  // voxels: as the level, not a change)
+  if (any && oriented_ > 0) {
+    const f64 h = grid_.h;
+    const V3 clo{h * (cc[0] * kChunk - 0.5), h * (cc[1] * kChunk - 0.5), h * (cc[2] * kChunk - 0.5)};
+    const V3 chi{clo.x + h * kChunk, clo.y + h * kChunk, clo.z + h * kChunk};
+    const IVec3 vlo{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk}, vhi{vlo[0] + kChunk - 1, vlo[1] + kChunk - 1, vlo[2] + kChunk - 1};
+    for (size_t o = 1; o < grids_.size(); ++o) {
+      if (!grids_[o] || !grids_[o]->any || grids_[o]->body != 0) continue;
+      const GridState& os = *grids_[o];
+      if (os.hi.x < clo.x || os.lo.x > chi.x || os.hi.y < clo.y || os.lo.y > chi.y || os.hi.z < clo.z || os.lo.z > chi.z) continue;
+      if (owns(static_cast<u16>(o), 0) && displace(static_cast<u16>(o), 0, &vlo, &vhi, false) > 0) changed = true;
+    }
+  }
   if (!changed) return;
   grid_.mark_dirty(cc);
   for (int d = 0; d < 3; ++d)
@@ -585,7 +715,7 @@ void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
         (void)own;
         const IVec3 oc = unkey3(k);
         // (its chunks whose box meets this chunk's: stale, to patch with the world chunk)
-        const f64 h = grid_.h;
+        const f64 h = st.g.h;
         V3 a{INFINITY, INFINITY, INFINITY}, b{-INFINITY, -INFINITY, -INFINITY};
         for (int c = 0; c < 8; ++c) {
           const V3 w = st.xf.to(V3{h * ((c & 1) ? (oc[0] + 1) * kChunk : oc[0] * kChunk), h * ((c & 2) ? (oc[1] + 1) * kChunk : oc[1] * kChunk),
@@ -606,10 +736,15 @@ void World::generate_grids(u64 key) {
   for (const SourceGrid& sg : source_->grids(unkey3(key))) {
     if (sg.id == 0 || slot_of(sg.id) >= 0) continue;  // (here already)
     VoxelGrid g;
-    g.h = grid_.h;
+    g.h = sg.voxel_size > 0.0 ? sg.voxel_size : grid_.h;
     if (!source_->generate_grid(sg.id, g)) continue;
     // (generated: not a change)
-    const GridId id = add_grid_impl(GridFrame{sg.origin, sg.rot}, std::move(g), true, sg.id, key, false);
+    GridDesc d;
+    d.frame = GridFrame{sg.origin, sg.rot};
+    d.voxel_size = g.h;
+    d.priority = sg.priority;
+    d.base = true;
+    const GridId id = add_grid_impl(d, std::move(g), sg.id, key, false);
     if (id == 0) continue;
     const u16 sl = static_cast<u16>(slot_of(id));
     GridState& st = gs(sl);
@@ -635,7 +770,14 @@ void World::evict_grid(u16 g, u64 home_region) {
 
 std::vector<u8> World::grid_entry(u16 g) const {
   const GridState& st = gs(g);
-  std::vector<u8> out;
+  GridDelta d;
+  d.id = st.id;
+  d.base = st.base;
+  d.h = st.g.h;
+  d.priority = st.priority;
+  d.body = st.body == 0 ? 0u : kins_[st.body]->id;
+  d.origin = st.local.identity ? V3{} : st.local.off;
+  d.rot = st.local.identity ? Quat{} : st.local.q;
   std::vector<u64> keys;
   if (st.base) {
     keys = st.g.modified_chunks();
@@ -643,37 +785,29 @@ std::vector<u8> World::grid_entry(u16 g) const {
     for (const auto& [k, c] : st.g.chunks()) keys.push_back(k);
   }
   std::sort(keys.begin(), keys.end());
-  put32(out, st.id);
-  out.push_back(st.base ? 1 : 0);
-  for (f64 x : {st.xf.off.x, st.xf.off.y, st.xf.off.z, st.xf.q.x, st.xf.q.y, st.xf.q.z, st.xf.q.w}) putf(out, x);
-  put32(out, static_cast<u32>(keys.size()));
-  for (u64 k : keys) {
-    const std::vector<u8> r = st.g.chunk_record(k);
-    put32(out, static_cast<u32>(r.size()));
-    out.insert(out.end(), r.begin(), r.end());
-  }
-  return out;
+  for (u64 k : keys) d.recs.push_back(st.g.chunk_record(k));
+  return write_grid_entry(d);
 }
 
 bool World::apply_grid_entry(u16 g, const std::vector<u8>& e, std::vector<u64>* touched) {
   Rd in{e};
-  in.u32_();
-  in.u8_();
-  for (int k = 0; k < 7; ++k) in.f64_();
-  const u32 n = in.u32_();
+  GridDelta d;
+  if (!read_grid_entry(in, kGridsVersion, grid_.h, &d)) return false;
   VoxelGrid& G = vg(g);
-  for (u32 c = 0; c < n && in.ok; ++c) {
-    const u32 sz = in.u32_();
-    if (!in.need(sz)) return false;
-    const std::vector<u8> r(e.begin() + static_cast<long>(in.p), e.begin() + static_cast<long>(in.p + sz));
-    in.p += sz;
+  for (const auto& r : d.recs) {
     u64 key = 0;
     if (!G.apply_record(r, &key)) return false;
     G.note_voxels_modified(key);
     if (touched) touched->push_back(key);
   }
   refresh_grid_box(g);
-  return in.ok;
+  // (placed anew while it was out of range: where it was)
+  const GridState& st = gs(g);
+  const LatticeXf at = LatticeXf::make(d.origin, d.rot);
+  if (at.off.x != st.local.off.x || at.off.y != st.local.off.y || at.off.z != st.local.off.z || at.q.x != st.local.q.x ||
+      at.q.y != st.local.q.y || at.q.z != st.local.q.z || at.q.w != st.local.q.w)
+    set_grid_frame(d.id, GridFrame{d.origin, d.rot});
+  return true;
 }
 
 void World::evict_chunk(u64 k) {
@@ -942,12 +1076,13 @@ void World::add_loads_to(const Structure& s, std::vector<f64>& F) const {
       if (f < 0) continue;
       const i32 i = s.node(FragKey{k, f, static_cast<u16>(g)});
       if (i < 0) continue;
-      const V3 p = voxel_centre(GVox{l.voxel, static_cast<u16>(g)});
-      const V3 M = cross(p - s.P.nodes[size_t(i)].c, l.force);
+      V3 p = voxel_centre(GVox{l.voxel, static_cast<u16>(g)}), Fl = l.force;
+      to_body(s.body, &Fl, &p);
+      const V3 M = cross(p - s.P.nodes[size_t(i)].c, Fl);
       f64* a = &F[6 * size_t(i)];
-      a[0] += l.force.x;
-      a[1] += l.force.y;
-      a[2] += l.force.z;
+      a[0] += Fl.x;
+      a[1] += Fl.y;
+      a[2] += Fl.z;
       a[3] += M.x;
       a[4] += M.y;
       a[5] += M.z;
@@ -1158,11 +1293,20 @@ u64 World::state_hash() const {
     const GridState& st = gs(static_cast<u16>(slot_of(id)));
     mix(0x6F7269656E746564ull ^ id);
     for (f64 x : {st.xf.off.x, st.xf.off.y, st.xf.off.z, st.xf.q.x, st.xf.q.y, st.xf.q.z, st.xf.q.w}) mix(bits(x));
+    if (st.g.h != grid_.h) mix(bits(st.g.h));
+    if (st.priority != 0) mix(0x5052494Full ^ static_cast<u64>(static_cast<u32>(st.priority)));
+    if (st.body != 0) mix(0x424F4459ull ^ kins_[st.body]->id);
     hash_grid(st.g);
   }
   std::vector<GridId> removed = removed_base_;
   std::sort(removed.begin(), removed.end());
   for (GridId id : removed) mix(0x52454D4F564544ull ^ id);
+  // the kinematic bodies: where they are and how they move
+  for (KinematicId id : kinematics()) {
+    const KinState& K = *kins_[size_t(kin_slot_of(id))];
+    mix(0x4B494E4Eull ^ id);
+    for (f64 x : {K.x.x, K.x.y, K.x.z, K.q.x, K.q.y, K.q.z, K.q.w, K.v.x, K.v.y, K.v.z, K.w.x, K.w.y, K.w.z}) mix(bits(x));
+  }
   return hsh;
 }
 
@@ -1184,6 +1328,17 @@ u64 World::session_hash() const {
     mix(bits(b.q.y));
     mix(bits(b.q.z));
     mix(bits(b.q.w));
+  }
+  // the joints: which there are, what their ends hold on to, what they carry
+  for (size_t k = 0; k < rigid_.joints.size(); ++k) {
+    const Joint& j = rigid_.joints[k];
+    mix(0x4A4F494Eull ^ j.id);
+    mix(static_cast<u64>(jrecs_[k].a.piece));
+    mix(static_cast<u64>(jrecs_[k].b.piece));
+    mix(bits(j.force.x));
+    mix(bits(j.force.y));
+    mix(bits(j.force.z));
+    mix(bits(j.value));
   }
   for (const auto& sys : systems_) mix(sys->state_hash());
   return hsh;
@@ -1329,12 +1484,13 @@ RayHit World::raycast(const V3& o, const V3& dir, f64 max_dist) const {
   for (size_t g = 1; g < grids_.size(); ++g) {
     if (!grids_[g] || !grids_[g]->any) continue;
     const GridState& st = *grids_[g];
-    const V3 m{h, h, h};
+    const f64 hg = st.g.h;
+    const V3 m{hg, hg, hg};
     f64 t0, t1;
     if (!clip_box(o, d, st.lo - m, st.hi + m, bt, &t0, &t1)) continue;
     const V3 ol = st.xf.from(o + d * t0);
     const V3 dl = st.xf.dir_from(d);
-    if (dda(ol, dl, h, t1 - t0 + h, [&](const IVec3& p) { return vox_solid(st.g.get(p)); }, &t, &face, step, &v)) {
+    if (dda(ol, dl, hg, t1 - t0 + hg, [&](const IVec3& p) { return vox_solid(st.g.get(p)); }, &t, &face, step, &v)) {
       const f64 tt = t0 + t;
       if (tt < bt) {
         bt = tt;
@@ -1367,7 +1523,7 @@ RayHit World::raycast(const V3& o, const V3& dir, f64 max_dist) const {
       const BodyShape& S = b.shapes[k];
       const V3 ol = S.xf.from(os + ds * t0);
       const V3 dl = S.xf.dir_from(ds);
-      if (dda(ol, dl, h, 2.0 * r, [&](const IVec3& p) { return vox_solid(S.get(p)); }, &t, &face, step, &v)) {
+      if (dda(ol, dl, S.h, 2.0 * r, [&](const IVec3& p) { return vox_solid(S.get(p)); }, &t, &face, step, &v)) {
         const f64 tt = t0 + t;
         if (tt < bt) {
           bt = tt;
@@ -1435,13 +1591,18 @@ CollideResult World::collide(const V3& mn, const V3& mx, const V3& mv) const {
       if (sh.hit) {
         const f64 free = sh.t * dm;
         dm = dm > 0 ? std::max(0.0, free - eps) : std::min(0.0, free + eps);
-        if (a == 2 && move[2] < 0) res.on_ground = true;
+        if (a == 2 && move[2] < 0) {
+          res.on_ground = true;
+          res.ground = sh.grid;
+        }
       }
     }
     lo[size_t(a)] += dm;
     hi[size_t(a)] += dm;
     res.move[a] = dm;
   }
+  // (what it stands on moves it: its velocity under the base's centre)
+  if (res.ground != 0) res.ground_velocity = grid_velocity(res.ground, V3{0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), lo[2]});
   return res;
 }
 
@@ -1449,7 +1610,6 @@ SweepHit World::sweep(const V3& mn, const V3& mx, const V3& mv) const { return s
 
 SweepHit World::sweep_grids(const V3& mn, const V3& mx, const V3& mv, bool world_grid) const {
   SweepHit res;
-  const f64 h = grid_.h;
   if (!in_range(mn) || !in_range(mx) || !finite3(mv)) return res;
   for (int a = 0; a < 3; ++a)
     if (mx[a] < mn[a] || mx[a] - mn[a] > 16.0) return res;
@@ -1471,6 +1631,7 @@ SweepHit World::sweep_grids(const V3& mn, const V3& mx, const V3& mv, bool world
     if (!grids_[gi]) continue;
     const GridState& st = *grids_[gi];
     const VoxelGrid& G = vg(static_cast<u16>(gi));
+    const f64 h = G.h;
     if (gi > 0 && (!st.any || shi.x < st.lo.x - h || slo.x > st.hi.x + h || shi.y < st.lo.y - h || slo.y > st.hi.y + h ||
                    shi.z < st.lo.z - h || slo.z > st.hi.z + h))
       continue;
@@ -1507,6 +1668,9 @@ SweepHit World::sweep_grids(const V3& mn, const V3& mx, const V3& mv, bool world
   res.t = best;
   res.normal = bn;
   res.grid = bg;
+  // (the surface's motion where the box touches it: its face towards the surface)
+  const V3 c = ca + V * best;
+  res.velocity = grid_velocity(bg, c - bn * (std::abs(bn.x) * ea.x + std::abs(bn.y) * ea.y + std::abs(bn.z) * ea.z));
   return res;
 }
 
@@ -1558,7 +1722,17 @@ void World::design_structure(Structure& s, bool dry) {
   }
   const size_t n = s.P.nodes.size();
   std::vector<f64> F(6 * n, 0.0);
-  for (size_t i = 0; i < n; ++i) F[6 * i + 2] = -s.weight[i];
+  if (s.body == 0) {
+    for (size_t i = 0; i < n; ++i) F[6 * i + 2] = -s.weight[i];
+  } else {
+    // (a kinematic body's: its weight as it stands, in its frame)
+    const V3 g = rotate_inv(kins_[s.body]->q, V3{0.0, 0.0, -cfg_.rigid.gravity});
+    for (size_t i = 0; i < n; ++i) {
+      F[6 * i + 0] = g.x * s.P.nodes[i].mass;
+      F[6 * i + 1] = g.y * s.P.nodes[i].mass;
+      F[6 * i + 2] = g.z * s.P.nodes[i].mass;
+    }
+  }
   add_loads_to(s, F);  // (a dam is designed for its water)
   std::vector<f64> u(6 * n, 0.0);
   PcgResult r = s.P.solve(F, u, 1e-5, 2000, false);
@@ -1614,11 +1788,11 @@ void World::design_structure(Structure& s, bool dry) {
 
 void World::design_near(const V3& c, f64 r) {
   // structures around an event, designed before it happens (streamed worlds, grids added later)
-  const f64 h = grid_.h;
   for (size_t gi = 0; gi < grids_.size(); ++gi) {
     if (!grids_[gi] || grids_[gi]->undesigned.empty()) continue;
     const u16 g = static_cast<u16>(gi);
     const VoxelGrid& G = vg(g);
+    const f64 h = G.h;
     const auto& und = gs(g).undesigned;
     const V3 cl = g == 0 ? c : xf_of(g).from(c);
     const IVec3 lo = voxel_of(cl - V3{r, r, r}, h), hi = voxel_of(cl + V3{r, r, r}, h);

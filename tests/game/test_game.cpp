@@ -288,46 +288,158 @@ TEST_CASE("game: an oriented grid is meshed where its frame puts it, felt by the
   wall.h = h;
   box(wall, {-32, -1, 0}, {32, 2, 24}, make_vox(MaterialId::Masonry, false));
   wall.compact();
-  const f64 s = std::sqrt(0.5);
   const Quat rot{0.0, 0.0, std::sin(0.125 * 3.14159265358979323846), std::cos(0.125 * 3.14159265358979323846)};
   const V3 origin{6.0, 6.0, 0.0};
   const GridId id = g.world().add_grid(GridFrame{origin, rot}, std::move(wall));
   REQUIRE(id != 0);
   g.bake();
   g.tick();
-  // its chunks' meshes: its id, and vertices on its turned faces (in the wall's frame: across it
-  // within its half thickness, along it within its half length)
+  // its chunks' meshes: its id, their vertices in its lattice (placed in the world by its view)
   i32 meshes = 0;
   bool placed = true;
+  std::vector<IVec3> chunks;
   for (const ChunkMesh& m : g.take_meshes({})) {
     if (m.grid != id) continue;
     ++meshes;
-    for (const MeshVertex& v : m.vertices) {
-      const V3 d = V3{v.pos[0], v.pos[1], v.pos[2]} - origin;
-      const f64 along = s * (d.x + d.y), across = s * (d.y - d.x);
-      placed = placed && std::abs(across) <= 1.5 * h + 1e-4 && std::abs(along + 0.5 * h) <= 32 * h + 1e-4 && d.z >= -0.5 * h - 1e-4 &&
-               d.z <= 23.5 * h + 1e-4;
-    }
+    chunks.push_back(m.chunk);
+    for (const MeshVertex& v : m.vertices)
+      placed = placed && v.pos[0] >= -32.5 * h - 1e-4 && v.pos[0] <= 31.5 * h + 1e-4 && std::abs(v.pos[1]) <= 1.5 * h + 1e-4 &&
+               v.pos[2] >= -0.5 * h - 1e-4 && v.pos[2] <= 23.5 * h + 1e-4;
   }
   CHECK(meshes > 0);
   CHECK(placed);
-  // the client's collision: the world voxel at the wall's centre is solid, one 1 m off it is not
-  const std::vector<u64> occ = g.take_occupancy_changed();
-  const IVec3 on{48, 48, 8}, off{42, 54, 8};
-  const IVec3 cc = chunk_of(on);
-  CHECK(chunk_of(off) == cc);
-  CHECK(std::find(occ.begin(), occ.end(), key3(cc[0], cc[1], cc[2])) != occ.end());
+  // its view: where it is
+  const std::vector<GridView> views = g.take_grid_views();
+  REQUIRE(views.size() == 1);
+  CHECK(views[0].id == id);
+  CHECK(views[0].origin.x == origin.x);
+  CHECK(views[0].rot.z == rot.z);
+  CHECK(views[0].voxel_size == h);
+  CHECK(views[0].body == 0);
+  CHECK(g.take_grid_views().empty());  // (unchanged: not again)
+  // the client's collision: its chunks' occupancy in its lattice
   std::vector<u8> bits(kChunkVox / 8);
-  REQUIRE(g.chunk_occupancy(cc, bits.data()) == 2);
+  const IVec3 on{0, 0, 8}, off{0, 5, 8};
+  REQUIRE(g.grid_chunk_occupancy(id, chunk_of(on), bits.data()) == 2);
   auto bit = [&](const IVec3& p) { return (bits[size_t(chunk_index(p) >> 3)] >> (chunk_index(p) & 7)) & 1; };
   CHECK(bit(on) == 1);
   CHECK(bit(off) == 0);
-  // removed: its meshes and its occupancy go
+  // the world grid's occupancy is its own
+  REQUIRE(g.chunk_occupancy(IVec3{1, 1, 0}, bits.data()) == 0);
+  // removed: its meshes and its view go
   REQUIRE(g.world().remove_grid(id));
   g.tick();
   g.take_meshes({});
   CHECK(static_cast<i32>(g.take_removed_grid_chunks().size()) == meshes);
-  const std::vector<u64> occ2 = g.take_occupancy_changed();
-  CHECK(std::find(occ2.begin(), occ2.end(), key3(cc[0], cc[1], cc[2])) != occ2.end());
-  CHECK(g.chunk_occupancy(cc, bits.data()) == 0);
+  CHECK(g.take_grid_views().empty());
+  const std::vector<GridId> gone = g.take_removed_grids();
+  REQUIRE(gone.size() == 1);
+  CHECK(gone[0] == id);
+  CHECK(g.grid_chunk_occupancy(id, chunk_of(on), bits.data()) == 0);
+}
+
+TEST_CASE("game: the machines world - its machines move, its free parts hang on their joints, the ball knocks the wall") {
+  auto run = [](int threads, i32* pieces, i32* joints, i64* wall, f64* lift_top) {
+    set_num_threads(threads);
+    Game g;
+    load_procedural(g, make_procedural("machines", 1));
+    g.bake();
+    CHECK(g.machine_count() == 4);
+    // (the crane's wall: grid 8, the level's grids after the free parts on joints)
+    auto wall_voxels = [&]() { return g.world().grid(8)->solid_count(); };
+    const i64 wall0 = wall_voxels();
+    f64 top = 0.0;
+    for (int t = 0; t < 600; ++t) {
+      g.tick();
+      KinematicState k;
+      REQUIRE(g.world().kinematic(1, &k));
+      top = std::max(top, k.pose.pos.z);
+    }
+    *pieces = static_cast<i32>(g.world().pieces().size());
+    *joints = static_cast<i32>(g.world().joints().size());
+    *wall = wall0 - wall_voxels();
+    *lift_top = top;
+    return g.session_hash();
+  };
+  const int hw = num_threads();
+  i32 p1, j1, p4, j4;
+  i64 w1, w4;
+  f64 top1, top4;
+  const u64 a = run(1, &p1, &j1, &w1, &top1), b = run(4, &p4, &j4, &w4, &top4);
+  set_num_threads(hw);
+  MESSAGE("machines after 10 s: " << p1 << " pieces, " << j1 << " joints, the wall lost " << w1 << " voxels, the lift up to " << top1 << " m");
+  CHECK(j1 == 7);                        // (the rope, the rod, the chain's four, the door's hinge)
+  CHECK(p1 >= 10);                       // (the ball, the bob, the links, the door, the crates: and the wall's rubble)
+  CHECK(w1 > 100);                       // (the wrecking ball went through it)
+  CHECK(top1 == doctest::Approx(4.75).epsilon(0.001));
+  CHECK(a == b);
+}
+
+TEST_CASE("game: the far render tier draws the oriented grids of a streamed world too") {
+  // the same city, its buildings in the world grid, and with about one in eight turned in grids of
+  // their own: the far tiles hold about as much of them either way (a turned building's voxels
+  // are splatted into the coarse cells their centres fall in)
+  auto far_vertices = [](bool turned, i32* tiles) {
+    Game eng;
+    VoxelGrid g;
+    g.h = 0.125;
+    auto src = make_city_source(3, 1000.0, 0.125, turned);
+    const auto sp = src->spawn_pos(), sd = src->spawn_dir();
+    eng.load(std::move(g), sp, sd);
+    eng.load_streaming(std::move(src), eng.grid().h, StreamConfig{});
+    eng.set_viewer({sp[0], sp[1], sp[2] + 1.6});
+    size_t verts = 0;
+    *tiles = 0;
+    for (int t = 0; t < 200; ++t) {
+      eng.tick();
+      for (const ChunkMesh& m : eng.take_far_meshes()) {
+        verts += m.vertices.size();
+        ++*tiles;
+      }
+    }
+    return verts;
+  };
+  i32 n0 = 0, n1 = 0;
+  const size_t plain = far_vertices(false, &n0), turned = far_vertices(true, &n1);
+  MESSAGE("far tier: " << plain << " vertices in " << n0 << " tiles; with turned buildings " << turned << " in " << n1);
+  CHECK(n1 == n0);
+  CHECK(turned > 0.9 * static_cast<f64>(plain));
+  CHECK(turned != plain);  // (the turned ones are there, turned)
+}
+
+TEST_CASE("game: a burning turned grid is meshed again as it glows and chars") {
+  const f64 h = 0.125;
+  auto box = [](VoxelGrid& g, const IVec3& lo, const IVec3& hi, Vox v) {
+    for (i32 x = lo[0]; x < hi[0]; ++x)
+      for (i32 y = lo[1]; y < hi[1]; ++y) g.fill_column(x, y, lo[2], hi[2], v);
+  };
+  Game g;
+  VoxelGrid w;
+  w.h = h;
+  box(w, {-32, -32, -4}, {32, 32, 0}, make_vox(MaterialId::Rock, true));
+  w.compact();
+  g.load(std::move(w), V3{0, 0, 0}, V3{1, 0, 0});
+  VoxelGrid wall;
+  wall.h = h;
+  box(wall, {-12, 0, 0}, {12, 1, 24}, make_vox(MaterialId::Wood, false));
+  wall.compact();
+  const Quat rot{0.0, 0.0, std::sin(0.25), std::cos(0.25)};
+  const GridId id = g.world().add_grid(GridFrame{V3{0.0, 0.0, 0.0}, rot}, std::move(wall));
+  REQUIRE(id != 0);
+  g.bake();
+  g.tick();
+  g.take_meshes({});
+  g.ignite(g.world().grid_to_world(id, V3{0.0, 0.0, h}), 0.3);
+  i32 remeshed = 0, glowing = 0;
+  for (int t = 0; t < 5 * 60; ++t) {
+    g.tick();
+    for (const ChunkMesh& m : g.take_meshes({})) {
+      if (m.grid != id) continue;
+      ++remeshed;
+      for (const MeshVertex& v : m.vertices) glowing += (v.texture & 0xFF00) == 0xFE00 ? 1 : 0;
+    }
+  }
+  MESSAGE("a burning turned grid: " << remeshed << " chunk meshes again, " << glowing << " glowing vertices");
+  CHECK(remeshed > 0);
+  CHECK(glowing > 0);
 }

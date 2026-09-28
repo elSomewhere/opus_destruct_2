@@ -98,15 +98,16 @@ const float* svx_env_smoke(svx_engine* e);
 int svx_use(svx_engine* e, double ox, double oy, double oz, double dx, double dy, double dz);
 int svx_raycast(svx_engine* e, double ox, double oy, double oz, double dx, double dy, double dz, double max_dist,
                 double* out);
-/* out[4]: move xyz, on_ground */
+/* out[8]: move xyz, on_ground, the grid stood on (on_ground), its velocity there xyz (a kinematic
+ * body's: a controller riding it adds it x dt to its next move) */
 void svx_collide(svx_engine* e, double minx, double miny, double minz, double maxx, double maxy, double maxz,
                  double mx, double my, double mz, double* out);
 
 /* Meshes of changed chunks: count, then per mesh info[10] = chunk xyz, origin xyz, vertex count,
  * index count, decoration only (1: charring or glow changed, the voxels did not - its occupancy
- * is as before), grid (0: the world grid; else an oriented grid's chunk, its vertices placed in
- * the world by the grid's frame and its origin the world position of its minimum corner: key it
- * by grid and chunk, its occupancy comes with svx_poll_occupancy), and the buffers. */
+ * is as before), grid (0: the world grid; else an oriented grid's chunk: its vertices and origin
+ * in the grid's lattice (metres), placed in the world by the grid's frame (svx_poll_grids); key
+ * it by grid and chunk, its occupancy is svx_grid_chunk_occupancy's), and the buffers. */
 int svx_poll_meshes(svx_engine* e);
 void svx_mesh_info(svx_engine* e, int i, double* out);
 const void* svx_mesh_vertices(svx_engine* e, int i);
@@ -118,10 +119,20 @@ void svx_removed_chunk(svx_engine* e, int i, int* out3);
  * grid and chunk coordinates (4 ints). */
 int svx_poll_removed_grid(svx_engine* e);
 void svx_removed_grid_chunk(svx_engine* e, int i, int* out4);
-/* World chunks whose occupancy changed because oriented grids' voxels did (their meshes were not
- * re-sent): count, then chunk coordinates (3 ints) - read them again with svx_chunk_occupancy. */
-int svx_poll_occupancy(svx_engine* e);
-void svx_occupancy_chunk(svx_engine* e, int i, int* out3);
+/* The oriented grids' places (after a tick): count of the grids that came, moved or move (their
+ * kinematic body), then per grid info[19] = id, origin xyz, rotation xyzw, voxel size, kinematic
+ * body, and the velocity field it moves with: velocity xyz, angular xyz, centre xyz (v + w x
+ * (X - c); zero for a static grid). The grids gone: count, then ids. */
+int svx_poll_grids(svx_engine* e);
+void svx_grid_info(svx_engine* e, int i, double* out19);
+int svx_poll_grids_removed(svx_engine* e);
+unsigned svx_grid_removed(svx_engine* e, int i);
+/* Occupancy of an oriented grid's chunk in its lattice (as svx_chunk_occupancy). */
+int svx_grid_chunk_occupancy(svx_engine* e, unsigned grid, int cx, int cy, int cz, uint8_t* out4096);
+/* The joints now (to draw): count, then info[8] = id, type (0 ball, 1 hinge, 2 slider, 3 fixed,
+ * 4 distance), end a xyz, end b xyz. */
+int svx_poll_joints(svx_engine* e);
+void svx_joint_info(svx_engine* e, int i, double* out8);
 /* Far render tier of streamed worlds: new far tile meshes (count, then info[8] = tile x, y, 0,
  * origin xyz, vertex count, index count, and the buffers) and removed far tiles (x, y). */
 int svx_poll_far(svx_engine* e);
@@ -130,10 +141,10 @@ const void* svx_far_vertices(svx_engine* e, int i);
 const void* svx_far_indices(svx_engine* e, int i);
 int svx_poll_far_removed(svx_engine* e);
 void svx_far_removed(svx_engine* e, int i, int* out2);
-/* Occupancy of chunk (cx, cy, cz) for client-side collision: returns 0 (all air or not
- * resident), 1 (all solid) or 2 (mixed: out4096 receives 32^3 bits, bit v of byte v >> 3 for
- * voxel index v = (x * 32 + y) * 32 + z, local coordinates). A voxel is solid if the world grid's
- * is, or its centre lies in an oriented grid's solid voxel. */
+/* Occupancy of chunk (cx, cy, cz) of the world grid for client-side collision: returns 0 (all
+ * air or not resident), 1 (all solid) or 2 (mixed: out4096 receives 32^3 bits, bit v of byte
+ * v >> 3 for voxel index v = (x * 32 + y) * 32 + z, local coordinates). The oriented grids' are
+ * their own (svx_grid_chunk_occupancy). */
 int svx_chunk_occupancy(svx_engine* e, int cx, int cy, int cz, uint8_t* out4096);
 
 /* Events: count, then per event info[21] = kind (0 detached, 1 crack, 2 impact, 3 bubble (v1), 4 splash,

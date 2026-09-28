@@ -21,9 +21,14 @@ three more things, all interacting with the structures:
 All of it works in streamed and bounded worlds alike.
 
 Structures need not follow the voxel lattice. **Oriented grids** give a structure a lattice of
-its own, at any position and rotation: a building at an angle, a diagonal brace, a tilted ramp.
-They are simulated like the world grid in every respect, bonded to it and to each other where
-they meet, with no voxel stepping ([`docs/GRIDS.md`](docs/GRIDS.md)).
+its own, at any position and rotation and of any voxel size: a building at an angle, a diagonal
+brace, a tilted ramp. They are simulated like the world grid in every respect, bonded to it and to
+each other where they meet, with no voxel stepping ([`docs/GRIDS.md`](docs/GRIDS.md)).
+
+Things can move by design. A **kinematic body** is a frame the host drives (a lift, a door, a
+drawbridge, a crane's jib): its grids push and carry pieces and are loaded by the motion.
+**Joints** hold things together (hinges, sliders, ropes, rods, welds) and give way; a wrecking
+ball swings on a crane's rope into a wall ([`docs/MOTION.md`](docs/MOTION.md)).
 
 - **Video:** [`docs/media/tower_collapse.mp4`](docs/media/tower_collapse.mp4): the tower losing its
   two west rows of ground columns (`svx_engine_demo --world tower --scenario pillars`, CPU
@@ -41,7 +46,9 @@ they meet, with no voxel stepping ([`docs/GRIDS.md`](docs/GRIDS.md)).
   - Falling pieces are rigid bodies that keep their bonds and break on impact, progressively,
     part by part.
 - **Structures off the lattice:** [`docs/GRIDS.md`](docs/GRIDS.md): oriented grids, the
-  junctions that bond them, their persistence, streaming and API.
+  junctions that bond them, priority and displacement, voxel sizes, their persistence,
+  streaming and API.
+- **Kinematic bodies and joints:** [`docs/MOTION.md`](docs/MOTION.md).
 - **Fire, smoke and water:** [`docs/ENV.md`](docs/ENV.md). `svx_env` is built on the core's
   public extension points (voxel layers, damage, loads, piece forces, systems), so the core
   stays a clean destruction and structural-integrity engine.
@@ -78,13 +85,16 @@ npm run dev -- --port 5190           # COOP/COEP headers are set (SharedArrayBuf
 open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engine=mock without it)
 ```
 
-- **Worlds:** `?world=rooms|city|tower|yard|angles&seed=N`, or a Freedoom WAD via the panel
-  (doors, lifts, floors, platforms, crushers and stairs work).
-  - `city`: a streamed 1 km² city, with timber floors in a third of its buildings, and ponds.
+- **Worlds:** `?world=rooms|city|tower|yard|angles|machines&seed=N`, or a Freedoom WAD via the
+  panel (doors, lifts, floors, platforms, crushers and stairs work).
+  - `city`: a streamed 1 km² city, with timber floors in a third of its buildings, some
+    buildings turned (in oriented grids), and ponds.
   - `yard`: one of each construction: a timber house, a stone tower, a greenhouse, a steel
     shed, a reinforced wall, a reservoir and a timber water tower.
   - `angles`: structures in oriented grids: a turned tower, a diagonal bridge deck, a ramp, a
     cross-braced steel portal, turned masonry walls, crates and a leaning monolith.
+  - `machines`: kinematic bodies and joints: a lift (ride it), a turntable with crates, a
+    drawbridge, a crane swinging a wrecking ball into a wall, a pendulum, a chain, a hinged door.
 - **Controls:** WASD move, mouse look, Space jump, Shift run; 1 to 5 or the wheel select pistol,
   shotgun, rocket launcher, flamethrower, water hose, click fires; E uses, V toggles noclip, R respawns; G cycles debug
   views (bond utilization, fragments); H toggles the HUD and its tick timeline; Esc opens the
@@ -101,14 +111,16 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
     on fire, then hoses it down.
   - `node scripts/water-wasm.mjs http://localhost:5190/ OUT`: breaches the yard's reservoir.
   - `node scripts/angles-wasm.mjs http://localhost:5190/ OUT`: the `angles` world. It checks
-    that the turned structures draw, that a box stops at the 45° wall and the player stands on
-    the ramp, then blasts them.
+    that the turned structures draw, that a box stops at the 45° wall (exactly where the turned
+    cubes are) and the player stands on the ramp, then blasts them.
+  - `node scripts/machines-wasm.mjs http://localhost:5190/ OUT`: the `machines` world. It checks
+    that the kinematic bodies' grids and the ropes draw, and that the player rides the lift.
 
 ## Tools (`build/native-release/tools/`)
 
 | Tool | Purpose |
 |---|---|
-| `svx_engine_demo --world tower\|rooms\|slab\|chimney\|bridge\|yard\|angles\|city [--scenario S] [--seconds T] [--threads N] [--turn DEG] [--frames DIR --fps F --res WxH --cam x,y,z --look x,y,z]` | Headless scenario run with a CPU renderer for frames. Tower scenarios: `pillars` (both west rows of ground columns), `side`, `core`, `all`, `rockets`. `--turn DEG` stands a procedural world's structure in a grid turned about the vertical. Reports pieces, breaks, per-phase rigid costs, awake speeds, piece sizes and the session hash. |
+| `svx_engine_demo --world tower\|rooms\|slab\|chimney\|bridge\|yard\|angles\|machines\|city [--scenario S] [--seconds T] [--threads N] [--turn DEG] [--turned-city] [--frames DIR --fps F --res WxH --cam x,y,z --look x,y,z]` | Headless scenario run with a CPU renderer for frames. Tower scenarios: `pillars` (both west rows of ground columns), `side`, `core`, `all`, `rockets`. `--turn DEG` stands a procedural world's structure in a grid turned about the vertical; `--turned-city` streams the city with turned buildings. Reports pieces, breaks, per-phase rigid costs, awake speeds, piece sizes and the session hash. |
 | `svx_replay record\|play --world W --seconds S [--out F \| --log F] [--threads T]` | Records and replays sessions from command logs; checkpoint hashes are the determinism check. |
 | `svx_map_check [--threads T] [--movers] WAD...` | Imports, bakes and design-checks every map, then runs it idle. |
 | `svx_soak [--world city\|tower\|rooms\|yard] [--wad F --map M] [--minutes M] [--archive-mb MB] [--forget-s S] [--no-shoot] [--no-env]` | Long sessions and their memory: a streamed city crossed for minutes with continuous destruction, fires and water (or a bounded level shot at), printing the world's memory by kind (the environment systems included), the change archive, forgotten regions and the process's physical footprint. |
@@ -125,24 +137,25 @@ Diagnostics of the core (printing only, never changing results; compiled out wit
 core/      svx_core: the destruction physics (docs/CORE.md). Depends on the standard library only.
   include/svx/world/world.hpp   svx::World, the public C++ API
   include/svx/svx_core.h        the C API
-  base/      types, vectors, deterministic parallel pool, diagnostics
+  base/      types, vectors, deterministic math and parallel pool, diagnostics
   material/  the material registry (strengths, fracture energies, rubble sizes)
   world/     voxel grids (the world grid, oriented grids and their junctions), chunk sources,
-             World (structures, pieces and their fracture, streaming, persistence, queries)
+             World (structures, pieces and their fracture, kinematic bodies, joints,
+             streaming, persistence, queries)
   frag/      fragments (pre-scored rubble pieces per chunk)
   solve/     smoothed-aggregation multigrid, PCG
   stress/    fragment-graph stress problems, bond failure checks
-  phys/      rigid voxel bodies: contacts, solver, sleep
+  phys/      rigid voxel bodies: contacts, joints, solver, sleep
   capi/      the C API
 mesh/      svx_mesh: chunk, piece, far-tile and water meshing for renderers
 env/       svx_env: fire, smoke, water on the core's extension points (docs/ENV.md)
 game/      svx_game: the prototype game harness
   game.hpp   svx::Game: viewer, movers, triggers, command log, piece meshes and poses, far tier
-  procgen, city, columns, dmath, replay; doom/ (WAD reader, voxelizer, textures, specials,
+  procgen, city, columns, replay; doom/ (WAD reader, voxelizer, textures, specials,
   movers); api/ (the web worker's flat C ABI)
 examples/  minimal hosts of the core (C++, C)
 tools/     command-line tools (game level runs, replays, map checks, benches), WASM modules
 tests/     core/ (links svx_core only), env/ (svx_env) and game/ doctest suites
 web/       TypeScript + Vite front end: worker host, WebGPU renderer, FPS sandbox
-docs/      the core guide, design, grids, environment, game API, v1 history
+docs/      the core guide, design, grids, motion, environment, game API, v1 history
 ```

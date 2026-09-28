@@ -23,7 +23,9 @@ struct svx_engine {
   std::vector<ChunkMesh> meshes;
   std::vector<u64> removed;
   std::vector<GridChunk> removed_grid;
-  std::vector<u64> occupancy;
+  std::vector<GridView> grid_views;
+  std::vector<GridId> grids_removed;
+  std::vector<JointView> joints;
   std::vector<GameEvent> events;
   std::unique_ptr<doom::DoomWorld> doom;  // texturing / light for Doom worlds
   std::vector<u8> delta;
@@ -85,13 +87,11 @@ int svx_load_procedural(svx_engine* e, const char* kind, double seed) {
   const std::string k = kind ? kind : "rooms";
   e->doom.reset();
   if (k == "city") {
-    // the 1 km^2 city streams around the viewer (plan Phase 6)
-    e->eng.load_streaming(make_city_source(seed_of(seed), 1000.0, e->h), e->h);
+    // the 1 km^2 city streams around the viewer (plan Phase 6), some of its buildings turned
+    e->eng.load_streaming(make_city_source(seed_of(seed), 1000.0, e->h, true), e->h);
     return 0;
   }
-  ProcWorld w = make_procedural(k, seed_of(seed), e->h);
-  e->eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
-  add_grids(e->eng.world(), std::move(w.grids));
+  load_procedural(e->eng, make_procedural(k, seed_of(seed), e->h));
   return 0;
 }
 
@@ -318,6 +318,8 @@ void svx_collide(svx_engine* e, double minx, double miny, double minz, double ma
   const CollideResult r = e->eng.world().collide(V3{minx, miny, minz}, V3{maxx, maxy, maxz}, V3{mx, my, mz});
   for (int q = 0; q < 3; ++q) out[q] = r.move[q];
   out[3] = r.on_ground ? 1.0 : 0.0;
+  out[4] = static_cast<double>(r.ground);
+  for (int q = 0; q < 3; ++q) out[5 + q] = r.ground_velocity[q];
 }
 
 int svx_poll_meshes(svx_engine* e) {
@@ -331,13 +333,13 @@ void svx_mesh_info(svx_engine* e, int i, double* out) {
     return;
   }
   const ChunkMesh& m = e->meshes[i];
-  V3 lo;
+  // (the chunk's minimum corner: an oriented grid's in its lattice, of its voxel size)
+  const VoxelGrid* G = e->eng.world().grid(m.grid);
+  const f64 h = G ? G->h : e->h;
   for (int q = 0; q < 3; ++q) {
     out[q] = m.chunk[q];
-    lo[q] = e->h * (m.chunk[q] * kChunk - 0.5);
+    out[3 + q] = h * (m.chunk[q] * kChunk - 0.5);
   }
-  if (m.grid != kWorldGrid) lo = e->eng.world().grid_to_world(m.grid, lo);
-  for (int q = 0; q < 3; ++q) out[3 + q] = lo[q];
   out[6] = static_cast<double>(m.vertices.size());
   out[7] = static_cast<double>(m.indices.size());
   out[8] = m.grid == kWorldGrid && e->eng.decoration_only(key3(m.chunk[0], m.chunk[1], m.chunk[2])) ? 1.0 : 0.0;
@@ -376,18 +378,54 @@ void svx_removed_grid_chunk(svx_engine* e, int i, int* out4) {
   for (int q = 0; q < 3; ++q) out4[1 + q] = c.chunk[q];
 }
 
-int svx_poll_occupancy(svx_engine* e) {
-  e->occupancy = e->eng.take_occupancy_changed();
-  return static_cast<int>(e->occupancy.size());
+int svx_grid_chunk_occupancy(svx_engine* e, unsigned grid, int cx, int cy, int cz, uint8_t* out4096) {
+  return e->eng.grid_chunk_occupancy(grid, {cx, cy, cz}, out4096);
 }
 
-void svx_occupancy_chunk(svx_engine* e, int i, int* out3) {
-  if (!in_range(e->occupancy, i)) {
-    out3[0] = out3[1] = out3[2] = 0;
-    return;
+int svx_poll_grids(svx_engine* e) {
+  e->grid_views = e->eng.take_grid_views();
+  e->grids_removed = e->eng.take_removed_grids();
+  return static_cast<int>(e->grid_views.size());
+}
+
+void svx_grid_info(svx_engine* e, int i, double* out) {
+  std::fill(out, out + 19, 0.0);
+  if (!in_range(e->grid_views, i)) return;
+  const GridView& v = e->grid_views[i];
+  out[0] = static_cast<double>(v.id);
+  for (int q = 0; q < 3; ++q) out[1 + q] = v.origin[q];
+  out[4] = v.rot.x;
+  out[5] = v.rot.y;
+  out[6] = v.rot.z;
+  out[7] = v.rot.w;
+  out[8] = v.voxel_size;
+  out[9] = static_cast<double>(v.body);
+  for (int q = 0; q < 3; ++q) {
+    out[10 + q] = v.vel[q];
+    out[13 + q] = v.ang[q];
+    out[16 + q] = v.centre[q];
   }
-  const IVec3 c = unkey3(e->occupancy[i]);
-  for (int q = 0; q < 3; ++q) out3[q] = c[q];
+}
+
+int svx_poll_grids_removed(svx_engine* e) { return static_cast<int>(e->grids_removed.size()); }
+
+unsigned svx_grid_removed(svx_engine* e, int i) { return in_range(e->grids_removed, i) ? e->grids_removed[i] : 0u; }
+
+int svx_poll_joints(svx_engine* e) {
+  e->joints = e->eng.joint_views();
+  return static_cast<int>(e->joints.size());
+}
+
+void svx_joint_info(svx_engine* e, int i, double* out) {
+  std::fill(out, out + 8, 0.0);
+  if (!in_range(e->joints, i)) return;
+  const JointView& j = e->joints[i];
+  out[0] = static_cast<double>(j.id);
+  out[1] = static_cast<double>(j.type);
+  for (int q = 0; q < 3; ++q) {
+    out[2 + q] = j.a[q];
+    out[5 + q] = j.b[q];
+  }
 }
 
 int svx_poll_far(svx_engine* e) {

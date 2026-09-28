@@ -167,9 +167,13 @@ void body_refresh(Body& b, f64 h, int max_points) {
   };
   std::vector<Cand> uniq;
   b.count = 0;
-  for (const BodyShape& S : b.shapes) b.count += S.count;
+  for (BodyShape& S : b.shapes) {
+    if (!(S.h > 0.0)) S.h = h;
+    b.count += S.count;
+  }
   for (size_t k = 0; k < b.shapes.size(); ++k) {
     const BodyShape& S = b.shapes[k];
+    const f64 h = S.h;
     auto solid = [&](const IVec3& p) { return vox_solid(S.get(p)); };
     const i64 cx = S.dim[0] + 1, cy = S.dim[1] + 1, cz = S.dim[2] + 1;
     std::vector<u8> seen(static_cast<size_t>((cx * cy * cz + 7) / 8), 0);
@@ -369,7 +373,6 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
   // only (optional): contacts of these bodies alone (the others' contacts are kept by the caller)
   if (!only) contacts_.clear();
   if (statics.empty()) return;
-  const f64 h = statics.front().g->h, ih = 1.0 / h;
   const i32 nb = static_cast<i32>(bodies.size());
   {
     bool any = false;
@@ -425,8 +428,9 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
         const V3& X = W[k];
         for (u32 s : near) {
           const StaticGrid& G = statics[s];
+          const f64 h = G.g->h;
           const V3 L = G.xf.from(X);  // (the world grid: X itself)
-          const IVec3 p = voxel_of(L, ih);
+          const IVec3 p = voxel_of(L, 1.0 / h);
           if (!vox_solid(grid_vox(s, p))) continue;
           int axis = 2, sign = 1;
           f64 depth = 0.5 * h;
@@ -447,12 +451,13 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
           c.shape_a = static_cast<i16>(A.pt_shape[k]);
           c.grid = G.slot;
           c.wvox = p;
+          c.vs = G.velocity_at(X);
           c.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(~0ull) ^ (static_cast<u64>(k) << 1));
           if (G.slot != 0) c.key = mix64(c.key ^ (static_cast<u64>(G.slot) * 0x9E3779B97F4A7C15ull));
           out.push_back(c);
         }
       }
-      reduce_manifold(out, h);
+      reduce_manifold(out, A.shapes.front().h);
     }
   });
   for (auto& v : wc)
@@ -499,7 +504,9 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
         const Body& B = *bodies[size_t(ib)];
         const M3 RB = to_matrix(B.q);
         const M3 RBt = transpose(RB);
-        const f64 reach2 = (B.radius + h) * (B.radius + h);
+        f64 hb = 0.0;
+        for (const BodyShape& SB : B.shapes) hb = std::max(hb, SB.h);
+        const f64 reach2 = (B.radius + hb) * (B.radius + hb);
         const auto& W = A.wpts;
         for (size_t k = 0; k < A.pts.size(); ++k) {
           const V3& X = W[k];
@@ -507,8 +514,9 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
           const V3 sb = B.com + RBt * (X - B.x);  // (B's body frame)
           for (size_t m = 0; m < B.shapes.size(); ++m) {
             const BodyShape& SB = B.shapes[m];
+            const f64 h = SB.h;
             const V3 sp = SB.xf.from(sb);  // (its lattice)
-            const IVec3 p = voxel_of(sp, ih);
+            const IVec3 p = voxel_of(sp, 1.0 / h);
             const i32 vi = SB.index(p);
             if (vi < 0 || !vox_solid(SB.vox[size_t(vi)])) continue;
             int axis = 2, sign = 1;
@@ -537,7 +545,7 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
             one.push_back(c);
           }
         }
-        reduce_manifold(one, h);
+        reduce_manifold(one, A.shapes.front().h);
         for (const Contact& c : one) pc[size_t(q)].push_back(c);
         one.clear();
       }
@@ -576,6 +584,7 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
 }
 
 void RigidWorld::solve(f64 dt) {
+  if (!joints.empty()) wake_jointed();
   auto invm = [&](i32 i) -> f64 { return (i < 0 || bodies[size_t(i)]->asleep) ? 0.0 : bodies[size_t(i)]->inv_mass; };
   std::vector<M3> Iw(bodies.size());
   for (size_t i = 0; i < bodies.size(); ++i)
@@ -597,6 +606,8 @@ void RigidWorld::solve(f64 dt) {
     const Body& B = *bodies[size_t(i)];
     return B.v + cross(B.w, r);
   };
+  // (b's side: a body, or the static grid's surface - at rest, or a kinematic body's moving)
+  auto velb = [&](const Contact& c) -> V3 { return c.b >= 0 ? vel(c.b, c.rb) : c.vs; };
   auto apply = [&](const Contact& c, const V3& J) {
     if (c.a >= 0 && !bodies[size_t(c.a)]->asleep) {
       Body& A = *bodies[size_t(c.a)];
@@ -616,7 +627,7 @@ void RigidWorld::solve(f64 dt) {
     c.kn = eff(c, c.n);
     c.k1 = eff(c, c.t1);
     c.k2 = eff(c, c.t2);
-    const f64 vn = dot(vel(c.a, c.ra) - vel(c.b, c.rb), c.n);
+    const f64 vn = dot(vel(c.a, c.ra) - velb(c), c.n);
     c.approach = std::max(0.0, -vn);
     c.bounce = vn < -par.bounce_speed ? -par.restitution * vn : 0.0;
     c.mu = par.friction;
@@ -632,6 +643,7 @@ void RigidWorld::solve(f64 dt) {
       apply(c, c.n * c.ln + c.t1 * c.l1 + c.t2 * c.l2);
     }
   }
+  prepare_joints(dt, Iw);
   // Parallel Gauss-Seidel by graph colouring. A pair's manifold (consecutive contacts of the same
   // two bodies, or a body and the world) is solved in order as one group; the groups of one colour
   // share no awake body, so they are solved concurrently (bitwise the same in any order). Groups
@@ -699,13 +711,13 @@ void RigidWorld::solve(f64 dt) {
   const bool reduced = busy_ || contacts_.size() > par.busy_contacts;
   const int vel_iters = reduced ? par.busy_iterations : par.iterations;
   const int pos_iters = reduced ? std::min(2, par.position_iterations) : par.position_iterations;
-  for (int it = 0; it < vel_iters; ++it)
+  for (int it = 0; it < vel_iters; ++it) {
     sweep([&](Contact& c) {
-      V3 dv = vel(c.a, c.ra) - vel(c.b, c.rb);
+      V3 dv = vel(c.a, c.ra) - velb(c);
       const f64 ln = std::max(0.0, c.ln + c.kn * (c.bounce - dot(dv, c.n)));
       apply(c, c.n * (ln - c.ln));
       c.ln = ln;
-      dv = vel(c.a, c.ra) - vel(c.b, c.rb);
+      dv = vel(c.a, c.ra) - velb(c);
       const f64 lim = c.mu * c.ln;
       const f64 l1 = std::clamp(c.l1 - c.k1 * dot(dv, c.t1), -lim, lim);
       const f64 l2 = std::clamp(c.l2 - c.k2 * dot(dv, c.t2), -lim, lim);
@@ -713,18 +725,25 @@ void RigidWorld::solve(f64 dt) {
       c.l1 = l1;
       c.l2 = l2;
     });
+    solve_joints();
+  }
   // Squeeze guard: a light body pinned between heavy ones can come out of the iteration with a
   // speed no contact partner has (and fly off). Contacts may slow a body down freely but speed it
   // up only to about its fastest partner's speed.
   {
     std::vector<f64> partner(bodies.size(), 0.0);
     for (const Contact& c : contacts_) {
-      if (c.b < 0) continue;
+      if (c.b < 0) {
+        // (a kinematic body's moving surface: as fast as it is there)
+        if (norm2(c.vs) > 0.0) partner[size_t(c.a)] = std::max(partner[size_t(c.a)], norm(c.vs));
+        continue;
+      }
       const Body& A = *bodies[size_t(c.a)];
       const Body& B = *bodies[size_t(c.b)];
       partner[size_t(c.a)] = std::max(partner[size_t(c.a)], norm(B.v_pre) + B.radius * norm(B.w_pre));
       partner[size_t(c.b)] = std::max(partner[size_t(c.b)], norm(A.v_pre) + A.radius * norm(A.w_pre));
     }
+    joint_partner_speeds(partner);
     for (size_t i = 0; i < bodies.size(); ++i) {
       Body& b = *bodies[i];
       if (b.asleep) continue;
@@ -744,7 +763,7 @@ void RigidWorld::solve(f64 dt) {
     if (i < 0) return V3{};
     return pv[size_t(i)] + cross(pw[size_t(i)], r);
   };
-  for (int it = 0; it < pos_iters; ++it)
+  for (int it = 0; it < pos_iters; ++it) {
     sweep([&](Contact& c) {
       if (c.bias <= 0.0) return;
       const f64 vn = dot(pvel(c.a, c.ra) - pvel(c.b, c.rb), c.n);
@@ -760,6 +779,9 @@ void RigidWorld::solve(f64 dt) {
         pw[size_t(c.b)] -= Iw[size_t(c.b)] * cross(c.rb, J);
       }
     });
+    solve_joints_position(pv, pw);
+  }
+  finish_joints(dt);
   pseudo_v_.swap(pv);
   pseudo_w_.swap(pw);
 }
@@ -816,6 +838,7 @@ const std::vector<u8>& RigidWorld::support(f64 dt) {
     }
     sup_pairs_.push_back({c.a, c.b, jz, static_cast<u8>(up_a), static_cast<u8>(up_b)});
   }
+
   if (sup_queue_.empty() || sup_pairs_.empty()) return held_;
   // the awake pairs' edges by the supporting body (a counting sort: in contact order)
   sup_start_.assign(n + 1, 0);
@@ -840,7 +863,61 @@ const std::vector<u8>& RigidWorld::support(f64 dt) {
   return held_;
 }
 
-void RigidWorld::sleep_update(f64 dt) {
+std::vector<i32> RigidWorld::resting_on(const std::vector<StaticGrid>& statics) const {
+  // The motion each body rests on: the moving surface of a kinematic body that bears on it most
+  // (of the world surfaces it touches), passed on to what rests on it in turn (a stack on a lift).
+  // Settling is relative to it: a crate on a conveyor is carried, not held back. -1: the static
+  // world's rest (every body, when nothing moves).
+  const size_t n = bodies.size();
+  std::vector<i32> on(n, -1);
+  bool moving = false;
+  for (const StaticGrid& G : statics) moving = moving || G.moving;
+  if (!moving) return on;
+  std::vector<i32> of_slot;
+  for (size_t s = 0; s < statics.size(); ++s) {
+    if (statics[s].slot >= of_slot.size()) of_slot.resize(size_t(statics[s].slot) + 1, -1);
+    of_slot[statics[s].slot] = static_cast<i32>(s);
+  }
+  std::vector<f64> bear(n, 0.0);
+  std::vector<std::pair<u16, f64>> sums;
+  for (size_t k = 0; k < contacts_.size();) {
+    const i32 a = contacts_[k].a;
+    if (contacts_[k].b >= 0) {
+      ++k;
+      continue;
+    }
+    // (a body's world contacts are consecutive: the normal impulse of each surface on it)
+    sums.clear();
+    for (; k < contacts_.size() && contacts_[k].b < 0 && contacts_[k].a == a; ++k) {
+      const Contact& c = contacts_[k];
+      auto it = std::find_if(sums.begin(), sums.end(), [&](const std::pair<u16, f64>& e) { return e.first == c.grid; });
+      if (it == sums.end()) sums.push_back({c.grid, c.ln});
+      else it->second += c.ln;
+    }
+    for (const auto& [slot, ln] : sums) {
+      if (!(ln > bear[size_t(a)])) continue;
+      bear[size_t(a)] = ln;
+      const i32 s = slot < of_slot.size() ? of_slot[slot] : -1;
+      on[size_t(a)] = s >= 0 && statics[size_t(s)].moving ? s : -1;
+    }
+  }
+  constexpr f64 kUp = 0.1;
+  for (int pass = 0; pass < 8; ++pass) {
+    bool more = false;
+    for (const Contact& c : contacts_) {
+      if (c.b < 0) continue;
+      // (n pushes a out of b: up, a rests on b)
+      const i32 top = c.n.z > kUp ? c.a : c.n.z < -kUp ? c.b : -1, low = top == c.a ? c.b : c.a;
+      if (top < 0 || on[size_t(top)] >= 0 || bear[size_t(top)] > 0.0 || on[size_t(low)] < 0) continue;
+      on[size_t(top)] = on[size_t(low)];
+      more = true;
+    }
+    if (!more) break;
+  }
+  return on;
+}
+
+void RigidWorld::sleep_update(f64 dt, const std::vector<StaticGrid>& statics) {
   // Bodies sleep one by one once slow for a while (a sleeping body is a static support for the
   // others); an awake body touching a sleeping one fast enough wakes it (collide). Rates are per
   // 1/120 s (the same at any substep length).
@@ -860,6 +937,15 @@ void RigidWorld::sleep_update(f64 dt) {
   // Settling (rest damping) and sleep are for bodies held up (support) only: debris falling
   // together touches, but nothing holds it - it falls at g.
   const std::vector<u8>& supported = support(dt);
+  // (a body a moving surface touches is carried or pushed by it: it never sleeps there - asleep,
+  // it would take no part in contacts, and be passed through)
+  std::vector<u8> on_moving(bodies.size(), 0);
+  for (const Contact& c : contacts_)
+    if (c.b < 0 && norm2(c.vs) > 0.0) on_moving[size_t(c.a)] = 1;
+  const std::vector<i32> on = resting_on(statics);
+  // (what hangs on a joint is held for sleep, not settled: no friction holds a pendulum still)
+  std::vector<u8> hung;
+  if (!joints.empty()) hung = hanging(supported);
   // (a hold lasts 0.05 s after it was lost - rubble settling in a pile loses and finds its hold
   // from one substep to the next - for all but a fall: a piece falling is not held back, and soon
   // too fast to count towards sleep)
@@ -867,25 +953,48 @@ void RigidWorld::sleep_update(f64 dt) {
   for (size_t i = 0; i < bodies.size(); ++i) {
     Body& b = *bodies[i];
     if (b.asleep) continue;
-    const f64 sp = norm(b.v) + b.radius * norm(b.w);
     b.held = supported[i] ? kHold : std::max(0, b.held - steps);
-    if (b.held > 0 && sp < par.rest_speed && b.radius < par.rest_radius) {
-      // rest damping: settling rubble loses its last jitter (its hold just lost: all but its fall)
-      if (supported[i]) {
-        b.v *= rest;
-      } else {
-        b.v.x *= rest;
-        b.v.y *= rest;
+    f64 sp;
+    if (on[i] < 0) {
+      sp = norm(b.v) + b.radius * norm(b.w);
+      if (b.held > 0 && sp < par.rest_speed && b.radius < par.rest_radius) {
+        // rest damping: settling rubble loses its last jitter (its hold just lost: all but its fall)
+        if (supported[i]) {
+          b.v *= rest;
+        } else {
+          b.v.x *= rest;
+          b.v.y *= rest;
+        }
+        b.w *= rest;
       }
-      b.w *= rest;
+    } else {
+      // (on a moving surface: its jitter is what it has beyond the surface's motion there)
+      const StaticGrid& G = statics[size_t(on[i])];
+      const V3 vr = G.velocity_at(b.x);
+      sp = norm(b.v - vr) + b.radius * norm(b.w - G.w);
+      if (b.held > 0 && sp < par.rest_speed && b.radius < par.rest_radius) {
+        if (supported[i]) {
+          b.v = vr + (b.v - vr) * rest;
+        } else {
+          b.v.x = vr.x + (b.v.x - vr.x) * rest;
+          b.v.y = vr.y + (b.v.y - vr.y) * rest;
+        }
+        b.w = G.w + (b.w - G.w) * rest;
+      }
     }
     // (a smoothed speed: a settling piece's last jitter does not restart its count; real motion does)
     b.sleep_ema = keep * b.sleep_ema + (1.0 - keep) * sp;
     // (only a held body counts towards sleep; a resting one that loses its hold for a substep -
     // a jitter - keeps most of its count, one that falls is soon too fast to keep any)
-    if (sp > 3.0 * sleep_speed) b.still = 0;
-    else if (b.held > 0 && b.sleep_ema < sleep_speed) b.still += steps;
+    if (sp > 3.0 * sleep_speed || on_moving[i] || on[i] >= 0) b.still = 0;
+    else if ((b.held > 0 || (!hung.empty() && hung[i])) && b.sleep_ema < sleep_speed) b.still += steps;
     else b.still = std::max(0, b.still - 2 * steps);
+  }
+  // (bodies joined sleep together; one joined to a moving frame never sleeps)
+  if (!joints.empty()) joint_stillness();
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    Body& b = *bodies[i];
+    if (b.asleep) continue;
     if (b.still >= par.sleep_substeps) {
       b.asleep = true;
       b.v = V3{};
@@ -1015,7 +1124,7 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
   const auto t4 = Clock::now();
   integrate_positions(dt);
   refresh_boxes();
-  sleep_update(dt);
+  sleep_update(dt, statics);
   const auto t5 = Clock::now();
   prof_ms[0] += ms(t0, t1);
   prof_ms[1] += ms(t1, t2);

@@ -252,5 +252,6 @@ by name, see [`CORE.md`](CORE.md)):
 | min_body_voxels, min_fracture_frags | 16, 8 | dust below; unbreakable rubble below |
 | max_bodies | 3,000 | beyond: the smallest sleeping pieces are culled (the game fades them) |
 | substeps, iterations | 2, 10 | rigid solver |
-| junction_samples, junction_reach | 3, 0.5 | samples per face edge and how far out they reach (voxels) at junctions between grids |
+| junction_samples, junction_reach | 3, 0.5 | samples per face edge and how far out they reach (voxels of the other grid) at junctions between grids |
+| rigid.joint_baumgarte, rigid.joint_slop, rigid.joint_warm | 0.5, 0.5 mm, 0.9 | joints: the share of their position error taken out per substep beyond the slop, and of the last substep's impulses they start from |
 | solve_restarts | 60 | unconverged restarts of a structure's solve (each after 120 iterations) before it is left alone |

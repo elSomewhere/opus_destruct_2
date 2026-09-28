@@ -5,11 +5,12 @@
 // render frames with a small CPU ray caster (world grid + rigid pieces) to PPM files, which
 // ffmpeg turns into a video: the collapse can be judged without a browser.
 //
-// usage: svx_engine_demo [--world rooms|city|tower|yard|slab|chimney|bridge|angles] [--seed N] [--wad F --map M] [--threads T]
+// usage: svx_engine_demo [--world rooms|city|tower|yard|slab|chimney|bridge|angles|machines] [--seed N] [--wad F --map M] [--threads T]
 //          [--seconds S] [--scenario pillars|side|rockets|core|none] [--fragility F] [--impact I]
 //          [--dif D] [--frames DIR] [--fps F] [--res WxH] [--cam x,y,z] [--look x,y,z]
-//          [--report S] [--debug-view N] [--turn DEG]
+//          [--report S] [--debug-view N] [--turn DEG] [--turned-city]
 //
+// --turned-city: the streamed city with some of its buildings turned in grids of their own.
 // --turn DEG: a procedural world's structure (everything above the ground) stands in a grid of
 // its own turned DEG degrees about the vertical through its centre (docs/GRIDS.md), on the world
 // grid's ground (bonded to it by junctions); the scenario's blasts and the camera turn with it.
@@ -120,7 +121,7 @@ int main(int argc, char** argv) {
   bool cam_set = false, look_set = false;
   V3 cam, look;
   f64 turn = 0.0;
-  bool turned = false;
+  bool turned = false, turned_city = false;
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -141,6 +142,7 @@ int main(int argc, char** argv) {
     else if (a == "--debug-view") debug_view = std::atoi(next());
     else if (a == "--work") work = std::atoll(next());
     else if (a == "--res") std::sscanf(next(), "%dx%d", &W, &H);
+    else if (a == "--turned-city") turned_city = true;
     else if (a == "--turn") {
       turn = std::atof(next());
       turned = true;
@@ -209,7 +211,7 @@ int main(int argc, char** argv) {
     eng.load(std::move(g), dw->spawn_pos, dw->spawn_dir);
     world = map_name;
   } else if (world == "city") {
-    auto src = make_city_source(seed, 1000.0, h);
+    auto src = make_city_source(seed, 1000.0, h, turned_city);
     VoxelGrid g;
     g.h = h;
     const auto sp = src->spawn_pos(), sd = src->spawn_dir();
@@ -263,10 +265,10 @@ int main(int argc, char** argv) {
       turn_rot = Quat{0.0, 0.0, std::sin(th), std::cos(th)};
       const GridId id = eng.world().add_grid(GridFrame{V3{h * turn_pivot[0], h * turn_pivot[1], 0.0}, turn_rot}, std::move(t));
       std::printf("turned %.1f degrees: %zu voxels in grid %u about (%d %d)\n", turn, moved.size(), id, turn_pivot[0], turn_pivot[1]);
+      add_grids(eng.world(), std::move(w.grids));
     } else {
-      eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+      load_procedural(eng, std::move(w));
     }
-    add_grids(eng.world(), std::move(w.grids));
   }
   eng.set_params(par);
   if (const char* wv = std::getenv("SVX_WATCH")) {

@@ -18,6 +18,7 @@
 #pragma once
 
 #include <array>
+#include <map>
 #include <vector>
 
 #include "svx/world/world.hpp"
@@ -81,11 +82,14 @@ class FireSystem final : public WorldSystem {
   };
   const std::vector<Flame>& flames() const { return flames_; }
   // For renderers: chunks where a voxel began or stopped glowing, and pieces whose charring or
-  // glow changed, since the last take.
+  // glow changed, since the last take; the oriented grids' chunks where a voxel began or stopped
+  // glowing.
   std::vector<u64> take_glow_changes();
   std::vector<i64> take_piece_changes();
+  std::vector<GridChunk> take_grid_glow_changes();
   struct Stats {
     i32 hot = 0, burning = 0, burning_pieces = 0;
+    i32 grid_hot = 0, grid_burning = 0;  // (the oriented grids')
     i64 burnt_out = 0, ignited = 0, dropped = 0;  // (totals)
     i64 steps = 0;
     f64 step_ms = 0.0;   // (this tick)
@@ -108,6 +112,10 @@ class FireSystem final : public WorldSystem {
  private:
   void fire_step(World& w, f64 dt);
   void step_pieces(World& w, f64 dt, std::vector<V3>& heat_world);
+  // The oriented grids (docs/GRIDS.md): fire as in the world, in each grid's lattice ("up": its
+  // axis nearest the world's). Flames reach across lattices through their world points
+  // (heat_world: the world grid's this step; grid_in_: the grids' at the next step).
+  void step_grids(World& w, f64 dt, std::vector<V3>& heat_world);
   void track_heat(const World& w, const std::vector<u64>& chunks);  // (heat already in these chunks)
   void admit(std::vector<std::pair<f64, u64>>& cand);               // (a command's voxels, nearest first, within the budget)
   void heat_sphere(World& w, const V3& pos, f64 radius, f64 celsius, bool own);
@@ -120,6 +128,9 @@ class FireSystem final : public WorldSystem {
   std::array<FireMaterial, 128> mats_{};
   int heat_ = -1, burn_ = -1, water_ = -1;  // layers
   std::vector<u64> hot_;                    // voxel keys with heat (sorted)
+  std::map<GridId, std::vector<u64>> grid_hot_;  // the oriented grids': per grid, its voxel keys with heat (sorted)
+  std::vector<V3> grid_in_;                 // flames' reach into the grids, for the next step (point, (degC, reach))
+  std::vector<GridChunk> grid_glow_changes_;
   std::vector<Flame> flames_;
   std::vector<u64> glow_changes_;
   std::vector<i64> piece_changes_;

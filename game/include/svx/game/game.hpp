@@ -70,6 +70,47 @@ struct GameStats : WorldStats {
   f64 env_ms = 0.0;
 };
 
+// An oriented grid's place for the front end (docs/GRIDS.md): its frame in the world, voxel
+// size, and the velocity field it moves with (a kinematic body's: v + w x (X - c); zero for the
+// static world's). Its chunk meshes and occupancy are in its lattice.
+struct GridView {
+  GridId id = 0;
+  V3 origin;
+  Quat rot;
+  f64 voxel_size = 0.0;
+  KinematicId body = 0;
+  V3 vel, ang, centre;
+};
+
+// A machine's motion: how the game drives a kinematic body of the level every tick (World::
+// drive_kinematic), a function of time (the same in every session and replay).
+struct MachineDrive {
+  enum class Kind : u8 {
+    Oscillate,  // along the axis, from its rest pose out by amplitude (m) and back, eased
+    Spin,       // about the axis (through its origin) at amplitude (rad/s)
+    Swing,      // about the axis, from its rest pose by amplitude (rad) and back, eased
+  };
+  Kind kind = Kind::Spin;
+  V3 axis{0, 0, 1};     // (world)
+  f64 amplitude = 0.0;
+  f64 period = 10.0;    // s (oscillate, swing: there and back)
+  f64 phase = 0.0;      // s
+};
+
+// Something a level drops into its world when play starts (after the bake and a saved session's
+// changes): a free object of this session, a piece from the first tick (crates on a turntable).
+struct Drop {
+  GridDesc desc;
+  VoxelGrid voxels;
+};
+
+// A joint for the renderer: its ends in the world (a rope is drawn between them).
+struct JointView {
+  JointId id = 0;
+  JointType type = JointType::Ball;
+  V3 a, b;
+};
+
 // A flame for the renderer: a burning voxel (world position, degC).
 struct FlamePoint {
   V3 pos;
@@ -133,6 +174,13 @@ class Game {
   i64 ticks() const { return world_.ticks(); }
   void record_to(CommandLog* log) { log_ = log; }
 
+  // Machines: kinematic bodies of the level the game drives (a lift, a turntable, a drawbridge,
+  // a crane's jib); their pose is a function of the ticks. Drops: objects dropped in when play
+  // starts (the first tick).
+  bool add_machine(KinematicId body, const MachineDrive& drive);
+  void add_drop(Drop&& d) { drops_.push_back(std::move(d)); }
+  i32 machine_count() const { return static_cast<i32>(machines_.size()); }
+
   // Movers (game/src/movers.cpp).
   i32 add_mover(const MoverDef& d);
   bool activate_mover(i32 id, i32 move = 0);
@@ -149,19 +197,23 @@ class Game {
   std::function<std::vector<MoverTrigger>(const V3& at)> shot_resolver;
 
   // Output for the front end.
-  // (the oriented grids' chunks among them: ChunkMesh::grid their id, their vertices in world
-  // coordinates, docs/GRIDS.md)
+  // (the oriented grids' chunks among them: ChunkMesh::grid their id, their vertices in the
+  // grid's lattice (metres), placed in the world by its view: take_grid_views)
   std::vector<ChunkMesh> take_meshes(const MeshOptions& base);
   std::vector<u64> take_removed_chunks();
   // The oriented grids' chunks whose meshes go (emptied, or their grid removed).
   std::vector<GridChunk> take_removed_grid_chunks();
-  // The player's collision occupancy of a world chunk (kChunkVox / 8 bytes of bits: 0 no chunk,
-  // 1 all solid, 2 mixed): the world grid's voxels and the oriented grids' there (a turned voxel
-  // as the world voxel its centre is in: a turned wall is felt a little stepped, never leaky for a
-  // body wider than a voxel).
+  // The player's collision occupancy of a world chunk (kChunkVox / 8 bytes of bits; returns 0 no
+  // chunk, 1 all solid, 2 mixed), and of an oriented grid's chunk in its lattice: a front end
+  // sweeps the player against both exactly (World::collide's rules).
   int chunk_occupancy(const IVec3& chunk, u8* bits) const;
-  // World chunks whose occupancy changed through the oriented grids since the last call.
-  std::vector<u64> take_occupancy_changed();
+  int grid_chunk_occupancy(GridId grid, const IVec3& chunk, u8* bits) const;
+  // The grids whose place changed since the last call (they came, were moved, their kinematic
+  // body moves), and the grids gone.
+  std::vector<GridView> take_grid_views();
+  std::vector<GridId> take_removed_grids();
+  // The joints now (to be drawn).
+  std::vector<JointView> joint_views() const;
   std::vector<ChunkMesh> take_far_meshes();
   std::vector<std::array<i32, 2>> take_far_removed();
   std::vector<GameEvent> take_events();
@@ -199,12 +251,12 @@ class Game {
     bool disabled = false;
   };
   void step_movers();
+  void step_machines();
   void set_mover_rows(Mover& m, i32 rows);
   bool blocks_player(const Mover& m, i32 rows) const;
   void check_movers_hit();  // (after a tick: carves and blasts destroy the movers they hollowed)
   void drain_world_events();
-  void grids_occupancy(const std::vector<u64>& world_chunks);  // (the grids' overlay of these world chunks, again)
-  void grid_box_chunks(const V3& lo, const V3& hi, std::vector<u64>* out) const;  // (world chunks of a world box)
+  GridView grid_view(GridId id) const;
   ChunkMesh piece_mesh(const Body& b) const;
   ChunkMesh shape_mesh(const Body& b, size_t shape) const;
   void far_update();
@@ -231,13 +283,13 @@ class Game {
   f64 wet_clock_ = 0.0;
   std::vector<u64> removed_chunks_;
   f64 mesh_ms_ = 0.0;
-  // oriented grids: the chunks with a mesh at the front end, the ones to drop, each grid's world
-  // box (its occupancy goes with it); the grids' occupancy overlay per world chunk
+  // oriented grids: the chunks with a mesh at the front end, the ones to drop; the grids' places
+  // the front end has, and the grids it is to drop
   std::set<std::pair<GridId, u64>> grid_meshed_;
   std::vector<GridChunk> removed_grid_chunks_;
-  std::unordered_map<GridId, std::pair<V3, V3>> grid_box_;
-  std::unordered_map<u64, std::vector<u8>> grid_occ_;  // world chunk -> kChunkVox bits
-  std::unordered_set<u64> occ_changed_;
+  std::set<std::pair<GridId, u64>> grid_charred_, grid_remesh_;  // (the grids' charring and glow: as charred_, remesh_)
+  std::unordered_map<GridId, GridView> grid_sent_;
+  std::vector<GridId> removed_grids_;
 
   struct View {                              // a piece's mesh frame: sent at (x0, q0)
     V3 x0;
@@ -252,6 +304,13 @@ class Game {
   };
   std::vector<Fading> fading_;
 
+  struct Machine {
+    KinematicId body = 0;
+    MachineDrive drive;
+    Pose rest;
+  };
+  std::vector<Machine> machines_;
+  std::vector<Drop> drops_;
   std::vector<Mover> movers_;
   std::unordered_map<u64, std::vector<i32>> mover_cols_;
   std::vector<std::pair<V3, f64>> shots_;  // carves and blasts of this tick (centre, reach)

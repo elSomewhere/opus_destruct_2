@@ -23,7 +23,7 @@ struct Box {
 
 class CitySource final : public GameSource {
  public:
-  CitySource(u64 seed, f64 extent_m, f64 h) : seed_(seed), h_(h) {
+  CitySource(u64 seed, f64 extent_m, f64 h, bool turned) : seed_(seed), h_(h), turned_(turned) {
     extent_ = static_cast<i32>(extent_m / h);
     blocks_ = std::max(1, extent_ / kPitch);
     // one extra chunk of margin around the city
@@ -55,9 +55,53 @@ class CitySource final : public GameSource {
     const i32 by0 = std::max(0, b[1] / kPitch - 1), by1 = std::min(blocks_ - 1, (e[1] - 1) / kPitch);
     for (i32 bx = bx0; bx <= bx1; ++bx)
       for (i32 by = by0; by <= by1; ++by) {
-        building(bx, by, fill);
+        if (!turned_lot(bx, by)) building(bx, by, fill);
         if (pond(bx, by)) fill(pond_box(bx, by), kAir);
       }
+    return any;
+  }
+
+  // The turned buildings: each in a grid of its own at home in the chunk of its lot's centre.
+  std::vector<SourceGrid> grids(const IVec3& cc) const override {
+    std::vector<SourceGrid> out;
+    if (!turned_ || cc[2] != 0) return out;
+    const i32 bx0 = std::max(0, cc[0] * kChunk / kPitch - 1), bx1 = std::min(blocks_ - 1, (cc[0] * kChunk + kChunk - 1) / kPitch);
+    const i32 by0 = std::max(0, cc[1] * kChunk / kPitch - 1), by1 = std::min(blocks_ - 1, (cc[1] * kChunk + kChunk - 1) / kPitch);
+    for (i32 bx = bx0; bx <= bx1; ++bx)
+      for (i32 by = by0; by <= by1; ++by) {
+        if (!turned_lot(bx, by)) continue;
+        const IVec3 c = lot_centre(bx, by);
+        if (chunk_of(c) != IVec3{cc[0], cc[1], 0}) continue;
+        SourceGrid g;
+        g.id = static_cast<u32>(bx) * 4096u + static_cast<u32>(by) + 1u;
+        g.origin = V3{h_ * c[0], h_ * c[1], 0.0};
+        const f64 deg = 10.0 + static_cast<f64>((lot_traits(bx, by) >> 16) % 26);
+        const f64 t = 0.5 * deg * 3.14159265358979323846 / 180.0;
+        g.rot = Quat{0.0, 0.0, std::sin(t), std::cos(t)};
+        out.push_back(g);
+      }
+    return out;
+  }
+
+  bool generate_grid(u32 id, VoxelGrid& out) const override {
+    if (!turned_ || id == 0) return false;
+    const i32 bx = static_cast<i32>((id - 1) / 4096u), by = static_cast<i32>((id - 1) % 4096u);
+    if (bx >= blocks_ || by >= blocks_ || !turned_lot(bx, by)) return false;
+    // the lot's building, about its centre
+    out.h = h_;
+    const IVec3 c = lot_centre(bx, by);
+    bool any = false;
+    building(bx, by, [&](const Box& b, Vox v) {
+      for (i32 x = b.lo[0]; x < b.hi[0]; ++x)
+        for (i32 y = b.lo[1]; y < b.hi[1]; ++y)
+          if (v == kAir) {
+            for (i32 z = b.lo[2]; z < b.hi[2]; ++z) out.set(x - c[0], y - c[1], z, kAir);
+          } else {
+            out.fill_column(x - c[0], y - c[1], b.lo[2], b.hi[2], v);
+            any = true;
+          }
+    });
+    out.compact();
     return any;
   }
 
@@ -108,7 +152,8 @@ class CitySource final : public GameSource {
     const i32 bx0 = std::max(0, lo[0] / kPitch - 1), bx1 = std::min(blocks_ - 1, (e[0] - 1) / kPitch);
     const i32 by0 = std::max(0, lo[1] / kPitch - 1), by1 = std::min(blocks_ - 1, (e[1] - 1) / kPitch);
     for (i32 bx = bx0; bx <= bx1; ++bx)
-      for (i32 by = by0; by <= by1; ++by) building(bx, by, fill);
+      for (i32 by = by0; by <= by1; ++by)
+        if (!turned_lot(bx, by)) building(bx, by, fill);  // (the turned ones: their grids, Game::far_mesh)
     return true;
   }
 
@@ -143,6 +188,9 @@ class CitySource final : public GameSource {
   u64 lot_traits(i32 bx, i32 by) const { return mix64(lot_hash(bx, by) ^ 0x5EEDF00Dull); }
   // an empty lot is a pond every other time: the ground dug out 3 voxels, full of water
   bool pond(i32 bx, i32 by) const { return empty_lot(bx, by) && (lot_traits(bx, by) & 1) == 0; }
+  // (turned cities) a building in a grid of its own, turned about its lot's centre
+  bool turned_lot(i32 bx, i32 by) const { return turned_ && !empty_lot(bx, by) && ((lot_traits(bx, by) >> 8) & 7) == 3; }
+  IVec3 lot_centre(i32 bx, i32 by) const { return {bx * kPitch + kPitch / 2, by * kPitch + kPitch / 2, 0}; }
   Box pond_box(i32 bx, i32 by) const {
     const i32 ox = bx * kPitch + kStreet / 2 + 12, oy = by * kPitch + kStreet / 2 + 12, n = kPitch - kStreet - 24;
     return {{ox, oy, -3}, {ox + n, oy + n, 0}};
@@ -199,14 +247,15 @@ class CitySource final : public GameSource {
 
   u64 seed_;
   f64 h_;
+  bool turned_ = false;
   i32 extent_ = 0, blocks_ = 1;
   IVec3 clo_{0, 0, 0}, chi_{1, 1, 1};
 };
 
 }  // namespace
 
-std::unique_ptr<GameSource> make_city_source(u64 seed, f64 extent_m, f64 h) {
-  return std::make_unique<CitySource>(seed, extent_m, h);
+std::unique_ptr<GameSource> make_city_source(u64 seed, f64 extent_m, f64 h, bool turned) {
+  return std::make_unique<CitySource>(seed, extent_m, h, turned);
 }
 
 }  // namespace svx

@@ -16,6 +16,8 @@ struct SourceGrid {
   u32 id = 0;        // unique and stable (not 0): the same grid gets the same id every time
   V3 origin;
   Quat rot;
+  f64 voxel_size = 0.0;  // its voxel size (m; 0: the world's)
+  i32 priority = 0;      // (overlaps: GridDesc::priority)
 };
 
 class ChunkSource {

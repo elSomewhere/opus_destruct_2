@@ -233,11 +233,199 @@ void angles(ProcWorld& w, Rng& rng) {
   box(place({350, 140, 0}, turn(30, 0, 0, 1) * turn(12, 1, 0, 0)), -4, 4, -2, 2, -2, 40, stone);
 }
 
+// Machines (docs/MOTION.md): kinematic bodies the game drives, and joints. The free parts that
+// hang on joints (a wrecking ball, a pendulum's bob, a door's leaf, a chain's links) are grids of
+// the level the bake keeps (they are held): pieces from the first tick.
+void machines(ProcWorld& w) {
+  VoxelGrid& g = w.grid;
+  const f64 h = g.h;
+  const Vox rc = make_vox(MaterialId::Rc, false), conc = make_vox(MaterialId::Concrete, false);
+  const Vox steel = make_vox(MaterialId::Steel, false), held = make_vox(MaterialId::Steel, true);
+  const Vox wood = make_vox(MaterialId::Wood, false), masonry = make_vox(MaterialId::Masonry, false);
+  const Quat id{0, 0, 0, 1};
+  // (a free object of the level at world point o; its grid id: the order it is added in)
+  auto object = [&](const V3& o) -> VoxelGrid& {
+    ProcGrid pg;
+    pg.frame = GridFrame{o, id};
+    pg.grid.h = h;
+    w.grids.push_back(std::move(pg));
+    return w.grids.back().grid;
+  };
+  auto grid_id = [&](size_t index) { return static_cast<u64>(index + 1); };
+  auto joint = [&](JointType type, JointAnchor a, JointAnchor b) -> JointDesc& {
+    JointDesc d;
+    d.type = type;
+    d.a = a;
+    d.b = b;
+    w.joints.push_back(d);
+    return w.joints.back();
+  };
+  auto at_world = [](const V3& p) {
+    JointAnchor a;
+    a.kind = JointAnchor::Kind::World;
+    a.point = p;
+    return a;
+  };
+  auto at_grid = [](u64 grid, const V3& p) {
+    JointAnchor a;
+    a.kind = JointAnchor::Kind::Grid;
+    a.id = grid;
+    a.point = p;
+    return a;
+  };
+
+  // --- the free parts on joints (grids 1..)
+  // A crane (a mast of the world grid at (12, 28), 8 m) swings a 3 t steel ball on a 5 m rope
+  // into a masonry wall (a grid of its own across the ball's path, below).
+  box(g, 92, 100, 220, 228, 0, 64, rc);
+  reinforce(g, {92, 220, 0}, {100, 228, 64});
+  const V3 tip{12.0 - 0.5 * h + 5.75, 28.0 - 0.5 * h, 8.2 - 2.5 * h};
+  const size_t ball = w.grids.size();
+  box(object(V3{tip.x, tip.y, 3.0 - 3.5 * h}), -3, 3, -3, 3, -2, 4, steel);
+  // A pendulum: a steel bob (0.4 t) on a 3 m rod from the beam of a steel frame at (30.75, 28),
+  // let go 60 degrees out.
+  box(g, 216, 220, 222, 226, 0, 44, steel);
+  box(g, 272, 276, 222, 226, 0, 44, steel);
+  box(g, 216, 276, 222, 226, 44, 48, steel);
+  const V3 pivot{h * 246 - 0.5 * h, h * 224 - 0.5 * h, h * 44 - 0.5 * h};
+  const f64 L = 3.0, th = 60.0 * 3.14159265358979323846 / 180.0;
+  const V3 bob{pivot.x + L * std::sin(th), pivot.y, pivot.z - L * std::cos(th)};
+  const size_t bob_g = w.grids.size();
+  box(object(bob), -1, 2, -1, 2, -1, 2, steel);
+  // A chain of four wooden links, 1 m apart, from the arm of a steel gallows at (36..39, 28).
+  box(g, 288, 292, 222, 226, 0, 48, steel);
+  box(g, 288, 312, 222, 226, 44, 48, steel);
+  const V3 hook{h * 306, pivot.y, pivot.z};
+  size_t first_link = w.grids.size();
+  for (int k = 0; k < 4; ++k) box(object(V3{hook.x, hook.y, hook.z - 0.75 - 1.0 * k}), -2, 2, -2, 2, -2, 2, wood);
+  // A wooden door on a hinge in the doorway of a brick wall at (45, 28): its leaf clear of the
+  // wall all round (bonded to nothing, it swings).
+  box(g, 344, 400, 222, 225, 0, 24, masonry);
+  box(g, 364, 372, 222, 225, 0, 17, kAir);
+  const size_t door = w.grids.size();
+  box(object(V3{h * 365, h * 223, h * 1}), 0, 6, 0, 1, 0, 15, wood);
+  // The crane's target: a masonry wall (3 m wide, 4 m high, 0.25 m) standing across the ball's
+  // swing, 60 degrees round from the jib's rest (a grid turned to face it).
+  {
+    const f64 a = 60.0 * 3.14159265358979323846 / 180.0;
+    ProcGrid pg;
+    pg.frame = GridFrame{V3{12.0 + 6.0 * std::cos(a), 28.0 + 6.0 * std::sin(a), 0.0}, Quat{0.0, 0.0, std::sin(0.5 * a), std::cos(0.5 * a)}};
+    pg.grid.h = h;
+    box(pg.grid, -12, 12, -1, 1, 0, 32, masonry);
+    w.grids.push_back(std::move(pg));
+  }
+
+  // --- the kinematic bodies (ids 1..; their grids after the free parts')
+  size_t next_grid = w.grids.size();
+  auto body = [&](const Pose& pose, MachineDrive::Kind kind, const V3& axis, f64 amplitude, f64 period) -> ProcBody& {
+    ProcBody b;
+    b.pose = pose;
+    b.drive.kind = kind;
+    b.drive.axis = axis;
+    b.drive.amplitude = amplitude;
+    b.drive.period = period;
+    w.bodies.push_back(std::move(b));
+    return w.bodies.back();
+  };
+  auto body_grid = [&](ProcBody& b) -> VoxelGrid& {
+    ProcGrid pg;
+    pg.frame = GridFrame{V3{}, id};
+    pg.grid.h = h;
+    b.grids.push_back(std::move(pg));
+    ++next_grid;
+    return b.grids.back().grid;
+  };
+  // A lift beside a concrete tower (3 x 3 m, 5 m) at (13..16, 5..8): its 2.5 m deck rises to the
+  // tower's top and down again every 12 s.
+  box(g, 104, 128, 40, 64, 0, 40, conc);
+  {
+    ProcBody& b = body(Pose{V3{17.35, 6.5, 0.25}, id}, MachineDrive::Kind::Oscillate, V3{0, 0, 1}, 4.5, 12.0);
+    box(body_grid(b), -10, 10, -10, 10, 0, 2, held);
+  }
+  // A turntable (3 m radius) at (30, 8), turning at 0.4 rad/s; crates dropped on it.
+  {
+    ProcBody& b = body(Pose{V3{30.0, 8.0, 0.25}, id}, MachineDrive::Kind::Spin, V3{0, 0, 1}, 0.4, 1.0);
+    VoxelGrid& t = body_grid(b);
+    for (int x = -24; x < 24; ++x)
+      for (int y = -24; y < 24; ++y)
+        if ((x + 0.5) * (x + 0.5) + (y + 0.5) * (y + 0.5) < 24.0 * 24.0) t.fill_column(x, y, 0, 2, held);
+    for (int k = 0; k < 3; ++k) {
+      const f64 a = 2.1 * k, r = 1.6;
+      Drop d;
+      d.desc.frame = GridFrame{V3{30.0 + r * std::cos(a) - 0.25, 8.0 + r * std::sin(a) - 0.25, 0.25 + 2.0 * h + 0.02}, id};
+      d.desc.base = false;
+      d.voxels.h = h;
+      box(d.voxels, 0, 4, 0, 4, 0, 4, wood);
+      w.drops.push_back(std::move(d));
+    }
+  }
+  // A drawbridge over a 5 m gap between two abutments at (39..42) and (47..50): its RC deck
+  // (4.9 m, 2 m wide) raised 70 degrees and lowered again every 16 s, about its hinge.
+  box(g, 312, 336, 40, 64, 0, 16, conc);
+  box(g, 376, 400, 40, 64, 0, 16, conc);
+  {
+    ProcBody& b = body(Pose{V3{42.0 + 0.5 * h, 6.5, 2.0}, id}, MachineDrive::Kind::Swing, V3{0, -1, 0}, 1.2, 16.0);
+    VoxelGrid& d = body_grid(b);
+    box(d, 0, 2, -8, 8, -4, -2, held);
+    box(d, 0, 39, -8, 8, -2, 0, rc);
+    reinforce(d, {0, -8, -2}, {39, 8, 0});
+  }
+  // The crane's jib: turning 125 degrees and back about the mast every 10 s.
+  const size_t jib = next_grid;
+  {
+    ProcBody& b = body(Pose{V3{12.0 - 0.5 * h, 28.0 - 0.5 * h, 8.2}, id}, MachineDrive::Kind::Swing, V3{0, 0, 1}, 2.2, 10.0);
+    VoxelGrid& j = body_grid(b);
+    box(j, -4, 4, -4, 4, -2, 2, held);
+    box(j, 4, 48, -4, 4, -2, 2, steel);
+  }
+
+  // --- the joints
+  // (a wire rope: it stretches a little, a shock reaches the jib over the time it takes)
+  JointDesc& rope = joint(JointType::Distance, at_grid(grid_id(jib), tip), at_grid(grid_id(ball), V3{tip.x, tip.y, 3.0}));
+  rope.stiffness = 1e6;
+  rope.damping = 2e4;
+  JointDesc& rod = joint(JointType::Distance, at_world(pivot), at_grid(grid_id(bob_g), bob));
+  rod.rope = false;
+  for (int k = 0; k < 4; ++k) {
+    const V3 top{hook.x, hook.y, hook.z - 0.75 - 1.0 * k + 1.5 * h};
+    const V3 up = k == 0 ? hook : V3{hook.x, hook.y, hook.z - 0.75 - 1.0 * (k - 1) - 2.5 * h};
+    JointDesc& c = joint(JointType::Distance, k == 0 ? at_world(up) : at_grid(grid_id(first_link + size_t(k) - 1), up),
+                         at_grid(grid_id(first_link + size_t(k)), top));
+    c.rope = false;
+  }
+  JointDesc& hinge = joint(JointType::Hinge, at_world(V3{h * 364.5, h * 223, h * 8}), at_grid(grid_id(door), V3{h * 364.5, h * 223, h * 8}));
+  hinge.axis = V3{0, 0, 1};
+  hinge.limited = true;
+  hinge.lower = -1.6;
+  hinge.upper = 1.6;
+}
+
 }  // namespace
 
 void add_grids(World& world, std::vector<ProcGrid>&& grids) {
   for (ProcGrid& pg : grids) world.add_grid(pg.frame, std::move(pg.grid));
   grids.clear();
+}
+
+void load_procedural(Game& game, ProcWorld&& w) {
+  game.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+  World& world = game.world();
+  add_grids(world, std::move(w.grids));
+  for (ProcBody& b : w.bodies) {
+    const KinematicId k = world.add_kinematic(b.pose);
+    for (ProcGrid& pg : b.grids) {
+      GridDesc d;
+      d.frame = pg.frame;
+      d.body = k;
+      world.add_grid(d, std::move(pg.grid));
+    }
+    if (b.driven) game.add_machine(k, b.drive);
+  }
+  for (const JointDesc& j : w.joints) world.add_joint(j);
+  for (Drop& d : w.drops) game.add_drop(std::move(d));
+  w.bodies.clear();
+  w.joints.clear();
+  w.drops.clear();
 }
 
 ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h) {
@@ -307,6 +495,13 @@ ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h) {
     g.hi = {176, 64, 60};
     w.spawn_pos = {h * 88, h * 4, -0.5 * h + 0.02};
     w.spawn_dir = {0, 1, 0.2};
+  } else if (kind == "machines") {
+    ground(g, 0, 480, 0, 320, 4);
+    machines(w);
+    g.lo = {0, 0, -4};
+    g.hi = {480, 320, 96};
+    w.spawn_pos = {h * 32, h * 128, -0.5 * h + 0.02};
+    w.spawn_dir = {1, 0, 0.05};
   } else if (kind == "angles") {
     ground(g, 0, 384, 0, 288, 4);
     angles(w, rng);

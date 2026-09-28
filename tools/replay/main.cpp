@@ -18,7 +18,7 @@
 #include <memory>
 #include <string>
 
-#include "svx/game/dmath.hpp"
+#include "svx/base/dmath.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/game/doom/movers.hpp"
 #include "svx/game/doom/world.hpp"
