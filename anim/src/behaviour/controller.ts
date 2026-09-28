@@ -1469,7 +1469,7 @@ export class Behaviours {
     let bump = 0;
     for (const p of body.parts) bump += p.bumped;
     const bdv = bump / body.totalMass;
-    if (bdv > 0.08 && this.alive && (mode === 'animated' || mode === 'reacting')) {
+    if (bdv > 0.12 && this.alive && (mode === 'animated' || mode === 'reacting')) {
       this.upset = Math.max(this.upset, Math.min(0.5, 2.5 * bdv));
       if (bdv > 0.3) this.forceReact = true;
     }
@@ -1553,6 +1553,13 @@ export class Behaviours {
       const sb = this.body.parts[i === 0 ? B.shinL : B.shinR]!;
       const sn = sb.contactNormal;
       const blocked = (fb.contact && (n[0] * sx + n[1] * sy) / sl < -0.35) || (sb.bumped > 1.5 && (sn[0] * sx + sn[1] * sy) / sl < -0.35);
+      // (coming down onto something - a body, a lump of rubble - late in the swing: the foot
+      // lands on it, a step sooner than meant, and the gait goes on)
+      if (!blocked && fb.contact && n[2] > 0.6 && f.swing > 0.5 && lag > 0.08 * k) {
+        this.plan.feetPlanner.plantNow(i, this.solePos(i));
+        this.blockedFor[i] = 0;
+        continue;
+      }
       // (blocked by something in the way; merely scuffing the ground is not a trip unless the
       // foot is hopelessly behind)
       if ((blocked && lag > 0.05 * k) || (fb.contact && lag > 0.4 * k)) {

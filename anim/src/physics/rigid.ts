@@ -20,7 +20,7 @@
  * The inner loops are written on scalars to stay allocation-free.
  */
 import type { Quat } from '../math/quat.ts';
-import type { V3 } from '../math/vec.ts';
+import { clamp, type V3 } from '../math/vec.ts';
 import type { CollisionWorld, SphereContact } from './collision.ts';
 
 /** A collision sphere in a body's frame (centre relative to the centre of mass). */
@@ -1080,8 +1080,16 @@ export class RigidSystem {
     B.contactPoint[2] = B.x[2] + rz;
     const w = B.invMassAt(rx, ry, rz, n[0], n[1], n[2]);
     if (w <= 0) return;
-    // (an obstacle found deep inside - two bodies overlapping - is left gradually)
-    const l = (k.obstacle ? Math.min(pen, DEEP_SPEED * this.substep) : pen) / w;
+    // (an obstacle found deep inside - two bodies overlapping - is left gradually; another
+    // body's part is pushed out of as fast as the two come together, not faster: people
+    // standing too close ease apart, a body barged into goes)
+    let cap = DEEP_SPEED;
+    if (k.other) {
+      const o = k.other;
+      const approach = -((B.v[0] - o.v[0]) * n[0] + (B.v[1] - o.v[1]) * n[1] + (B.v[2] - o.v[2]) * n[2]);
+      cap = clamp(approach + 0.3, 0.4, DEEP_SPEED);
+    }
+    const l = (k.obstacle ? Math.min(pen, cap * this.substep) : pen) / w;
     B.applyPos(l * n[0], l * n[1], l * n[2], rx, ry, rz);
     k.lambda = l;
     if (k.other) k.took += Math.min(l / this.substep, 40);

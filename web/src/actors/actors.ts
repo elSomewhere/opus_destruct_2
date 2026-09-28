@@ -827,7 +827,7 @@ export class ActorWorld {
         // panic most, rarely otherwise, hardly ever a soldier
         const hs = Math.hypot(a.vel[0], a.vel[1]);
         if (hs > 1.2 && a.onGround && !an.busy && an.stance === 'stand' && !a.brawler && !a.char.controlled) {
-          const perSecond = hs > 2.6 ? (a.mood === 'panic' ? 1 / 35 : 1 / 150) : 1 / 600;
+          const perSecond = hs > 2.6 ? (a.mood === 'panic' ? 1 / 120 : 1 / 400) : 1 / 1500;
           if (Math.random() < (a.faction === 'soldier' ? 0.15 : 1) * perSecond * dt) a.char.trip();
         }
         const inp = an.input;
@@ -1033,11 +1033,29 @@ export class ActorWorld {
       if (a.brawler && a.brawler.opponent === b.char) continue;
       const ox = a.pos[0] - b.pos[0], oy = a.pos[1] - b.pos[1];
       const d2 = ox * ox + oy * oy;
-      if (d2 > 0.5 || d2 < 1e-6 || Math.abs(a.pos[2] - b.pos[2]) > 1) continue;
+      if (d2 > 4 || d2 < 1e-6 || Math.abs(a.pos[2] - b.pos[2]) > 1) continue;
       const d = Math.sqrt(d2);
-      const push = (0.7 - d) * 3;
-      sepX += (ox / d) * push;
-      sepY += (oy / d) * push;
+      // (bodies are shoulders wide: people keep a little space between them)
+      if (d < 0.8) {
+        const push = (0.8 - d) * (d < 0.55 ? 9 : 4);
+        sepX += (ox / d) * push;
+        sepY += (oy / d) * push;
+      }
+      // and they see each other coming: where the two will be in a moment, a step aside now
+      const rvx = a.vel[0] - b.vel[0], rvy = a.vel[1] - b.vel[1];
+      const rv2 = rvx * rvx + rvy * rvy;
+      if (rv2 > 0.25) {
+        const t = clamp(-(ox * rvx + oy * rvy) / rv2, 0, 0.6);
+        const px = ox + rvx * t, py = oy + rvy * t;
+        const pd = Math.hypot(px, py);
+        if (t > 0 && pd < 0.75) {
+          // (sideways to the closing motion, the way the miss already leans)
+          const side = pd > 1e-3 ? 1 / pd : 0;
+          const k = (0.75 - pd) * 5 * (1 - t / 0.6);
+          sepX += (pd > 1e-3 ? px * side : -rvy / Math.sqrt(rv2)) * k;
+          sepY += (pd > 1e-3 ? py * side : rvx / Math.sqrt(rv2)) * k;
+        }
+      }
     }
     // the body's move this frame when it leads
     const rm = a.char.takeRootMotion();
