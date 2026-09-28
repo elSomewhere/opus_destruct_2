@@ -193,15 +193,26 @@ between chest and head.
   decomposition), and hinges for elbows and knees that bend one way.
 - **Muscles** are PD drives towards the plan's joint rotations. Stiffness comes from a natural
   frequency per joint and the effective inertia it moves (the spine 15 rad/s, knees 18 rad/s),
-  damping from a damping ratio. They also track the plan's joint velocities and feed its
-  accelerations forward. **Tone** (per part, 0..1+) scales them: the behaviours make the body
-  tense, slack, or anywhere between.
+  damping from a damping ratio (arms, wrists and neck critically damped or more, so they
+  settle rather than ring with every footfall). They also track the plan's joint velocities.
+  They do not feed the plan's accelerations forward: differentiated twice from frame to frame,
+  off a plan the physics feeds back into, those were mostly noise, and the body trembled with
+  them. **Tone** (per part, 0..1+) scales them: the behaviours make the body tense, slack, or
+  anywhere between. Arms are carried loosely at ease only while they hang; hands held up (on
+  the head, raised, over the face) are firm and gripped where they are meant.
+- **Tissue**: a limp joint is heavily damped, and a limp body (falling, dying, dead) has no part
+  spinning faster than 14 rad/s: a dead limb swings and settles, an impact does not set a hand
+  whirling or bounce the pelvis back up.
 - **Gravity compensation** holds limbs up in proportion to tone, so an arm at ease hangs and
   swings while a tensed one holds its place.
 - **Assists** ("hand of god" forces, as Euphoria has them, used sparingly): support holds the
   pelvis up, steering moves it along the plan, an upright orienter keeps the trunk upright,
   feet pins keep planted feet planted (stiff, not rigid), swing guides guide the feet, and hand
-  grips hold weapons, a wall or a wound. Each is scaled by mode. A falling body has none.
+  grips hold weapons, a wall, a wound or a hand held up. Each is scaled by mode. A falling body
+  has none.
+- **Lost limbs**: a limb shot off stays in the simulation (the joints need it) but touches
+  nothing and weighs next to nothing. A leg gone, the body goes down and never stands again (it
+  can crawl); a gun hand gone drops the gun.
 
 `RigidSystem` is an XPBD solver (Müller et al. 2020): 1/480 s substeps, one pass per substep,
 velocities derived from positions. It has contacts against the CollisionWorld with friction,
@@ -247,10 +258,14 @@ the blow.
 
 Reflexes run on top of any mode:
 
-- **Flinching** from what lands close (`perceive`: impacts, rounds whizzing past, blasts, blows
-  coming): the head turns away and ducks, the shoulders come up, and a hand comes up between
-  the face and the danger; once it has passed, a look back at what it was. Nerves build up
-  over time and make the next flinch bigger.
+- **Flinching** from what lands close (`perceive`: impacts within 4.5 m, rounds whizzing past,
+  blasts, blows coming): the head turns away and ducks, the shoulders come up, and a hand comes
+  up between the face and the danger; a round smacking in at the feet makes a startled step
+  away from it; once it has passed, a look back at what it was. The flinch is one smoothed
+  response, not a jerk per round: the threats are pooled (how much, from where), it comes
+  quickly and goes slowly, and it changes sides only when the danger clearly does. Under
+  sustained fire it becomes a held cover posture: ducked low, both arms over the head. Nerves
+  build up over time and make the next flinch bigger.
 - **Holding a wound:** a hand goes to it and stays for seconds (longer for the gut and chest).
   The posture of injuries follows: a limp, a weak arm, a hunch. After the flinch and a glance
   at the wound, the head turns to look for where the blow came from.
@@ -267,7 +282,9 @@ joint along the lever arm: a round high in the chest rocks the trunk back, a sho
 turns it, a fist on the jaw snaps the head round on the neck. A share goes to the whole body.
 Then the balance deals with the rest. The results are graded rather than scripted:
 
-- one rifle round in the chest rocks the trunk back 5–35° and does not fell;
+- one rifle round in the chest rocks the trunk back 5–35° and does not fell; no two rounds
+  land alike: some knock the body a step or two back along the round, now and then one drives
+  it back hard (more often the worse it is hurt), and a leg hit sometimes buckles the knee;
 - a jab snaps the head;
 - a cross or an uppercut staggers the body a step or two;
 - a push kick to the belly drives it back several steps;

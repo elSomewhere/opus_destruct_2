@@ -529,10 +529,12 @@ export class HumanoidBody {
       const w = target.p[bone]!;
       const d = qrotate(qconj(chestQ), [w[0] - chestP[0], w[1] - chestP[1], w[2] - chestP[2]]);
       const com = this.comLocal[B.chest]!;
-      // anchor = (head offset in the chest's rest frame) - (com - chest head)
-      j.anchorA[0] = d[0] - com[0];
-      j.anchorA[1] = d[1] - com[1];
-      j.anchorA[2] = d[2] - com[2];
+      // anchor = (head offset in the chest's rest frame) - (com - chest head); it follows the
+      // clavicle smoothly (a shrug moving the joint itself in one frame would snap the arm)
+      const f = prev && dt > 0 ? 1 - Math.exp(-dt * 18) : 1;
+      j.anchorA[0] += (d[0] - com[0] - j.anchorA[0]) * f;
+      j.anchorA[1] += (d[1] - com[1] - j.anchorA[1]) * f;
+      j.anchorA[2] += (d[2] - com[2] - j.anchorA[2]) * f;
       void rh;
     }
     this.extras.copyFrom(local);
@@ -544,9 +546,8 @@ export class HumanoidBody {
       const j = this.joints[i]!;
       const t = Math.max(0, this.tone[i]!);
       j.stiffness = this.baseStiffness[i]! * t;
-      // a limp joint keeps some damping (tissue), a tense one more
-      // (a limp joint is heavily damped by its tissue: a dead limb swings and settles, it does
-      // not flap)
+      // a tense joint is damped more; a limp one heavily by its tissue (a dead limb swings and
+      // settles, it does not flap)
       j.damping = this.baseDamping[i]! * (0.5 + 0.5 * Math.min(1.5, t) + 0.5 * Math.max(0, 1 - t));
     }
   }
