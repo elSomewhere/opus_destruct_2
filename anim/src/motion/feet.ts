@@ -491,7 +491,7 @@ export class FootPlanner {
         hz[2] += lift;
         // the sole keeps above what is under and just ahead of the foot on its way (a stair's
         // edge, a kerb): the toe does not stub on it
-        if (step > 0 && s < 0.92) {
+        if ((step > 0 || f.clear > 0) && s < 0.92) {
           const dx = f.target[0] - from[0], dy = f.target[1] - from[1];
           const dl = Math.hypot(dx, dy);
           if (dl > 1e-3) {
@@ -501,8 +501,11 @@ export class FootPlanner {
             for (const a of [-d.heelBack, d.ballFwd * 1.3, d.ballFwd * 1.3 + 0.12 * k]) {
               // (not past the landing: the foot comes down onto its tread)
               if (along + a > dl + 0.02 * k) continue;
-              const gz = this.collision.groundHeight(hz[0] + ux * a, hz[1] + uy * a, hz[2] + 0.5 * k, hz[2] - 0.8 * k);
-              if (gz !== null && gz > floor) floor = gz;
+              // (the foot's width: what is just beside the line catches it too)
+              for (const w of [0, -0.06 * k, 0.06 * k]) {
+                const gz = this.collision.groundHeight(hz[0] + ux * a - uy * w, hz[1] + uy * a + ux * w, hz[2] + 0.5 * k, hz[2] - 0.8 * k);
+                if (gz !== null && gz > floor) floor = gz;
+              }
             }
             if (floor > -Infinity) hz[2] = Math.max(hz[2], floor + 0.05 * k);
           }

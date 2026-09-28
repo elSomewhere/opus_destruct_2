@@ -214,6 +214,36 @@ test('stairs: walking and running up a flight of voxel stairs and off the landin
   }
 });
 
+test('rubble: walkers pick their way across a field of rubble (a toe that touches is lifted over)', () => {
+  const h = 0.125;
+  const boxes: [number, number, number, number, number][] = [];
+  for (let k = 0; k < 90; k++) {
+    const x = 5 + ((k * 37) % 50) / 10, y = -8 + ((k * 53) % 40) / 10, z = ((k * 13) % 3) * 0.125 + 0.125;
+    boxes.push([x, y, x + 0.25 + (k % 3) * 0.125, y + 0.25 + (k % 2) * 0.125, z]);
+  }
+  const world = new VoxelCollision(h, (i, j, k) => {
+    if (k <= 0) return true;
+    const x = i * h, y = j * h, z = k * h;
+    for (const b of boxes) if (x >= b[0] && x < b[2] && y >= b[1] && y < b[3] && z < b[4] + 0.0625) return true;
+    return false;
+  });
+  let stumbled = 0, runs = 0;
+  for (const lane of [-7.5, -6.8, -6.1, -5.4, -4.7]) {
+    runs++;
+    const c = civilian(world, 1, 0, [3.5, lane, 0.0625]);
+    let hit = false;
+    host(c, 7, 0, (x, _t, hh) => {
+      hit ||= x.behaviours.mode !== 'animated';
+      if (!x.controlled) {
+        hh.pos[0] += 1.2 * DT;
+        hh.pos[2] = world.groundHeight(hh.pos[0], hh.pos[1], hh.pos[2] + 0.7, hh.pos[2] - 1.5) ?? hh.pos[2];
+      }
+    }, { pos: [3.5, lane, 0.0625], yaw: 0, v: 0 });
+    if (hit) stumbled++;
+  }
+  assert.ok(stumbled <= 1, `${stumbled} of ${runs} walkers stumbled`);
+});
+
 test('trips: running over a beam without lifting the feet catches a foot on it', () => {
   // a 15 cm beam across the way at y = 3
   const h = 0.125;

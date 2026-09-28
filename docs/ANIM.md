@@ -254,8 +254,10 @@ Reflexes run on top of any mode:
   The posture of injuries follows: a limp, a weak arm, a hunch.
 - **Stun and shock:** a struck part and its parent go slack for a moment, and the whole body
   dips with the shock of a hit.
-- **Trips:** a swinging foot that is blocked stops there. The body pitches forward over it and
-  catches itself with quick steps, or goes down.
+- **Trips:** a swinging foot that touches something is lifted higher at once (the stumble
+  reflex). Caught for longer than a careful step allows (hardly at all when running), it stops
+  there: the body pitches forward over it and catches itself with quick steps, or goes down.
+  Walkers pick their way across rubble; runners trip on it.
 
 **What a hit does** (`hitAt`, via `wound`, `melee`, `blast`): an impulse where it lands. A
 light part takes what it can and passes the rest up the limb. The struck part spins about its
@@ -536,7 +538,7 @@ Other calls: `hitAt(info)` (a blow without a wound), `impulse(point, dv)`, `knoc
 ## 9. Tests and checks
 
 ```bash
-cd anim && npm install && npm test          # 81 unit tests: rigid joints, the body, tracking, hits,
+cd anim && npm install && npm test          # 82 unit tests: rigid joints, the body, tracking, hits,
                                             # balance, trips, flinches, bracing, knockouts, dying,
                                             # bodies among bodies, motion, strikes, brawls, damage,
                                             # gibs, retro

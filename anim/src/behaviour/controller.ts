@@ -356,6 +356,8 @@ export class Behaviours {
   }
 
   private forceReact = false;
+  /** How long each swinging foot has been caught on something (s). */
+  private readonly blockedFor: [number, number] = [0, 0];
   /** Why the last reaction ended in a fall (debugging). */
   lostWhy = '';
 
@@ -1383,7 +1385,7 @@ export class Behaviours {
         // (the leg's muscles swing it; this only guides the foot to its spot, gently, so the
         // whole body is not dragged by it and an obstacle can stop it; up a stair the knee is
         // lifted with a will)
-        const up = clamp((f.target[2] - f.lift[2]) / (0.25 * k), 0, 1);
+        const up = clamp(Math.max(f.target[2] - f.lift[2], f.clear) / (0.25 * k), 0, 1);
         pin.stiffness = fm * (500 + 1500 * up);
         pin.maxForce = (mode === 'reacting' ? 90 : 45) + 250 * up;
         pin.damping = fm * 40;
@@ -1439,7 +1441,7 @@ export class Behaviours {
     let bump = 0;
     for (const p of body.parts) if (p.bumped > bump) bump = p.bumped;
     if (bump > 6 && this.alive && (mode === 'animated' || mode === 'reacting')) this.upset = Math.max(this.upset, 0.3);
-    this.detectTrips(out);
+    this.detectTrips(out, dt);
     // the dead settle (a body at rest does not keep rocking on its contacts) and sleep
     if (mode === 'dead') {
       const slow = body.system.lastSpeed < 0.25 || this.modeTime > 2.5;
@@ -1495,14 +1497,19 @@ export class Behaviours {
   }
 
   /** A swinging foot that hits something on its way stops there: a trip. */
-  private detectTrips(pose: WorldPose): void {
+  private detectTrips(pose: WorldPose, dt: number): void {
     if (this.mode !== 'animated' && this.mode !== 'reacting') return;
     const feet = this.plan.feetPlanner.feet;
     const k = this.k;
+    // (a hurried body trips at a touch; one picking its way lifts the foot over and goes on)
+    const hurry = clamp((Math.hypot(this.plan.velocity[0], this.plan.velocity[1]) - 1.2) / 2.3, 0, 1);
     for (let i = 0; i < 2; i++) {
       const f = feet[i]!;
       // (still rolling off its toes, a foot against a riser is not caught: it lifts)
-      if (f.planted || f.held || f.swing < 0.2 || f.swing > 0.85) continue;
+      if (f.planted || f.held || f.swing < 0.2 || f.swing > 0.85) {
+        this.blockedFor[i] = 0;
+        continue;
+      }
       const fb = this.body.parts[i === 0 ? B.footL : B.footR]!;
       const planned = this.plan.world.p[i === 0 ? H.footL : H.footR]!;
       const actual = pose.p[i === 0 ? H.footL : H.footR]!;
@@ -1514,10 +1521,16 @@ export class Behaviours {
       // (blocked by something in the way; merely scuffing the ground is not a trip unless the
       // foot is hopelessly behind)
       if ((blocked && lag > 0.05 * k) || (fb.contact && lag > 0.4 * k)) {
-        this.catchFoot(i);
-        if (this.mode === 'animated') this.setMode('reacting');
-        return;
-      }
+        // the stumble reflex: the first touch lifts the foot higher; caught for longer than a
+        // careful step allows (or hopelessly behind), it trips
+        if (this.blockedFor[i]! === 0) f.clear = Math.max(0, f.clear) + 0.1 * k * (1 - 0.7 * hurry);
+        this.blockedFor[i]! += dt;
+        if (this.blockedFor[i]! > lerp(0.16, 0.02, hurry) || lag > 0.5 * k) {
+          this.catchFoot(i);
+          if (this.mode === 'animated') this.setMode('reacting');
+          return;
+        }
+      } else this.blockedFor[i] = Math.max(0, this.blockedFor[i]! - dt);
     }
   }
 }
