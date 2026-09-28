@@ -33,6 +33,7 @@ import {
   ModelMesher,
   qrotate,
   qz,
+  clamp,
   vadd,
   vdist,
   vnorm,
@@ -1155,16 +1156,40 @@ export class ActorWorld {
       const v = vscale(vsub(pos, prev.pos), 1 / span);
       const speed = Math.hypot(v[0], v[1], v[2]);
       if (speed < 3.5) continue;
+      // (how hard it hits: a lump of rubble strikes a blow, a slab crushes)
+      const mass = 900 * isl.radius ** 3;
+      const momentum = mass * speed;
       for (const a of this.actors) {
         if (a.opacity < 0.5) continue;
         const c = a.char.bounds().center;
-        if (vdist(c, pos) > isl.radius * 0.75 + 0.35) continue;
-        if (a.char.alive) {
-          a.char.die(c, vscale(v, 0.6));
-          this.gibs.spray(c, [0, 0, 1], 25, 3, 1.2);
-          this.hooks.bloodMist(c, [0, 0, 1], 2);
-          this.onDeath(a, vnorm(v));
-        } else a.char.impulse(c, vscale(v, 0.5));
+        const d = vdist(c, pos);
+        // falling close by: a flinch, the arms up
+        if (a.char.alive && d < isl.radius + 3 && d > isl.radius * 0.75 + 0.35) a.char.perceive({ point: pos, strength: clamp(0.4 + isl.radius, 0.4, 1.2), kind: 'impact' });
+        if (d > isl.radius * 0.75 + 0.35) continue;
+        if (!a.char.alive) {
+          a.char.impulse(c, vscale(v, 0.5));
+          continue;
+        }
+        if (isl.radius < 0.7 && momentum < 900) {
+          // struck where it meets the body, knocked along its way
+          const dir = vnorm(v);
+          const at = vadd(c, vscale(vnorm(vsub(pos, c)), 0.2));
+          at[2] = Math.max(at[2], c[2] + 0.2 * Math.max(0, pos[2] - c[2]));
+          const wasAlive = a.char.alive;
+          a.char.melee(at, dir, 'blunt', clamp(momentum / 130, 0.5, 4));
+          a.char.health -= momentum / 14;
+          a.char.push([dir[0], dir[1], 0], Math.min(4, momentum / 90));
+          if (a.char.health <= 0 && wasAlive) {
+            a.char.die(c, vscale(v, 0.3));
+            this.onDeath(a, dir);
+          } else if (this.settings.ai) a.brain.hurt(a, pos, this, null);
+          this.hooks.bloodMist(at, vscale(dir, -1), 0.6);
+          continue;
+        }
+        a.char.die(c, vscale(v, 0.6));
+        this.gibs.spray(c, [0, 0, 1], 25, 3, 1.2);
+        this.hooks.bloodMist(c, [0, 0, 1], 2);
+        this.onDeath(a, vnorm(v));
       }
       this.gibs.impulse(pos, isl.radius + 0.5, speed * 0.4);
     }

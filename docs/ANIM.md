@@ -448,8 +448,9 @@ The retro look is a function of the modern animation, not separate content (`ret
   voxel body open like the thugs' knives.
 
   The battle destroys the level: rounds break bonds and bring down storeys. Rockets tear
-  characters apart and throw bodies. Falling rigid debris crushes characters, and a long fall
-  kills. Blows push the player.
+  characters apart and throw bodies. Falling debris is felt by its weight: a lump of rubble
+  strikes a blow (a stagger, a knockdown, a wound), a slab crushes, and people flinch from
+  what comes down close by. A long fall kills. Blows push the player.
 - **Drawing.** Characters, their weapons, benches, gibs, blood drops (instanced cubes), stains,
   blood pools and blob shadows (decals) are drawn in the main pass with the world's lighting:
   hemisphere, sun, sector light, fog and muzzle flashes.
