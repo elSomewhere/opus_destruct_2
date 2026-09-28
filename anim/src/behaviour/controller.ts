@@ -126,6 +126,7 @@ export class Behaviours {
   private downUntil = 0;
   private dyingFor = 0.6;
   private dyingHead = false;
+  private readonly writheSeed: number;
   /** The pelvis height the dying body sinks from. */
   private dieZ = 0;
   private tension = 0;
@@ -143,6 +144,7 @@ export class Behaviours {
     this.plan = plan;
     this.body = body;
     this.rng = new Rng(seed * 977 + 5);
+    this.writheSeed = this.rng.next() * 100;
   }
 
   get k(): number {
@@ -342,6 +344,22 @@ export class Behaviours {
   private forceReact = false;
   /** Why the last reaction ended in a fall (debugging). */
   lostWhy = '';
+
+  /**
+   * Too badly hurt to stand: the legs give, the body goes down and writhes (clutching the
+   * wound, curling up, rocking) for `seconds`, then struggles back up.
+   */
+  collapse(seconds: number): void {
+    if (!this.alive || this.writhing) return;
+    this.writhing = true;
+    this.downUntil = this.time + seconds;
+    this.daze = Math.max(this.daze, 0.8);
+    this.upset = 1;
+    this.forceReact = true;
+  }
+
+  /** Down and writhing in pain (see collapse). */
+  writhing = false;
 
   /** Knocked out: the body drops and stays down `seconds`. */
   knockOut(seconds: number): void {
@@ -567,6 +585,20 @@ export class Behaviours {
       ctl.fold += 0.15;
     }
 
+    // writhing on the ground: curling up and stretching out, rocking, the head coming up
+    if (this.mode === 'lying' && this.writhing && this.alive) {
+      const t = this.time + this.writheSeed;
+      // spasms of pain come and go: curling up, rocking, the head coming up, easing off
+      const spasm = Math.pow(0.5 + 0.5 * Math.sin(t * 0.9) * Math.sin(t * 0.31 + 1), 1.5);
+      const a = 0.5 + 0.5 * Math.sin(t * 1.7);
+      ctl.relaxLegs = 0.25 + 0.75 * spasm;
+      ctl.spine[2] += (0.25 + 0.4 * spasm) * Math.sin(t * 1.3);
+      ctl.spine[1] += 0.35 * spasm * Math.sin(t * 0.8 + 2);
+      ctl.chest[0] -= 0.35 * spasm * a;
+      ctl.neck[0] -= 0.45 * spasm * Math.max(0, Math.sin(t * 1.1));
+      ctl.fold += 0.45 * spasm;
+    }
+
     // ---- reflexes and behaviours ----
     if (alive || this.mode === 'dying') {
       if (this.mode === 'reacting') this.balance(dt);
@@ -673,11 +705,11 @@ export class Behaviours {
       }
       case 'lying': {
         if (!this.conscious && this.time >= this.downUntil) this.conscious = true;
-        const wait = this.conscious ? Math.max(0.8, this.downUntil - this.time) : Infinity;
-        if (this.alive && this.modeTime > wait) this.setMode('rising');
+        if (this.alive && this.conscious && this.modeTime > 0.8 && this.time >= this.downUntil) this.setMode('rising');
         break;
       }
       case 'rising': {
+        this.writhing = false;
         // gather for a moment, then get up through the stances
         if (this.modeTime > 0.5 && plan.down && plan.stance === 'down' && plan.stanceProgress >= 1) plan.getUp();
         if (this.modeTime > 0.6 && !plan.down && plan.stance === 'stand' && plan.stanceProgress >= 1) this.setMode('animated');
@@ -1133,7 +1165,7 @@ export class Behaviours {
         arms = 0.9;
         break;
       case 'lying':
-        base = this.conscious ? 0.22 : 0.06;
+        base = !this.conscious ? 0.06 : this.writhing ? 0.75 : 0.22;
         break;
       case 'rising': {
         base = lerp(0.25, 1, smoothstep(0.1, 0.9, this.modeTime));

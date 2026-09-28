@@ -160,6 +160,11 @@ export class Character {
     return this.behaviours.leading;
   }
 
+  /** Badly hurt, down and writhing on the ground. */
+  get writhing(): boolean {
+    return this.behaviours.writhing;
+  }
+
   /** Down on the ground (knocked down or out), or getting up. */
   get down(): boolean {
     const m = this.behaviours.mode;
@@ -524,6 +529,9 @@ export class Character {
         // (a head shot drops the body at once; elsewhere it goes over a moment)
         this.die(null, null, res.headshot ? 0.08 : 0.55 + Math.random() * 0.6);
         res.killed = true;
+      } else if (this.health < this.maxHealth * 0.3 || Math.max(this.behaviours.injuries.legL, this.behaviours.injuries.legR) > 0.8) {
+        // too hurt to stand: down, writhing
+        if (Math.random() < 0.75) this.behaviours.collapse(5 + Math.random() * 9);
       }
     } else this.impulse(hit.point, vscale(vnorm(dir), impulse * 1.4));
     return res;
