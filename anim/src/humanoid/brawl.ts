@@ -95,7 +95,10 @@ export class Brawler {
     const oDown = !o.alive || o.down;
     a.input.guard = !oDown || d < 2.5;
     a.input.lookAt = o.eyes();
-    if (me.controlled) return;
+    // (knocked about, it fights on once its feet are under it again)
+    const bh = me.behaviours;
+    const feet = a.feetPlanner.feet;
+    if (me.controlled && !(bh.mode === 'reacting' && bh.balanceError < 0 && feet[0].planted && feet[1].planted)) return;
     const want = oDown ? 1.7 : this.knife ? 0.82 : this.lastStrike === 'frontKick' || this.lastStrike === 'roundhouse' ? 1.08 : 0.92;
     // close or open the distance, circle to the side
     this.circleT -= dt;
@@ -129,6 +132,8 @@ export class Brawler {
       else if (this.lastStrike === 'jab' && this.rng.chance(0.55)) strike = 'cross';
       else if (d > 1.05) strike = this.rng.pick(['frontKick', 'roundhouse', 'jab']);
       else strike = this.rng.pick(['jab', 'jab', 'cross', 'hook', 'uppercut', 'frontKick']);
+      // (not off one leg while still finding its feet)
+      if (me.controlled && (strike === 'frontKick' || strike === 'roundhouse')) strike = this.rng.pick(['jab', 'cross']);
       if (me.weapon && me.weapon.kind !== 'knife' && me.weapon.kind !== 'pistol') strike = 'riflePush';
       a.play(strike, this.aimPoint(strike));
       this.lastStrike = strike;

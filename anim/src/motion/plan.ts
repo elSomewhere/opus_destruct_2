@@ -408,6 +408,8 @@ export class MotionPlan {
   }
 
   private getUpRun = false;
+  /** How briskly it gets up (1: the stances' own times; quicker unhurt, slower hurt). */
+  private getUpRate = 1;
 
   /**
    * Starts a one-shot action (strike, block, reload, gesture, fidget), optionally aimed at a
@@ -423,7 +425,29 @@ export class MotionPlan {
     }
     this.act?.stop();
     this.act = new ActionPlayer(def, target ? [target[0], target[1], target[2]] : null, rate);
+    if (target && def.reach) this.stepIn(def, target, rate);
     return true;
+  }
+
+  /**
+   * A punch at a target out of reach steps into it: the lead foot goes forward with the lunge
+   * (the hips drive over it, not out past the feet).
+   */
+  private stepIn(def: ActionDef, target: Readonly<V3>, rate: number): void {
+    if (def.ch.strikeFootR || def.ch.strikeFootL || this.stance !== 'stand' || Math.hypot(this.velocity[0], this.velocity[1]) > 0.3) return;
+    const k = this.k;
+    const dx = target[0] - this.rootPos[0], dy = target[1] - this.rootPos[1];
+    const h = Math.hypot(dx, dy);
+    const need = clamp(h - (def.reach ?? 0) * k, 0, 0.36 * k) * 0.6;
+    if (need < 0.05 * k || h < 1e-3) return;
+    const strikeAt = def.events?.find((e) => e.name === 'strike')?.t ?? 0.2;
+    // the lead foot: the one nearer the target
+    const f = this.feetPlanner.feet;
+    const d0 = Math.hypot(f[0].pos[0] - target[0], f[0].pos[1] - target[1]);
+    const d1 = Math.hypot(f[1].pos[0] - target[0], f[1].pos[1] - target[1]);
+    const i = d0 <= d1 ? 0 : 1;
+    const p = f[i]!.pos;
+    this.feetPlanner.step(i, [p[0] + (dx / h) * need * 1.15, p[1] + (dy / h) * need * 1.15, p[2]], Math.max(0.12, strikeAt / rate));
   }
 
   /** Stops the running one-shot action (a hit interrupts it). */
@@ -487,10 +511,11 @@ export class MotionPlan {
   }
 
   /** Gets up from lying: through sitting (or pushing up from the front), kneeling, to the host's stance. */
-  getUp(): void {
+  getUp(rate = 1): void {
     if (!this.lying) return;
     this.lying = false;
     this.getUpRun = true;
+    this.getUpRate = clamp(rate, 0.3, 2);
   }
 
   /** Progress of a stance transition 0..1 (1: settled). */
@@ -511,7 +536,7 @@ export class MotionPlan {
     this.stance = from;
     this.stanceTo = to;
     this.stanceP = 0;
-    this.stanceDur = transitionTime(from, to);
+    this.stanceDur = transitionTime(from, to) / (this.getUpRun ? this.getUpRate : 1);
   }
 
   private updateStance(dt: number): void {
@@ -823,8 +848,9 @@ export class MotionPlan {
         const kick = chA.strikeFootR !== undefined || chA.strikeFootL !== undefined;
         const s = clamp(Math.max(chA.strikeR?.[0] ?? 0, chA.strikeL?.[0] ?? 0, chA.strikeFootR?.[0] ?? 0, chA.strikeFootL?.[0] ?? 0), 0, 1);
         const need = clamp(h - act.def.reach * k, 0, 0.36 * k) * s * wA;
-        lunge = need * (kick ? 1 : 0.75);
-        lungeLean = kick ? 0 : need * 1.4;
+        // (a punch: the lead foot steps in with it and the shoulders lean, the hips follow less)
+        lunge = need * (kick ? 1 : 0.55);
+        lungeLean = kick ? 0 : need * 1.7;
         lungeDir[0] = tm[0] / h;
         lungeDir[1] = tm[1] / h;
       }

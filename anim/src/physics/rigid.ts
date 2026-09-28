@@ -61,6 +61,11 @@ export class RigidBody {
   impact = 0;
   /** The same against obstacles (other bodies, debris). */
   bumped = 0;
+  /**
+   * Passes through other bodies (not the world): a limb that strikes, whose blow the host
+   * deals (it is neither stopped by the body it hits nor one that body runs into).
+   */
+  ghost = false;
   /** Index in its system. */
   index = -1;
   /**
@@ -452,6 +457,27 @@ export class RigidSystem {
       }
       return;
     }
+    // (never let a runaway body hang the host: velocities are bounded, a broken state reset)
+    for (const b of this.bodies) {
+      if (!(Number.isFinite(b.x[0] + b.x[1] + b.x[2]) && Number.isFinite(b.q[0] + b.q[1] + b.q[2] + b.q[3]))) {
+        b.x[0] = b.px[0];
+        b.x[1] = b.px[1];
+        b.x[2] = b.px[2];
+        b.q[0] = b.pq[0];
+        b.q[1] = b.pq[1];
+        b.q[2] = b.pq[2];
+        b.q[3] = b.pq[3];
+        if (!Number.isFinite(b.x[0] + b.x[1] + b.x[2] + b.q[0] + b.q[1] + b.q[2] + b.q[3])) {
+          b.x[0] = b.x[1] = b.x[2] = 0;
+          b.q[0] = b.q[1] = b.q[2] = 0;
+          b.q[3] = 1;
+        }
+        b.v[0] = b.v[1] = b.v[2] = 0;
+        b.w[0] = b.w[1] = b.w[2] = 0;
+      }
+      clampLength(b.v, MAX_SPEED);
+      clampLength(b.w, MAX_SPIN);
+    }
     const n = Math.max(1, Math.ceil(dt / this.maxSubstep - 1e-6));
     const h = dt / n;
     this.substep = h;
@@ -479,7 +505,8 @@ export class RigidSystem {
       const k = this.contacts[i]!;
       if (!k.other || k.took <= 0) continue;
       const p = k.body.point(k.c);
-      this.reactions.push({ body: k.other, j: [-k.n[0] * k.took, -k.n[1] * k.took, -k.n[2] * k.took], at: [p[0] - k.n[0] * k.r, p[1] - k.n[1] * k.r, p[2] - k.n[2] * k.r] });
+      const took = Math.min(k.took, 60);
+      this.reactions.push({ body: k.other, j: [-k.n[0] * took, -k.n[1] * took, -k.n[2] * took], at: [p[0] - k.n[0] * k.r, p[1] - k.n[1] * k.r, p[2] - k.n[2] * k.r] });
     }
     // still: nothing has gone further than `stillDistance` from where it was when the stillness
     // began (a body at rest may jitter on its contacts, but it goes nowhere)
@@ -533,7 +560,7 @@ export class RigidSystem {
       const speed = Math.hypot(b.v[0], b.v[1], b.v[2]);
       for (const s of b.spheres) {
         const reach = speed + Math.hypot(b.w[0], b.w[1], b.w[2]) * Math.hypot(s.c[0], s.c[1], s.c[2]);
-        const m = this.margin + reach * dt;
+        const m = Math.min(this.margin + reach * dt, 0.6);
         b.point(s.c, c);
         if (!world.sphere(c, s.r + m, p)) continue;
         this.addContact(b, s, p.normal, c[0] + p.push[0], c[1] + p.push[1], c[2] + p.push[2], s.r + m);
@@ -551,10 +578,11 @@ export class RigidSystem {
     const c: V3 = [0, 0, 0];
     const n: V3 = [0, 0, 0];
     for (const b of this.bodies) {
+      if (b.ghost) continue;
       const speed = Math.hypot(b.v[0], b.v[1], b.v[2]);
       for (const s of b.spheres) {
         b.point(s.c, c);
-        const m = this.margin + speed * dt;
+        const m = Math.min(this.margin + speed * dt, 0.6);
         for (const o of this.obstacles) {
           const dx = c[0] - o.c[0], dy = c[1] - o.c[1], dz = c[2] - o.c[2];
           const rr = s.r + m + o.r;
@@ -1049,10 +1077,11 @@ export class RigidSystem {
     B.contactPoint[2] = B.x[2] + rz;
     const w = B.invMassAt(rx, ry, rz, n[0], n[1], n[2]);
     if (w <= 0) return;
-    const l = pen / w;
+    // (an obstacle found deep inside - two bodies overlapping - is left gradually)
+    const l = (k.obstacle ? Math.min(pen, DEEP_SPEED * this.substep) : pen) / w;
     B.applyPos(l * n[0], l * n[1], l * n[2], rx, ry, rz);
     k.lambda = l;
-    if (k.other) k.took += l / this.substep;
+    if (k.other) k.took += Math.min(l / this.substep, 40);
     // static friction: the contact point does not slide within the friction cone
     const loc = rotInv(B.q, rx, ry, rz, J1);
     const p0 = rot(B.pq, loc[0], loc[1], loc[2], J2);
@@ -1122,6 +1151,20 @@ const LIMIT_STEP = 0.025;
 const J2q: Quat = [0, 0, 0, 1];
 const J4q: Quat = [0, 0, 0, 1];
 const J5q: Quat = [0, 0, 0, 1];
+
+/** How fast an overlap with another body is undone (m/s): an approach is met in full, a body found deep inside another leaves it without being flung. */
+const DEEP_SPEED = 5;
+const MAX_SPEED = 60;
+const MAX_SPIN = 80;
+
+function clampLength(v: V3, max: number): void {
+  const l = Math.sqrt(v[0] * v[0] + v[1] * v[1] + v[2] * v[2]);
+  if (l <= max) return;
+  const k = max / l;
+  v[0] *= k;
+  v[1] *= k;
+  v[2] *= k;
+}
 
 function clampChange(v: V3, v0: Readonly<V3>, max: number): void {
   const dx = v[0] - v0[0], dy = v[1] - v0[1], dz = v[2] - v0[2];

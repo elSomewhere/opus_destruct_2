@@ -68,6 +68,7 @@ export class VoxelCollision implements CollisionWorld {
   }
 
   groundHeight(x: number, y: number, zTop: number, zBottom: number): number | null {
+    if (!Number.isFinite(x + y + zTop + zBottom) || zTop - zBottom > 64) return null;
     const i = this.idx(x);
     const j = this.idx(y);
     const k0 = this.idx(zTop);
@@ -83,6 +84,8 @@ export class VoxelCollision implements CollisionWorld {
 
   sphere(c: Readonly<V3>, r: number, out: SphereContact): boolean {
     const h = this.h;
+    // (a runaway query must not scan the world)
+    if (!(r < 4 * 1024 * h) || !Number.isFinite(c[0] + c[1] + c[2]) || r > 2) return false;
     const i0 = this.idx(c[0] - r), i1 = this.idx(c[0] + r);
     const j0 = this.idx(c[1] - r), j1 = this.idx(c[1] + r);
     const k0 = this.idx(c[2] - r), k1 = this.idx(c[2] + r);
@@ -129,6 +132,17 @@ export class VoxelCollision implements CollisionWorld {
                 dx = fx;
                 dy = fy;
                 dz = fz;
+              }
+            }
+            // (buried - no open face at hand: out through the top, the way it came in)
+            if (best >= h * 4) {
+              for (let up = 1; up <= 12; up++) {
+                if (this.solid(i, j, k + up)) continue;
+                best = (k + up - 0.5) * h - c[2];
+                dx = 0;
+                dy = 0;
+                dz = 1;
+                break;
               }
             }
             pen = best + r;

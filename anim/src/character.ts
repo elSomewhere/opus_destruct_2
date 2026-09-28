@@ -431,9 +431,17 @@ export class Character {
       this.wake();
     }
     this.body.system.wake();
+    // (a light part takes what it can - a few m/s - the body the rest: a shoulder barged
+    // moves the man, it does not fling his forearm)
+    const jl = Math.hypot(j[0], j[1], j[2]);
+    if (!(jl > 0) || !Number.isFinite(jl)) return;
+    const take = Math.min(jl, 2.5 * part.mass);
+    const k = take / jl;
     part.updateInertia();
-    part.applyImpulse(j[0], j[1], j[2], at[0] - part.x[0], at[1] - part.x[1], at[2] - part.x[2]);
-    this.behaviours.bumped(Math.hypot(j[0], j[1], j[2]));
+    part.applyImpulse(j[0] * k, j[1] * k, j[2] * k, at[0] - part.x[0], at[1] - part.x[1], at[2] - part.x[2]);
+    const rest = (jl - take) / (jl * this.body.totalMass);
+    if (rest > 0) this.body.shove(j[0] * rest, j[1] * rest, j[2] * rest * 0.3);
+    this.behaviours.bumped(jl);
   }
 
   /** A push on the body at `point` (velocity change dv, m/s), alive or dead. */

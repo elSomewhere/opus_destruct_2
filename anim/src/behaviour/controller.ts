@@ -97,6 +97,8 @@ export class Behaviours {
   readonly capture: V3 = [0, 0, 0];
   /** Distance of the capture point outside the support (negative: inside). */
   balanceError = 0;
+  /** The pendulum's natural frequency (sqrt(g / h), 1/s). */
+  private w0 = 3.5;
   groundZ = 0;
   /** Stagger steps taken in this reaction. */
   steps = 0;
@@ -124,6 +126,8 @@ export class Behaviours {
   /** The shock of a hit (0..1): the whole body slack for a moment. */
   private shock = 0;
   private downUntil = 0;
+  /** How long the body has been beyond saving (reacting). */
+  private lostFor = 0;
   private dyingFor = 0.6;
   private dyingHead = false;
   private readonly writheSeed: number;
@@ -169,6 +173,7 @@ export class Behaviours {
     this.mode = m;
     this.modeTime = 0;
     if (m === 'reacting') {
+      this.lostFor = 0;
       this.steps = 0;
       this.balancedFor = 0;
       this.reactT = 0;
@@ -178,6 +183,8 @@ export class Behaviours {
       this.brace = null;
     }
     if (m === 'falling') this.landed[0] = this.landed[1] = null;
+    // (what knocked the body over is spent: it gets up from the ground afresh)
+    if (m === 'falling' || m === 'lying' || m === 'rising') this.forceReact = false;
   }
 
   // ---- events --------------------------------------------------------------------------------
@@ -192,7 +199,10 @@ export class Behaviours {
     const f = clamp(info.force, 0, 8);
     const d = vnorm(info.dir);
     // how hard it shoves (N s): a round mostly stings, a kick or a blast moves the body
-    const J = info.kind === 'bullet' ? 14 + 12 * Math.min(f, 2.5) : info.kind === 'blunt' ? 34 * f : info.kind === 'blade' ? 9 * f : 55 * f;
+    let J = info.kind === 'bullet' ? 14 + 12 * Math.min(f, 2.5) : info.kind === 'blunt' ? 34 * f : info.kind === 'blade' ? 9 * f : 55 * f;
+    // (a fist on the jaw snaps the head round on the neck: the head moves away from it, it
+    // does not carry the body with it as a blow to the trunk does)
+    if (part === B.head && info.kind === 'blunt') J = Math.min(J, (2.2 + 1.1 * f) * this.body.parts[B.head]!.mass);
     // a light part cannot take it all: what it cannot passes up the limb to its parent
     const dvMax = info.kind === 'blunt' ? 7 : info.kind === 'blast' ? 10 : 4;
     let left = J;
@@ -218,10 +228,11 @@ export class Behaviours {
       const al = vlen(ax);
       if (al > 1e-4) {
         const trunkHit = part === B.pelvis || part === B.spine || part === B.chest;
-        const rate = (trunkHit ? 3.2 : part === B.head ? 3.6 : 4) * Math.min(f, 2.5) * (info.kind === 'blade' ? 0.4 : 1) * clamp(al / 0.12, 0.3, 1.2);
+        // (a heavy blow rocks the trunk, it does not fold it in two)
+        const rate = Math.min(trunkHit ? 4.2 : 9, (trunkHit ? 3.2 : part === B.head ? 3.6 : 4) * Math.min(f, 2.5) * (info.kind === 'blade' ? 0.4 : 1) * clamp(al / 0.12, 0.3, 1.2));
         for (let hop = 0, q = part; hop < 2 && q >= 0; hop++, q = PARENT_OF[q]!) {
           const w = this.body.parts[q]!.w;
-          const k2 = (hop === 0 ? 1 : 0.55) * rate / al;
+          const k2 = (hop === 0 ? 1 : part === B.head ? 0.2 : 0.55) * rate / al;
           w[0] += ax[0] * k2;
           w[1] += ax[1] * k2;
           w[2] += ax[2] * k2;
@@ -239,7 +250,7 @@ export class Behaviours {
     this.stunPart(part, s);
     // the whole body goes slack for a moment with the shock of it (it answers the blow with
     // its own weight: the arms swing, the head lolls), then the muscles take over again
-    this.shock = Math.max(this.shock, clamp(0.3 + 0.25 * f, 0, 0.8) * (info.kind === 'blade' ? 0.5 : 1));
+    this.shock = Math.max(this.shock, clamp(0.3 + 0.25 * f, 0, 0.8) * (info.kind === 'blade' ? 0.5 : part === B.head ? 0.6 : 1));
     if (part > 0) this.stunPart(PARENT_OF[part]!, s * 0.5);
     // a blow to the head dazes (hard ones knock out)
     if (zone === 'head' && info.kind === 'blunt') this.daze = Math.max(this.daze, clamp(0.25 * f, 0, 0.9));
@@ -268,9 +279,12 @@ export class Behaviours {
 
   /** Another body bumped into this one (N s): hard enough, the balance has to answer it. */
   bumped(j: number): void {
-    if (!this.alive) return;
-    if (j > 4) this.upset = Math.max(this.upset, 0.3);
-    if (j / this.body.totalMass > 0.35) this.forceReact = true;
+    // (on the ground or getting up, bumps are part of it)
+    if (!this.alive || (this.mode !== 'animated' && this.mode !== 'reacting')) return;
+    // (a brush of hands or shoulders in passing is nothing; a body knocked into is)
+    const dv = j / this.body.totalMass;
+    if (dv > 0.1) this.upset = Math.max(this.upset, Math.min(0.5, 2 * dv));
+    if (dv > 0.35) this.forceReact = true;
   }
 
   /** Something close by: a flinch, stronger the closer and the bigger it is. */
@@ -436,6 +450,7 @@ export class Behaviours {
     this.groundZ = g ?? this.plan.rootPos[2];
     const h = Math.max(0.45 * k, this.com[2] - this.groundZ);
     const w0 = Math.sqrt(G / h);
+    this.w0 = w0;
     this.capture[0] = this.com[0] + this.comVel[0] / w0;
     this.capture[1] = this.com[1] + this.comVel[1] / w0;
     this.capture[2] = this.groundZ;
@@ -657,8 +672,11 @@ export class Behaviours {
         const pv = this.planPelvisVel;
         const dv = Math.hypot(this.comVel[0] - pv[0], this.comVel[1] - pv[1]);
         const standing = plan.stance === 'stand' && plan.stanceProgress >= 1 && !plan.down;
+        // (out of balance beyond what the plan means: a lunge into a punch is not a fall)
+        const px = pp[0] + this.com[0] - bp[0] + pv[0] / this.w0, py = pp[1] + this.com[1] - bp[1] + pv[1] / this.w0;
+        const planned = this.support.empty ? 0 : Math.max(0, this.support.distance(px, py));
         // (only after something happened to the body: lagging a hurried plan is not a fall)
-        const knocked = this.upset > 0 && (lateral > 0.1 * k || dev > 0.22 * k || dv > 1.4 || (vs < 0.3 && this.balanceError > 0.06 * k));
+        const knocked = this.upset > 0 && (lateral > 0.1 * k || dev > 0.22 * k || dv > 1.4 || (vs < 0.3 && this.balanceError > 0.06 * k + planned));
         if (standing && (this.forceReact || knocked)) {
           this.forceReact = false;
           this.setMode('reacting');
@@ -671,6 +689,8 @@ export class Behaviours {
         break;
       }
       case 'reacting': {
+        // (already knocked: another knock is dealt with here)
+        this.forceReact = false;
         this.reactT += dt;
         const legs = this.legStrength();
         const tilt = this.tilt(pose);
@@ -679,7 +699,11 @@ export class Behaviours {
         const fp = plan.feetPlanner.feet;
         const stepping = (!fp[0].planted && fp[0].forced) || (!fp[1].planted && fp[1].forced);
         const reach = maxStep * (stepping ? 1.75 : 1.3) + 0.1 * k;
-        const lost = tilt > 0.9 || (!this.airborne && this.balanceError > reach) || legs < 0.25 || this.steps > 12 || this.reactT > 6 || this.daze > 0.75 || !this.conscious;
+        // (lost for a moment, not a passing jolt - unless far gone)
+        const beyond = tilt > 0.9 || (!this.airborne && this.balanceError > reach);
+        this.lostFor = beyond ? this.lostFor + dt : 0;
+        const gone = beyond && (this.lostFor > 0.14 || tilt > 1.3 || this.balanceError > 1.8 * reach);
+        const lost = gone || legs < 0.25 || this.steps > 12 || this.reactT > 6 || this.daze > 0.75 || !this.conscious;
         if (lost) {
           this.lostWhy = tilt > 0.9 ? 'tilt' : this.balanceError > reach ? 'reach' : legs < 0.25 ? 'legs' : this.steps > 12 ? 'steps' : this.reactT > 6 ? 'time' : 'daze';
           this.setMode('falling');
@@ -710,8 +734,10 @@ export class Behaviours {
       }
       case 'rising': {
         this.writhing = false;
-        // gather for a moment, then get up through the stances
-        if (this.modeTime > 0.5 && plan.down && plan.stance === 'down' && plan.stanceProgress >= 1) plan.getUp();
+        // gather for a moment, then get up through the stances: briskly unhurt, slowly hurt
+        const inj = this.injuries;
+        const hurt = clamp(inj.pain + 0.6 * Math.max(inj.legL, inj.legR) + 0.5 * this.daze, 0, 1);
+        if (this.modeTime > 0.3 + 0.5 * hurt && plan.down && plan.stance === 'down' && plan.stanceProgress >= 1) plan.getUp(lerp(1.45, 0.7, hurt));
         if (this.modeTime > 0.6 && !plan.down && plan.stance === 'stand' && plan.stanceProgress >= 1) this.setMode('animated');
         break;
       }
@@ -1200,6 +1226,13 @@ export class Behaviours {
       if (i < 0) return 1;
       return 1 + plan.effort[i]! * (plan.striking[i] ? 2.5 : 0.6);
     };
+    // (a limb that strikes passes through the body it strikes: the host deals the blow)
+    for (let i = 0; i < 4; i++) {
+      const g = plan.striking[i]! && this.alive;
+      const [a, b] = i === 0 ? [B.forearmL, B.handL] : i === 1 ? [B.forearmR, B.handR] : i === 2 ? [B.shinL, B.footL] : [B.shinR, B.footR];
+      body.parts[a]!.ghost = g;
+      body.parts[b]!.ghost = g;
+    }
     const feet = plan.feetPlanner.feet;
     for (let i = 1; i < BODY_COUNT; i++) {
       const t = regionT[REGION[i]!] * limbT(REGION[i]!) * (1 - 0.85 * this.stun[i]!);
