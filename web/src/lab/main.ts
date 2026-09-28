@@ -476,15 +476,15 @@ async function main(): Promise<void> {
       },
     });
   };
-  fighter('brawler A', 'brawler B', 7.3, -10, 0, 70, null);
-  fighter('brawler B', 'brawler A', 8.3, -10, Math.PI, 71, null);
-  fighter('knife', 'unarmed', 7.3, -13.2, 0, 72, props.knife);
-  fighter('unarmed', 'knife', 8.2, -13.2, Math.PI, 73, null, true);
+  fighter('brawler A', 'brawler B', 11.3, -10, 0, 70, null);
+  fighter('brawler B', 'brawler A', 12.3, -10, Math.PI, 71, null);
+  fighter('knife', 'unarmed', 11.3, -13.2, 0, 72, props.knife);
+  fighter('unarmed', 'knife', 12.2, -13.2, Math.PI, 73, null, true);
   // thugs: one with a knife on a civilian, one with his fists on a soldier (the rifle butt)
-  fighter('thug knife', 'victim', 10.6, -10, 0, 74, props.knife, 'thug');
-  fighter('victim', 'thug knife', 11.5, -10, Math.PI, 75, null);
-  fighter('thug fists', 'rifleman', 10.6, -13.2, 0, 76, null, 'thug');
-  fighter('rifleman', 'thug fists', 11.5, -13.2, Math.PI, 77, props.rifle, true);
+  fighter('thug knife', 'victim', 13.9, -10, 0, 74, props.knife, 'thug');
+  fighter('victim', 'thug knife', 14.8, -10, Math.PI, 75, null);
+  fighter('thug fists', 'rifleman', 13.9, -13.2, 0, 76, null, 'thug');
+  fighter('rifleman', 'thug fists', 14.8, -13.2, Math.PI, 77, props.rifle, true);
 
   // ---- balance, reflexes and a soldier's pauses ------------------------------------------------
   // pretend rounds smacking in: a puff of dust, and whoever is close flinches
