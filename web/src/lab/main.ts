@@ -956,6 +956,8 @@ async function main(): Promise<void> {
     step,
     shoot: shootRay,
     rocket,
+    /** A pretend round smacking in at p (dust; whoever is close flinches). */
+    impact: (p: V3) => impact(p),
     reset,
     setStyle,
     setTimeScale: (s: number) => (timeScale = s),
