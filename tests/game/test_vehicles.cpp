@@ -273,6 +273,34 @@ TEST_CASE("vehicles: a player's drive replays bit for bit, and a saved session b
   CHECK(v.speed > 6.0);
 }
 
+TEST_CASE("vehicles: a car's mesh is its size (its voxels are its grid's, not the world's)") {
+  Game game;
+  load_road(game);
+  const u32 id = game.spawn_vehicle({VehicleKind::Sedan, Paint::Blue}, V3{40, 0, -0.0625}, 0.0);
+  REQUIRE(id != 0);
+  f64 lo[3] = {1e9, 1e9, 1e9}, hi[3] = {-1e9, -1e9, -1e9};
+  i64 chassis = 0;
+  for (int t = 0; t < 30 && chassis == 0; ++t) {
+    game.tick();
+    VehicleView v;
+    if (game.vehicle(id, &v)) chassis = v.chassis;
+    for (const GameEvent& e : game.take_events())
+      if (e.kind == GameEvent::Kind::Detached && chassis != 0 && e.id == chassis)
+        for (const MeshVertex& mv : e.mesh.vertices)
+          for (int a = 0; a < 3; ++a) {
+            lo[a] = std::min(lo[a], f64(mv.pos[a]));
+            hi[a] = std::max(hi[a], f64(mv.pos[a]));
+          }
+  }
+  VehicleView v;
+  REQUIRE(game.vehicle(id, &v));
+  REQUIRE(hi[0] > lo[0]);
+  MESSAGE("its mesh: " << hi[0] - lo[0] << " x " << hi[1] - lo[1] << " x " << hi[2] - lo[2] << " m; its box " << 2 * v.half_extent.x << " x "
+                       << 2 * v.half_extent.y << " x " << v.half_extent.z << " m");
+  CHECK(std::abs((hi[0] - lo[0]) - 2 * v.half_extent.x) < 0.3);
+  CHECK(std::abs((hi[1] - lo[1]) - 2 * v.half_extent.y) < 0.3);
+}
+
 TEST_CASE("vehicles: driven into a wall its front crumples - it keeps its id, is meshed again, and shows damage") {
   Game game;
   load_road(game, true);

@@ -564,7 +564,7 @@ ChunkMesh Game::shape_mesh(const Body& b, size_t k, bool fresh, Paint body) cons
   }
   if (found && bp != 0) retint(out, tex_placeholder, tex_body);
   if (!found) {
-    out = mesh_shape(S, world_.voxel_size(), mo);
+    out = mesh_shape(S, S.h > 0.0 ? S.h : world_.voxel_size(), mo);  // (its own voxel size: a car's are 6.25 cm)
     if (memo) {
       std::lock_guard<std::mutex> lock(*shape_memo_mu_);
       if (shape_memo_.size() >= 48) shape_memo_.clear();  // (a bound: the kinds and paints seen lately)

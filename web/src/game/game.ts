@@ -72,6 +72,9 @@ export class Game {
   private info: WorldInfo | null = null;
   private engineStats: EngineStats | null = null;
   private lastRender: RenderStats | null = null;
+  /** The last frame's camera (the debug handle reports it). */
+  private lastEye: Vec3 = [0, 0, 0];
+  private lastForward: Vec3 = [1, 0, 0];
   private running = false;
   private lastFrame = 0;
   private frameMsEma = 16;
@@ -446,6 +449,8 @@ export class Game {
     const wheels = this.vehicleFrame(dt, nowS);
     this.renderer.particles.update(dt);
 
+    this.lastEye = camera.eye;
+    this.lastForward = camera.forward;
     this.lastRender = this.renderer.render({
       camera,
       timeS: nowS,
@@ -587,6 +592,7 @@ export class Game {
         engineDriving: this.tracker.player,
         camera: this.driving.mode,
         cameraDistance: { ...this.driving.camInfo },
+        view: { eye: [...this.lastEye], forward: [...this.lastForward] },
         wheels: [...this.tracker.wheels.values()]
           .filter((w) => w.vehicle === this.driving.vehicle)
           .map((w) => ({ contact: w.contact, slip: w.slip, material: w.material })),
@@ -635,6 +641,8 @@ export interface StructvoxDebugApi {
     camera: CameraMode;
     /** The chase camera's distances (m): wanted, free of walls, now. */
     cameraDistance: { want: number; free: number; now: number };
+    /** The camera of the last frame drawn. */
+    view: { eye: number[]; forward: number[] };
     /** The player's car's wheels. */
     wheels: { contact: boolean; slip: number; material: number }[];
   };

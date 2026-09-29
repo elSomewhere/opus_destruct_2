@@ -206,7 +206,8 @@ A gamepad drives too (RT/LT, left stick, A handbrake, Y in/out, right stick look
   like the pieces.
 - **Cameras** (`driving.ts`): the chase camera lags the car's heading and shows part of a
   slide, widens its field of view with speed, is kept out of walls (a ray through the
-  occupancy), and shakes on a crash.
+  occupancy) - where the way back is short (a wall, a parked car behind) it rises over it
+  rather than closing in on the roof - and shakes on a crash.
 - **Effects** (`vehicle-effects.ts`): skid marks (translucent quads on the road, a ring of
   6000), tyre smoke on hard surfaces, dust on soil, sparks where a crash hits (from the sudden
   change of the car's velocity), glass shards and metal sparks from the engine's dust events.

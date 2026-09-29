@@ -32,6 +32,8 @@ const SPEED_FOV = (12 * Math.PI) / 180;
 const MOUSE = 0.0022;
 /** Seconds without looking around before the view swings back behind the car. */
 const RECENTRE_S = 1.2;
+/** Steeper pitches (added, radians) the chase camera tries when the way back from the car is short. */
+const RISES = [0.25, 0.5, 0.8, 1.1];
 
 function wrap(a: number): number {
   return a - 2 * Math.PI * Math.floor((a + Math.PI) / (2 * Math.PI));
@@ -55,6 +57,8 @@ export class Driving {
   private orbitPitch = 0;
   private lastLook = -Infinity;
   private camDist = 0;
+  /** How far the chase camera has risen over what is behind the car (radians of pitch). */
+  private camRise = 0;
   private fov = BASE_FOV;
   private lastSpeed = 0;
   /** The last pose of the driven vehicle (where the player gets out if it is gone). */
@@ -76,6 +80,7 @@ export class Driving {
     this.orbitYaw = 0;
     this.orbitPitch = 0;
     this.camDist = 0;
+    this.camRise = 0;
     this.lastSpeed = v.speed;
     this.lastPose = pose;
     engine.enterVehicle(v.id);
@@ -92,6 +97,7 @@ export class Driving {
   cycleCamera(): void {
     this.mode = CAMERA_MODES[(CAMERA_MODES.indexOf(this.mode) + 1) % CAMERA_MODES.length]!;
     this.camDist = 0;
+    this.camRise = 0;
   }
 
   /**
@@ -198,15 +204,36 @@ export class Driving {
     }
     const far = this.mode === 'far';
     const dist = (far ? 1.55 : 1) * (2.0 * he[0] + 1.8);
-    const pitch = (far ? 0.3 : 0.2) + this.orbitPitch;
+    const pitch0 = (far ? 0.3 : 0.2) + this.orbitPitch;
     const yaw = this.camYaw + this.orbitYaw;
     const look: Vec3 = [pose.pos[0], pose.pos[1], pose.pos[2] + 0.45 * he[2]];
-    const cp = Math.cos(pitch);
-    const dir: Vec3 = [cp * Math.cos(yaw), cp * Math.sin(yaw), -Math.sin(pitch)];
-    // kept out of walls: the way from the car back to the camera, through the world's voxels
-    let free = dist;
+    const dirAt = (pitch: number): Vec3 => {
+      const cp = Math.cos(pitch);
+      return [cp * Math.cos(yaw), cp * Math.sin(yaw), -Math.sin(pitch)];
+    };
+    // Kept out of walls: the way from the car back to the camera, through the world's voxels.
+    // Where it is short (a wall, a parked car behind), the camera rises over it - the steeper
+    // pitch with the most room - rather than closing in on the car's roof.
+    const room = (pitch: number): number => {
+      const d = dirAt(pitch);
+      return occupancy?.ready ? Math.min(dist, clearance(occupancy, look, [-d[0], -d[1], -d[2]], dist, voxelSize) - 0.3) : dist;
+    };
+    let rise = 0;
+    let best = room(pitch0);
+    if (best < 0.75 * dist)
+      for (const r of RISES) {
+        const f = room(pitch0 + r);
+        if (f > best + 0.25) {
+          best = f;
+          rise = r;
+        }
+        if (best >= 0.75 * dist) break;
+      }
+    // (rising at once, settling back slowly)
+    this.camRise = rise > this.camRise ? this.camRise + (rise - this.camRise) * (1 - Math.exp(-dt * 8)) : this.camRise + (rise - this.camRise) * (1 - Math.exp(-dt * 1.5));
+    const dir = dirAt(pitch0 + this.camRise);
     // (never nearer than just behind the car itself: from inside it, it would not be seen)
-    if (occupancy?.ready) free = Math.max(Math.min(dist, he[0] + 0.6), clearance(occupancy, look, [-dir[0], -dir[1], -dir[2]], dist, voxelSize) - 0.3);
+    const free = Math.max(Math.min(dist, he[0] + 0.6), room(pitch0 + this.camRise));
     if (this.camDist === 0 || free < this.camDist) this.camDist = free;
     else this.camDist += (free - this.camDist) * (1 - Math.exp(-dt * 2.5));
     this.camInfo = { want: dist, free, now: this.camDist };

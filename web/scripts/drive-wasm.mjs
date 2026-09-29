@@ -120,7 +120,14 @@ try {
   check(car !== undefined && car.speed > 3, `the car drives (${car?.speed.toFixed(1)} m/s)`);
   console.log(`camera: ${JSON.stringify((await state()).cameraDistance)}`);
   await shot('drive-03-speed');
-  // a slide: steer and the handbrake
+  // a slide: steer and the handbrake - from a town speed (at full speed a spin may well end in
+  // the parked cars, which is a crash, not a slide)
+  await page.evaluate(() => window.__structvox.drive(0, 1, true));
+  for (let k = 0; k < 40; k++) {
+    await sleep(100);
+    car = await mine();
+    if (!car || car.speed < 15) break;
+  }
   await page.evaluate(() => window.__structvox.drive(0.4, 1, true));
   for (let k = 0; k < 7; k++) {
     await sleep(200);
@@ -147,12 +154,18 @@ try {
   await page.evaluate((a, y) => window.__structvox.spawnVehicle(2, 1, a[0], a[1], a[2], y + 90), at, car.yaw);
   await sleep(1200);
   const damage0 = car.damage;
+  // (the van: the one nearest where it was dropped)
+  const van = (await vehicles())
+    .filter((v) => v.kind === 'van')
+    .map((v) => ({ id: v.id, d: Math.hypot(v.pos[0] - at[0], v.pos[1] - at[1]) }))
+    .sort((a, b) => a.d - b.d)[0]?.id;
+  const vanDamage = async () => (await vehicles()).find((v) => v.id === van)?.damage ?? 0;
   await page.evaluate(() => window.__structvox.drive(1, 0));
   let hit = false;
   for (let k = 0; k < 60 && !hit; k++) {
     await sleep(100);
     car = await mine();
-    if (car && car.damage > damage0 + 0.02) hit = true;
+    if (car && (car.damage > damage0 + 0.02 || (await vanDamage()) > 0.02)) hit = true;
     if (k === 30) await shot('drive-06-approach');
   }
   await sleep(300);
@@ -160,7 +173,9 @@ try {
   await page.evaluate(() => window.__structvox.drive(0, 0, true, 1));
   await sleep(2000);
   car = await mine();
-  check(car !== undefined && car.damage > damage0, `the crash crumpled it (damage ${damage0.toFixed(2)} -> ${car?.damage.toFixed(2)})`);
+  // (a car wrecked before - damage 1 - crumples still: the van shows it)
+  const vd = await vanDamage();
+  check(car !== undefined && (car.damage > damage0 || vd > 0), `the crash crumpled it (damage ${damage0.toFixed(2)} -> ${car?.damage.toFixed(2)}, the van ${vd.toFixed(2)})`);
   await page.evaluate(() => window.__structvox.camera('far'));
   await sleep(500);
   await shot('drive-08-wreck');
