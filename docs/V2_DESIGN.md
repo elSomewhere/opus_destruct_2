@@ -102,7 +102,9 @@ linear-elastic equilibrium on the fragment graph:
   kinetic share of its energy (6 %) bounds both: it goes to the shattered mass, or, with little
   or none of it (a blast in the air, on the anchored ground), to the loaded mass.
 - **Detachment.** After a round, what no longer reaches an anchor leaves the grid as a rigid
-  piece, with its bonds (unbroken faces), at rest or with a blast's impulse.
+  piece, with its bonds (unbroken faces): at rest, or - what a blast's load broke off, within
+  its cascade - with the momentum the blast gave its fragments (a wall 2.2 m behind a blast in
+  the air comes apart at 2.9 m/s on average, not 0.1).
 - **Design pass** (bake): every structure is solved under its own weight, and members above a
   utilization of 0.45 are strengthened, so what stands at load time stands at rest.
 - **Streamed worlds are designed on first touch.** Chunks fresh from the generator are
@@ -123,6 +125,12 @@ each shape and the junctions between its shapes.
   tested against the world grid and other pieces' shapes. Normals come from the face of least
   penetration leading to air. A pair keeps a manifold of 12 contacts, plus 8 per metre of a
   piece's radius (a large piece rests on a bearing surface, not on a few points).
+- **Continuous collision.** A piece that may move more than half a voxel in a substep (7.5 m/s at
+  120 Hz, 3.75 m/s at 60 Hz) casts its free samples along their motion through the grids; the
+  nearest faces they would reach (at most 8) become speculative contacts: rows that ask for no
+  more closing than the gap within the substep, with no position correction and no warm start.
+  A piece at 28 m/s (a blast's fastest) stops at a sheet one voxel thick instead of passing it.
+  It costs nothing measurable (fast pieces no longer sink deep into what they hit).
 - **Solver.** Sequential impulses (projected Gauss–Seidel): warm starting, Coulomb friction,
   restitution for fast impacts only, split-impulse position correction (the impulses stay true
   forces for the fracture layer). A squeeze guard keeps a light piece pinned between heavy ones
@@ -141,10 +149,14 @@ each shape and the junctions between its shapes.
   per 1/120 s: rubble is rough, and piles settle within seconds. A large piece toppling slowly is
   not held back. An awake piece moving near a sleeping one wakes it, as do carves and blasts
   nearby, and a piece removed or broken (what rested on it may hang over a gap).
+- **Machines** (pieces on driven joints, MOTION.md): their parts are not settled while their
+  drives work, and what rests on them settles relative to the part it rests on (a crate on a
+  turntable is carried, not held back) and does not sleep while it runs; a machine at work wakes
+  what it touches, however slowly it moves.
 - **Coupling to structures.** Contact impulses on world voxels load the fragment they touch:
   impacts as sudden load cases (pancake collapse of floors), resting pieces as dead loads.
-- **Budget.** Beyond 3,000 pieces the smallest sleeping ones fade out. Pieces that fall off the
-  world are removed.
+- **Budget.** Beyond 3,000 pieces the smallest sleeping ones fade out (never a joint's pieces, nor
+  those the host keeps). Pieces that fall off the world are removed.
 
 ## 5. Fracture of pieces
 

@@ -51,6 +51,7 @@ struct FragParams {
   // size / this grid's (1: the world grid, or a grid of its voxel size), so a grid's rubble has the
   // world's size in metres. Small components merge by the same measure.
   f64 scale = 1.0;
+  const MaterialTable* mats = nullptr;  // the materials (a world's; nullptr: the process's)
 };
 
 // Fragments of chunk cc of the grid (uses its voxels, broken faces and h).

@@ -11,23 +11,21 @@ world grid in every respect: fragments, bonds, stress, failure, pieces, carving,
 water, smoke, persistence and streaming. Where the voxels of two grids meet, they are bonded by
 **junctions**, so a turned building stands on the world grid's ground, and a diagonal brace
 carries load between world-grid columns. A piece that breaks off may span several grids. A grid
-can be placed anew, and a grid can belong to a **kinematic body** that the host drives (a door, a
-lift, a drawbridge: [`MOTION.md`](MOTION.md)).
+can be placed anew; grids stand still - what moves by design is pieces on driven joints (a door,
+a lift, a drawbridge: [`MOTION.md`](MOTION.md)).
 
 The method of the core is in [`V2_DESIGN.md`](V2_DESIGN.md); hosting the core is in
-[`CORE.md`](CORE.md); kinematic bodies and joints are in [`MOTION.md`](MOTION.md). This page
-covers what grids add.
+[`CORE.md`](CORE.md); joints and machines are in [`MOTION.md`](MOTION.md). This page covers
+what grids add.
 
 ## 1. The model
 
 - **Grids.** A world has the **world grid** (id 0, the axes of the world; loaded or streamed)
   and any number of **oriented grids** (ids from 1). Each is a `VoxelGrid`, described by a
   `GridDesc`:
-  - `frame {origin, rot}`: its voxel `p` is centred at `origin + R(rot) (h p)`, in its body's
-    frame (the world, for the static world's grids);
+  - `frame {origin, rot}`: its voxel `p` is centred at `origin + R(rot) (h p)` in the world;
   - `voxel_size` `h` (0: the world's; §4);
   - `priority` (§3);
-  - `body`: the kinematic body it belongs to (0: the static world; `MOTION.md`);
   - `base`: part of the level, or a change of this session (§6).
 - **Everything the world grid's voxels do, a grid's voxels do.**
   - Anchored voxels are supports; free voxels form fragments in the grid's own lattice (its
@@ -36,8 +34,7 @@ covers what grids add.
     probes, fire, water and smoke all work per grid.
 - **Structures span grids.** An extraction walks lattice faces within a grid and junctions
   between grids alike, so one structure can hold fragments of several grids, and one equilibrium
-  solve covers them all. Only grids of the same body bond: bodies move apart, they meet in
-  contacts and joints.
+  solve covers them all.
 - **Pieces span grids.** A piece is a set of **shapes**, one per grid it has voxels of, each
   with its voxels in its own lattice, of its own voxel size, and a transform from that lattice to
   the piece's frame (`BodyShape::xf`, `BodyShape::h`). Its bonds are the lattice bonds within each
@@ -57,7 +54,7 @@ A junction is the interface between the voxels of two grids.
   default 3: the centres of an even subdivision of the face), pushed out along the face normal
   by `junction_reach` voxels of the other grid (default half of one: where the owner displaced
   the other grid's voxels, §3, the other's surface is up to half of its voxel away). A sample that
-  lands in a solid voxel of another grid of the same body joins the two voxels. A fragment's own
+  lands in a solid voxel of another grid joins the two voxels. A fragment's own
   faces give its "forward" samples; the samples of another grid's faces that land in it are its
   "reverse" samples.
 - **Ownership.** Where two grids meet, the **owner** (§3) measures the interface: its faces
@@ -115,8 +112,8 @@ in a wall, a turned beam cast into a pier.
   equal priority, the newer (higher id). The world grid has priority 0 and id 0: a grid of
   negative priority yields to it. A bar placed first, then a column cast around it: give the bar
   the higher priority and the column is cast around the bar, its voxels removed where the bar is.
-- **Displacement.** Within one body (the static world, or one kinematic body), the other grid's
-  voxels whose centres lie in the owner's solid are **removed**. Each space holds one material,
+- **Displacement.** The other grid's voxels whose centres lie in the owner's solid are
+  **removed**. Each space holds one material,
   so its mass counts once, and the owner's surface meets the other grid's where the member was
   cast. It is done when a grid is added, placed anew, when voxels are written into a grid, and
   when streamed chunks and grids are generated.
@@ -141,16 +138,15 @@ A grid may have a voxel size of its own (`GridDesc::voxel_size`): a finer grid h
 - **Measured** (§2): the same cantilever at half the voxel size is 1.06 × as utilized at 0°,
   1.19 × at 20° (means over 12 placements of the beam in its lattice), and its mass is the same.
 
-## 5. Moving grids
+## 5. Placing a grid anew
 
-- **Placed anew.** `set_grid_frame(id, frame)` moves a grid (in its body's frame) and keeps its
-  voxels, changes and design. What it was bonded to lets go (structures there are extracted
-  again: a slab resting on it falls), it bonds to what it meets where it is now, and where it
-  overlaps grids of its body, the lower priority's voxels are displaced (§3). Its broken
-  junction samples are forgotten (a new interface), and its fragments' identities change with
-  it. `GridMoved` reports it; `save_delta` keeps the new frame.
-- **In motion.** A grid of a kinematic body moves with it, steadily through each tick: pieces are
-  pushed and carried by it, its structures are loaded by its motion. See [`MOTION.md`](MOTION.md).
+`set_grid_frame(id, frame)` moves a grid and keeps its voxels, changes and design. What it was
+bonded to lets go (structures there are extracted again: a slab resting on it falls), it bonds to
+what it meets where it is now, and where it overlaps other grids, the lower priority's voxels are
+displaced (§3). Its broken junction samples are forgotten (a new interface), and its fragments'
+identities change with it. `GridMoved` reports it; `save_delta` keeps the new frame. (Grids
+stand still between such placements: what moves by design is pieces on driven joints,
+[`MOTION.md`](MOTION.md).)
 
 ## 6. Using grids (C++)
 
@@ -180,21 +176,20 @@ for (;;) {
 
 | Call | What it does |
 |---|---|
-| `add_grid(desc, voxels)`, `add_grid(frame, voxels, base = true)` | Adds a grid; returns its id (0: refused, e.g. inside a tick, with a non-finite frame, a bad voxel size or an unknown body). `base`: part of the level (the level adds its grids again, in the same order, before `load_delta`; their changes are saved like the world grid's); else a change of this session, saved whole. After the design pass, a new grid is designed when first touched. Free voxels touching nothing fall as a piece at the next tick. |
+| `add_grid(desc, voxels)`, `add_grid(frame, voxels, base = true)` | Adds a grid; returns its id (0: refused, e.g. inside a tick, with a non-finite frame or a bad voxel size). `base`: part of the level (the level adds its grids again, in the same order, before `load_delta`; their changes are saved like the world grid's); else a change of this session, saved whole. After the design pass, a new grid is designed when first touched. Free voxels touching nothing fall as a piece at the next tick. |
 | `remove_grid(id)` | Removes a grid's voxels (pieces that broke off it stay). What it held through junctions is extracted again: a slab resting on it falls. |
 | `set_grid_frame(id, frame)` | Places a grid anew (§5). |
 | `grids()`, `grid(id)`, `grid_frame(id, &f)` | The oriented grids (ascending ids), a grid's voxels, its frame in the world now. |
-| `grid_priority(id)`, `grid_body(id)` | Its priority (§3) and kinematic body (0: the static world). |
+| `grid_priority(id)` | Its priority (§3). |
 | `grid_to_world(id, p)`, `world_to_grid(id, X)` | Points between a grid's coordinates (metres: voxel `p`'s centre is `h p`) and the world. |
-| `grid_velocity(id, X)` | Its velocity at a world point (a kinematic body's motion; zero for a static grid). |
-| `grid_solids(chunk)`, `grid_solid(voxel)`, `grid_voxel_at(X, &grid, &voxel)` | The static world's grids in the world grid's voxels (a voxel whose centre lies in a solid voxel of one), per world chunk and cached, for systems of the world's lattice (§8). |
+| `grid_solids(chunk)`, `grid_solid(voxel)`, `grid_voxel_at(X, &grid, &voxel)` | The grids in the world grid's voxels (a voxel whose centre lies in a solid voxel of one), per world chunk and cached, for systems of the world's lattice (§8). |
 | `set_voxels(grid, edits, flags)` | Edits in a grid's coordinates. |
 | `take_changed_grid_chunks()` | The oriented grids' chunks whose voxels changed, by grid, then chunk. |
 | `layer(grid, L, p)`, `set_layer(grid, L, edits)`, `take_layer_changes(grid, L)` | Layers of a grid's voxels. |
 | `set_loads(group, loads)` | `VoxelLoad::grid` names the voxel's grid. |
 | `carve`, `blast` | Act on every grid the sphere reaches (the sphere in each lattice). |
 | `raycast` | Walks each grid's lattice; `RayHit::grid` and `voxel` say what it hit, `shape` which shape of a piece. |
-| `collide`, `sweep` | `collide` moves a box axis by axis against the world grid and against the grids (swept separating-axis tests against each grid voxel's cube), and reports what it lands on with its velocity there (`CollideResult::ground`, `ground_velocity`: a lift carries its rider). `sweep` moves a box in any direction and returns the normal of what stopped it (a controller slides along a turned wall) and that surface's velocity. |
+| `collide`, `sweep`, `overlaps`, `depenetrate` | `collide` moves a box axis by axis against the world grid and against the grids' and the pieces' voxels (swept separating-axis tests against each voxel's cube), and reports what it lands on with its velocity there (`CollideResult::ground`, `ground_piece`, `ground_velocity`: a lift's car carries its rider). `sweep` moves a box in any direction and returns the normal of what stopped it (a controller slides along a turned wall) and that surface's velocity. `overlaps` and `depenetrate` find a box stuck in solid voxels, and how far up it is free. |
 | `debug_field(grid, chunk, field, out)`, `probe_utilization(grid, voxel)` | Per grid. |
 | `piece(id)->shapes[k]` | A piece's shapes: `grid` (where its voxels came from), `h`, `xf` (its lattice in the piece's frame), voxels in lattice coordinates. A lattice point `s` of shape `k` is at `Body::lattice_to_world(k, s)`. |
 | `piece_layer`, `set_piece_layer`, `remove_piece_voxels` | Take a shape index (0: the first). |
@@ -203,14 +198,14 @@ for (;;) {
   rotation), `GridRemoved` (removed, evicted with its home chunk, or by `load`) and `GridMoved`
   (placed anew, or by `load_delta`).
 - **Stats:** `WorldStats::grids`. `state_hash` includes the grids, their frames, voxel sizes,
-  priorities, bodies and junction breaks (only when there are grids: a world-grid-only world
-  hashes as before).
+  priorities and junction breaks (only when there are grids: a world-grid-only world hashes as
+  before).
 
 ### Rendering
 
 - **A grid's chunks.** Mesh them in the grid's lattice (`mesh_chunk(*world.grid(id), chunk,
   opts)`: positions in the lattice, in metres) and draw them with the grid's frame as their
-  model transform. A grid that moves is never meshed again for it: only its transform changes.
+  model transform. A grid placed anew is not meshed again for it: only its transform changes.
   The game harness sends exactly that (`Game::take_meshes`, `ChunkMesh::grid`; the frames with
   `Game::take_grid_views`).
 - **Pieces.** Mesh each shape with `mesh_shape` (vertices in the shape's lattice), map them
@@ -222,22 +217,22 @@ for (;;) {
 - **Chunk records** (delta format version 4) end with the chunk's junction breaks. Version 3
   records load with none.
 - **The grids' part.** An optional trailer after the world grid's records:
-  - magic `SVXG` (0x47585653), version 2;
+  - magic `SVXG` (0x47585653), version 3;
   - the ids of the level's grids that were removed;
-  - per grid: its id, flags (the level's; moved), its frame (origin xyz and rotation xyzw as f64,
-    in its body's frame), voxel size, priority and body, and its chunk records. A level's grid
-    saves its changed chunks (and its frame, if it was placed anew); a session's grid saves all
-    of its chunks;
-  - the kinematic bodies ([`MOTION.md`](MOTION.md) §1): the level's removed, then each body's
-    pose and motion.
-  - A world of the world grid alone saves exactly as before, with no trailer. Version 1
-    trailers (grids of the world's voxel size, no bodies) still load.
+  - per grid: its id, flags (the level's; moved), its frame (origin xyz and rotation xyzw as f64),
+    voxel size and priority, and its chunk records. A level's grid saves its changed chunks (and
+    its frame, if it was placed anew); a session's grid saves all of its chunks;
+  - the session ([`CORE.md`](CORE.md) §4): the world's clock, the pieces, the joints, the
+    sleeping pieces' dead loads, and a streamed world's pieces archived out of range.
+  - A world of the world grid alone, with no pieces or joints, saves exactly as before, with no
+    trailer. Version 1 trailers (grids of the world's voxel size) and version 2 trailers (of the
+    kinematic bodies there were: read if they had none) still load.
 - **Loading.**
-  - Load the level (the world grid, then its kinematic bodies and grids in the same order),
-    `bake`, `load_delta`.
-  - The whole delta is checked first. A malformed trailer, or a level's grid or body that is
-    missing (unless streamed), refuses it, and nothing is applied.
-  - A session's grid or body is made again with its id.
+  - Load the level (the world grid, then its grids in the same order, then its joints), `bake`,
+    `load_delta`: the session's pieces and joints take the place of the level's joints.
+  - The whole delta is checked first. A malformed trailer, or a level's grid that is missing
+    (unless streamed), refuses it, and nothing is applied.
+  - A session's grid is made again with its id.
 
 ## 8. The environment
 
@@ -248,8 +243,7 @@ Fire, smoke and water ([`ENV.md`](ENV.md)) act on the grids too.
   Flames reach across lattices through their world points: a burning turned wall sets the world
   grid's wall beside it alight, a burning floor a turned crate on it. The harness meshes a grid's
   chunks again as they char and glow.
-- **Water and smoke** live in the world grid's lattice. They see the static world's grids by
-  `grid_solids`: a world voxel whose centre lies in a grid's solid voxel is solid to them. Water
+- **Water and smoke** live in the world grid's lattice. They see the grids by `grid_solids`: a world voxel whose centre lies in a grid's solid voxel is solid to them. Water
   is held back by a turned wall and presses on its voxels (its structure takes the load); a
   turned roof holds smoke. A grid's changes (voxels, removal, a new place) wake them where it is.
 
@@ -271,26 +265,26 @@ Fire, smoke and water ([`ENV.md`](ENV.md)) act on the grids too.
 `svx/svx_core.h`:
 
 - **Grids:** `svxc_add_grid` (a dense box of voxels, origin and rotation, base flag) and
-  `svxc_add_grid_desc` (`svxc_grid_desc`: frame, voxel size, priority, body, base),
+  `svxc_add_grid_desc` (`svxc_grid_desc`: frame, voxel size, priority, base),
   `svxc_remove_grid`, `svxc_set_grid_frame`, `svxc_grids`, `svxc_grid_frame`,
-  `svxc_grid_voxel_size`, `svxc_grid_priority`, `svxc_grid_body`, `svxc_grid_velocity`.
+  `svxc_grid_voxel_size`, `svxc_grid_priority`.
 - **Voxels, layers and loads per grid:** `svxc_set_grid_voxels`, `svxc_grid_chunk_voxels`,
   `svxc_poll_changed_grid_chunks` (4 ints each: grid, chunk x, y, z), `svxc_set_grid_layer`,
   `svxc_grid_layer`, `svxc_set_grid_loads`.
 - **Pieces:** `svxc_piece_shape_count` and `svxc_piece_shape` (voxels, box, the shape's
   lattice in the piece's frame, its grid).
 - **Queries and events:** `svxc_sweep`, `svxc_sweep_ex` and `svxc_collide_ex` (with the touched
-  or stood-on grid and its velocity); `svxc_hit` carries `grid` and `shape`; the events
-  `SVXC_GRID_ADDED`, `SVXC_GRID_REMOVED` and `SVXC_GRID_MOVED`; `svxc_stats::grids`.
-- Kinematic bodies and joints: [`MOTION.md`](MOTION.md).
+  or stood-on grid or piece and its velocity), `svxc_overlaps`, `svxc_depenetrate`; `svxc_hit`
+  carries `grid` and `shape`; the events `SVXC_GRID_ADDED`, `SVXC_GRID_REMOVED` and
+  `SVXC_GRID_MOVED`; `svxc_stats::grids`.
+- Joints and machines: [`MOTION.md`](MOTION.md).
 
 ## 11. The game and the browser
 
 - **`Game`.**
   - Meshes the grids' changed chunks in their lattices (`ChunkMesh::grid` set), and drops
     them when a grid goes (`take_removed_grid_chunks`).
-  - `take_grid_views()` gives the grids that came, moved or move (a kinematic body's, every tick
-    it moves): frame, voxel size, body and the velocity field it moves with;
+  - `take_grid_views()` gives the grids that came or were placed anew (frame, voxel size);
     `take_removed_grids()` the grids gone.
   - The client's collision: `chunk_occupancy(chunk)` of the world grid, and
     `grid_chunk_occupancy(grid, chunk)` of a grid's chunk in its lattice.
@@ -300,20 +294,21 @@ Fire, smoke and water ([`ENV.md`](ENV.md)) act on the grids too.
   - `svx_mesh_info` gives the grid id in `out[9]`; a grid's mesh (and its origin) is in its
     lattice.
   - `svx_poll_removed_grid` / `svx_removed_grid_chunk` list emptied grid chunks.
-  - `svx_poll_grids` / `svx_grid_info` (19 doubles: id, origin, rotation, voxel size, body,
-    velocity, angular velocity, centre) and `svx_poll_grids_removed` / `svx_grid_removed`.
-  - `svx_grid_chunk_occupancy`; `svx_collide` (8 doubles: the move, on ground, the grid stood on
-    and its velocity there).
+  - `svx_poll_grids` / `svx_grid_info` (9 doubles: id, origin, rotation, voxel size) and
+    `svx_poll_grids_removed` / `svx_grid_removed`.
+  - `svx_grid_chunk_occupancy`; `svx_collide` (9 doubles: the move, on ground, the grid stood
+    on, the velocity there of what it stands on, the piece stood on); `svx_event_occupancy` (a
+    piece's voxels, with its detached or remeshed mesh).
   - The worker keys a grid's chunk meshes `g<grid>:<x>,<y>,<z>` and sends the frames in `grids`
     messages (`web/src/engine/protocol.ts`).
 - **The browser.**
-  - The renderer draws each grid's chunks with its frame (an object slot per grid): a moving
-    grid, like a rigid piece, one tick in the past, interpolated between its last two frames.
+  - The renderer draws each grid's chunks with its frame (an object slot per grid).
   - The client's collision (`web/src/game/occupancy.ts`) holds the grids' occupancy in their
-    lattices and sweeps the player against their voxels as turned cubes, exactly as the engine's
-    `collide` (separating axes). The player rides what it stands on: a lift, a turntable.
-- **Procedural worlds** carry grids, kinematic bodies, joints and drops: `ProcWorld`, loaded
-  with `load_procedural(game, std::move(w))`.
+    lattices and the pieces' voxels (`web/src/engine/pieces.ts`, placed as they are drawn), and
+    sweeps the player against them as turned cubes, exactly as the engine's `collide`
+    (separating axes). The player rides what it stands on: a lift's car, a turntable.
+- **Procedural worlds** carry grids, joints and drops: `ProcWorld`, loaded with
+  `load_procedural(game, std::move(w))`.
 - **The `angles` world** (`?world=angles`, `svx_engine_demo --world angles`) has:
   - a frame building turned 30°;
   - a 17 m bridge deck at 35° cast into two world-grid piers;
@@ -324,7 +319,7 @@ Fire, smoke and water ([`ENV.md`](ENV.md)) act on the grids too.
   - a stone monolith leaning 12°.
 
   The engine demo's scenario blasts them.
-- **The `machines` world** (`?world=machines`) has kinematic bodies and joints:
+- **The `machines` world** (`?world=machines`) has machines on driven joints and hanging parts:
   [`MOTION.md`](MOTION.md) §4.
 - **Checks.**
   - `svx_engine_demo --turn DEG` runs any procedural world's structure in a grid turned about
@@ -334,7 +329,7 @@ Fire, smoke and water ([`ENV.md`](ENV.md)) act on the grids too.
     the browser: it draws, a box moving into the 45° wall stops at it, the player stands on the
     ramp, and the blasts run without errors.
   - `web/test/occupancy.test.ts`: the client's collision against a turned wall and a moving
-    platform.
+    piece.
 
 ## 12. Known limits
 
@@ -343,10 +338,6 @@ Fire, smoke and water ([`ENV.md`](ENV.md)) act on the grids too.
   structure is solved with the multigrid (see V2_DESIGN.md §2).
 - **Water and smoke see grids at the world's resolution.** A world voxel is solid to them if its
   centre lies in a grid's solid voxel: a turned wall thinner than a world voxel may let water
-  through in places. A kinematic body's grids move and take no part in them.
-- **Heat reaches a kinematic body's grids from their own fires only.** Their flames heat the
-  world and the static grids; the world's flames do not heat them.
-- **Displacement is within one body.** A kinematic body's grids pass through the static world's
-  voxels (and other bodies'): the host drives them where it wants.
+  through in places.
 - **The far render tier** samples a grid's voxel centres into its coarse cells (a thin turned
   wall is a row of coarse cells).

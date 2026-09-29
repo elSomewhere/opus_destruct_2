@@ -320,6 +320,7 @@ void svx_collide(svx_engine* e, double minx, double miny, double minz, double ma
   out[3] = r.on_ground ? 1.0 : 0.0;
   out[4] = static_cast<double>(r.ground);
   for (int q = 0; q < 3; ++q) out[5 + q] = r.ground_velocity[q];
+  out[8] = static_cast<double>(r.ground_piece);
 }
 
 int svx_poll_meshes(svx_engine* e) {
@@ -389,7 +390,7 @@ int svx_poll_grids(svx_engine* e) {
 }
 
 void svx_grid_info(svx_engine* e, int i, double* out) {
-  std::fill(out, out + 19, 0.0);
+  std::fill(out, out + 9, 0.0);
   if (!in_range(e->grid_views, i)) return;
   const GridView& v = e->grid_views[i];
   out[0] = static_cast<double>(v.id);
@@ -399,12 +400,6 @@ void svx_grid_info(svx_engine* e, int i, double* out) {
   out[6] = v.rot.z;
   out[7] = v.rot.w;
   out[8] = v.voxel_size;
-  out[9] = static_cast<double>(v.body);
-  for (int q = 0; q < 3; ++q) {
-    out[10 + q] = v.vel[q];
-    out[13 + q] = v.ang[q];
-    out[16 + q] = v.centre[q];
-  }
 }
 
 int svx_poll_grids_removed(svx_engine* e) { return static_cast<int>(e->grids_removed.size()); }
@@ -511,6 +506,13 @@ void svx_event_info(svx_engine* e, int i, double* out) {
 const void* svx_event_vertices(svx_engine* e, int i) { return in_range(e->events, i) ? e->events[i].mesh.vertices.data() : nullptr; }
 const void* svx_event_indices(svx_engine* e, int i) { return in_range(e->events, i) ? e->events[i].mesh.indices.data() : nullptr; }
 
+const void* svx_event_occupancy(svx_engine* e, int i, double* out_size) {
+  if (out_size) *out_size = 0.0;
+  if (!in_range(e->events, i) || e->events[i].occupancy.empty()) return nullptr;
+  if (out_size) *out_size = static_cast<double>(e->events[i].occupancy.size());
+  return e->events[i].occupancy.data();
+}
+
 // v2 has no displacement fields (pieces are rigid; structures stand still until they break).
 void svx_set_gpu_displacement(svx_engine* e, int enabled) {
   (void)e;
@@ -536,7 +538,7 @@ const void* svx_field_data(svx_engine* e, int i) {
 
 int svx_debris(svx_engine* e) {
   const std::vector<PiecePose> ps = e->eng.pieces();
-  e->debris.resize(9 * ps.size());
+  e->debris.resize(15 * ps.size());
   f64* o = e->debris.data();
   for (const PiecePose& p : ps) {
     o[0] = static_cast<double>(p.id);
@@ -548,7 +550,11 @@ int svx_debris(svx_engine* e) {
     o[6] = p.rot.z;
     o[7] = p.rot.w;
     o[8] = p.opacity;
-    o += 9;
+    for (int q = 0; q < 3; ++q) {
+      o[9 + q] = p.vel[q];
+      o[12 + q] = p.ang[q];
+    }
+    o += 15;
   }
   return static_cast<int>(ps.size());
 }

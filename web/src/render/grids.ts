@@ -1,7 +1,7 @@
 /**
  * The oriented grids' chunk meshes (docs/GRIDS.md): meshed in each grid's lattice, drawn with
- * its frame (engine/gridframes.ts) as the model matrix of the grid's object slot. A grid that
- * moves (a kinematic body's) is never meshed again for it: only its model changes.
+ * its frame (engine/gridframes.ts) as the model matrix of the grid's object slot. A grid placed
+ * anew is not meshed again for it: only its model changes.
  */
 import type { GridFrame, GridFrames } from '../engine/gridframes.ts';
 import type { ChunkMesh, Vec3 } from '../engine/protocol.ts';

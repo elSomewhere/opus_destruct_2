@@ -22,7 +22,7 @@ Conventions:
 | `type` | fields | notes |
 |---|---|---|
 | `init` | `config: {voxelSize, threads, memoryMB, params, persist?, gpuDisplacement?}` | First message. `persist` (**ext**): keep gameplay changes per world in OPFS (below). `gpuDisplacement` (**ext**): displacement fields (below; v2 engines send none). |
-| `loadProcedural` | `seed, kind: 'city'\|'rooms'\|'tower'\|'yard'\|'angles'\|'machines'` | Test worlds. `city` is the streamed 1 km² city (some of its buildings turned, in oriented grids). `yard` has one construction of each kind (timber, stone, glass, steel, reinforced concrete, a reservoir, a water tower). `angles` has structures off the lattice, in oriented grids ([`GRIDS.md`](GRIDS.md)). `machines` has kinematic bodies and joints: a lift, a turntable, a drawbridge, a crane with a wrecking ball, a pendulum, a chain, a hinged door ([`MOTION.md`](MOTION.md)). |
+| `loadProcedural` | `seed, kind: 'city'\|'rooms'\|'tower'\|'yard'\|'angles'\|'machines'` | Test worlds. `city` is the streamed 1 km² city (some of its buildings turned, in oriented grids). `yard` has one construction of each kind (timber, stone, glass, steel, reinforced concrete, a reservoir, a water tower). `angles` has structures off the lattice, in oriented grids ([`GRIDS.md`](GRIDS.md)). `machines` has machines - pieces on driven joints held by structures - and hanging parts: a lift, a turntable, a drawbridge, a crane with a wrecking ball, a pendulum, a chain, a hinged door ([`MOTION.md`](MOTION.md)). |
 | `loadWad` | `buffer: ArrayBuffer (transfer), map: string, options: {mode:'rock'\|'air', shellVoxels, bake:boolean}` | Doom level. |
 | `viewer` | `pos:[x,y,z], dir:[x,y,z]` | Streaming, bake and LOD focus. Sent every frame or two, including while the player is not in control. |
 | `blast` | `pos:[x,y,z], radius, energy` | Rocket or explosion. `energy` is in J. |
@@ -55,16 +55,16 @@ Conventions:
 | `ready` | `info: {bounds:{min,max}, voxelCount, spawn:{pos,dir}, textures:boolean}` | After a load. `spawn.pos` is the player's **feet** position, standing on the floor. |
 | `textures` | `list: [{id, name, width, height, rgba: ArrayBuffer}]` | Doom textures and flats (transfer). Sent before `ready` when `info.textures`. RGBA8, row 0 = top. |
 | `chunkMeshes` | `meshes: [{key, origin:[3], vertices: ArrayBuffer, vertexCount, indices: ArrayBuffer, indexCount, grid?}], fields?` | New or changed chunk meshes (transfer). A mesh replaces the previous mesh with the same key. `fields` (**ext**): see [Displacement fields](#displacement-fields). An oriented grid's chunk (**ext**) has the key `g<grid>:<x>,<y>,<z>` and `grid` set; its vertices and origin are in the grid's lattice (metres), drawn with the grid's frame (`grids`). |
-| `grids` (**ext**) | `frames: Float64Array (19 per grid: id, origin xyz, rotation xyzw, voxel size, kinematic body, velocity xyz, angular xyz, centre xyz), removed: number[]` | The oriented grids that came, moved or move (a kinematic body's, every tick it moves), and the grids gone. See [Oriented grids](#oriented-grids-and-joints-ext). |
+| `grids` (**ext**) | `frames: Float64Array (9 per grid: id, origin xyz, rotation xyzw, voxel size), removed: number[]` | The oriented grids that came or were placed anew, and the grids gone. See [Oriented grids](#oriented-grids-and-joints-ext). |
 | `joints` (**ext**) | `joints: Float64Array (8 per joint: id, type, end a xyz, end b xyz)` | The joints after every tick while any exist, plus one empty set when the last is gone (type 4: a rope or rod, drawn between its ends). |
 | `chunkRemoved` | `keys: string[]` | Evicted or emptied chunks. |
 | `events` | `list: [...]` | See [Events](#events). |
-| `debris` (**ext**) | `poses: [{id, pos:[3], rot:[x,y,z,w], opacity}]` | Rigid debris poses after every tick while any piece exists, plus one empty list when the last piece is gone. See [Rigid debris](#rigid-debris). |
+| `debris` (**ext**) | `poses: Float64Array (15 per piece: id, pos xyz, rot xyzw, opacity, velocity xyz, angular velocity xyz)` | Rigid debris poses after every tick while any piece exists, plus one empty set when the last piece is gone. See [Rigid debris](#rigid-debris). |
 | `occupancy` (**ext**) | `voxelSize, chunks: [{chunk:[3], state: 0\|1\|2, bits?: ArrayBuffer, grid?}]` | Solid occupancy of every chunk whose voxels changed, sent after the tick's meshes; an oriented grid's (`grid` set) in its lattice. See [Client-side collision](#client-side-collision). |
 | `env` (**ext**) | `flames: Float32Array (x, y, z, °C per flame), smoke: Float32Array (x, y, z, density per cell)` | About 10 Hz while anything burns or smokes, plus one empty set when all is clear. At most 4096 of each: an even sample of the burning voxels, the densest smoke cells (4 voxels each). See [Environment](#environment). |
 | `water` (**ext**) | `meshes: [...as chunkMeshes], removed: string[]` | Water surface meshes of chunks whose water changed (at most 10 Hz per chunk), and chunks whose water is gone. Drawn translucent after the opaque world. |
 | `raycastResult` | `id, hit: null \| {pos:[3], normal:[3], distance, material}` | |
-| `collideResult` | `id, move:[3], onGround:boolean, ground?, groundVelocity?:[3]` | `ground` (**ext**): the grid stood on (0 the world grid) and its velocity under the box (a kinematic body's: the player rides it). |
+| `collideResult` | `id, move:[3], onGround:boolean, ground?, groundPiece?, groundVelocity?:[3]` | `ground`, `groundPiece` (**ext**): the grid (0 the world grid) or the piece stood on, and its velocity under the box (a lift's car, a turntable: the player rides it). |
 | `stats` | `stats: {tickMs, structuralMs, rigidMs, voxels, chunks, memoryMB, events, pieces, awakePieces, contacts, bondsBroken, ...}` | About 4 Hz. `events` counts events since the previous stats message. The full set is `EngineStats` in `protocol.ts`; extra keys are shown generically by the HUD. |
 | `error` (**ext**) | `message, fatal:boolean, command?` | `fatal`: the engine cannot continue. `command`: the command type that failed. |
 | `progress` (**ext**) | `stage, done, total` | Load progress for the loading screen. |
@@ -168,7 +168,10 @@ come to rest as rubble (docs/V2_DESIGN.md §4–5).
   - `pos`: its current centre of mass.
   - `rot`: its rotation since detachment, as a unit quaternion `[x, y, z, w]`.
   - `opacity`: 1, falling to 0 while the piece fades out.
+  - `velocity`, `angular`: its motion (what rides on it is carried so).
 - A mesh vertex `p` is drawn at `pos + R(rot)·(p − centroid)`.
+- A `detached` event carries the piece's voxels too (`occupancy`, **ext**: per shape its lattice
+  at the event's pose and a bit per cell of its box), for the client's collision.
 - A rigid piece missing from a `debris` list has been removed. A piece that breaks is removed,
   and its parts arrive as new `detached` events (meshes in world coordinates at that moment).
 - The web front end interpolates between the last two poses, one tick behind, so motion is
@@ -219,8 +222,10 @@ must not wait for it, so the WASM worker streams **occupancy**:
     `v = (x·32 + y)·32 + z` in local coordinates, where voxel = 32·chunk + local.
 - The front end keeps these bits and runs the `collide` sweep locally, every frame, with
   exactly the engine's rules: the world grid's voxels layer by layer, an oriented grid's as
-  turned cubes (the engine's separating-axis sweep), placed by the grid's frame (`grids`).
-  What the box lands on and its velocity there come with the result: the player rides a lift.
+  turned cubes (the engine's separating-axis sweep), placed by the grid's frame (`grids`), and
+  a piece's as turned cubes too (its `occupancy`, placed by its pose as it is drawn: one tick
+  behind, interpolated). What the box lands on and its velocity there come with the result: the
+  player rides a lift's car, a turntable, and is lifted out of a car that rose into their feet.
   - The browser smoke test checks 300 random sweeps against the worker's `collide`: they are
     identical.
 - Engines that do not send `occupancy` keep the round-trip `collide`.
@@ -228,10 +233,8 @@ must not wait for it, so the WASM worker streams **occupancy**:
 ### Oriented grids and joints (**ext**)
 
 - **Grids.** An oriented grid's chunk meshes are in its lattice; its frame comes in `grids`
-  messages (when it comes, is placed anew, and every tick its kinematic body moves). The front
-  end draws its chunks with the frame as their model matrix, a moving grid one tick in the past,
-  interpolated between its last two frames like rigid debris, and feels it at the same place.
-  A grid in `removed` is gone with its chunks.
+  messages (when it comes, and when it is placed anew). The front end draws its chunks with the
+  frame as their model matrix. A grid in `removed` is gone with its chunks.
 - **Joints.** `joints` lists the joints' ends every tick while any exist; the front end draws
   the distance joints (ropes, rods) as thin tubes between their ends.
 
@@ -252,13 +255,14 @@ the same world is loaded again. Worlds are identified by:
 - lifecycle: `svx_create`, `svx_load_*`;
 - simulation and commands: `svx_tick`, `svx_blast`, `svx_carve`, `svx_use`, `svx_ignite`,
   `svx_extinguish`, `svx_pour`;
-- queries: `svx_raycast`, `svx_collide` (8 values: the move, on ground, the grid stood on and
-  its velocity there);
+- queries: `svx_raycast`, `svx_collide` (9 values: the move, on ground, the grid stood on, the
+  velocity there of what it stands on, the piece stood on);
 - output: `svx_poll_meshes` (`svx_mesh_info` gives a mesh's grid, 0 for the world grid; a
   grid's mesh is in its lattice), `svx_poll_removed`, `svx_poll_removed_grid` (oriented grids'
   emptied chunks), `svx_chunk_occupancy` / `svx_grid_chunk_occupancy`, `svx_poll_grids` /
   `svx_grid_info` / `svx_poll_grids_removed` / `svx_grid_removed` (the grids' frames),
-  `svx_poll_joints` / `svx_joint_info`, `svx_poll_events`, `svx_debris`, `svx_stats`,
+  `svx_poll_joints` / `svx_joint_info`, `svx_poll_events` (`svx_event_occupancy`: a piece's
+  voxels), `svx_debris` (15 values a piece), `svx_stats`,
   `svx_poll_env` (flames and smoke), `svx_poll_water` / `svx_poll_water_removed`;
 - persistence: `svx_save_delta` / `svx_load_delta`;
 - determinism: `svx_state_hash`, a digest of the session including debris poses, identical

@@ -98,8 +98,9 @@ const float* svx_env_smoke(svx_engine* e);
 int svx_use(svx_engine* e, double ox, double oy, double oz, double dx, double dy, double dz);
 int svx_raycast(svx_engine* e, double ox, double oy, double oz, double dx, double dy, double dz, double max_dist,
                 double* out);
-/* out[8]: move xyz, on_ground, the grid stood on (on_ground), its velocity there xyz (a kinematic
- * body's: a controller riding it adds it x dt to its next move) */
+/* out[9]: move xyz, on_ground, the grid stood on (on_ground), the velocity there xyz of what it
+ * stands on (a piece's - a lift's car, a turntable: a controller riding it adds it x dt to its
+ * next move), the piece stood on (0: none) */
 void svx_collide(svx_engine* e, double minx, double miny, double minz, double maxx, double maxy, double maxz,
                  double mx, double my, double mz, double* out);
 
@@ -119,12 +120,10 @@ void svx_removed_chunk(svx_engine* e, int i, int* out3);
  * grid and chunk coordinates (4 ints). */
 int svx_poll_removed_grid(svx_engine* e);
 void svx_removed_grid_chunk(svx_engine* e, int i, int* out4);
-/* The oriented grids' places (after a tick): count of the grids that came, moved or move (their
- * kinematic body), then per grid info[19] = id, origin xyz, rotation xyzw, voxel size, kinematic
- * body, and the velocity field it moves with: velocity xyz, angular xyz, centre xyz (v + w x
- * (X - c); zero for a static grid). The grids gone: count, then ids. */
+/* The oriented grids' places (after a tick): count of the grids that came or moved, then per
+ * grid info[9] = id, origin xyz, rotation xyzw, voxel size. The grids gone: count, then ids. */
 int svx_poll_grids(svx_engine* e);
-void svx_grid_info(svx_engine* e, int i, double* out19);
+void svx_grid_info(svx_engine* e, int i, double* out9);
 int svx_poll_grids_removed(svx_engine* e);
 unsigned svx_grid_removed(svx_engine* e, int i);
 /* Occupancy of an oriented grid's chunk in its lattice (as svx_chunk_occupancy). */
@@ -156,6 +155,9 @@ int svx_poll_events(svx_engine* e);
 void svx_event_info(svx_engine* e, int i, double* out);
 const void* svx_event_vertices(svx_engine* e, int i);
 const void* svx_event_indices(svx_engine* e, int i);
+/* A piece's voxels for a front end's collision (Detached, Remesh: its shapes at the event's pose;
+ * size in bytes to out_size; NULL: none): the layout of svx::piece_occupancy (game.hpp). */
+const void* svx_event_occupancy(svx_engine* e, int i, double* out_size);
 
 /* GPU displacement (v1; v2 has none: svx_poll_fields returns 0): chunks under running bubbles are meshed per face once and
  * move by displacement fields instead of being re-meshed every tick. svx_poll_fields returns
@@ -170,9 +172,10 @@ int svx_poll_fields(svx_engine* e);
 void svx_field_info(svx_engine* e, int i, double* out);
 const void* svx_field_data(svx_engine* e, int i);
 
-/* Rigid debris: count of live pieces, then svx_debris_data holds 9 doubles per piece: id (of
- * its detached event), centre xyz, rotation since detachment as quaternion xyzw, opacity 0..1.
- * A mesh vertex p (world, at detachment) is drawn at centre + R (p - event pos). */
+/* Rigid debris: count of live pieces, then svx_debris_data holds 15 doubles per piece: id (of
+ * its detached event), centre xyz, rotation since detachment as quaternion xyzw, opacity 0..1,
+ * velocity of its centre xyz, angular velocity xyz. A mesh vertex p (world, at detachment) is
+ * drawn at centre + R (p - event pos). */
 int svx_debris(svx_engine* e);
 const double* svx_debris_data(svx_engine* e);
 /* Rigid debris on (default) or off (detached pieces are only reported). */

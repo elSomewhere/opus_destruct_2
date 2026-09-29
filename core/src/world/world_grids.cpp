@@ -59,8 +59,6 @@ GridId World::id_of(u16 g) const { return grids_[g]->id; }
 
 const LatticeXf& World::xf_of(u16 g) const { return grids_[g]->xf; }
 
-const LatticeXf& World::lxf_of(u16 g) const { return grids_[g]->local; }
-
 f64 World::h_of(u16 g) const { return vg(g).h; }
 
 
@@ -145,7 +143,7 @@ u64 World::grid_solids_stamp(const IVec3& cc) const {
 bool World::grid_voxel_at(const V3& X, GridId* grid, IVec3* voxel) const {
   if (oriented_ == 0) return false;
   for (size_t s = 1; s < grids_.size(); ++s) {
-    if (!grids_[s] || !grids_[s]->any || grids_[s]->body != 0) continue;
+    if (!grids_[s] || !grids_[s]->any) continue;
     const GridState& st = *grids_[s];
     if (!inside(X, st.lo, st.hi)) continue;
     const IVec3 v = voxel_of(st.xf.from(X), st.g.h);
@@ -178,7 +176,7 @@ const World::SolidsCache* World::solids_entry(const IVec3& cc) const {
   const V3 clo{h * (cc[0] * kChunk - 0.5), h * (cc[1] * kChunk - 0.5), h * (cc[2] * kChunk - 0.5)};
   const V3 chi{clo.x + h * kChunk, clo.y + h * kChunk, clo.z + h * kChunk};
   for (size_t s = 1; s < grids_.size(); ++s) {
-    if (!grids_[s] || !grids_[s]->any || grids_[s]->body != 0) continue;
+    if (!grids_[s] || !grids_[s]->any) continue;
     const GridState& st = *grids_[s];
     if (st.hi.x < clo.x || st.lo.x > chi.x || st.hi.y < clo.y || st.lo.y > chi.y || st.hi.z < clo.z || st.lo.z > chi.z) continue;
     c.from.push_back({s, st.g.revision(), st.placement});
@@ -206,11 +204,6 @@ const World::SolidsCache* World::solids_entry(const IVec3& cc) const {
   return &(solids_[key] = std::move(c));
 }
 
-V3 World::grid_velocity(GridId id, const V3& world) const {
-  const i32 s = slot_of(id);
-  return s <= 0 ? V3{} : body_velocity(grids_[size_t(s)]->body, world);
-}
-
 V3 World::grid_to_world(GridId id, const V3& lattice) const {
   const i32 s = slot_of(id);
   return s <= 0 ? lattice : grids_[size_t(s)]->xf.to(lattice);
@@ -236,21 +229,19 @@ void World::refresh_grid_box(u16 g) {
     }
     any = true;
   }
-  const V3 olo = st.blo, ohi = st.bhi;
+  const V3 olo = st.lo, ohi = st.hi;
   const bool was = st.any;
   st.any = any;
   if (!any) {
-    st.blo = st.bhi = st.local.off;
     st.lo = st.hi = st.xf.off;
   } else {
     const f64 h = st.g.h;
     st.llo = V3{h * (clo[0] * kChunk - 0.5), h * (clo[1] * kChunk - 0.5), h * (clo[2] * kChunk - 0.5)};
     st.lhi = V3{h * ((chi[0] + 1) * kChunk - 0.5), h * ((chi[1] + 1) * kChunk - 0.5), h * ((chi[2] + 1) * kChunk - 0.5)};
-    world_box(st.local, st.llo, st.lhi, &st.blo, &st.bhi);
     world_box(st.xf, st.llo, st.lhi, &st.lo, &st.hi);
   }
   // (a grid that grew reaches more: the candidates of junctions are found again)
-  if (any != was || !inside(st.blo, olo, ohi) || !inside(st.bhi, olo, ohi)) grids_changed();
+  if (any != was || !inside(st.lo, olo, ohi) || !inside(st.hi, olo, ohi)) grids_changed();
 }
 
 void World::grids_changed() { ++grid_epoch_; }
@@ -266,22 +257,21 @@ const std::vector<u16>& World::near_grids(u16 g, u64 chunk) {
   const auto it = st.near.find(chunk);
   if (it != st.near.end()) return it->second;
   std::vector<u16> out;
-  // the chunk's box in its body's frame, grown by the reach of a sample (and a voxel of margin):
-  // grids of the same body only (bodies move apart: they meet in contacts, not bonds)
+  // the chunk's box in the world, grown by the reach of a sample (and a voxel of margin)
   const f64 h = st.g.h;
   const IVec3 cc = unkey3(chunk);
   const V3 lo{h * (cc[0] * kChunk - 0.5), h * (cc[1] * kChunk - 0.5), h * (cc[2] * kChunk - 0.5)};
   const V3 hi{h * ((cc[0] + 1) * kChunk - 0.5), h * ((cc[1] + 1) * kChunk - 0.5), h * ((cc[2] + 1) * kChunk - 0.5)};
   V3 wlo, whi;
-  world_box(st.local, lo, hi, &wlo, &whi);
+  world_box(st.xf, lo, hi, &wlo, &whi);
   const f64 r = std::max(0.0, cfg_.junction_reach) + 1.5;
-  if (g != 0 && st.body == 0) out.push_back(0);  // (the world grid: everywhere in the static world)
+  if (g != 0) out.push_back(0);  // (the world grid: everywhere)
   for (size_t s = 1; s < grids_.size(); ++s) {
-    if (s == g || !grids_[s] || !grids_[s]->any || grids_[s]->body != st.body) continue;
+    if (s == g || !grids_[s] || !grids_[s]->any) continue;
     const GridState& o = *grids_[s];
     const f64 m = r * std::max(h, o.g.h);  // (a sample reaches voxels of the other grid)
-    if (o.bhi.x < wlo.x - m || o.blo.x > whi.x + m || o.bhi.y < wlo.y - m || o.blo.y > whi.y + m || o.bhi.z < wlo.z - m ||
-        o.blo.z > whi.z + m)
+    if (o.hi.x < wlo.x - m || o.lo.x > whi.x + m || o.hi.y < wlo.y - m || o.lo.y > whi.y + m || o.hi.z < wlo.z - m ||
+        o.lo.z > whi.z + m)
       continue;
     out.push_back(static_cast<u16>(s));
   }
@@ -305,14 +295,6 @@ std::vector<StaticGrid> World::static_grids() const {
     o.lo = st.lo - V3{m, m, m};
     o.hi = st.hi + V3{m, m, m};
     o.slot = static_cast<u16>(s);
-    if (st.body != 0) {
-      // (a kinematic body's grid: its velocity field)
-      const KinState& K = *kins_[st.body];
-      o.moving = norm2(K.v) > 0.0 || norm2(K.w) > 0.0;
-      o.v = K.v;
-      o.w = K.w;
-      o.c = K.x;
-    }
     out.push_back(o);
   }
   return out;
@@ -349,9 +331,6 @@ GridId World::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId want, 
   // (a voxel size of its own: from 1/64 to 64 x the world's)
   const f64 h = d.voxel_size == 0.0 ? grid_.h : d.voxel_size;
   if (!std::isfinite(h) || !(h >= grid_.h / 64.0) || !(h <= grid_.h * 64.0)) return 0;
-  // (its body: the static world, or a kinematic body there is)
-  const i32 body = kin_slot_of(d.body);
-  if (body < 0) return 0;
   // (its voxels within the key range, a margin for the events around them)
   for (const auto& [k, c] : voxels.chunks()) {
     const IVec3 cc = unkey3(k);
@@ -375,15 +354,8 @@ GridId World::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId want, 
   st->base = d.base;
   st->priority = d.priority;
   st->home = home;
-  st->local = LatticeXf::make(frame.origin, frame.rot);
+  st->xf = LatticeXf::make(frame.origin, frame.rot);
   // (never the identity: a grid placed exactly as the world grid is still its own lattice)
-  if (st->local.identity) {
-    st->local.identity = false;
-    st->local.R = M3::identity();
-    st->local.Rt = M3::identity();
-  }
-  st->body = static_cast<u16>(body);
-  st->xf = body == 0 ? st->local : compose(body_pose(static_cast<u16>(body)), st->local);
   if (st->xf.identity) {
     st->xf.identity = false;
     st->xf.R = M3::identity();
@@ -403,14 +375,10 @@ GridId World::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId want, 
   grids_[slot] = std::move(st);
   slots_[id] = slot;
   if (home != ~0ull) home_grids_[home].push_back(slot);
-  if (body != 0) {
-    auto& list = kins_[size_t(body)]->grids;
-    list.insert(std::lower_bound(list.begin(), list.end(), slot), slot);
-  }
   ++oriented_;
   refresh_grid_box(slot);
   grids_changed();
-  // where it overlaps the grids of its body, the lower priority's voxels go (a level's grid: as
+  // where it overlaps other grids, the lower priority's voxels go (a level's grid: as
   // part of the level, not saved; a grid of this session: a change)
   displace_overlaps(slot, !d.base);
   // what it touches is loaded differently now, and a grid of free voxels on nothing falls: its
@@ -516,14 +484,13 @@ bool World::set_grid_frame(GridId id, const GridFrame& frame) {
   // (its broken junction samples were those of its old place: it bonds afresh)
   st.g.clear_junction_breaks();
   // (the systems of the world's lattice hear of the place it leaves)
-  if (st.any && st.body == 0 && !systems_.empty()) world_chunks_of(LatticeXf{}, st.lo, st.hi, sys_changed_);
-  st.local = LatticeXf::make(frame.origin, frame.rot);
-  if (st.local.identity) {
-    st.local.identity = false;
-    st.local.R = M3::identity();
-    st.local.Rt = M3::identity();
+  if (st.any && !systems_.empty()) world_chunks_of(LatticeXf{}, st.lo, st.hi, sys_changed_);
+  st.xf = LatticeXf::make(frame.origin, frame.rot);
+  if (st.xf.identity) {
+    st.xf.identity = false;
+    st.xf.R = M3::identity();
+    st.xf.Rt = M3::identity();
   }
-  st.xf = st.body == 0 ? st.local : compose(body_pose(st.body), st.local);
   st.moved = true;
   ++st.placement;
   st.g.mark_all_dirty();  // (hosts place its chunks anew)
@@ -560,14 +527,13 @@ void World::displace_overlaps(u16 g, bool tracked) {
   if (!live(g)) return;
   const GridState& st = gs(g);
   if (g != 0 && !st.any) return;
-  // (the grids of its body whose boxes meet its box, in slot order: the world grid first)
+  // (the grids whose boxes meet its box, in slot order: the world grid first)
   for (size_t o = 0; o < grids_.size(); ++o) {
     if (o == g || !grids_[o]) continue;
     const u16 s = static_cast<u16>(o);
     const GridState& os = gs(s);
-    if (os.body != st.body) continue;
-    if (s != 0 && (!os.any || os.bhi.x < st.blo.x || os.blo.x > st.bhi.x || os.bhi.y < st.blo.y || os.blo.y > st.bhi.y ||
-                   os.bhi.z < st.blo.z || os.blo.z > st.bhi.z))
+    if (s != 0 && (!os.any || os.hi.x < st.lo.x || os.lo.x > st.hi.x || os.hi.y < st.lo.y || os.lo.y > st.hi.y ||
+                   os.hi.z < st.lo.z || os.lo.z > st.hi.z))
       continue;
     if (g == 0 && s == 0) continue;
     if (owns(g, s)) displace(g, s, nullptr, nullptr, tracked);
@@ -576,26 +542,24 @@ void World::displace_overlaps(u16 g, bool tracked) {
 }
 
 void World::displace_edits(u16 g, const IVec3& lo, const IVec3& hi, bool tracked) {
-  const GridState& st = gs(g);
   const f64 h = h_of(g);
-  // the edits' box in the body's frame
+  // the edits' box in the world
   V3 blo, bhi;
-  world_box(lxf_of(g), V3{h * (lo[0] - 0.5), h * (lo[1] - 0.5), h * (lo[2] - 0.5)}, V3{h * (hi[0] + 0.5), h * (hi[1] + 0.5), h * (hi[2] + 0.5)},
+  world_box(xf_of(g), V3{h * (lo[0] - 0.5), h * (lo[1] - 0.5), h * (lo[2] - 0.5)}, V3{h * (hi[0] + 0.5), h * (hi[1] + 0.5), h * (hi[2] + 0.5)},
             &blo, &bhi);
   for (size_t o = 0; o < grids_.size(); ++o) {
     if (o == g || !grids_[o]) continue;
     const u16 s = static_cast<u16>(o);
     const GridState& os = gs(s);
-    if (os.body != st.body) continue;
-    if (s != 0 && (!os.any || os.bhi.x < blo.x || os.blo.x > bhi.x || os.bhi.y < blo.y || os.blo.y > bhi.y || os.bhi.z < blo.z ||
-                   os.blo.z > bhi.z))
+    if (s != 0 && (!os.any || os.hi.x < blo.x || os.lo.x > bhi.x || os.hi.y < blo.y || os.lo.y > bhi.y || os.hi.z < blo.z ||
+                   os.lo.z > bhi.z))
       continue;
     if (owns(s, g)) {
       displace(s, g, &lo, &hi, tracked);  // (written where the owner is: they go again)
     } else {
       // (the other grid's voxels the new ones take the place of: the box in its lattice)
       V3 llo, lhi;
-      world_box(inverse(lxf_of(s)), blo, bhi, &llo, &lhi);
+      world_box(inverse(xf_of(s)), blo, bhi, &llo, &lhi);
       const f64 hs = h_of(s);
       IVec3 slo = voxel_of(llo, hs), shi = voxel_of(lhi, hs);
       for (int a = 0; a < 3; ++a) {
@@ -618,7 +582,7 @@ i32 World::displace(u16 keep, u16 lose, const IVec3* lo, const IVec3* hi, bool t
   IVec3 vlo{INT32_MIN / 2, INT32_MIN / 2, INT32_MIN / 2}, vhi{INT32_MAX / 2, INT32_MAX / 2, INT32_MAX / 2};
   if (keep != 0) {
     V3 blo, bhi;
-    world_box(inverse(lxf_of(lose)), K.blo, K.bhi, &blo, &bhi);
+    world_box(inverse(xf_of(lose)), K.lo, K.hi, &blo, &bhi);
     vlo = voxel_of(blo, hl);
     vhi = voxel_of(bhi, hl);
     for (int a = 0; a < 3; ++a) {
@@ -641,8 +605,8 @@ i32 World::displace(u16 keep, u16 lose, const IVec3* lo, const IVec3* hi, bool t
     keys.push_back(k);
   }
   std::sort(keys.begin(), keys.end());
-  const LatticeXf& XL = lxf_of(lose);
-  const LatticeXf& XK = lxf_of(keep);
+  const LatticeXf& XL = xf_of(lose);
+  const LatticeXf& XK = xf_of(keep);
   std::vector<GVox> removed;
   std::vector<GKey> supports;
   const bool was = L.tracking();
@@ -694,7 +658,7 @@ void World::remove_grid_slot(u16 g, bool event) {
   // of the place it leaves)
   const V3 m{2 * st.g.h, 2 * st.g.h, 2 * st.g.h};
   if (st.any) rigid_.wake_box(st.lo - m, st.hi + m);
-  if (st.any && st.body == 0 && !systems_.empty()) world_chunks_of(LatticeXf{}, st.lo, st.hi, sys_changed_);
+  if (st.any && !systems_.empty()) world_chunks_of(LatticeXf{}, st.lo, st.hi, sys_changed_);
   for (auto it = dead_loads_.begin(); it != dead_loads_.end(); ++it)
     it->second.erase(std::remove_if(it->second.begin(), it->second.end(), [&](const DeadLoad& d) { return d.vox.grid == g; }),
                      it->second.end());
@@ -709,10 +673,6 @@ void World::remove_grid_slot(u16 g, bool event) {
       ht->second.erase(std::remove(ht->second.begin(), ht->second.end(), g), ht->second.end());
       if (ht->second.empty()) home_grids_.erase(ht);
     }
-  }
-  if (st.body != 0 && st.body < kins_.size() && kins_[st.body]) {
-    auto& list = kins_[st.body]->grids;
-    list.erase(std::remove(list.begin(), list.end(), g), list.end());
   }
   const GridId id = st.id;
   if (event) {
@@ -736,7 +696,7 @@ void World::remove_grid_slot(u16 g, bool event) {
 int World::junction_side(u16 g, const JSample& j, bool fwd) const {
   if (fwd) return j.face;  // (its own face)
   // (the other grid's face, whose normal points at the node: out of the node is its opposite)
-  const V3 n = lxf_of(g).dir_from(lxf_of(j.vg).dir_to(face_normal(j.face)) * -1.0);
+  const V3 n = xf_of(g).dir_from(xf_of(j.vg).dir_to(face_normal(j.face)) * -1.0);
   int a = 0;
   for (int q = 1; q < 3; ++q)
     if (std::abs(n[q]) > std::abs(n[a])) a = q;
@@ -758,7 +718,7 @@ const std::vector<JSample>& World::junction_fwd(JunctionScratch& js, u16 g, u64 
   // (a sample reaches junction_reach voxels of the other grid out of its face: where the other
   // grid's voxels were displaced by this one's, its surface is up to half of its voxel away)
   const f64 reach = std::clamp(cfg_.junction_reach, 0.0, 2.0);
-  const LatticeXf& X = lxf_of(g);  // (in the body's frame: its grids do not move apart)
+  const LatticeXf& X = xf_of(g);
   const IVec3 base{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
   constexpr int kStride[3] = {kChunk * kChunk, kChunk, 1};
   // (per other grid: its chunk last looked into)
@@ -801,8 +761,8 @@ const std::vector<JSample>& World::junction_fwd(JunctionScratch& js, u16 g, u64 
             Xw = X.to(junction_point(p, face, sub, S, h, push));
             pushed = push;
           }
-          if (s != 0 && !inside(Xw, gs(s).blo, gs(s).bhi)) continue;
-          const IVec3 o = voxel_of(s == 0 ? Xw : lxf_of(s).from(Xw), h_of(s));
+          if (s != 0 && !inside(Xw, gs(s).lo, gs(s).hi)) continue;
+          const IVec3 o = voxel_of(s == 0 ? Xw : xf_of(s).from(Xw), h_of(s));
           if (s == 0 && source_ && !chunk_resident(chunk_of(o))) {
             out.push_back({p, o, g, 0, static_cast<u8>(face), static_cast<u8>(sub), kJunctionUnknown});
             break;
@@ -832,15 +792,15 @@ const std::vector<JSample>* World::junction_rev(JunctionScratch& js, const FragK
       const V3 lo{h * (cc[0] * kChunk - 0.5), h * (cc[1] * kChunk - 0.5), h * (cc[2] * kChunk - 0.5)};
       const V3 hi{h * ((cc[0] + 1) * kChunk - 0.5), h * ((cc[1] + 1) * kChunk - 0.5), h * ((cc[2] + 1) * kChunk - 0.5)};
       for (u16 s : nb) {
-        // the chunk's box in the body's frame, grown by what a sample of the other grid reaches
+        // the chunk's box in the world, grown by what a sample of the other grid reaches
         V3 wlo, whi;
-        world_box(lxf_of(f.grid), lo, hi, &wlo, &whi);
+        world_box(xf_of(f.grid), lo, hi, &wlo, &whi);
         const f64 m = (std::clamp(cfg_.junction_reach, 0.0, 2.0) + 2.0) * std::max(h, h_of(s));
         wlo -= V3{m, m, m};
         whi += V3{m, m, m};
         V3 llo, lhi;
         // (... in the other lattice: its box there)
-        LatticeXf inv = inverse(lxf_of(s));
+        LatticeXf inv = inverse(xf_of(s));
         world_box(inv, wlo, whi, &llo, &lhi);
         const IVec3 vlo = voxel_of(llo, h_of(s)), vhi = voxel_of(lhi, h_of(s));
         const VoxelGrid& O = vg(s);

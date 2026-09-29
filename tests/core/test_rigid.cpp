@@ -157,3 +157,30 @@ TEST_CASE("rigid: a block held against a wall by friction settles and sleeps") {
   CHECK(B.asleep);
   CHECK(std::abs(B.x.z - z0) < 0.1);
 }
+
+TEST_CASE("rigid: a fast block does not pass through a thin wall (continuous collision)") {
+  // a sheet one voxel thick at x = 2 m, and a 0.25 m block thrown at it at 28 m/s (a blast's
+  // fastest) in a busy world's substeps (one a tick, 60 Hz: 0.47 m - nearly four voxels - a
+  // substep: its samples step over the sheet)
+  auto run = [](bool speculative, f64* x_end, f64* v_end) {
+    VoxelGrid g = ground();
+    for (i32 y = -32; y < 64; ++y) g.fill_column(16, y, 0, 40, make_vox(MaterialId::Rock, true));
+    g.compact();
+    RigidWorld w;
+    w.par.speculative = speculative;
+    auto b = box(1, {0, 0, 0}, {2, 2, 2}, 0.125);
+    b->x = V3{0.5, 0.5, 2.0};
+    b->v = V3{28.0, 0.0, 0.0};
+    w.add(std::move(b));
+    for (int s = 0; s < 30; ++s) w.substep(1.0 / 60.0, g, nullptr);
+    *x_end = w.bodies.front()->x.x;
+    *v_end = w.bodies.front()->v.x;
+  };
+  f64 x0, v0, x1, v1;
+  run(false, &x0, &v0);
+  run(true, &x1, &v1);
+  MESSAGE("block at 28 m/s at a sheet one voxel thick: without continuous collision it ends at x " << x0 << " (the sheet at 2.0), with it at "
+                                                                                                  << x1 << ", moving " << v1 << " m/s");
+  CHECK(x0 > 2.0);  // (it went through)
+  CHECK(x1 < 2.0 - 0.0625);
+}

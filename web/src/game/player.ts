@@ -49,8 +49,8 @@ export class Player {
   /** Generation counter: results of requests sent before a respawn are ignored. */
   private generation = 0;
   /**
-   * What the player stands on moves them (a lift, a turntable: a kinematic body's grid): its
-   * velocity under their feet and its turn, from the last sweep.
+   * What the player stands on moves them (a lift's car, a turntable: a piece on a driven joint):
+   * its velocity under their feet and its turn, from the last sweep.
    */
   private groundVel: Vec3 = [0, 0, 0];
   private groundSpin = 0;
@@ -141,7 +141,7 @@ export class Player {
     const min: Vec3 = [this.pos[0] - hw, this.pos[1] - hw, this.pos[2]];
     const max: Vec3 = [this.pos[0] + hw, this.pos[1] + hw, this.pos[2] + PLAYER.height];
     if (local?.ready) {
-      // pushed up by a rising lift / closing door rather than stuck inside it
+      // pushed up by a rising lift's car rather than stuck inside it
       const lift = local.depenetrate(min, max, 1.25);
       if (lift !== null && lift > 0) {
         this.pos = [this.pos[0], this.pos[1], this.pos[2] + lift];

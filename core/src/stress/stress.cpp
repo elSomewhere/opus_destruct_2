@@ -11,17 +11,17 @@
 
 namespace svx {
 
-BondStrength bond_strength(const SBond& b, f64 fragility) {
+BondStrength bond_strength(const SBond& b, f64 fragility, const MaterialTable& mats) {
   const f64 s = b.strength / std::max(1e-6, fragility);
   if (b.sectioned) return {s * b.ft, s * b.fb, s * b.fc, s * b.coh, static_cast<f64>(b.mu)};
-  const Material& A = material(b.ma);
-  const Material& B = material(b.mb);
+  const Material& A = mats[b.ma];
+  const Material& B = mats[b.mb];
   return {s * std::min(A.ft, B.ft), s * std::min(A.fb, B.fb), s * std::min(A.fc, B.fc), s * std::min(A.cohesion, B.cohesion),
           std::min(A.friction, B.friction)};
 }
 
-f64 bond_utilization(const SBond& b, const BondLoad& L, f64 fragility, FailMode* mode) {
-  BondStrength S = bond_strength(b, fragility);
+f64 bond_utilization(const SBond& b, const BondLoad& L, f64 fragility, const MaterialTable& mats, FailMode* mode) {
+  BondStrength S = bond_strength(b, fragility, mats);
   // (a section with no strength left - full damage, a material without tensile strength -
   // fails under any load of that kind: never 0 / 0)
   constexpr f64 kWeakest = 1e-9;
@@ -57,8 +57,8 @@ f64 bond_utilization(const SBond& b, const BondLoad& L, f64 fragility, FailMode*
 }
 
 void StressProblem::bond_matrices(const SBond& b, f64 D[36], f64 Ba[36], f64 Bb[36]) const {
-  const Material& A = material(b.ma);
-  const Material& B = material(b.mb);
+  const Material& A = materials()[b.ma];
+  const Material& B = materials()[b.mb];
   const f64 la = std::max(b.la, 1e-4), lb = std::max(b.lb, 1e-4);
   const f64 invE = la / A.E + lb / B.E;
   const f64 invG = la / A.G + lb / B.G;
@@ -449,8 +449,8 @@ void StressProblem::current(std::vector<f64>& u) const {
 
 BondLoad StressProblem::bond_load(i32 bi, const std::vector<f64>& u) const {
   const SBond& b = bonds[size_t(bi)];
-  const Material& A = material(b.ma);
-  const Material& B = material(b.mb);
+  const Material& A = materials()[b.ma];
+  const Material& B = materials()[b.mb];
   f64 Ba[36], Bb[36];
   blk6::rigid_block(b.p - nodes[size_t(b.a)].c, Ba);
   f64 xa[6] = {0, 0, 0, 0, 0, 0}, xb[6] = {0, 0, 0, 0, 0, 0};

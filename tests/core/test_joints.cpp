@@ -152,7 +152,7 @@ TEST_CASE("joints: a door on a hinge swings when pushed, stops at its limit, and
   CHECK(norm(s.b - s.a) < 0.01);
 }
 
-TEST_CASE("joints: a slider carries a block along its axis at its motor's speed, to its limit") {
+TEST_CASE("joints: a slider carries a block along its axis at its drive's speed, to its limit") {
   World w;
   w.load(ground());
   w.bake();
@@ -165,9 +165,9 @@ TEST_CASE("joints: a slider carries a block along its axis at its motor's speed,
   d.limited = true;
   d.lower = -0.5;
   d.upper = 1.5;
-  d.motor = true;
-  d.motor_speed = 0.5;
-  d.motor_max = 20000.0;
+  d.drive.kind = JointDrive::Kind::Speed;
+  d.drive.speed = 0.5;
+  d.drive.max = 20000.0;
   const JointId j = w.add_joint(d);
   REQUIRE(j != 0);
   for (int t = 0; t < 60; ++t) w.tick();
@@ -184,10 +184,151 @@ TEST_CASE("joints: a slider carries a block along its axis at its motor's speed,
   MESSAGE("slider after 5 s: offset " << s.value << " (limit 1.5)");
   CHECK(s.value == doctest::Approx(1.5).epsilon(0.02));
   // reversed
-  REQUIRE(w.set_joint_motor(j, true, -1.0, 20000.0));
+  d.drive.speed = -1.0;
+  REQUIRE(w.set_joint_drive(j, d.drive));
   for (int t = 0; t < 180; ++t) w.tick();
   REQUIRE(w.joint(j, &s));
   CHECK(s.value == doctest::Approx(-0.5).epsilon(0.05));
+}
+
+TEST_CASE("joints: a servo lifts a block to its target and holds it; a program moves it; too weak, it stalls") {
+  // a 0.5 t steel block on a vertical slider (a lift's car), from the world at 2 m
+  auto lift = [](World& w, const JointDrive& drive, JointId* id) {
+    w.load(ground());
+    w.bake();
+    const GridId g = object(w, V3{0.0, 0.0, 2.0}, {-2, -2, -2}, {2, 2, 2}, MaterialId::Steel);
+    JointDesc d;
+    d.type = JointType::Slider;
+    d.a = at_world(V3{0.0, 0.0, 2.0});
+    d.b = at_grid(g, V3{0.0, 0.0, 2.0});
+    d.axis = V3{0, 0, 1};
+    d.limited = true;
+    d.lower = -1.5;
+    d.upper = 3.0;
+    d.drive = drive;
+    *id = w.add_joint(d);
+    return *id != 0;
+  };
+  JointDrive to;
+  to.kind = JointDrive::Kind::Target;
+  to.speed = 1.0;
+  to.max = 20000.0;
+  to.target = 1.2;
+  {
+    World w;
+    JointId j = 0;
+    REQUIRE(lift(w, to, &j));
+    for (int t = 0; t < 180; ++t) w.tick();
+    JointState s;
+    REQUIRE(w.joint(j, &s));
+    const PieceState p = w.pieces().front();
+    MESSAGE("servo after 3 s: at " << s.value << " (target 1.2), velocity " << p.vel.z);
+    CHECK(s.value == doctest::Approx(1.2).epsilon(0.01));
+    CHECK(std::abs(p.vel.z) < 0.02);
+    // it goes no faster than its speed on the way
+    to.target = -1.0;
+    REQUIRE(w.set_joint_drive(j, to));
+    f64 fastest = 0.0;
+    for (int t = 0; t < 60; ++t) {
+      w.tick();
+      fastest = std::max(fastest, std::abs(w.pieces().front().vel.z));
+    }
+    MESSAGE("servo down: fastest " << fastest << " m/s (speed 1)");
+    CHECK(fastest < 1.05);
+    CHECK(fastest > 0.9);
+  }
+  {
+    // a program: from 0 to 2 m and back every 6 s; it follows it
+    JointDrive osc = to;
+    osc.kind = JointDrive::Kind::Oscillate;
+    osc.target = 0.0;
+    osc.target2 = 2.0;
+    osc.period = 6.0;
+    osc.speed = 3.0;
+    World w;
+    JointId j = 0;
+    REQUIRE(lift(w, osc, &j));
+    f64 worst = 0.0, top = 0.0;
+    for (int t = 0; t < 720; ++t) {
+      w.tick();
+      JointState s;
+      REQUIRE(w.joint(j, &s));
+      f64 x = 0.0, rate = 0.0;
+      osc.goal(w.time(), &x, &rate);
+      if (t > 30) worst = std::max(worst, std::abs(s.value - x));
+      top = std::max(top, s.value);
+    }
+    MESSAGE("program: worst lag " << worst << " m, top " << top);
+    CHECK(worst < 0.05);
+    CHECK(top == doctest::Approx(2.0).epsilon(0.02));
+  }
+  {
+    // a drive weaker than the block's weight (4.9 kN) cannot lift it: it stalls, sinking to its limit
+    JointDrive weak = to;
+    weak.max = 2000.0;
+    World w;
+    JointId j = 0;
+    REQUIRE(lift(w, weak, &j));
+    for (int t = 0; t < 180; ++t) w.tick();
+    JointState s;
+    REQUIRE(w.joint(j, &s));
+    MESSAGE("weak drive: at " << s.value << " (limit -1.5)");
+    CHECK(s.value < -1.4);
+  }
+}
+
+TEST_CASE("joints: a character stands on a lift's car (a piece on a driven slider) and rides it up and down") {
+  World w;
+  w.load(ground());
+  w.bake();
+  // a 1.5 m square steel car, 0.25 m thick, at 1 m on a vertical slider: up 3 m and back every 8 s
+  const GridId g = object(w, V3{0.0, 0.0, 1.0}, {-6, -6, -1}, {6, 6, 1}, MaterialId::Steel);
+  JointDesc d;
+  d.type = JointType::Slider;
+  d.a = at_world(V3{0.0, 0.0, 1.0});
+  d.b = at_grid(g, V3{0.0, 0.0, 1.0});
+  d.axis = V3{0, 0, 1};
+  d.drive.kind = JointDrive::Kind::Oscillate;
+  d.drive.target = 0.0;
+  d.drive.target2 = 3.0;
+  d.drive.period = 8.0;
+  d.drive.speed = 4.0;
+  d.drive.max = 1e5;
+  REQUIRE(w.add_joint(d) != 0);
+  w.tick();
+  // a character (0.6 m x 0.6 m x 1.8 m) dropped onto it; a controller: lifted out of what it is
+  // in, carried by what it stands on, falling otherwise
+  const f64 dt = w.config().dt;
+  V3 feet{0.1, -0.2, 1.4};
+  f64 vz = 0.0;
+  V3 ride;
+  bool on = false;
+  i64 stood_on = 0;
+  f64 top = 0.0, lowest_gap = 1e9;
+  for (int t = 0; t < 960; ++t) {
+    const V3 lo{feet.x - 0.3, feet.y - 0.3, feet.z}, hi{feet.x + 0.3, feet.y + 0.3, feet.z + 1.8};
+    const f64 up = w.depenetrate(lo, hi, 0.5);
+    REQUIRE(up >= 0.0);
+    feet.z += up;
+    vz = on ? 0.0 : vz - 9.81 * dt;
+    const V3 move = (on ? ride : V3{}) * dt + V3{0, 0, vz * dt - (on ? 1e-3 : 0.0)};
+    const CollideResult r = w.collide(V3{feet.x - 0.3, feet.y - 0.3, feet.z}, V3{feet.x + 0.3, feet.y + 0.3, feet.z + 1.8}, move);
+    feet += r.move;
+    on = r.on_ground;
+    ride = r.ground_velocity;
+    if (on && r.ground_piece != 0) stood_on = r.ground_piece;
+    w.tick();
+    const PieceState p = w.pieces().front();
+    top = std::max(top, feet.z);
+    if (t > 60) lowest_gap = std::min(lowest_gap, feet.z - (p.pos.z + 0.125));
+  }
+  const PieceState p = w.pieces().front();
+  MESSAGE("rider: stood on piece " << stood_on << " (the car " << p.id << "), rose to " << top << " m, feet above the car's top at least "
+                                   << lowest_gap << " m, now " << feet.z << " (car top " << p.pos.z + 0.125 << ")");
+  CHECK(stood_on == p.id);
+  CHECK(top > 4.0);
+  CHECK(lowest_gap > -0.07);
+  CHECK(std::abs(feet.z - (p.pos.z + 0.125)) < 0.1);
 }
 
 TEST_CASE("joints: a joint gives way beyond its strength, and when the voxel it holds on to goes") {
@@ -326,50 +467,59 @@ TEST_CASE("joints: a weight on a rope loads the structure it hangs from") {
   CHECK(loaded > 1.3 * bare);
 }
 
-TEST_CASE("joints: a wrecking ball on a crane's rope, swung by the arm, knocks a wall down") {
+TEST_CASE("joints: a wrecking ball on a crane's rope, swung by its jib, knocks a wall down") {
   World w;
   VoxelGrid g = ground(96);
   // a masonry wall, 8 m long, 3 m high, 0.25 m thick, across the ball's path
   box(g, {-32, 36, 0}, {32, 38, 24}, make_vox(MaterialId::Masonry, false));
+  // the crane's mast: a steel column (0.5 m square, 6 m) at the origin
+  box(g, {-2, -2, 0}, {2, 2, 48}, make_vox(MaterialId::Steel, false));
   g.compact();
   w.load(std::move(g));
   w.bake();
   const i64 wall0 = w.grid().solid_count();
-  // the crane: a mast of the world grid would do; here a kinematic arm turning about the vertical
-  // at (0, 0, 6), its steel jib 5 m along +x
-  const KinematicId arm = w.add_kinematic(Pose{V3{0.0, 0.0, 6.0}, kId});
+  // its jib: a steel beam (5 m along +x) a voxel above the mast's top, on a hinge on the mast's
+  // axis, its drive holding it still
   VoxelGrid jib;
   jib.h = h;
-  box(jib, {-2, -2, -2}, {2, 2, 2}, make_vox(MaterialId::Steel, true));
-  box(jib, {2, -1, -1}, {40, 1, 1}, make_vox(MaterialId::Steel, false));
+  box(jib, {-2, -1, 0}, {40, 1, 2}, make_vox(MaterialId::Steel, false));
   jib.compact();
-  GridDesc jd;
-  jd.body = arm;
-  const GridId jg = w.add_grid(jd, std::move(jib));
+  const GridId jg = w.add_grid(GridFrame{V3{0.0, 0.0, 49 * h}, kId}, std::move(jib), false);
   REQUIRE(jg != 0);
+  JointDesc hd;
+  hd.type = JointType::Hinge;
+  hd.a = at_grid(kWorldGrid, V3{-0.5 * h, -0.5 * h, 48 * h});
+  hd.b = at_grid(jg, V3{-0.5 * h, -0.5 * h, 48 * h});
+  hd.axis = V3{0, 0, 1};
+  hd.drive.kind = JointDrive::Kind::Target;
+  hd.drive.target = 0.0;
+  hd.drive.speed = 1.2;
+  hd.drive.max = 2e5;
+  const JointId arm = w.add_joint(hd);
+  REQUIRE(arm != 0);
   // a 1 t steel ball (0.5 m cube) on a 4 m rope from the jib's tip
-  const GridId ball = object(w, V3{4.9, 0.0, 1.75}, {-2, -2, -2}, {2, 2, 2}, MaterialId::Steel);
+  const GridId ball = object(w, V3{4.9, 0.0, 49 * h - 4.0 - 2.5 * h}, {-2, -2, -2}, {2, 2, 2}, MaterialId::Steel);
   JointDesc r;
   r.type = JointType::Distance;
-  r.a = at_grid(jg, V3{4.9, 0.0, 6.0 - 0.5 * h});
-  r.b = at_grid(ball, V3{4.9, 0.0, 1.75 + 1.5 * h});
+  r.a = at_grid(jg, V3{4.9, 0.0, 48.5 * h});
+  r.b = at_grid(ball, V3{4.9, 0.0, 49 * h - 4.0 - 0.5 * h});
+  r.stiffness = 1e6;
+  r.damping = 2e4;
   const JointId rope = w.add_joint(r);
   REQUIRE(rope != 0);
   for (int t = 0; t < 60; ++t) w.tick();
   JointState s;
   REQUIRE(w.joint(rope, &s));
   MESSAGE("crane: the rope carries " << s.force.z << " N at rest");
-  // the arm swings round towards the wall (at +y): a quarter turn in 1.5 s, and on
-  for (int t = 0; t < 240; ++t) {
-    const f64 u = std::min(1.0, t / 90.0);
-    w.set_kinematic_velocity(arm, V3{}, V3{0.0, 0.0, 1.2 * u});
-    w.tick();
-  }
+  // the jib swings round towards the wall (at +y) at 1.2 rad/s
+  hd.drive.target = 2.5;
+  REQUIRE(w.set_joint_drive(arm, hd.drive));
+  for (int t = 0; t < 240; ++t) w.tick();
   const i64 wall1 = w.grid().solid_count();
   MESSAGE("crane: the wall lost " << wall0 - wall1 << " voxels, " << w.pieces().size() << " pieces; the rope "
-                                  << (w.joint(rope, &s) ? "holds" : "broke"));
-  CHECK(wall1 < wall0);
-  CHECK(w.pieces().size() > 3);
+                                  << (w.joint(rope, &s) ? "holds" : "broke") << ", the jib's hinge " << (w.joint(arm, &s) ? "holds" : "broke"));
+  CHECK(wall0 - wall1 > 200);
+  CHECK(w.pieces().size() >= 3);  // (the jib, the ball, and what it knocked out)
 }
 
 TEST_CASE("joints: a session with joints is bit-identical on any thread count") {

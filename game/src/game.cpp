@@ -68,7 +68,6 @@ void Game::set_params(const GameParams& p) {
 void Game::load(VoxelGrid&& g, const V3& spawn_pos, const V3& spawn_dir) {
   movers_.clear();
   mover_cols_.clear();
-  machines_.clear();
   drops_.clear();
   grid_charred_.clear();
   grid_remesh_.clear();
@@ -126,6 +125,8 @@ bool Game::load_delta(const std::vector<u8>& bytes) {
   if (!world_.load_delta(bytes)) return false;
   // (the delta's chunks hold the movers as they were when it was saved)
   for (Mover& m : movers_) set_mover_rows(m, m.rows);
+  // (a session that was played had its drops: they are among its pieces)
+  if (world_.time() > 0.0) drops_.clear();
   return true;
 }
 
@@ -250,49 +251,12 @@ std::vector<FlamePoint> Game::flames(i32 max) const {
   return out;
 }
 
-bool Game::add_machine(KinematicId body, const MachineDrive& drive) {
-  KinematicState k;
-  if (!world_.kinematic(body, &k) || !std::isfinite(norm2(drive.axis)) || !(norm2(drive.axis) > 0.0) || !std::isfinite(drive.amplitude) ||
-      !(drive.period > 0.0) || !std::isfinite(drive.phase))
-    return false;
-  Machine m;
-  m.body = body;
-  m.drive = drive;
-  m.drive.axis = normalized(drive.axis);
-  m.rest = k.pose;
-  machines_.push_back(m);
-  return true;
-}
-
-void Game::step_machines() {
-  // (where each is at the end of this tick)
-  const f64 t = static_cast<f64>(world_.ticks() + 1) * world_.config().dt;
-  for (const Machine& m : machines_) {
-    const MachineDrive& d = m.drive;
-    Pose p = m.rest;
-    const f64 cyc = 0.5 * (1.0 - dm::cos(2.0 * 3.14159265358979323846 * (t + d.phase) / d.period));
-    switch (d.kind) {
-      case MachineDrive::Kind::Oscillate:
-        p.pos = m.rest.pos + d.axis * (d.amplitude * cyc);
-        break;
-      case MachineDrive::Kind::Spin:
-        p.rot = rotation_of(d.axis * (d.amplitude * (t + d.phase))) * m.rest.rot;
-        break;
-      case MachineDrive::Kind::Swing:
-        p.rot = rotation_of(d.axis * (d.amplitude * cyc)) * m.rest.rot;
-        break;
-    }
-    world_.drive_kinematic(m.body, p);
-  }
-}
-
 void Game::tick() {
   // what the level drops in when play starts
   if (!drops_.empty()) {
     for (Drop& d : drops_) world_.add_grid(d.desc, std::move(d.voxels));
     drops_.clear();
   }
-  if (!par_.paused && !machines_.empty()) step_machines();
   // movers first: their voxels are in place when the world's commands and pieces see them
   if (!par_.paused && !movers_.empty()) step_movers();
   world_.tick();
@@ -356,6 +320,7 @@ void Game::tick() {
         g.ang = b->w;
         g.voxels = b->count;
         g.mesh = piece_mesh(*b);
+        g.occupancy = piece_occupancy(*b);
         vt->second = {b->x, b->q};  // (its poses from now on: from this mesh's frame)
         events_.push_back(std::move(g));
       }
@@ -399,6 +364,7 @@ void Game::drain_world_events() {
         g.kind = GameEvent::Kind::Detached;
         g.pos = fresh[k]->x;
         g.mesh = std::move(meshes[k]);
+        g.occupancy = piece_occupancy(*fresh[k]);
         break;
       case WorldEvent::Kind::PieceRemoved: {
         const auto it = views_.find(e.id);
@@ -667,18 +633,11 @@ GridView Game::grid_view(GridId id) const {
   v.origin = f.origin;
   v.rot = f.rot;
   if (const VoxelGrid* G = world_.grid(id)) v.voxel_size = G->h;
-  v.body = world_.grid_body(id);
-  KinematicState k;
-  if (v.body != 0 && world_.kinematic(v.body, &k)) {
-    v.vel = k.vel;
-    v.ang = k.ang;
-    v.centre = k.pose.pos;
-  }
   return v;
 }
 
 std::vector<GridView> Game::take_grid_views() {
-  // (the grids now against the places the front end has: the new ones, the moved and moving)
+  // (the grids now against the places the front end has: the new ones and the moved)
   std::vector<GridView> out;
   const std::vector<GridId> ids = world_.grids();
   for (GridId id : ids) {
@@ -686,8 +645,7 @@ std::vector<GridView> Game::take_grid_views() {
     const auto it = grid_sent_.find(id);
     auto eq = [](const V3& a, const V3& b) { return a.x == b.x && a.y == b.y && a.z == b.z; };
     const bool same = it != grid_sent_.end() && eq(it->second.origin, v.origin) && it->second.rot.x == v.rot.x && it->second.rot.y == v.rot.y &&
-                      it->second.rot.z == v.rot.z && it->second.rot.w == v.rot.w && it->second.voxel_size == v.voxel_size &&
-                      it->second.body == v.body && eq(it->second.vel, v.vel) && eq(it->second.ang, v.ang) && eq(it->second.centre, v.centre);
+                      it->second.rot.z == v.rot.z && it->second.rot.w == v.rot.w && it->second.voxel_size == v.voxel_size;
     if (same) continue;
     grid_sent_[id] = v;
     out.push_back(v);
@@ -745,15 +703,41 @@ std::vector<GameEvent> Game::take_events() {
   return out;
 }
 
+std::vector<u8> piece_occupancy(const Body& b) {
+  std::vector<u8> out;
+  auto put32 = [&](u32 v) {
+    for (int i = 0; i < 4; ++i) out.push_back(static_cast<u8>(v >> (8 * i)));
+  };
+  auto putf = [&](f64 x) {
+    u64 u;
+    std::memcpy(&u, &x, 8);
+    for (int i = 0; i < 8; ++i) out.push_back(static_cast<u8>(u >> (8 * i)));
+  };
+  put32(static_cast<u32>(b.shapes.size()));
+  for (size_t k = 0; k < b.shapes.size(); ++k) {
+    const BodyShape& S = b.shapes[k];
+    const V3 origin = b.lattice_to_world(k, V3{});
+    const Quat q = b.lattice_rot(k);
+    for (f64 x : {origin.x, origin.y, origin.z, q.x, q.y, q.z, q.w, S.h}) putf(x);
+    for (int a = 0; a < 3; ++a) put32(static_cast<u32>(S.lo[size_t(a)]));
+    for (int a = 0; a < 3; ++a) put32(static_cast<u32>(S.dim[size_t(a)]));
+    const size_t base = out.size();
+    out.resize(base + (S.vox.size() + 7) / 8, 0);
+    for (size_t i = 0; i < S.vox.size(); ++i)
+      if (vox_solid(S.vox[i])) out[base + (i >> 3)] = static_cast<u8>(out[base + (i >> 3)] | (1u << (i & 7)));
+  }
+  return out;
+}
+
 std::vector<PiecePose> Game::pieces() const {
   std::vector<PiecePose> out;
   out.reserve(views_.size() + fading_.size());
   for (const PieceState& p : world_.pieces()) {
     const auto it = views_.find(p.id);
     if (it == views_.end()) continue;
-    out.push_back({p.id, p.pos, p.rot * conj(it->second.q0), 1.0});
+    out.push_back({p.id, p.pos, p.rot * conj(it->second.q0), 1.0, p.vel, p.ang});
   }
-  for (const Fading& f : fading_) out.push_back({f.id, f.pos, f.rot, std::max(0.0, 1.0 - f.t / fade_time)});
+  for (const Fading& f : fading_) out.push_back({f.id, f.pos, f.rot, std::max(0.0, 1.0 - f.t / fade_time), V3{}, V3{}});
   std::sort(out.begin(), out.end(), [](const PiecePose& a, const PiecePose& b) { return a.id < b.id; });
   return out;
 }

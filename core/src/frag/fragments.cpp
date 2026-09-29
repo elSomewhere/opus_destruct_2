@@ -80,6 +80,7 @@ MassProps finish_mass(const f64* s, f64 h) {
 }
 
 FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& par) {
+  const MaterialTable& mats = par.mats ? *par.mats : default_materials();
   FragChunk out;
   const Chunk* ch = g.chunk(cc);
   if (!ch) return out;
@@ -97,13 +98,13 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
   constexpr int kStride[3] = {S * S, S, 1};
   auto host_of = [&](int i, int x, int y, int z) -> MaterialId {
     const MaterialId own = vox_mat(vox_at(i));
-    if (!material(own).reinforcement) return own;
+    if (!mats[own].reinforcement) return own;
     const int c[3] = {x, y, z};
     for (int a = 0; a < 3; ++a)
       for (int sg = -1; sg <= 1; sg += 2) {
         if (c[a] + sg < 0 || c[a] + sg >= S) continue;
         const Vox n = vox_at(i + sg * kStride[a]);
-        if (vox_free(n) && !material(vox_mat(n)).reinforcement) return vox_mat(n);
+        if (vox_free(n) && !mats[vox_mat(n)].reinforcement) return vox_mat(n);
       }
     return own;
   };
@@ -114,7 +115,7 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
         const Vox v = vox_at(i);
         if (!vox_free(v)) continue;
         const MaterialId mid = host_of(i, x, y, z);
-        const Material& M = material(mid);
+        const Material& M = mats[mid];
         const i64 gx = base[0] + x, gy = base[1] + y, gz = base[2] + z;
         f64 sp[3] = {M.frag_x, M.frag_y, M.frag_z};  // (the registry keeps them >= 1)
         if (par.scale != 1.0)
@@ -199,7 +200,7 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
         if (cj < 0 || cj == ci) continue;
         if ((broken_at(i) >> a) & 1) continue;
         const MaterialId mi = vox_mat(vox_at(i)), mj = vox_mat(vox_at(j));
-        if (mi != mj && !material(mi).reinforcement && !material(mj).reinforcement) continue;
+        if (mi != mj && !mats[mi].reinforcement && !mats[mj].reinforcement) continue;
         if (comp_count[static_cast<size_t>(ci)] < min_voxels) nb[static_cast<size_t>(ci)].push_back({cj, 1});
         if (comp_count[static_cast<size_t>(cj)] < min_voxels) nb[static_cast<size_t>(cj)].push_back({ci, 1});
       }
@@ -259,7 +260,7 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
       fi.lo[a] = std::min<i8>(fi.lo[a], static_cast<i8>(kc[a]));
       fi.hi[a] = std::max<i8>(fi.hi[a], static_cast<i8>(kc[a]));
     }
-    const f64 m = material(vox_mat(vox_at(i))).rho * vol;
+    const f64 m = mats[vox_mat(vox_at(i))].rho * vol;
     // accumulate relative to the chunk origin (small numbers), shifted to world below
     accumulate_voxel(m, V3{h * kc[0], h * kc[1], h * kc[2]}, h, sums[static_cast<size_t>(f)].data());
   }
@@ -268,9 +269,9 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
     const u16 id = out.id[static_cast<size_t>(i)];
     if (!id) continue;
     FragInfo& fi = out.frags[static_cast<size_t>(id - 1)];
-    if (!material(fi.mat).reinforcement) continue;
+    if (!mats[fi.mat].reinforcement) continue;
     const MaterialId m = vox_mat(vox_at(i));
-    if (!material(m).reinforcement) fi.mat = m;
+    if (!mats[m].reinforcement) fi.mat = m;
   }
   // voxel lists per fragment (counting sort by fragment, scan order within)
   out.vox_start.assign(out.frags.size() + 1, 0);

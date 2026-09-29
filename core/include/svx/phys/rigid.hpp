@@ -22,6 +22,7 @@
 #include <functional>
 #include <memory>
 #include <unordered_map>
+#include <array>
 #include <vector>
 
 #include "svx/base/vec.hpp"
@@ -131,6 +132,7 @@ struct Body {
   bool recheck = false;  // (its strengths changed: its stress is checked again at its next contact)
   i64 parent = 0;
   i64 origin = 0;  // (world) the piece it was split from, until it joins the world (joints follow their voxels)
+  bool keep = false;  // (world) never culled (World::set_piece_keep; a joint's pieces are kept too)
   // world data (fracture layer)
   std::shared_ptr<BodyGraph> graph;
   i32 stress_cooldown = 0;
@@ -169,17 +171,13 @@ struct Body {
 void body_refresh(Body& b, f64 h, int max_points);
 
 // A static grid the bodies collide with: the world's (the identity, unbounded) or an oriented
-// grid (a lattice with a frame, bounded by its world box). A kinematic body's grid moves: its
-// surfaces push and carry what they touch (infinite mass, the velocity field v + w x (X - c)).
+// grid (a lattice with a frame, bounded by its world box).
 struct StaticGrid {
   const VoxelGrid* g = nullptr;
   LatticeXf xf;                      // lattice -> world
   V3 lo, hi;                         // world box (bounded grids)
   bool unbounded = false;
   u16 slot = 0;                      // (Contact::grid)
-  bool moving = false;
-  V3 v, w, c;
-  V3 velocity_at(const V3& X) const { return moving ? v + cross(w, X - c) : V3{}; }
 };
 
 struct RigidParams {
@@ -213,6 +211,13 @@ struct RigidParams {
   f64 sleep_speed = 0.15;            // m/s (linear + radius x angular)
   int sleep_substeps = 30;           // (of 1/120 s) still before sleeping
   int max_points = 1024;             // collision samples per body
+  // Continuous collision with the static grids: a body that may move more than half a voxel in a
+  // substep (7.5 m/s at 120 Hz) looks along its motion, and the nearest solid faces its samples
+  // would reach become speculative contacts (at most speculative_contacts, the nearest): it stops
+  // at the face if it would get there, and they do nothing otherwise. A fast piece does not pass
+  // through a thin wall or floor.
+  bool speculative = true;
+  int speculative_contacts = 8;
   int manifold = 12;                 // contacts kept per body pair ...
   f64 manifold_per_m = 8.0;          // ... plus this per m of the body's radius (a bearing surface)
   f64 kill_depth = 30.0;             // m below the world: removed
@@ -227,7 +232,6 @@ struct Contact {
   i16 shape_a = 0, shape_b = 0;      // ... in these shapes
   u16 grid = 0;                      // the static grid hit (b = -1: StaticGrid::slot)
   IVec3 wvox{0, 0, 0};               // its voxel hit (b = -1)
-  V3 vs;                             // (b = -1) the static grid's surface velocity at p (a kinematic body's)
   V3 ra, rb, t1, t2;
   f64 kn = 0, k1 = 0, k2 = 0;
   f64 ln = 0, l1 = 0, l2 = 0;        // accumulated impulses (N s)
@@ -246,11 +250,14 @@ class RigidWorld {
   // Joints (phys/joint.hpp), ascending id: solved with the contacts. Their ends are set before
   // each substep by the owner (a body end that is not in `bodies`: the joint is skipped).
   std::vector<Joint> joints;
+  // The clock (s) at the end of the substep being solved: joints' drives follow their programs by it.
+  f64 time = 0.0;
 
   // Contacts of the last substep's final solve (read by the fracture layer / structure loads).
   // Their body indices refer to the body list of that substep: valid until bodies are added or
   // removed.
   const std::vector<Contact>& contacts() const { return contacts_; }
+  std::vector<std::array<i32, 2>> joint_bodies() const;  // per joint: its ends' body indices now (-1: none; by id)
 
   // One substep of dt. `fracture` (optional) runs after the contact solve and returns 0 (nothing
   // changed), 1 (bodies were split / removed / added: the contacts are carried over to the new
@@ -264,6 +271,7 @@ class RigidWorld {
   void wake(Body& b);
   i32 awake_count() const;
   Body* find(i64 id);
+  const Body* find(i64 id) const;
   // Busy now? (a function of the bodies' state: the same on every thread count and platform)
   bool busy() const;
   // accumulated wall time (ms) per phase: collide, solve, fracture, rollback (collide + solve),
@@ -276,13 +284,15 @@ class RigidWorld {
   void reduce_manifold(std::vector<Contact>& cs, f64 h) const;
   void solve(f64 dt);
   void integrate_positions(f64 dt);
-  void sleep_update(f64 dt, const std::vector<StaticGrid>& statics);
-  std::vector<i32> resting_on(const std::vector<StaticGrid>& statics) const;  // (per body: a moving static's index, -1)
+  void sleep_update(f64 dt);
+  static constexpr i32 kWorldRest = -1, kMachine = -2;
+  std::vector<i32> resting_on() const;  // (per body: kWorldRest, kMachine, or the body index it rests on)
   const std::vector<u8>& support(f64 dt);  // (per body: held up by the world, a sleeping body or a held body)
   void refresh_boxes();
   std::vector<Contact> contacts_;
   bool busy_ = false;
   f64 sleep_speed_ = 0.15;  // (the sleep / wake threshold of the current substep length)
+  f64 step_dt_ = 0.0;       // (the current substep's length)
   void set_step(f64 dt);
   std::unordered_map<u64, std::array<f64, 3>> warm_;  // contact key -> (ln, l1, l2)
   std::vector<i32> island_;  // (scratch)
@@ -311,7 +321,6 @@ class RigidWorld {
     M3 Ia, Ib;                         // inverse inertias (world)
     V3 pa, pb;                         // anchors (world)
     V3 ra, rb;                         // arms to where the linear rows act (a slider's a: to pb)
-    V3 fva, fwa, fca, fvb, fwb, fcb;   // immovable ends' velocity fields
     V3 ax, t1, t2;                     // a's axis and two directions square to it (world)
     V3 n;                              // (distance) from a's anchor to b's
     M3 Kp, Ka;                         // inverted point and angular blocks
@@ -320,6 +329,7 @@ class RigidWorld {
     f64 gamma = 0.0, soft = 0.0;       // (a stretching distance joint) softness, and its stretch as a target rate
     f64 ksoft = 0.0;                   // ... its row's inverted mass with the softness
     f64 value = 0.0;                   // hinge angle, slider offset, distance
+    f64 goal = 0.0, goal_rate = 0.0;   // (a drive to a target) where it is to be, and how fast that moves
     i8 lim = 0;                        // the limit bearing: -1 lower, +1 upper, 2 both (locked), 0 none
     // position errors to remove (pseudo targets)
     V3 ep, ea;                         // point, angular
@@ -336,7 +346,9 @@ class RigidWorld {
   void joint_partner_speeds(std::vector<f64>& partner) const;  // (the squeeze guard)
   void wake_jointed();     // a sleeper joined to a body in motion, or to a moving frame, wakes
   void joint_stillness();  // joined bodies count towards sleep together (sleep_update)
+  static bool driving(const Joint& j, const JointPrep& P);  // its drive at work (running, or short of its target)
   std::vector<u8> hanging(const std::vector<u8>& held) const;  // bodies a joint holds up (to what is held or immovable)
+  std::vector<u8> machine_parts() const;                        // per body: an end of a drive at work
 };
 
 }  // namespace svx

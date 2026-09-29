@@ -36,7 +36,7 @@ if(SVX_WASM)
     _svx_mesh_info _svx_mesh_vertices _svx_mesh_indices _svx_poll_removed _svx_removed_chunk _svx_chunk_occupancy
     _svx_poll_removed_grid _svx_removed_grid_chunk _svx_grid_chunk_occupancy _svx_poll_grids _svx_grid_info _svx_poll_grids_removed
     _svx_grid_removed _svx_poll_joints _svx_joint_info
-    _svx_poll_events _svx_event_info _svx_event_vertices _svx_event_indices _svx_stats
+    _svx_poll_events _svx_event_info _svx_event_vertices _svx_event_indices _svx_event_occupancy _svx_stats
     _svx_debris _svx_debris_data _svx_set_debris _svx_set_gpu_displacement _svx_poll_fields
     _svx_field_info _svx_field_data _svx_poll_far _svx_far_info _svx_far_vertices _svx_far_indices
     _svx_poll_far_removed _svx_far_removed _svx_state_hash _svx_ignite _svx_extinguish _svx_poll_env _svx_env_flames _svx_env_smoke_count _svx_env_smoke

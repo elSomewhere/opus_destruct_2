@@ -1,15 +1,17 @@
 /**
  * Client-side solid occupancy (protocol `occupancy` messages): one bit per voxel for every
  * resident chunk of the world grid and of the oriented grids (in their lattices, placed by their
- * frames: engine/gridframes.ts), so the player's collision sweeps run on the main thread with
- * exactly the engine's `collide` rules and never wait for a busy worker (structure solves and a
- * collapse's pieces can hold the worker for tens of milliseconds per tick).
+ * frames: engine/gridframes.ts), and the rigid pieces' voxels where they are now
+ * (engine/pieces.ts), so the player's collision sweeps run on the main thread with exactly the
+ * engine's `collide` rules and never wait for a busy worker (structure solves and a collapse's
+ * pieces can hold the worker for tens of milliseconds per tick).
  *
- * The world grid's voxels are swept layer by layer; an oriented grid's as the turned cubes they
- * are (the engine's box-cube sweep, separating axes). What the box stands on is reported with
- * its velocity there: a lift, a turntable carries its rider.
+ * The world grid's voxels are swept layer by layer; an oriented grid's and a piece's as the
+ * turned cubes they are (the engine's box-cube sweep, separating axes). What the box stands on
+ * is reported with its velocity there: a lift's car, a turntable carries its rider.
  */
-import { gridToWorld, gridVelocity, worldToGrid, type GridFrame, type GridFrames } from '../engine/gridframes.ts';
+import { gridToWorld, worldToGrid, type GridFrames, type Lattice } from '../engine/gridframes.ts';
+import { PieceBodies, shapeSolid } from '../engine/pieces.ts';
 import type { OccupancyMessage, Vec3 } from '../engine/protocol.ts';
 import type { SweepResult } from './stepmove.ts';
 
@@ -41,11 +43,22 @@ function solidIn(chunks: Map<number, ChunkOcc>, x: number, y: number, z: number)
   return ((c.bits[v >> 3]! >> (v & 7)) & 1) === 1;
 }
 
-/** A sweep's hit on an oriented grid: the free fraction, the surface's normal, the grid. */
+/** A sweep's hit on an oriented grid or a piece: the free fraction, the surface's normal, the grid (0: a piece) or the piece. */
 export interface GridHit {
   t: number;
   normal: Vec3;
   grid: number;
+  piece: number;
+}
+
+/** Solid voxels in a lattice: the box they are in (voxels, inclusive) and a test. */
+interface Solids {
+  lattice: Lattice;
+  lo: Vec3;
+  hi: Vec3;
+  solid: (x: number, y: number, z: number) => boolean;
+  grid: number;
+  piece: number;
 }
 
 /**
@@ -128,6 +141,7 @@ export class OccupancyStore {
   private readonly chunks = new Map<number, ChunkOcc>();
   private readonly grids = new Map<number, GridOcc>();
   private frames: GridFrames | null = null;
+  private pieces: PieceBodies | null = null;
   private h = 0.125;
 
   /** True once the engine has sent occupancy for the current world. */
@@ -144,6 +158,11 @@ export class OccupancyStore {
   /** The grids' frames the oriented grids' occupancy is placed with. */
   setFrames(frames: GridFrames): void {
     this.frames = frames;
+  }
+
+  /** The rigid pieces (their voxels where they are now). */
+  setPieces(pieces: PieceBodies): void {
+    this.pieces = pieces;
   }
 
   clear(): void {
@@ -187,30 +206,49 @@ export class OccupancyStore {
     return solidIn(this.chunks, x, y, z);
   }
 
-  /** The grids near a world box (their frames and occupancy). */
-  private *gridsNear(lo: Vec3, hi: Vec3): Generator<[GridFrame, GridOcc]> {
-    if (!this.frames) return;
-    for (const [id, g] of this.grids) {
-      const f = this.frames.get(id);
-      if (!f || g.chunks.size === 0) continue;
-      // (its lattice box in the world)
-      const h = f.h;
-      const wlo: Vec3 = [Infinity, Infinity, Infinity];
-      const whi: Vec3 = [-Infinity, -Infinity, -Infinity];
-      for (let k = 0; k < 8; k++) {
-        const p = gridToWorld(f, [h * ((k & 1 ? g.hi[0] : g.lo[0]) + (k & 1 ? 0.5 : -0.5)), h * ((k & 2 ? g.hi[1] : g.lo[1]) + (k & 2 ? 0.5 : -0.5)), h * ((k & 4 ? g.hi[2] : g.lo[2]) + (k & 4 ? 0.5 : -0.5))]);
-        for (let a = 0; a < 3; a++) {
-          wlo[a] = Math.min(wlo[a]!, p[a]!);
-          whi[a] = Math.max(whi[a]!, p[a]!);
-        }
+  /** The turned lattices near a world box: the oriented grids', and the pieces' shapes where they are now. */
+  private *solidsNear(lo: Vec3, hi: Vec3): Generator<Solids> {
+    if (this.frames)
+      for (const [id, g] of this.grids) {
+        const f = this.frames.get(id);
+        if (!f || g.chunks.size === 0) continue;
+        const s: Solids = { lattice: f, lo: g.lo, hi: g.hi, solid: (x, y, z) => solidIn(g.chunks, x, y, z), grid: id, piece: 0 };
+        if (OccupancyStore.meets(s, lo, hi)) yield s;
       }
-      if (hi[0] < wlo[0] - h || lo[0] > whi[0] + h || hi[1] < wlo[1] - h || lo[1] > whi[1] + h || hi[2] < wlo[2] - h || lo[2] > whi[2] + h) continue;
-      yield [f, g];
-    }
+    if (this.pieces)
+      for (const b of this.pieces.near(lo, hi))
+        for (const sh of b.shapes) {
+          const s: Solids = {
+            lattice: PieceBodies.lattice(b, sh),
+            lo: sh.lo,
+            hi: [sh.lo[0] + sh.dim[0] - 1, sh.lo[1] + sh.dim[1] - 1, sh.lo[2] + sh.dim[2] - 1],
+            solid: (x, y, z) => shapeSolid(sh, x, y, z),
+            grid: 0,
+            piece: b.id,
+          };
+          if (OccupancyStore.meets(s, lo, hi)) yield s;
+        }
   }
 
-  /** The solid voxels of a grid whose cubes may meet a world box (in its lattice). */
-  private *voxelsNear(f: GridFrame, g: GridOcc, lo: Vec3, hi: Vec3): Generator<Vec3> {
+  /** Whether a lattice's box (in the world) meets a world box, a voxel of margin. */
+  private static meets(s: Solids, lo: Vec3, hi: Vec3): boolean {
+    const f = s.lattice;
+    const h = f.h;
+    const wlo: Vec3 = [Infinity, Infinity, Infinity];
+    const whi: Vec3 = [-Infinity, -Infinity, -Infinity];
+    for (let k = 0; k < 8; k++) {
+      const p = gridToWorld(f, [h * ((k & 1 ? s.hi[0] : s.lo[0]) + (k & 1 ? 0.5 : -0.5)), h * ((k & 2 ? s.hi[1] : s.lo[1]) + (k & 2 ? 0.5 : -0.5)), h * ((k & 4 ? s.hi[2] : s.lo[2]) + (k & 4 ? 0.5 : -0.5))]);
+      for (let a = 0; a < 3; a++) {
+        wlo[a] = Math.min(wlo[a]!, p[a]!);
+        whi[a] = Math.max(whi[a]!, p[a]!);
+      }
+    }
+    return !(hi[0] < wlo[0] - h || lo[0] > whi[0] + h || hi[1] < wlo[1] - h || lo[1] > whi[1] + h || hi[2] < wlo[2] - h || lo[2] > whi[2] + h);
+  }
+
+  /** The solid voxels of a lattice whose cubes may meet a world box (in its lattice). */
+  private static *voxelsNear(s: Solids, lo: Vec3, hi: Vec3): Generator<Vec3> {
+    const f = s.lattice;
     const h = f.h;
     const llo: Vec3 = [Infinity, Infinity, Infinity];
     const lhi: Vec3 = [-Infinity, -Infinity, -Infinity];
@@ -221,14 +259,14 @@ export class OccupancyStore {
         lhi[a] = Math.max(lhi[a]!, l[a]!);
       }
     }
-    const v0 = llo.map((x) => Math.floor(x / h + 0.5) - 1);
-    const v1 = lhi.map((x) => Math.floor(x / h + 0.5) + 1);
+    const v0 = llo.map((x, a) => Math.max(s.lo[a]!, Math.floor(x / h + 0.5) - 1));
+    const v1 = lhi.map((x, a) => Math.min(s.hi[a]!, Math.floor(x / h + 0.5) + 1));
     for (let x = v0[0]!; x <= v1[0]!; x++)
       for (let y = v0[1]!; y <= v1[1]!; y++)
-        for (let z = v0[2]!; z <= v1[2]!; z++) if (solidIn(g.chunks, x, y, z)) yield [x, y, z];
+        for (let z = v0[2]!; z <= v1[2]!; z++) if (s.solid(x, y, z)) yield [x, y, z];
   }
 
-  private static axes(f: GridFrame): Vec3[] {
+  private static axes(f: Lattice): Vec3[] {
     const R = f.R;
     return [
       [R[0]!, R[3]!, R[6]!],
@@ -238,8 +276,8 @@ export class OccupancyStore {
   }
 
   /**
-   * The engine's sweep of the box [mn, mx] by V against the oriented grids' voxels: the first
-   * touch (free fraction, normal, grid), or null.
+   * The engine's sweep of the box [mn, mx] by V against the oriented grids' and the pieces'
+   * voxels: the first touch (free fraction, normal, grid or piece), or null.
    */
   sweepGrids(mn: Vec3, mx: Vec3, V: Vec3): GridHit | null {
     const ca: Vec3 = [(mn[0] + mx[0]) / 2, (mn[1] + mx[1]) / 2, (mn[2] + mx[2]) / 2];
@@ -247,19 +285,20 @@ export class OccupancyStore {
     const slo: Vec3 = [Math.min(mn[0], mn[0] + V[0]), Math.min(mn[1], mn[1] + V[1]), Math.min(mn[2], mn[2] + V[2])];
     const shi: Vec3 = [Math.max(mx[0], mx[0] + V[0]), Math.max(mx[1], mx[1] + V[1]), Math.max(mx[2], mx[2] + V[2])];
     let best: GridHit | null = null;
-    for (const [f, g] of this.gridsNear(slo, shi)) {
+    for (const s of this.solidsNear(slo, shi)) {
+      const f = s.lattice;
       const u = OccupancyStore.axes(f);
       const h = f.h;
-      for (const v of this.voxelsNear(f, g, slo, shi)) {
+      for (const v of OccupancyStore.voxelsNear(s, slo, shi)) {
         const cb = gridToWorld(f, [h * v[0], h * v[1], h * v[2]]);
         const hit = sweepBoxCube(ca, ea, V, cb, u, 0.5 * h);
-        if (hit && (!best || hit.t < best.t)) best = { t: hit.t, normal: hit.n, grid: f.id };
+        if (hit && (!best || hit.t < best.t)) best = { t: hit.t, normal: hit.n, grid: s.grid, piece: s.piece };
       }
     }
     return best;
   }
 
-  /** Whether the box overlaps a solid voxel (voxel v spans [v - 1/2, v + 1/2] h), of any grid. */
+  /** Whether the box overlaps a solid voxel (voxel v spans [v - 1/2, v + 1/2] h), of any grid or piece. */
   overlaps(mn: Vec3, mx: Vec3): boolean {
     const h = this.h;
     const eps = 1e-4;
@@ -267,14 +306,15 @@ export class OccupancyStore {
     const hi = mx.map((v) => Math.floor((v - eps) / h + 0.5));
     for (let x = lo[0]!; x <= hi[0]!; x++)
       for (let y = lo[1]!; y <= hi[1]!; y++) for (let z = lo[2]!; z <= hi[2]!; z++) if (this.solid(x, y, z)) return true;
-    // (the oriented grids' turned cubes)
+    // (the oriented grids' and the pieces' turned cubes)
     const smn: Vec3 = [mn[0] + eps, mn[1] + eps, mn[2] + eps];
     const smx: Vec3 = [mx[0] - eps, mx[1] - eps, mx[2] - eps];
     const ca: Vec3 = [(smn[0] + smx[0]) / 2, (smn[1] + smx[1]) / 2, (smn[2] + smx[2]) / 2];
     const ea: Vec3 = [(smx[0] - smn[0]) / 2, (smx[1] - smn[1]) / 2, (smx[2] - smn[2]) / 2];
-    for (const [f, g] of this.gridsNear(smn, smx)) {
+    for (const s of this.solidsNear(smn, smx)) {
+      const f = s.lattice;
       const u = OccupancyStore.axes(f);
-      for (const v of this.voxelsNear(f, g, smn, smx)) {
+      for (const v of OccupancyStore.voxelsNear(s, smn, smx)) {
         const cb = gridToWorld(f, [f.h * v[0], f.h * v[1], f.h * v[2]]);
         if (boxCubeOverlap(ca, ea, cb, u, 0.5 * f.h)) return true;
       }
@@ -284,8 +324,8 @@ export class OccupancyStore {
 
   /**
    * Smallest upward lift (<= maxRise, in steps of half a voxel) that frees a box stuck in solid
-   * voxels (a lift rising under the player, a door closing on them); 0 if it is free, null if
-   * nothing within maxRise helps.
+   * voxels (a lift's car rising under the player); 0 if it is free, null if nothing within
+   * maxRise helps.
    */
   depenetrate(mn: Vec3, mx: Vec3, maxRise: number): number | null {
     if (!this.overlaps(mn, mx)) return 0;
@@ -297,8 +337,8 @@ export class OccupancyStore {
 
   /**
    * The engine's `collide`: an axis-by-axis (x, y, z) sweep of the box against the world grid's
-   * voxels (layer by layer) and the oriented grids' (turned cubes); what it lands on, with its
-   * velocity there.
+   * voxels (layer by layer) and the oriented grids' and pieces' (turned cubes); what it lands
+   * on, with its velocity there.
    */
   collide(mn: Vec3, mx: Vec3, move: Vec3): SweepResult {
     const h = this.h;
@@ -309,6 +349,7 @@ export class OccupancyStore {
     const vidx = (x: number): number => Math.floor(x / h + 0.5);
     const p = [0, 0, 0];
     let ground = -1;
+    let piece = 0;
     for (let a = 0; a < 3; a++) {
       let dm = move[a]!;
       if (dm === 0) continue;
@@ -341,8 +382,8 @@ export class OccupancyStore {
           ground = 0;
         }
       }
-      // (the oriented grids' voxels: cubes at an angle)
-      if (dm !== 0 && this.grids.size > 0) {
+      // (the oriented grids' and the pieces' voxels: cubes at an angle)
+      if (dm !== 0 && (this.grids.size > 0 || (this.pieces?.size ?? 0) > 0)) {
         const L: Vec3 = [0, 0, 0];
         L[a] = dm;
         const hit = this.sweepGrids(lo, hi, L);
@@ -352,6 +393,7 @@ export class OccupancyStore {
           if (a === 2 && move[2] < 0) {
             out.onGround = true;
             ground = hit.grid;
+            piece = hit.piece;
           }
         }
       }
@@ -359,13 +401,13 @@ export class OccupancyStore {
       hi[a] = hi[a]! + dm;
       out.move[a] = dm;
     }
-    if (ground >= 0) {
-      out.ground = ground;
-      const f = ground > 0 ? this.frames?.get(ground) : undefined;
-      if (f) {
-        out.groundVelocity = gridVelocity(f, [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]]);
-        out.groundAngular = [...f.ang];
-      }
+    if (ground >= 0) out.ground = ground;
+    // (a piece it stands on moves it: its velocity under the base's centre, and its turn)
+    const body = piece !== 0 ? this.pieces?.get(piece) : undefined;
+    if (body) {
+      out.groundPiece = piece;
+      out.groundVelocity = PieceBodies.velocity(body, [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, lo[2]]);
+      out.groundAngular = [...body.ang];
     }
     return out;
   }

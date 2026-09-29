@@ -25,8 +25,9 @@ import type { EngineKind } from './select.ts';
 export interface CollideResult {
   move: Vec3;
   onGround: boolean;
-  /** (onGround) the grid it stands on (0 the world grid) and its velocity under the box. */
+  /** (onGround) the grid it stands on (0 the world grid) or the piece, and its velocity under the box. */
   ground?: number;
+  groundPiece?: number;
   groundVelocity?: Vec3;
 }
 
@@ -195,6 +196,7 @@ export class EngineClient {
       this.collides.delete(data.id);
       const r: CollideResult = { move: data.move, onGround: data.onGround };
       if (data.ground !== undefined) r.ground = data.ground;
+      if (data.groundPiece) r.groundPiece = data.groundPiece;
       if (data.groundVelocity) r.groundVelocity = data.groundVelocity;
       p?.resolve(r);
     } else if (data.type === 'error' && data.fatal) {

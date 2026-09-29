@@ -368,7 +368,7 @@ struct VoxelAt {
 // strong as the weaker material of the two voxels it joins, times the condition of the more
 // damaged one; the section's strengths are the faces' mean. at(p) -> VoxelAt.
 template <class At>
-void section_strengths(const IVec3* faces, const u8* axes, size_t n, At&& at, SBond& B) {
+void section_strengths(const MaterialTable& mats, const IVec3* faces, const u8* axes, size_t n, At&& at, SBond& B) {
   f64 ft = 0, fb = 0, fc = 0, coh = 0, mu = 0;
   for (size_t k = 0; k < n; ++k) {
     IVec3 q = faces[k];
@@ -376,8 +376,8 @@ void section_strengths(const IVec3* faces, const u8* axes, size_t n, At&& at, SB
     q[axes[k]] += 1;
     const VoxelAt b = at(q);
     // (a side that is air - an unloaded neighbour, a support face - is as the other side)
-    const Material& A = material(vox_solid(a.v) ? vox_mat(a.v) : vox_mat(b.v));
-    const Material& M = material(vox_solid(b.v) ? vox_mat(b.v) : vox_mat(a.v));
+    const Material& A = mats[vox_solid(a.v) ? vox_mat(a.v) : vox_mat(b.v)];
+    const Material& M = mats[vox_solid(b.v) ? vox_mat(b.v) : vox_mat(a.v)];
     // (full damage leaves a trace of strength: the section fails under any load, never 0 / 0)
     const f64 cond = std::max(1e-6, 1.0 - static_cast<f64>(std::max(a.damage, b.damage)) / 255.0);
     ft += cond * std::min(A.ft, M.ft);
@@ -400,12 +400,12 @@ void section_strengths(const IVec3* faces, const u8* axes, size_t n, At&& at, SB
 // strong as the weaker of the two voxels it joins (a sample into the unknown world: its own
 // voxel's), times the condition of the more damaged. at(lattice, p) -> VoxelAt.
 template <class At>
-void section_strengths_general(u16 grid, const IVec3* faces, const u8* axes, size_t nfaces, const JSample* js, size_t nj,
-                               At&& at, SBond& B, i32 S) {
+void section_strengths_general(const MaterialTable& mats, u16 grid, const IVec3* faces, const u8* axes, size_t nfaces, const JSample* js,
+                               size_t nj, At&& at, SBond& B, i32 S) {
   f64 ft = 0, fb = 0, fc = 0, coh = 0, mu = 0, wsum = 0;
   auto one = [&](const VoxelAt& a, const VoxelAt& b, f64 w) {
-    const Material& A = material(vox_solid(a.v) ? vox_mat(a.v) : vox_mat(b.v));
-    const Material& M = material(vox_solid(b.v) ? vox_mat(b.v) : vox_mat(a.v));
+    const Material& A = mats[vox_solid(a.v) ? vox_mat(a.v) : vox_mat(b.v)];
+    const Material& M = mats[vox_solid(b.v) ? vox_mat(b.v) : vox_mat(a.v)];
     const f64 cond = std::max(1e-6, 1.0 - static_cast<f64>(std::max(a.damage, b.damage)) / 255.0);
     ft += w * cond * std::min(A.ft, M.ft);
     fb += w * cond * std::min(A.fb, M.fb);
@@ -597,11 +597,6 @@ struct BodyGraph {
 
 struct World::Structure {
   i64 id = 0;
-  u16 body = 0;                    // its kinematic body's slot (0: the static world): its frame
-  // (a kinematic body's structure) the frame's acceleration field the solve in progress (or the
-  // last one) was given: uniform part (gravity less the frame's acceleration, in its frame), and
-  // its angular velocity and acceleration
-  V3 frame_g, frame_w, frame_alpha;
   StressProblem P;
   // Nodes are clusters of fragments (single fragments for small structures): node i holds
   // frags[fstart[i] .. fstart[i + 1]) (a retired node's entries are cleared, idx -1). A node's
@@ -640,29 +635,19 @@ struct World::Structure {
   bool multigrid = false;          // (a small structure's block-Jacobi solve did not converge)
   i32 rounds = 0, idle = 0;        // (rounds: of the break cascade in progress)
   bool truncated = false;
+  // The last blast's momentum on its fragments (and where it acts): parts its load breaks off
+  // take it with them, for as long as its cascade lasts (at most a second).
+  struct BlastHit {
+    FragKey f;
+    V3 J, at;
+  };
+  std::vector<BlastHit> blast;
+  i64 blast_tick = 0;
   i32 node(const FragKey& f) const {
     const auto it = nodemap.find(GKey{f.grid, f.chunk});
     if (it == nodemap.end() || f.idx < 0 || f.idx >= static_cast<i32>(it->second.size())) return -1;
     return it->second[size_t(f.idx)];
   }
-};
-
-// A kinematic body (docs/MOTION.md §1): a rigid frame the host drives, and its grids.
-struct World::KinState {
-  KinematicId id = 0;
-  bool base = true;
-  V3 x;                 // pose now: its frame's origin and rotation in the world
-  Quat q;
-  V3 v, w;              // velocity of the tick in progress (after it: of the last tick)
-  V3 a, alpha;          // acceleration of the last tick (its structures' inertial loads)
-  V3 x0, x1;            // (the tick in progress) pose at its start and its end
-  Quat q0, q1;
-  bool driven = false;  // drive_kinematic: (tx, tq) at the end of the next tick
-  V3 tx;
-  Quat tq;
-  bool hold = false;    // set_kinematic_velocity: keeps (cv, cw)
-  V3 cv, cw;
-  std::vector<u16> grids;  // its grids' slots (ascending)
 };
 
 // A joint's anchors (docs/MOTION.md §2): what each end holds on to. (Its solver state is
@@ -673,13 +658,39 @@ struct World::JointRec {
     JointAnchor::Kind kind = JointAnchor::Kind::World;  // (a Piece anchor is held as a Grid one: its voxel)
     GridId grid = 0;                   // (Grid) the grid of its voxel
     IVec3 voxel{0, 0, 0};              // (Grid) that voxel
-    // the anchor, the axis and the reference direction: Grid: in the grid's lattice (m);
-    // Kinematic: in the body's frame; World: in the world
+    // the anchor, the axis and the reference direction: Grid: in the grid's lattice (m); World:
+    // in the world
     V3 point, axis{0, 0, 1}, ref{1, 0, 0};
-    KinematicId body = 0;              // (Kinematic)
     i64 piece = 0;                     // (Grid) the piece its voxel went with (0: it is in its grid)
     i32 shape = -1;                    // ... its shape of that grid
   } a, b;
+};
+
+// A saved session's pieces and joints, read and checked before they are applied
+// (world_session.cpp).
+struct World::SessionDelta {
+  i64 steps = 0, next_id = 1;
+  JointId next_joint = 1;
+  std::vector<std::unique_ptr<Body>> pieces;
+  std::vector<std::pair<JointRec, Joint>> joints;
+  struct Dead {
+    i64 piece = 0;
+    struct Load {
+      GridId grid = 0;
+      IVec3 voxel{0, 0, 0};
+      V3 p, F;
+    };
+    std::vector<Load> loads;
+  };
+  std::vector<Dead> dead;
+  // (a streamed world's groups archived out of range: their records as archived)
+  struct Archived {
+    u64 key = 0;
+    std::vector<u64> chunks;
+    std::vector<JointId> joints;
+    std::vector<u8> record;
+  };
+  std::vector<Archived> archived;
 };
 
 // A grid of the world (docs/GRIDS.md): its frame, voxels (oriented grids; the world grid's are
@@ -688,15 +699,12 @@ struct World::GridState {
   GridId id = 0;
   bool base = true;                  // (oriented grids) part of the level: only its changes are saved
   i32 priority = 0;                  // overlaps: the higher keeps its voxels (then the higher id)
-  LatticeXf local;                   // lattice -> its body's frame (structures, junctions)
   LatticeXf xf;                      // lattice -> world (the world grid: the identity)
   VoxelGrid g;                       // (oriented grids)
   std::unordered_map<u64, FragChunk> frags;         // chunk -> its fragments (cache)
   std::unordered_map<u64, std::vector<i64>> owner;  // chunk -> structure id per fragment (0 none)
   std::unordered_set<u64> undesigned;               // chunks generated and not designed yet
-  u16 body = 0;                      // its body's slot (0: the static world)
   V3 lo, hi;                         // (oriented grids) world box of its chunks
-  V3 blo, bhi;                       // (oriented grids) ... in its body's frame (junction candidates)
   V3 llo, lhi;                       // (oriented grids) ... in its lattice (metres)
   bool any = false;                  // (oriented grids) it has chunks
   std::unordered_map<u64, std::vector<u16>> near;   // chunk -> other grids a junction sample may reach (cache)

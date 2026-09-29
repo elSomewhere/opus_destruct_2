@@ -54,7 +54,7 @@ struct SBond {
 struct BondStrength {
   f64 ft, fb, fc, coh, mu;
 };
-BondStrength bond_strength(const SBond& b, f64 fragility);
+BondStrength bond_strength(const SBond& b, f64 fragility, const MaterialTable& mats);
 
 // Bond loads in bond terms: N (tension > 0), shear V along t1, t2, torsion T, bending (M1 about t1,
 // M2 about t2).
@@ -63,7 +63,7 @@ struct BondLoad {
 };
 enum class FailMode : u8 { None = 0, Tension, Crush, Shear };
 // Utilization (1 = at strength) and the governing mode.
-f64 bond_utilization(const SBond& b, const BondLoad& L, f64 fragility, FailMode* mode = nullptr);
+f64 bond_utilization(const SBond& b, const BondLoad& L, f64 fragility, const MaterialTable& mats, FailMode* mode = nullptr);
 
 struct StressOptions {
   f64 rtol = 2e-3;        // relative residual of a converged solve
@@ -75,6 +75,8 @@ class StressProblem {
  public:
   std::vector<SNode> nodes;
   std::vector<SBond> bonds;
+  const MaterialTable* mats = nullptr;  // the bonds' materials (a world's; nullptr: the process's)
+  const MaterialTable& materials() const { return mats ? *mats : default_materials(); }
 
   // Assembles K over the intact bonds and builds the preconditioner. Free nodes need a path to
   // a support or a pinned node (callers split graphs into components first).

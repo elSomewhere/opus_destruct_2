@@ -16,10 +16,12 @@ export interface SweepResult {
   move: Vec3;
   onGround: boolean;
   /**
-   * (onGround) What it stands on: the grid (0 the world grid) and its motion there (a kinematic
-   * body's: its velocity under the box, and its angular velocity); a rider moves with it.
+   * (onGround) What it stands on: the grid (0 the world grid; 0 too for a piece) or the piece
+   * (a lift's car, a turntable) and its motion there (its velocity under the box, and its
+   * angular velocity); a rider moves with it.
    */
   ground?: number;
+  groundPiece?: number;
   groundVelocity?: Vec3;
   groundAngular?: Vec3;
 }

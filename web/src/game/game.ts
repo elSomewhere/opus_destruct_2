@@ -11,6 +11,7 @@ import type { Overlay } from '../ui/overlay.ts';
 import { SettingsPanel } from '../ui/settings.ts';
 import { Effects } from './effects.ts';
 import { Input } from './input.ts';
+import { PieceBodies } from '../engine/pieces.ts';
 import { OccupancyStore } from './occupancy.ts';
 import { Player } from './player.ts';
 import { WEAPONS, Weapons, type WeaponId } from './weapons.ts';
@@ -39,6 +40,8 @@ export class Game {
   private readonly occupancy = new OccupancyStore();
   /** The oriented grids' places: drawn and felt where they are (interpolated when they move). */
   private readonly gridFrames = new GridFrames();
+  /** The rigid pieces as the player's collision feels them (a lift's car, a turntable, rubble). */
+  private readonly pieces = new PieceBodies();
   private readonly effects: Effects;
   private readonly weapons: Weapons;
   private readonly hud: Hud;
@@ -91,6 +94,7 @@ export class Game {
       },
     });
     this.occupancy.setFrames(this.gridFrames);
+    this.occupancy.setPieces(this.pieces);
     this.input = new Input(opts.canvas, (locked) => {
       this.overlay.setPrompt(!locked && this.info !== null);
       this.settings.setVisible(!locked);
@@ -128,6 +132,7 @@ export class Game {
     this.renderer.clearWorld();
     this.occupancy.clear();
     this.gridFrames.clear();
+    this.pieces.clear();
     this.effects.setFlames(new Float32Array(0));
     this.effects.setSmoke(new Float32Array(0));
     this.overlay.setLoading(text, 0.05);
@@ -169,7 +174,7 @@ export class Game {
       for (const k of msg.keys) if (!this.renderer.grids.remove(k)) this.renderer.chunks.remove(k);
     });
     e.on('grids', (msg) => {
-      this.gridFrames.apply(msg.frames, msg.removed, performance.now() / 1000);
+      this.gridFrames.apply(msg.frames, msg.removed);
       for (const id of msg.removed) {
         this.renderer.grids.removeGrid(id);
         this.occupancy.removeGrid(id);
@@ -178,7 +183,11 @@ export class Game {
     e.on('joints', (msg) => this.renderer.ropes.set(msg.joints));
     e.on('events', (msg) => this.handleEvents(msg.list));
     e.on('occupancy', (msg) => this.occupancy.apply(msg));
-    e.on('debris', (msg) => this.renderer.islands.applyDebris(msg.poses, performance.now() / 1000));
+    e.on('debris', (msg) => {
+      const now = performance.now() / 1000;
+      this.renderer.islands.applyDebris(msg.poses, now);
+      this.pieces.applyDebris(msg.poses, now);
+    });
     e.on('water', (msg) => {
       for (const k of msg.removed) this.renderer.water.remove(k);
       for (const m of msg.meshes) this.renderer.water.upsert(m);
@@ -218,6 +227,7 @@ export class Game {
       switch (ev.kind) {
         case 'detached':
           this.renderer.islands.add(ev, now);
+          this.pieces.add(ev);
           if (!ev.remesh) this.effects.detached(ev);
           break;
         case 'crack':
@@ -260,8 +270,8 @@ export class Game {
       this.player.look(dx, dy);
       this.handleKeys();
     }
-    // (the moving grids where they are drawn: the player feels them there too)
-    this.gridFrames.advance(t / 1000);
+    // (the pieces where they are drawn: the player feels them there too)
+    this.pieces.advance(t / 1000);
     this.player.update(dt, this.input, this.engine, this.occupancy);
     if (this.info && this.player.pos[2] < this.info.bounds.min[2] - 30) this.player.respawn(); // kill plane
 
@@ -350,6 +360,7 @@ export class Game {
         engine: this.engineStats,
         statsSeq: this.statsSeq,
         events: this.eventsSeen,
+        pieceBodies: this.pieces.size,
         fps: 1000 / Math.max(1e-3, this.frameMsEma),
       }),
     };
@@ -377,6 +388,8 @@ export interface StructvoxDebugApi {
     /** Number of `stats` messages received (to wait for fresh stats after an action). */
     statsSeq: number;
     events: number;
+    /** Pieces whose voxels the client's collision holds. */
+    pieceBodies: number;
     fps: number;
   };
 }

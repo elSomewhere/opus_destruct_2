@@ -1,7 +1,7 @@
 // structvox — joints (docs/MOTION.md §2): what their ends hold on to, and how they follow it.
 //
-// An end holds on to a point of the world, a kinematic body's frame, or a voxel (of a grid, or
-// of a piece: kept as its grid's voxel). A voxel's end goes where the voxel goes: into the piece
+// An end holds on to a point of the world, or a voxel (of a grid, or of a piece: kept as its
+// grid's voxel). A voxel's end goes where the voxel goes: into the piece
 // it breaks off in (make_body_from_world), into the part of a piece it stays with when the piece
 // splits (flush_body_changes); when the voxel is gone the joint lets go. Each substep the
 // solver's ends (phys/joint.hpp) are filled from the anchors at the bodies' poses now; the
@@ -50,6 +50,13 @@ bool shape_solid(const BodyShape& S, const IVec3& p) {
   return i >= 0 && vox_solid(S.vox[size_t(i)]);
 }
 
+JointDrive sane_drive(JointDrive d) {
+  d.max = std::max(0.0, d.max);
+  d.period = std::max(1e-3, d.period);
+  d.stiffness = std::clamp(d.stiffness, 0.0, 1e3);
+  return d;
+}
+
 void squares(const V3& n, V3* t1, V3* t2) {
   *t1 = normalized(std::abs(n.x) < 0.57 ? cross(n, V3{1, 0, 0}) : cross(n, V3{0, 1, 0}));
   *t2 = cross(n, *t1);
@@ -62,8 +69,14 @@ void squares(const V3& n, V3* t1, V3* t2) {
 
 JointId World::add_joint(const JointDesc& d) {
   if (in_tick_) return 0;
+  return add_joint_impl(d, 0);
+}
+
+JointId World::add_joint_impl(const JointDesc& d, JointId want) {
+  if (want != 0 && std::any_of(jrecs_.begin(), jrecs_.end(), [&](const JointRec& r) { return r.id == want; })) return 0;
   if (!in_range(d.a.point) || !in_range(d.b.point) || !finite3(d.axis) || !(norm2(d.axis) > 1e-12)) return 0;
-  for (f64 x : {d.length, d.lower, d.upper, d.motor_speed, d.motor_max, d.break_force, d.break_torque, d.stiffness, d.damping})
+  for (f64 x : {d.length, d.lower, d.upper, d.break_force, d.break_torque, d.stiffness, d.damping, d.drive.speed, d.drive.max, d.drive.target,
+                d.drive.target2, d.drive.period, d.drive.phase, d.drive.stiffness})
     if (!std::isfinite(x)) return 0;
   const V3 axis = normalized(d.axis);
   V3 ref, t2;
@@ -84,17 +97,6 @@ JointId World::add_joint(const JointDesc& d) {
         E.ref = ref;
         Q[e] = Quat{};
         break;
-      case JointAnchor::Kind::Kinematic: {
-        const i32 ks = A.id <= 0xFFFFFFFFull ? kin_slot_of(static_cast<KinematicId>(A.id)) : -1;
-        if (ks <= 0) return 0;
-        const KinState& K = *kins_[size_t(ks)];
-        E.body = K.id;
-        E.point = rotate_inv(K.q, A.point - K.x);
-        E.axis = rotate_inv(K.q, axis);
-        E.ref = rotate_inv(K.q, ref);
-        Q[e] = K.q;
-        break;
-      }
       case JointAnchor::Kind::Grid: {
         const i32 s = A.id <= 0xFFFFFFFFull ? slot_of(static_cast<GridId>(A.id)) : -1;
         if (s < 0) return 0;
@@ -145,7 +147,7 @@ JointId World::add_joint(const JointDesc& d) {
     }
   }
   Joint j;
-  j.id = next_joint_;
+  j.id = want != 0 ? want : next_joint_;
   j.type = d.type;
   if (d.type == JointType::Distance) {
     const f64 L = d.length >= 0.0 ? d.length : norm(d.b.point - d.a.point);
@@ -157,23 +159,29 @@ JointId World::add_joint(const JointDesc& d) {
   j.limited = d.limited;
   j.lower = d.lower;
   j.upper = d.upper;
-  j.motor = d.motor;
-  j.motor_speed = d.motor_speed;
-  j.motor_max = std::max(0.0, d.motor_max);
+  j.drive = sane_drive(d.drive);
   j.break_force = std::max(0.0, d.break_force);
   j.break_torque = std::max(0.0, d.break_torque);
   j.rel = conj(Q[0]) * Q[1];
   r.id = j.id;
-  jrecs_.push_back(r);
-  rigid_.joints.push_back(j);
-  if (!fill_joint_end(jrecs_.back(), false) || !fill_joint_end(jrecs_.back(), true)) {
-    jrecs_.pop_back();
-    rigid_.joints.pop_back();
+  // (in id order: the solver's order, the same on every run)
+  const size_t k = insert_joint(r, j);
+  if (!fill_joint_end(jrecs_[k], false) || !fill_joint_end(jrecs_[k], true)) {
+    jrecs_.erase(jrecs_.begin() + static_cast<std::ptrdiff_t>(k));
+    rigid_.joints.erase(rigid_.joints.begin() + static_cast<std::ptrdiff_t>(k));
     return 0;
   }
-  ++next_joint_;
-  wake_joint(jrecs_.size() - 1);  // (what hangs on it moves now)
+  if (want == 0) ++next_joint_;
+  wake_joint(k);  // (what hangs on it moves now)
   return j.id;
+}
+
+size_t World::insert_joint(const JointRec& r, const Joint& j) {
+  const auto it = std::lower_bound(jrecs_.begin(), jrecs_.end(), r.id, [](const JointRec& x, JointId v) { return x.id < v; });
+  const size_t k = static_cast<size_t>(it - jrecs_.begin());
+  jrecs_.insert(it, r);
+  rigid_.joints.insert(rigid_.joints.begin() + static_cast<std::ptrdiff_t>(k), j);
+  return k;
 }
 
 bool World::remove_joint(JointId id) {
@@ -188,14 +196,13 @@ bool World::remove_joint(JointId id) {
   return false;
 }
 
-bool World::set_joint_motor(JointId id, bool on, f64 speed, f64 max) {
-  if (!std::isfinite(speed) || !std::isfinite(max)) return false;
+bool World::set_joint_drive(JointId id, const JointDrive& d) {
+  for (f64 x : {d.speed, d.max, d.target, d.target2, d.period, d.phase, d.stiffness})
+    if (!std::isfinite(x)) return false;
   for (size_t k = 0; k < rigid_.joints.size(); ++k) {
     Joint& j = rigid_.joints[k];
     if (j.id != id || j.broken) continue;
-    j.motor = on;
-    j.motor_speed = speed;
-    j.motor_max = std::max(0.0, max);
+    j.drive = sane_drive(d);
     wake_joint(k);
     return true;
   }
@@ -266,17 +273,6 @@ bool World::fill_joint_end(JointRec& r, bool b_end) {
     case JointAnchor::Kind::World:
       e.p = E.point;
       return true;
-    case JointAnchor::Kind::Kinematic: {
-      const i32 ks = kin_slot_of(E.body);
-      if (ks <= 0) return false;
-      const KinState& K = *kins_[size_t(ks)];
-      e.p = K.x + rotate(K.q, E.point);
-      e.q = K.q;
-      e.v = K.v;
-      e.w = K.w;
-      e.c = K.x;
-      return true;
-    }
     case JointAnchor::Kind::Grid:
     case JointAnchor::Kind::Piece:
       break;
@@ -290,12 +286,6 @@ bool World::fill_joint_end(JointRec& r, bool b_end) {
     const GridState& st = gs(g);
     e.p = st.xf.to(E.point);
     e.q = st.xf.q;
-    if (st.body != 0) {
-      const KinState& K = *kins_[st.body];
-      e.v = K.v;
-      e.w = K.w;
-      e.c = K.x;
-    }
     return true;
   }
   const Body* b = rigid_.find(E.piece);
@@ -443,11 +433,8 @@ void World::joint_structure_loads(f64 dt_sub) {
       }
       const i32 i = st->node(f);
       if (i < 0) continue;
-      V3 Fl = F, pl = (e ? j.b : j.a).p;
-      to_body(st->body, &Fl, &pl);
-      V3 Ml = M, origin;
-      to_body(st->body, &Ml, &origin);  // (a couple turns with the frame; its point does not matter)
-      const V3 Mt = cross(pl - st->P.nodes[size_t(i)].c, Fl) + Ml;
+      const V3 Fl = F, pl = (e ? j.b : j.a).p;
+      const V3 Mt = cross(pl - st->P.nodes[size_t(i)].c, Fl) + M;
       f64* a = &st->acc[6 * size_t(i)];
       a[0] += Fl.x;
       a[1] += Fl.y;
@@ -491,25 +478,6 @@ void World::joint_piece_forces(std::vector<std::vector<PointForce>>& per, std::v
       const V3 F = e ? j.force : j.force * -1.0;
       per[bi].push_back({fr, F, b.x + rotate(b.q, (e ? j.b : j.a).p)});
       fsum[bi] += norm(F);
-    }
-  }
-}
-
-void World::joint_dead_loads(const Body& b, std::vector<DeadLoad>& dl) const {
-  for (size_t k = 0; k < jrecs_.size(); ++k) {
-    const Joint& j = rigid_.joints[k];
-    if (j.broken) continue;
-    const JointRec& r = jrecs_[k];
-    // (a sleeping piece's pull on the grid the other end holds on to)
-    for (int e = 0; e < 2; ++e) {
-      const JointRec::End& on = e ? r.b : r.a;
-      const JointRec::End& other = e ? r.a : r.b;
-      if (on.piece != b.id || other.kind != JointAnchor::Kind::Grid || other.piece != 0) continue;
-      const i32 s = slot_of(other.grid);
-      if (s < 0) continue;
-      const V3 F = e ? j.force * -1.0 : j.force;  // (on the other end)
-      if (!finite3(F) || norm2(F) == 0.0) continue;
-      dl.push_back({GVox{other.voxel, static_cast<u16>(s)}, (e ? j.a : j.b).p, F});
     }
   }
 }

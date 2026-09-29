@@ -7,7 +7,7 @@
 //     angle, a diagonal brace, a tilted slab: docs/GRIDS.md). Where the voxels of two grids meet,
 //     they are bonded (junctions), so structures and pieces span grids.
 //   - The free (non-anchored) voxels are grouped into fragments (frag/fragments.hpp): pre-scored
-//     rubble pieces. Anchored voxels are supports (bedrock, foundations, kinematic parts).
+//     rubble pieces. Anchored voxels are supports (bedrock, foundations, a level's movers).
 //   - A static structure is a connected set of fragments that reaches a support. It is extracted
 //     when something changes it (a carve, a blast, an edit, new loads) and its equilibrium
 //     K u = f (gravity, contact forces of pieces, blast loads) is solved over ticks under a work
@@ -48,6 +48,7 @@
 #include "svx/phys/rigid.hpp"
 #include "svx/stress/stress.hpp"
 #include "svx/world/grid.hpp"
+#include "svx/world/joint_desc.hpp"
 #include "svx/world/source.hpp"
 
 namespace svx {
@@ -56,21 +57,11 @@ namespace world_detail {
 struct SecAcc;
 struct VoxelAt;
 struct JSample;
+struct Rd;
 class ChangeArchive;
 }
 
-// Grids (docs/GRIDS.md): the world grid is kWorldGrid; oriented grids have ids from 1.
-using GridId = u32;
-constexpr GridId kWorldGrid = 0;
-// Kinematic bodies (docs/MOTION.md §1): rigid frames the host drives; ids from 1 (0: the static world).
-using KinematicId = u32;
-
-// A rigid frame's place: its point s is at pos + rot s in the world.
-struct Pose {
-  V3 pos;
-  Quat rot;
-};
-
+// (GridId, kWorldGrid, JointId, JointAnchor, JointDesc: svx/world/joint_desc.hpp)
 // Where a grid is: its voxel p (integer coordinates in the grid) is centred at
 // origin + rot (h p) in the world.
 struct GridFrame {
@@ -93,47 +84,6 @@ struct GridDesc {
   // the same order, before load_delta; their changes are saved like the world grid's); else a
   // change of this session, saved whole.
   bool base = true;
-  // The kinematic body it is part of (its frame is then in the body's frame, and it moves with
-  // it); 0: the static world.
-  KinematicId body = 0;
-};
-
-// Joints (docs/MOTION.md §2): ids from 1. (JointType: phys/joint.hpp)
-using JointId = u32;
-
-// What an end of a joint holds on to (World::add_joint).
-struct JointAnchor {
-  enum class Kind : u8 {
-    World,      // a point fixed in the world
-    Grid,       // a voxel of a grid (kWorldGrid too): its structure holds it, it moves with its kinematic
-                // body, and it goes with the piece it breaks off in
-    Piece,      // a voxel of a piece: it goes with the part it is in when the piece breaks
-    Kinematic,  // a kinematic body's frame (its drive holds it; not a voxel of it)
-  };
-  Kind kind = Kind::World;
-  u64 id = 0;  // the grid, piece or kinematic body
-  V3 point;    // where, in the world now (Grid, Piece: in a solid voxel of it, or next to one)
-};
-
-struct JointDesc {
-  JointType type = JointType::Ball;
-  JointAnchor a, b;
-  V3 axis{0, 0, 1};  // (hinge, slider) in the world now
-  // (distance) its length: a rope's longest (it only pulls), a rod's (held both ways); < 0: the
-  // ends' distance now
-  f64 length = -1.0;
-  bool rope = true;
-  // (distance) how it stretches beyond its length: a spring (N/m) with damping (N s/m); 0: rigid.
-  // A wire rope of a crane stretches (a ball stopped by a wall pulls on the jib over the time
-  // it takes, not in one substep); a bungee much more.
-  f64 stiffness = 0.0, damping = 0.0;
-  // limits: (hinge) b's turn about the axis from now (rad); (slider) b's move along it from now (m)
-  bool limited = false;
-  f64 lower = 0.0, upper = 0.0;
-  // a motor driving that motion: its speed (rad/s, m/s) and strength (N m, N)
-  bool motor = false;
-  f64 motor_speed = 0.0, motor_max = 0.0;
-  f64 break_force = 0.0, break_torque = 0.0;  // it gives way beyond (N, N m; 0: never)
 };
 
 struct JointState {
@@ -141,14 +91,7 @@ struct JointState {
   V3 a, b;          // its ends in the world now
   V3 force, torque; // what b received through it in the last substep (a: the opposite; N, N m)
   f64 value = 0.0;  // (hinge) b's turn from its start (rad); (slider) b's move (m); (distance) the ends' distance (m)
-  i64 piece_a = 0, piece_b = 0;  // the pieces its ends are on now (0: a grid, a kinematic body, the world)
-};
-
-// A kinematic body's state (World::kinematic).
-struct KinematicState {
-  Pose pose;         // its frame in the world (at the end of the last tick)
-  V3 vel, ang;       // the velocity of its frame's origin and its angular velocity (the last tick)
-  std::vector<GridId> grids;
+  i64 piece_a = 0, piece_b = 0;  // the pieces its ends are on now (0: a grid, the world)
 };
 
 // A chunk of a grid (World::take_changed_grid_chunks).
@@ -301,20 +244,22 @@ struct RayHit {
 struct CollideResult {
   V3 move;  // the part of the requested move that is free
   bool on_ground = false;
-  // (on_ground) the grid it stands on and that grid's velocity under the box's base: a kinematic
-  // body's (a lift, a turntable); zero on the static world's. A controller riding it adds
+  // (on_ground) what it stands on - a grid, or a piece (a lift's car, a turntable, a crate) - and
+  // its velocity under the box's base (a grid's: zero). A controller riding it adds
   // ground_velocity x dt to its next move.
   GridId ground = 0;
+  i64 ground_piece = 0;
   V3 ground_velocity;
 };
 
-// World::sweep: how far a box moves along a direction before it touches a static grid.
+// World::sweep: how far a box moves along a direction before it touches a grid or a piece.
 struct SweepHit {
   bool hit = false;
   f64 t = 1.0;     // the fraction of the move that is free
   V3 normal;       // the touched surface's normal (against the move)
-  GridId grid = 0;
-  V3 velocity;     // the touched surface's velocity there (a kinematic body's grid; else zero)
+  GridId grid = 0;  // the grid touched (piece 0) ...
+  i64 piece = 0;    // ... or the piece
+  V3 velocity;     // the touched surface's velocity there (a piece's; a grid's: zero)
 };
 
 // One voxel write of World::set_voxels.
@@ -324,8 +269,8 @@ struct VoxelEdit {
 };
 
 enum EditFlags : u32 {
-  kEditUntracked = 1u << 0,  // not part of the persistence delta (kinematic parts a host rebuilds on load)
-  kEditIsolated = 1u << 1,   // the written solid voxels bond to nothing (doors, lifts: kinematic parts)
+  kEditUntracked = 1u << 0,  // not part of the persistence delta (a level's movers, which its host rebuilds on load)
+  kEditIsolated = 1u << 1,   // the written solid voxels bond to nothing (a level's movers: doors, lifts)
 };
 
 // Diagnostic fields per voxel (World::debug_field).
@@ -363,6 +308,7 @@ struct WorldStats {
   f64 stream_ms = 0.0;
   f64 archive_used_mb = 0.0, archive_capacity_mb = 0.0;
   i64 forgotten_regions = 0, forgotten_chunks = 0;  // changes forgotten (the archive full, or forget_after_s)
+  i64 archived_pieces = 0, forgotten_pieces = 0;    // pieces out of range, in the archive now; gone with their regions (totals)
   // memory budgets (MemoryBudget): what they removed
   i64 culled_pieces = 0, dropped_structures = 0, dropped_fragment_caches = 0, dropped_events = 0;
   // design (bake)
@@ -432,6 +378,12 @@ class World {
 
   void configure(const WorldConfig& c);
   const WorldConfig& config() const { return cfg_; }
+  // Materials (svx/material/material.hpp): the world's own table, made from the process's
+  // (default_materials) when the world is made. Changed before load(): what the world builds
+  // from it (fragments, structures, pieces) keeps the properties it was built with.
+  const MaterialTable& materials() const { return *mats_; }
+  bool register_material(const Material& m, MaterialId* id) { return mats_->add(m, id); }
+  void set_material(MaterialId id, const Material& m) { mats_->set(id, m); }
   void set_params(const WorldParams& p);
   const WorldParams& params() const { return par_; }
 
@@ -497,42 +449,20 @@ class World {
   bool remove_grid(GridId id);
   // Places a grid anew (it keeps its voxels, changes and design): what it was bonded to lets go,
   // it bonds to what it meets where it is now, and where it overlaps other grids the lower
-  // priority's voxels are removed. frame: in its body's frame (the static world's: the world).
-  // Saved in deltas. GridMoved. (A grid that moves all the time is a kinematic body's.)
+  // priority's voxels are removed. Saved in deltas. GridMoved. (Grids stand still: what moves
+  // is pieces - a machine is pieces on driven joints.)
   bool set_grid_frame(GridId id, const GridFrame& frame);
-  KinematicId grid_body(GridId id) const;             // its kinematic body (0: the static world)
 
-  // ---- kinematic bodies (docs/MOTION.md §1)
-  // A kinematic body is a rigid frame the host drives: a door, a lift, a drawbridge, a crane's
-  // arm. Its grids (GridDesc::body) move with it. Pieces meet them as moving surfaces (they are
-  // pushed and carried, with no give); their structures stand on their anchored voxels (what the
-  // drive holds) under gravity, what rests on them and the inertia of the motion, and break like
-  // any structure, what comes loose falling with the body's velocity. A body's grids bond to each
-  // other; the static world and other bodies it meets through contacts (and joints).
-  // base: part of the level (the level adds it again, before load_delta; its state is saved);
-  // else of this session, saved whole. Returns its id (0: refused).
-  KinematicId add_kinematic(const Pose& pose, bool base = true);
-  // Removes it with its grids (GridRemoved); release: its grids fall instead, as pieces with its
-  // velocity (anchored voxels come loose too).
-  bool remove_kinematic(KinematicId id, bool release = false);
-  // Where it is at the end of the next tick: it moves there steadily during the tick, and stays
-  // unless driven again. (A pose far from the last one is a jump at that speed: pieces are hit.)
-  bool drive_kinematic(KinematicId id, const Pose& target);
-  // A velocity it keeps from the next tick until driven, or given another (zero: it stops).
-  bool set_kinematic_velocity(KinematicId id, const V3& vel, const V3& ang);
-  bool kinematic(KinematicId id, KinematicState* out) const;  // false: none
-  std::vector<KinematicId> kinematics() const;                // ascending ids
-
-  // ---- joints (docs/MOTION.md §2)
+  // ---- joints (docs/MOTION.md)
   // A joint holds two things together: pieces, grids' voxels (their structures take its load),
-  // kinematic bodies, the world. A hinge on a door, a rope from a crane's arm to a wrecking ball,
-  // a slider, a chain of balls. An end on a voxel follows it: into the piece it breaks off in, into
-  // the part of a piece it stays with; it lets go when the voxel is gone, and the joint gives way
-  // beyond its breaking strength (JointBroken). Joints are of the session: not saved in deltas
-  // (like pieces: a level makes its joints again).
+  // the world. A hinge on a door, a rope from a crane's jib to a wrecking ball, a lift's car on
+  // its slider, a chain. A hinge's or a slider's drive moves it (a machine: its drive's program
+  // runs on the world's clock). An end on a voxel follows it: into the piece it breaks off in,
+  // into the part of a piece it stays with; it lets go when the voxel is gone, and the joint gives
+  // way beyond its breaking strength (JointBroken).
   JointId add_joint(const JointDesc& d);  // 0: refused (an anchor not there, from inside a tick)
   bool remove_joint(JointId id);
-  bool set_joint_motor(JointId id, bool on, f64 speed, f64 max);
+  bool set_joint_drive(JointId id, const JointDrive& drive);
   bool set_joint_limits(JointId id, bool on, f64 lower, f64 upper);
   bool joint(JointId id, JointState* out) const;  // false: none (broken, removed)
   std::vector<JointId> joints() const;            // ascending ids
@@ -540,15 +470,14 @@ class World {
   const VoxelGrid* grid(GridId id) const;             // kWorldGrid: grid(); nullptr: none
   bool grid_frame(GridId id, GridFrame* out) const;   // in the world now (false: none)
   i32 grid_priority(GridId id) const;                 // (kWorldGrid: 0)
-  // The oriented grids of the static world in the world grid's voxels: a voxel whose centre lies
-  // in a solid voxel of one. For systems of the world's lattice (water flows around a turned
-  // wall, smoke is held by it): per world chunk, kChunkVox bits (voxel i: bit i & 7 of byte
-  // i >> 3), null where no grid reaches; kept until the grids there change. (A kinematic body's
-  // grids move all the time: not in it.)
+  // The oriented grids in the world grid's voxels: a voxel whose centre lies in a solid voxel of
+  // one. For systems of the world's lattice (water flows around a turned wall, smoke is held by
+  // it): per world chunk, kChunkVox bits (voxel i: bit i & 7 of byte i >> 3), null where no grid
+  // reaches; kept until the grids there change.
   const u8* grid_solids(const IVec3& world_chunk) const;
   // What grid_solids(world_chunk) holds, as a stamp that changes when it does (0: none).
   u64 grid_solids_stamp(const IVec3& world_chunk) const;
-  // The static world's oriented grid with a solid voxel at a world point, and that voxel.
+  // The oriented grid with a solid voxel at a world point, and that voxel.
   bool grid_voxel_at(const V3& world, GridId* grid, IVec3* voxel) const;
   bool grid_solid(const IVec3& world_voxel) const {
     if (oriented_ == 0) return false;
@@ -559,9 +488,6 @@ class World {
   // A grid's point (its coordinates, metres: voxel p's centre is h p) in the world, and back.
   V3 grid_to_world(GridId id, const V3& lattice) const;
   V3 world_to_grid(GridId id, const V3& world) const;
-  // The velocity of the grid's point at a world point: its kinematic body's motion there (v + w x
-  // (X - origin), the last tick's); zero for the static world's grids.
-  V3 grid_velocity(GridId id, const V3& world) const;
 
   // ---- commands
   // Queued: they take effect in the next tick, in call order.
@@ -574,9 +500,16 @@ class World {
   i32 set_voxels(GridId grid, const std::vector<VoxelEdit>& edits, u32 flags = 0);  // (in a grid's coordinates)
   bool apply_impulse(i64 piece, const V3& point, const V3& impulse);  // N s at a world point
   bool remove_piece(i64 piece);                                         // PieceRemoved (Removed)
+  // A piece the host keeps: never culled over max_bodies or the pieces' memory budget (a joint's
+  // pieces - a machine's parts, what hangs on it - are kept anyway). Its parts keep it when it
+  // breaks.
+  bool set_piece_keep(i64 piece, bool keep);
 
   void tick();  // one step of config().dt
   i64 ticks() const { return st_.ticks; }
+  // The world's clock: s of simulation since the level loaded (paused ticks do not count; a saved
+  // session's is restored). Joint drives follow their programs by it.
+  f64 time() const { return static_cast<f64>(steps_) * cfg_.dt; }
 
   // ---- output
   std::vector<WorldEvent> take_events();   // since the last call, in order
@@ -630,13 +563,19 @@ class World {
   // A point commands and queries accept: finite, and within the voxel key range (kVoxelLimit).
   bool in_range(const V3& p) const;
   RayHit raycast(const V3& origin, const V3& dir, f64 max_dist) const;  // the grids' voxels and the pieces
-  // Moves the box [min, max] by `move` (per axis, x then y then z) as far as the grids' voxels
-  // let it (not the pieces): a character controller's sweep; stepping up ledges is the host's
+  // Moves the box [min, max] by `move` (per axis, x then y then z) as far as the grids' and the
+  // pieces' voxels let it: a character controller's sweep; stepping up ledges is the host's
   // business. Boxes and moves beyond 16 m are refused / clamped.
   CollideResult collide(const V3& min, const V3& max, const V3& move) const;
-  // How far the box [min, max] moves along `move` (any direction) before it touches a grid's
-  // voxels, and the normal there: a controller slides along rotated walls with it.
+  // How far the box [min, max] moves along `move` (any direction) before it touches a grid's or
+  // a piece's voxels, and the normal there: a controller slides along rotated walls with it.
   SweepHit sweep(const V3& min, const V3& max, const V3& move) const;
+  // Whether the box [min, max] overlaps a grid's or a piece's voxels (touching is not overlapping).
+  bool overlaps(const V3& min, const V3& max) const;
+  // How far the box must rise to overlap nothing (0: it overlaps nothing; in steps of half the
+  // world grid's voxel), or -1 when not within max_rise: a controller's feet pushed into by a
+  // rising lift's car or a turning deck are lifted out before it moves on.
+  f64 depenetrate(const V3& min, const V3& max, f64 max_rise) const;
   // Diagnostic field of the voxels of a resident chunk (kChunkVox values, Chunk::v order).
   // (Brings the chunk's fragments up to date: not const.)
   bool debug_field(const IVec3& chunk, DebugField field, std::vector<u8>* out) { return debug_field(kWorldGrid, chunk, field, out); }
@@ -672,6 +611,7 @@ class World {
     u64 chunk = 0;
     i32 idx = -1;  // index in the chunk's FragChunk (valid for the chunk's current fragments)
     u16 grid = 0;
+    bool operator==(const FragKey& o) const { return chunk == o.chunk && idx == o.idx && grid == o.grid; }
   };
   // a chunk of a grid, ordered by grid then chunk (the world grid's first, in key order)
   struct GKey {
@@ -690,6 +630,8 @@ class World {
 
   // ---- joints (world_joints.cpp)
   struct JointRec;
+  JointId add_joint_impl(const JointDesc& d, JointId want);  // (want: its id, a source's joint; 0: the next)
+  size_t insert_joint(const JointRec& r, const Joint& j);     // (in id order; returns its index)
   // Each substep: the solver's ends from the anchors (their bodies' poses now); a joint whose
   // anchor is gone is marked broken. Between substeps the broken ones (those too, that the solver
   // broke) are reaped: JointBroken, removed.
@@ -704,24 +646,34 @@ class World {
   // the joints' forces on the structures of the grids their ends hold on to (structure_loads)
   void joint_structure_loads(f64 dt_sub);
 
-  // ---- kinematic bodies (world_kinematic.cpp)
-  struct KinState;
-  i32 kin_slot_of(KinematicId id) const;     // -1: none
-  KinematicId add_kinematic_impl(const Pose& pose, bool base, KinematicId want);
-  void restore_kinematic(u16 k, const KinState& saved);  // (its pose and motion as saved)
-  std::vector<u8> kinematic_entries() const;  // (the delta's kinematic bodies part)
-  // The tick's motion: poses at the start and end of it, velocities, accelerations; the bodies'
-  // grids placed at fraction s of it (substeps) or at its end.
-  void begin_kinematics(f64 dt);
-  void place_kinematics(f64 s);
-  void place_kinematics_of(u16 k);           // (its grids where it is now)
-  bool kinematics_moving() const;
-  V3 body_velocity(u16 body, const V3& world_point) const;  // (0: zero)
-  V3 body_angular(u16 body) const;
-  // A body frame's loads (per unit mass, at body-frame point c): gravity and the frame's inertia.
-  V3 frame_accel(u16 body, const V3& c) const;
-  // World force and point in a structure's frame (the static world's: as they are).
-  void to_body(u16 body, V3* F, V3* p) const;
+  // ---- the session's pieces and joints in records: deltas, the streaming archive (world_session.cpp)
+  struct SessionDelta;
+  std::vector<u8> piece_record(const Body& b) const;
+  std::unique_ptr<Body> read_piece_record(const std::vector<u8>& rec) const;  // (nullptr: malformed)
+  std::vector<u8> joint_record(size_t k) const;
+  bool read_joint_record(world_detail::Rd& in, JointRec* r, Joint* j) const;
+  std::vector<u8> session_entries() const;                          // (the delta's session part)
+  bool read_session(world_detail::Rd& in, SessionDelta* s) const;  // (checked whole; false: malformed)
+  void apply_session(SessionDelta&& s);                             // (its pieces and joints for the ones there are)
+  // (a group's pieces, the joints on them and their dead loads; read; added to the world)
+  void write_group(std::vector<u8>& out, const std::vector<const Body*>& bodies, const std::vector<size_t>& joints) const;
+  bool read_group(world_detail::Rd& in, SessionDelta* s) const;
+  void add_group(SessionDelta& s);
+  // Pieces out of range (a streamed world): a group (pieces joined by joints or touching, ids
+  // sorted) archived with its joints and dead loads in the change archive's budget, with its
+  // chunks' region; back when every chunk it needs is resident again; gone with its region.
+  void archive_group(const std::vector<i64>& ids, const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of);
+  std::vector<std::vector<i64>> piece_groups(bool touching) const;  // (joined by joints; and touching, if asked)
+  void unload_joints();                                             // (those held by voxels gone out of range)
+  void restore_groups();
+  void forget_group(u64 key);
+  struct ArchivedGroup {
+    std::vector<u64> chunks;      // (resident, all: it comes back)
+    std::vector<JointId> joints;  // (archived with it: a source's joint is not made again meanwhile)
+    u32 pieces = 0;
+  };
+  std::map<u64, ArchivedGroup> archived_groups_;  // archive key ((3 << 62) | its first piece's id) -> ...
+  std::unordered_set<JointId> archived_joints_;
 
   // ---- grids (world_grids.cpp)
   VoxelGrid& vg(u16 g);
@@ -731,9 +683,7 @@ class World {
   bool live(u16 g) const { return g < grids_.size() && grids_[g] != nullptr; }
   i32 slot_of(GridId id) const;              // -1: none
   GridId id_of(u16 g) const;
-  const LatticeXf& xf_of(u16 g) const;       // lattice -> world
-  const LatticeXf& lxf_of(u16 g) const;      // lattice -> its body's frame (structures and junctions are made there)
-  LatticeXf body_pose(u16 body) const;       // a body's frame -> world (0: the static world, the identity)
+  const LatticeXf& xf_of(u16 g) const;       // lattice -> world (the world grid: the identity)
   f64 h_of(u16 g) const;                     // its voxel size
   bool owns(u16 a, u16 b) const;             // a keeps its voxels where a and b overlap (priority, then id)
   V3 voxel_centre(const GVox& v) const;      // in the world
@@ -837,7 +787,7 @@ class World {
   // ---- pieces (world_pieces.cpp)
   // A body from world fragments (their voxels leave their grids), with a velocity field.
   // v: its velocity (of its centre of mass); about (optional): v is that of this world point,
-  // the velocity field v + w x (X - about) (a kinematic body's motion)
+  // the velocity field v + w x (X - about) (what it broke off from was moving so)
   Body* make_body_from_world(const std::vector<FragKey>& frags, const V3& v, const V3& w, const V3* about = nullptr);
   int fracture_hook(f64 dt);                 // rigid substep hook: body stress, splits (0 none, 1 bodies changed, 2 solve again)
   struct PointForce {
@@ -910,17 +860,22 @@ class World {
   // changed ones, or all of them for a grid of this session), and applying one to a grid.
   std::vector<u8> grid_entry(u16 g) const;
   bool apply_grid_entry(u16 g, const std::vector<u8>& entry, std::vector<u64>* touched);
-  SweepHit sweep_grids(const V3& mn, const V3& mx, const V3& mv, bool world_grid) const;
+  // (the oriented grids' and the pieces' voxels, and the world grid's too if asked)
+  SweepHit sweep_solids(const V3& mn, const V3& mx, const V3& mv, bool world_grid) const;
+  // (each solid voxel of a grid or a piece whose cube may meet the world box [lo, hi]: its centre,
+  // axes and half side; f returns true to stop)
+  template <class F>
+  void for_voxel_cubes(const V3& lo, const V3& hi, bool world_grid, F&& f) const;
 
   WorldConfig cfg_;
   WorldParams par_;
+  // (on the heap: what the world builds refers to it, and the world may be moved)
+  std::unique_ptr<MaterialTable> mats_ = std::make_unique<MaterialTable>(default_materials());
+  const MaterialTable& mats() const { return *mats_; }
   VoxelGrid grid_;                           // the world grid (slot 0)
-  std::vector<std::unique_ptr<KinState>> kins_;  // by slot (slot 0: unused, the static world)
-  std::unordered_map<KinematicId, u16> kin_slots_;
-  KinematicId next_kin_ = 1;
-  std::vector<KinematicId> removed_kin_;  // the level's bodies removed (saved in deltas)
   // joints (world_joints.cpp): their anchors, parallel to rigid_.joints (ascending ids)
   std::vector<JointRec> jrecs_;
+  i64 steps_ = 0;  // unpaused ticks since the level loaded (time())
   JointId next_joint_ = 1;
   std::vector<std::unique_ptr<GridState>> grids_;  // by slot (nullptr: free); slot 0: the world grid's state
   std::unordered_map<GridId, u16> slots_;    // oriented grid id -> slot
@@ -971,12 +926,12 @@ class World {
     V3 p, F;
   };
   std::unordered_map<i64, std::vector<DeadLoad>> dead_loads_;  // sleeping body -> its resting forces
-  void joint_dead_loads(const Body& b, std::vector<DeadLoad>& dl) const;  // (its joints' pulls on grids)
   struct BlastLoad {
     i32 first;                               // the fragment's identity (grid, chunk, first voxel)
     u64 chunk;
     u16 grid;
     V3 F, at;                                // (at: the fragment's centre of mass)
+    V3 J;                                    // the momentum the blast gives the fragment (N s)
   };
   std::vector<BlastLoad> blast_loads_;
   std::vector<std::unique_ptr<Body>> pending_add_;

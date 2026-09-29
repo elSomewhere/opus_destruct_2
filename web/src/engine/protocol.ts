@@ -472,6 +472,13 @@ export interface DetachedEvent {
    * it replaces the old one, at the piece's pose now, without the effects of a detachment.
    */
   remesh?: boolean;
+  /**
+   * (front-end extension) The rigid piece's voxels for the client's collision, at the pose the
+   * mesh is in: u32 its shapes, then per shape its lattice (origin xyz, rotation xyzw, voxel size:
+   * f64), its voxel box (lo xyz, dims xyz: i32) and a bit per cell of the box (little-endian;
+   * engine/pieces.ts). Transferred.
+   */
+  occupancy?: ArrayBuffer;
 }
 
 /** Bond ruptures (decals and particles); `strength` is the utilization, about 1..2. */
@@ -529,10 +536,11 @@ export interface CollideResultMessage {
   move: Vec3;
   onGround: boolean;
   /**
-   * (front-end extension) What the box stands on (onGround): the grid (0 the world grid) and its
-   * velocity under the box (a kinematic body's: a lift, a turntable; a rider adds it x dt).
+   * (front-end extension) What the box stands on (onGround): the grid (0 the world grid) or the
+   * piece (a lift's car, a turntable) and its velocity under the box (a rider adds it x dt).
    */
   ground?: number;
+  groundPiece?: number;
   groundVelocity?: Vec3;
 }
 
@@ -672,9 +680,10 @@ export function emptyEngineStats(): EngineStats {
 /**
  * Doubles per rigid piece in `DebrisMessage.poses` (the `svx_debris_data` layout): id of its
  * detached event, centre of mass xyz, rotation since detachment as a unit quaternion xyzw (the
- * pivot is the event centroid), opacity 0..1 (below 1 while the engine fades it out).
+ * pivot is the event centroid), opacity 0..1 (below 1 while the engine fades it out), velocity
+ * of its centre xyz, angular velocity xyz (what rides on it is carried so).
  */
-export const DEBRIS_STRIDE = 9;
+export const DEBRIS_STRIDE = 15;
 
 /**
  * (front-end extension) Poses of all live rigid pieces, sent after an engine tick while any
@@ -720,17 +729,12 @@ export interface EnvMessage {
   smoke: Float32Array<ArrayBuffer>;
 }
 
-/**
- * Doubles per grid in `GridsMessage.frames`: id, origin xyz, rotation xyzw (lattice -> world),
- * voxel size, kinematic body (0: the static world), and the velocity field it moves with:
- * velocity xyz, angular xyz, centre xyz (v + w x (X - c)).
- */
-export const GRID_STRIDE = 19;
+/** Doubles per grid in `GridsMessage.frames`: id, origin xyz, rotation xyzw (lattice -> world), voxel size. */
+export const GRID_STRIDE = 9;
 
 /**
- * (front-end extension) The oriented grids' places (docs/GRIDS.md): the grids that came, moved or
- * move (a kinematic body's, every tick), and the grids gone. Their chunk meshes and occupancy are
- * in their lattices.
+ * (front-end extension) The oriented grids' places (docs/GRIDS.md): the grids that came or were
+ * placed anew, and the grids gone. Their chunk meshes and occupancy are in their lattices.
  */
 export interface GridsMessage {
   type: 'grids';
@@ -921,6 +925,7 @@ export function workerMessageTransferables(msg: WorkerMessage): ArrayBuffer[] {
         if (e.kind === 'detached') {
           pushUnique(out, seen, e.mesh.vertices);
           pushUnique(out, seen, e.mesh.indices);
+          if (e.occupancy) pushUnique(out, seen, e.occupancy);
         }
       }
       break;

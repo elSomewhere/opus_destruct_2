@@ -7,6 +7,7 @@
 
 #include "svx/base/vec.hpp"
 #include "svx/world/grid.hpp"
+#include "svx/world/joint_desc.hpp"
 
 namespace svx {
 
@@ -18,6 +19,13 @@ struct SourceGrid {
   Quat rot;
   f64 voxel_size = 0.0;  // its voxel size (m; 0: the world's)
   i32 priority = 0;      // (overlaps: GridDesc::priority)
+};
+
+// A joint a source places in its world: its id (unique and stable, not 0, below 2^31: the world
+// gives it the joint id 2^31 + id) and what it holds together.
+struct SourceJoint {
+  u32 id = 0;
+  JointDesc desc;
 };
 
 class ChunkSource {
@@ -54,6 +62,14 @@ class ChunkSource {
   virtual bool generate_grid(u32 id, VoxelGrid& out) const {
     (void)id, (void)out;
     return false;
+  }
+  // The joints at home in a chunk (docs/MOTION.md: a machine's, a hanging part's): made when the
+  // chunk's grids are, their anchors on those grids' voxels or the world grid's. A machine that
+  // went out of range is archived as it was, with its joints, and comes back so: its source's
+  // joints are made again only when it was forgotten. Called from the world's thread.
+  virtual std::vector<SourceJoint> joints(const IVec3& chunk) const {
+    (void)chunk;
+    return {};
   }
 };
 

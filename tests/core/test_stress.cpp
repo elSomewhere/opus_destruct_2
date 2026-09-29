@@ -81,8 +81,8 @@ TEST_CASE("stress: a cantilever carries its weight to the support (statics, exac
   CHECK(shear(tip) == doctest::Approx(9.81 * m).epsilon(1e-6));
   CHECK(moment(tip) == doctest::Approx(9.81 * m * 0.5 * L).epsilon(1e-6));
   // and the fibre stress check reads the bending: phi grows towards the root
-  const f64 phi_root = bond_utilization(P.bonds[0], root, 1.0);
-  const f64 phi_tip = bond_utilization(P.bonds[size_t(n - 1)], tip, 1.0);
+  const f64 phi_root = bond_utilization(P.bonds[0], root, 1.0, default_materials());
+  const f64 phi_tip = bond_utilization(P.bonds[size_t(n - 1)], tip, 1.0, default_materials());
   CHECK(phi_root > 50.0 * phi_tip);
 }
 
@@ -176,25 +176,25 @@ TEST_CASE("stress: removing a bond in place equals assembling without it") {
 TEST_CASE("stress: failure modes follow the fibre stresses") {
   StressProblem P = cantilever(2, 0.5, 1.0);
   const SBond& b = P.bonds[1];
-  const BondStrength S = bond_strength(b, 1.0);
+  const BondStrength S = bond_strength(b, 1.0, default_materials());
   BondLoad L;
   FailMode mode;
   L.N = 1.01 * S.ft * b.area;  // pure tension just over strength
-  CHECK(bond_utilization(b, L, 1.0, &mode) == doctest::Approx(1.01));
+  CHECK(bond_utilization(b, L, 1.0, default_materials(), &mode) == doctest::Approx(1.01));
   CHECK(mode == FailMode::Tension);
   L = BondLoad{};
   L.N = -1.2 * S.fc * b.area;  // crushing
-  CHECK(bond_utilization(b, L, 1.0, &mode) == doctest::Approx(1.2));
+  CHECK(bond_utilization(b, L, 1.0, default_materials(), &mode) == doctest::Approx(1.2));
   CHECK(mode == FailMode::Crush);
   L = BondLoad{};
   L.V1 = S.coh * b.area;  // shear (x 1.5 for the parabolic distribution)
-  CHECK(bond_utilization(b, L, 1.0, &mode) == doctest::Approx(1.5));
+  CHECK(bond_utilization(b, L, 1.0, default_materials(), &mode) == doctest::Approx(1.5));
   CHECK(mode == FailMode::Shear);
   // compression raises the shear strength (friction); fragility divides every strength (not the
   // friction coefficient)
   L.N = -b.area * S.coh / S.mu;
-  CHECK(bond_utilization(b, L, 1.0) == doctest::Approx(0.75));
-  CHECK(bond_utilization(b, L, 2.0) == doctest::Approx(1.0));
+  CHECK(bond_utilization(b, L, 1.0, default_materials()) == doctest::Approx(0.75));
+  CHECK(bond_utilization(b, L, 2.0, default_materials()) == doctest::Approx(1.0));
 }
 
 namespace {

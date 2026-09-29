@@ -8,7 +8,7 @@ add_executable(svx_core_tests
   core/test_capi.cpp
   core/test_ext.cpp
   core/test_grids.cpp
-  core/test_kinematic.cpp
+  core/test_machines.cpp
   core/test_joints.cpp
   core/test_dmath.cpp)
 target_include_directories(svx_core_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)

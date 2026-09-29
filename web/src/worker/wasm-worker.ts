@@ -104,6 +104,7 @@ interface SvxModule {
   _svx_event_info(e: number, i: number, out: number): void;
   _svx_event_vertices(e: number, i: number): number;
   _svx_event_indices(e: number, i: number): number;
+  _svx_event_occupancy(e: number, i: number, outSize: number): number;
   _svx_stats(e: number, out: number): void;
   _svx_debris(e: number): number;
   _svx_debris_data(e: number): number;
@@ -430,6 +431,15 @@ function flushJoints(): void {
   postToMain({ type: 'joints', joints });
 }
 
+/** A piece event's voxels for the client's collision (svx_event_occupancy), if it has them. */
+function eventOccupancy(i: number): { occupancy?: ArrayBuffer } {
+  const m = mod as SvxModule;
+  const size = scratch + 8 * 30; // (a double past the event info the caller is reading)
+  const ptr = m._svx_event_occupancy(eng, i, size);
+  const bytes = m.HEAPF64[size >> 3]!;
+  return ptr && bytes > 0 ? { occupancy: copyOut(ptr, bytes) } : {};
+}
+
 function flushEvents(): void {
   const m = mod as SvxModule;
   const n = m._svx_poll_events(eng);
@@ -456,6 +466,7 @@ function flushEvents(): void {
           indices: copyOut(m._svx_event_indices(eng, i), ic * 4),
           indexCount: ic,
         },
+        ...eventOccupancy(i),
       });
     } else if (kind === 1) {
       const voxels = f64(16);
@@ -486,6 +497,7 @@ function flushEvents(): void {
           indices: copyOut(m._svx_event_indices(eng, i), ic * 4),
           indexCount: ic,
         },
+        ...eventOccupancy(i),
       });
     }
     // (kind 3, the v1 bubble debug event, is not emitted by v2 engines)
@@ -789,6 +801,7 @@ async function handle(cmd: EngineCommand): Promise<void> {
       let move: Vec3 = [...cmd.move];
       let onGround = false;
       let ground = 0;
+      let groundPiece = 0;
       let groundVelocity: Vec3 = [0, 0, 0];
       if (mod && loaded) {
         mod._svx_collide(eng, cmd.min[0], cmd.min[1], cmd.min[2], cmd.max[0], cmd.max[1], cmd.max[2], cmd.move[0], cmd.move[1], cmd.move[2], scratch);
@@ -796,8 +809,9 @@ async function handle(cmd: EngineCommand): Promise<void> {
         onGround = f64(3) > 0;
         ground = f64(4);
         groundVelocity = [f64(5), f64(6), f64(7)];
+        groundPiece = f64(8);
       }
-      postToMain({ type: 'collideResult', id: cmd.id, move, onGround, ground, groundVelocity });
+      postToMain({ type: 'collideResult', id: cmd.id, move, onGround, ground, groundPiece, groundVelocity });
       break;
     }
     case 'setParams':

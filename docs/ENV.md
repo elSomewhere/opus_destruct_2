@@ -316,7 +316,7 @@ reports each system's memory (`MemoryReport::systems`).
 - The far render tier shows no water: distant ponds look like dry pits.
 - Oriented grids ([`GRIDS.md`](GRIDS.md) §8): fire burns in each grid's lattice and crosses
   between lattices through its flames' world points. Water and smoke live in the world grid's
-  lattice and see the static world's grids at its resolution (a world voxel is solid to them if
-  its centre lies in a grid's solid voxel): a turned wall thinner than a world voxel may leak. A
-  kinematic body's grids move and take no part in water and smoke; only their own flames heat
-  them.
+  lattice and see the grids at its resolution (a world voxel is solid to them if its centre lies
+  in a grid's solid voxel): a turned wall thinner than a world voxel may leak.
+- The systems' transient state (heat, smoke) is not in a delta: a loaded session's fires are out
+  (what they burnt stays burnt: the burn layer is saved).

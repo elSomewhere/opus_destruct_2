@@ -101,6 +101,8 @@ const Field kFields[] = {
     SVX_T_INT("rigid.manifold", rigid.manifold),
     SVX_T_F64("rigid.manifold_per_m", rigid.manifold_per_m),
     SVX_T_F64("rigid.kill_depth", rigid.kill_depth),
+    SVX_T_BOOL("rigid.speculative", rigid.speculative),
+    SVX_T_INT("rigid.speculative_contacts", rigid.speculative_contacts),
     SVX_T_F64("rigid.joint_baumgarte", rigid.joint_baumgarte),
     SVX_T_F64("rigid.joint_slop", rigid.joint_slop),
     SVX_T_F64("rigid.joint_warm", rigid.joint_warm),

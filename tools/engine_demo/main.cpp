@@ -160,8 +160,10 @@ int main(int argc, char** argv) {
   }
   par.debug_view = debug_view;
   Game eng;
-  if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC") || std::getenv("SVX_MIN_BODY") || std::getenv("SVX_RIGID") || std::getenv("SVX_ROUNDS") || std::getenv("SVX_REST")) {
+  if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC") || std::getenv("SVX_MIN_BODY") || std::getenv("SVX_RIGID") || std::getenv("SVX_ROUNDS") || std::getenv("SVX_REST") ||
+      std::getenv("SVX_NO_CCD")) {
     WorldConfig c = eng.config();
+    if (std::getenv("SVX_NO_CCD")) c.rigid.speculative = false;  // (experiments: no continuous collision)
     if (const char* e = std::getenv("SVX_RIGID")) {
       // (experiments) iterations,position_iterations,manifold,manifold_per_m,substeps
       int it, pit, man, sub;

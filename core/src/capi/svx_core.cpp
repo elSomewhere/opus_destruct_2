@@ -27,7 +27,7 @@ struct svxc_world {
 
 static_assert(SVXC_REBAR == static_cast<int>(MaterialId::Rebar) && SVXC_WOOD == static_cast<int>(MaterialId::Wood),
               "svx_core.h's materials are the registry's standard ones");
-static_assert(SVXC_JOINT_DISTANCE == static_cast<int>(JointType::Distance) && SVXC_ANCHOR_KINEMATIC == static_cast<int>(JointAnchor::Kind::Kinematic),
+static_assert(SVXC_JOINT_DISTANCE == static_cast<int>(JointType::Distance) && SVXC_ANCHOR_PIECE == static_cast<int>(JointAnchor::Kind::Piece),
               "svx_core.h's joints are the core's");
 static_assert(SVXC_JOINT_BROKEN == static_cast<int>(WorldEvent::Kind::JointBroken), "svx_core.h's events are the core's");
 
@@ -115,36 +115,31 @@ extern "C" {
 
 // ---- materials
 
-int svxc_material_set(int id, const svxc_material* m) {
-  if (!m) return -1;
+}  // extern "C"
+
+namespace {
+
+Material material_of(const svxc_material& m) {
   Material M;
-  M.name = m->name ? m->name : "";
-  M.E = m->E;
-  M.G = m->G;
-  M.rho = m->rho;
-  M.ft = m->ft;
-  M.fb = m->fb;
-  M.fc = m->fc;
-  M.cohesion = m->cohesion;
-  M.friction = m->friction;
-  M.Gf = m->Gf;
-  M.frag_x = m->frag[0];
-  M.frag_y = m->frag[1];
-  M.frag_z = m->frag[2];
-  M.frag_noise = m->frag_noise;
-  M.indestructible = m->indestructible != 0;
-  if (id >= 0) {
-    if (id >= kMaxMaterials) return -1;
-    set_material(static_cast<MaterialId>(id), M);
-    return id;
-  }
-  MaterialId out;
-  return register_material(M, &out) ? static_cast<int>(out) : -1;
+  M.name = m.name ? m.name : "";
+  M.E = m.E;
+  M.G = m.G;
+  M.rho = m.rho;
+  M.ft = m.ft;
+  M.fb = m.fb;
+  M.fc = m.fc;
+  M.cohesion = m.cohesion;
+  M.friction = m.friction;
+  M.Gf = m.Gf;
+  M.frag_x = m.frag[0];
+  M.frag_y = m.frag[1];
+  M.frag_z = m.frag[2];
+  M.frag_noise = m.frag_noise;
+  M.indestructible = m.indestructible != 0;
+  return M;
 }
 
-int svxc_material_get(int id, svxc_material* out) {
-  if (!out || id < 0 || id >= kMaxMaterials || !material_registered(static_cast<MaterialId>(id))) return 0;
-  const Material& M = material(static_cast<MaterialId>(id));
+void put_material(const Material& M, svxc_material* out) {
   out->name = M.name.c_str();
   out->E = M.E;
   out->G = M.G;
@@ -160,16 +155,54 @@ int svxc_material_get(int id, svxc_material* out) {
   out->frag[2] = M.frag_z;
   out->frag_noise = M.frag_noise;
   out->indestructible = M.indestructible ? 1 : 0;
+}
+
+// (a table's: set or registered; its properties; by name)
+int table_set(MaterialTable& t, int id, const svxc_material* m) {
+  if (!m) return -1;
+  const Material M = material_of(*m);
+  if (id >= 0) {
+    if (id >= kMaxMaterials) return -1;
+    t.set(static_cast<MaterialId>(id), M);
+    return id;
+  }
+  MaterialId out;
+  return t.add(M, &out) ? static_cast<int>(out) : -1;
+}
+
+int table_get(const MaterialTable& t, int id, svxc_material* out) {
+  if (!out || id < 0 || id >= kMaxMaterials || !t.registered(static_cast<MaterialId>(id))) return 0;
+  put_material(t[static_cast<MaterialId>(id)], out);
   return 1;
 }
 
-int svxc_material_find(const char* name) {
+int table_find(const MaterialTable& t, const char* name) {
   bool ok = false;
-  const MaterialId id = material_from_name(name, &ok);
+  const MaterialId id = t.find(name, &ok);
   return ok ? static_cast<int>(id) : -1;
 }
 
+}  // namespace
+
+extern "C" {
+
+int svxc_material_set(int id, const svxc_material* m) { return table_set(default_materials(), id, m); }
+int svxc_material_get(int id, svxc_material* out) { return table_get(default_materials(), id, out); }
+int svxc_material_find(const char* name) { return table_find(default_materials(), name); }
 void svxc_materials_reset(void) { reset_materials(); }
+
+int svxc_world_material_set(svxc_world* w, int id, const svxc_material* m) {
+  if (!w || !m) return -1;
+  if (id >= 0) {
+    if (id >= kMaxMaterials) return -1;
+    w->w.set_material(static_cast<MaterialId>(id), material_of(*m));
+    return id;
+  }
+  MaterialId out;
+  return w->w.register_material(material_of(*m), &out) ? static_cast<int>(out) : -1;
+}
+int svxc_world_material_get(svxc_world* w, int id, svxc_material* out) { return w ? table_get(w->w.materials(), id, out) : 0; }
+int svxc_world_material_find(svxc_world* w, const char* name) { return w ? table_find(w->w.materials(), name) : -1; }
 
 // ---- worlds
 
@@ -245,7 +278,6 @@ uint32_t svxc_add_grid_desc(svxc_world* w, const uint8_t* voxels, int nx, int ny
   desc.frame = GridFrame{V3{d->origin[0], d->origin[1], d->origin[2]}, Quat{d->rot[0], d->rot[1], d->rot[2], d->rot[3]}};
   desc.voxel_size = d->voxel_size;
   desc.priority = d->priority;
-  desc.body = d->body;
   desc.base = d->base != 0;
   return w->w.add_grid(desc, std::move(g));
 }
@@ -263,50 +295,6 @@ double svxc_grid_voxel_size(svxc_world* w, uint32_t id) {
 }
 
 int svxc_grid_priority(svxc_world* w, uint32_t id) { return w ? w->w.grid_priority(id) : 0; }
-
-uint32_t svxc_grid_body(svxc_world* w, uint32_t id) { return w ? w->w.grid_body(id) : 0; }
-
-void svxc_grid_velocity(svxc_world* w, uint32_t id, const double point[3], double vel[3]) {
-  if (!vel) return;
-  vel[0] = vel[1] = vel[2] = 0.0;
-  if (!w || !point) return;
-  put3(vel, w->w.grid_velocity(id, V3{point[0], point[1], point[2]}));
-}
-
-uint32_t svxc_add_kinematic(svxc_world* w, const double pos[3], const double rot[4], int base) {
-  if (!w || !pos || !rot) return 0;
-  return w->w.add_kinematic(Pose{V3{pos[0], pos[1], pos[2]}, Quat{rot[0], rot[1], rot[2], rot[3]}}, base != 0);
-}
-
-int svxc_remove_kinematic(svxc_world* w, uint32_t id, int release) { return w && w->w.remove_kinematic(id, release != 0) ? 1 : 0; }
-
-int svxc_drive_kinematic(svxc_world* w, uint32_t id, const double pos[3], const double rot[4]) {
-  if (!w || !pos || !rot) return 0;
-  return w->w.drive_kinematic(id, Pose{V3{pos[0], pos[1], pos[2]}, Quat{rot[0], rot[1], rot[2], rot[3]}}) ? 1 : 0;
-}
-
-int svxc_set_kinematic_velocity(svxc_world* w, uint32_t id, const double vel[3], const double ang[3]) {
-  if (!w || !vel || !ang) return 0;
-  return w->w.set_kinematic_velocity(id, V3{vel[0], vel[1], vel[2]}, V3{ang[0], ang[1], ang[2]}) ? 1 : 0;
-}
-
-int svxc_kinematic(svxc_world* w, uint32_t id, double pos[3], double rot[4], double vel[3], double ang[3]) {
-  KinematicState k;
-  if (!w || !w->w.kinematic(id, &k)) return 0;
-  if (pos) put3(pos, k.pose.pos);
-  if (rot) put4(rot, k.pose.rot);
-  if (vel) put3(vel, k.vel);
-  if (ang) put3(ang, k.ang);
-  return 1;
-}
-
-int svxc_kinematics(svxc_world* w, uint32_t* out, int max) {
-  if (!w) return 0;
-  const std::vector<KinematicId> ids = w->w.kinematics();
-  if (out)
-    for (int i = 0; i < std::min<int>(max, static_cast<int>(ids.size())); ++i) out[i] = ids[size_t(i)];
-  return static_cast<int>(ids.size());
-}
 
 int svxc_grids(svxc_world* w, uint32_t* out, int max) {
   if (!w) return 0;
@@ -451,6 +439,8 @@ int svxc_apply_impulse(svxc_world* w, int64_t piece, const double point[3], cons
 
 int svxc_remove_piece(svxc_world* w, int64_t piece) { return w && w->w.remove_piece(piece) ? 1 : 0; }
 
+int svxc_set_piece_keep(svxc_world* w, int64_t piece, int keep) { return w && w->w.set_piece_keep(piece, keep != 0) ? 1 : 0; }
+
 int svxc_add_layer(svxc_world* w, const char* name, int persistent, int bind) {
   if (!w || !name || !*name || bind < SVXC_BIND_PLACE || bind > SVXC_BIND_AIR) return -1;
   return w->w.add_layer({name, persistent != 0, static_cast<LayerBind>(bind)});
@@ -526,6 +516,8 @@ int svxc_chunk_layer(svxc_world* w, int layer, int cx, int cy, int cz, uint8_t* 
 void svxc_tick(svxc_world* w) {
   if (w) w->w.tick();
 }
+
+double svxc_time(svxc_world* w) { return w ? w->w.time() : 0.0; }
 
 // ---- output
 
@@ -688,12 +680,31 @@ void svxc_joint_defaults(svxc_joint_desc* d) {
   d->axis[2] = 1.0;
   d->length = -1.0;
   d->rope = 1;
+  const JointDrive def;
+  d->drive.speed = def.speed;
+  d->drive.period = def.period;
+  d->drive.stiffness = def.stiffness;
 }
+
+namespace {
+bool drive_of(const svxc_joint_drive& d, JointDrive* out) {
+  if (d.kind < SVXC_DRIVE_OFF || d.kind > SVXC_DRIVE_OSCILLATE) return false;
+  out->kind = static_cast<JointDrive::Kind>(d.kind);
+  out->speed = d.speed;
+  out->max = d.max;
+  out->target = d.target;
+  out->target2 = d.target2;
+  out->period = d.period;
+  out->phase = d.phase;
+  out->stiffness = d.stiffness;
+  return true;
+}
+}  // namespace
 
 uint32_t svxc_add_joint(svxc_world* w, const svxc_joint_desc* d) {
   if (!w || !d || d->type < SVXC_JOINT_BALL || d->type > SVXC_JOINT_DISTANCE) return 0;
   auto anchor = [](const svxc_anchor& a, JointAnchor* out) {
-    if (a.kind < SVXC_ANCHOR_WORLD || a.kind > SVXC_ANCHOR_KINEMATIC) return false;
+    if (a.kind < SVXC_ANCHOR_WORLD || a.kind > SVXC_ANCHOR_PIECE) return false;
     out->kind = static_cast<JointAnchor::Kind>(a.kind);
     out->id = a.id;
     out->point = V3{a.point[0], a.point[1], a.point[2]};
@@ -710,9 +721,7 @@ uint32_t svxc_add_joint(svxc_world* w, const svxc_joint_desc* d) {
   j.limited = d->limited != 0;
   j.lower = d->lower;
   j.upper = d->upper;
-  j.motor = d->motor != 0;
-  j.motor_speed = d->motor_speed;
-  j.motor_max = d->motor_max;
+  if (!drive_of(d->drive, &j.drive)) return 0;
   j.break_force = d->break_force;
   j.break_torque = d->break_torque;
   return w->w.add_joint(j);
@@ -720,8 +729,9 @@ uint32_t svxc_add_joint(svxc_world* w, const svxc_joint_desc* d) {
 
 int svxc_remove_joint(svxc_world* w, uint32_t id) { return w && w->w.remove_joint(id) ? 1 : 0; }
 
-int svxc_set_joint_motor(svxc_world* w, uint32_t id, int on, double speed, double max) {
-  return w && w->w.set_joint_motor(id, on != 0, speed, max) ? 1 : 0;
+int svxc_set_joint_drive(svxc_world* w, uint32_t id, const svxc_joint_drive* d) {
+  JointDrive j;
+  return w && d && drive_of(*d, &j) && w->w.set_joint_drive(id, j) ? 1 : 0;
 }
 
 int svxc_set_joint_limits(svxc_world* w, uint32_t id, int on, double lower, double upper) {
@@ -759,6 +769,7 @@ void svxc_collide_ex(svxc_world* w, const double mn[3], const double mx[3], cons
   put3(out->move, r.move);
   out->on_ground = r.on_ground ? 1 : 0;
   out->ground = r.ground;
+  out->ground_piece = r.ground_piece;
   put3(out->ground_velocity, r.ground_velocity);
 }
 
@@ -773,8 +784,18 @@ int svxc_sweep_ex(svxc_world* w, const double mn[3], const double mx[3], const d
   out->t = r.t;
   put3(out->normal, r.normal);
   out->grid = r.grid;
+  out->piece = r.piece;
   put3(out->velocity, r.velocity);
   return 1;
+}
+
+int svxc_overlaps(svxc_world* w, const double mn[3], const double mx[3]) {
+  return w && mn && mx && w->w.overlaps({mn[0], mn[1], mn[2]}, {mx[0], mx[1], mx[2]}) ? 1 : 0;
+}
+
+double svxc_depenetrate(svxc_world* w, const double mn[3], const double mx[3], double max_rise) {
+  if (!w || !mn || !mx) return -1.0;
+  return w->w.depenetrate({mn[0], mn[1], mn[2]}, {mx[0], mx[1], mx[2]}, max_rise);
 }
 
 void svxc_get_stats(svxc_world* w, svxc_stats* out) {

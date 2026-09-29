@@ -25,10 +25,12 @@ its own, at any position and rotation and of any voxel size: a building at an an
 brace, a tilted ramp. They are simulated like the world grid in every respect, bonded to it and to
 each other where they meet, with no voxel stepping ([`docs/GRIDS.md`](docs/GRIDS.md)).
 
-Things can move by design. A **kinematic body** is a frame the host drives (a lift, a door, a
-drawbridge, a crane's jib): its grids push and carry pieces and are loaded by the motion.
-**Joints** hold things together (hinges, sliders, ropes, rods, welds) and give way; a wrecking
-ball swings on a crane's rope into a wall ([`docs/MOTION.md`](docs/MOTION.md)).
+Things can move by design, and nothing moves that the physics does not move. **Joints** hold
+pieces to structures (hinges, sliders, ropes, rods, welds) and give way; a hinge's or a slider's
+**drive** moves it on a program. A machine - a lift's car, a turntable, a drawbridge, a crane's
+jib - is pieces on driven joints: what rides on it is carried, its load goes into what holds it,
+and when that is shot away it comes down; a wrecking ball swings on a crane's rope into a wall
+([`docs/MOTION.md`](docs/MOTION.md)).
 
 - **Video:** [`docs/media/tower_collapse.mp4`](docs/media/tower_collapse.mp4): the tower losing its
   two west rows of ground columns (`svx_engine_demo --world tower --scenario pillars`, CPU
@@ -48,7 +50,7 @@ ball swings on a crane's rope into a wall ([`docs/MOTION.md`](docs/MOTION.md)).
 - **Structures off the lattice:** [`docs/GRIDS.md`](docs/GRIDS.md): oriented grids, the
   junctions that bond them, priority and displacement, voxel sizes, their persistence,
   streaming and API.
-- **Kinematic bodies and joints:** [`docs/MOTION.md`](docs/MOTION.md).
+- **Joints and machines:** [`docs/MOTION.md`](docs/MOTION.md).
 - **Fire, smoke and water:** [`docs/ENV.md`](docs/ENV.md). `svx_env` is built on the core's
   public extension points (voxel layers, damage, loads, piece forces, systems), so the core
   stays a clean destruction and structural-integrity engine.
@@ -93,8 +95,9 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
     shed, a reinforced wall, a reservoir and a timber water tower.
   - `angles`: structures in oriented grids: a turned tower, a diagonal bridge deck, a ramp, a
     cross-braced steel portal, turned masonry walls, crates and a leaning monolith.
-  - `machines`: kinematic bodies and joints: a lift (ride it), a turntable with crates, a
-    drawbridge, a crane swinging a wrecking ball into a wall, a pendulum, a chain, a hinged door.
+  - `machines`: machines on driven joints and hanging parts: a lift (ride it), a turntable with
+    crates (ride it), a drawbridge, a crane swinging a wrecking ball into a wall, a pendulum, a
+    chain, a hinged door - all held by structures you can shoot away.
 - **Controls:** WASD move, mouse look, Space jump, Shift run; 1 to 5 or the wheel select pistol,
   shotgun, rocket launcher, flamethrower, water hose, click fires; E uses, V toggles noclip, R respawns; G cycles debug
   views (bond utilization, fragments); H toggles the HUD and its tick timeline; Esc opens the
@@ -114,7 +117,8 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
     that the turned structures draw, that a box stops at the 45° wall (exactly where the turned
     cubes are) and the player stands on the ramp, then blasts them.
   - `node scripts/machines-wasm.mjs http://localhost:5190/ OUT`: the `machines` world. It checks
-    that the kinematic bodies' grids and the ropes draw, and that the player rides the lift.
+    that the pieces and the ropes draw and reach the client's collision, and that the player
+    rides the lift and the turntable.
 
 ## Tools (`build/native-release/tools/`)
 
@@ -138,9 +142,9 @@ core/      svx_core: the destruction physics (docs/CORE.md). Depends on the stan
   include/svx/world/world.hpp   svx::World, the public C++ API
   include/svx/svx_core.h        the C API
   base/      types, vectors, deterministic math and parallel pool, diagnostics
-  material/  the material registry (strengths, fracture energies, rubble sizes)
+  material/  material tables (strengths, fracture energies, rubble sizes): the process's, a world's
   world/     voxel grids (the world grid, oriented grids and their junctions), chunk sources,
-             World (structures, pieces and their fracture, kinematic bodies, joints,
+             World (structures, pieces and their fracture, joints and machines,
              streaming, persistence, queries)
   frag/      fragments (pre-scored rubble pieces per chunk)
   solve/     smoothed-aggregation multigrid, PCG

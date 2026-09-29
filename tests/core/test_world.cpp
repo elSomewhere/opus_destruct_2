@@ -112,7 +112,7 @@ TEST_CASE("world: set_voxels — isolated anchored parts bond to nothing, untrac
   World w;
   w.load(table_world());
   REQUIRE(w.bake());
-  // a kinematic block (a door) next to a leg: anchored, isolated, untracked
+  // a mover's block (a door) next to a leg: anchored, isolated, untracked
   std::vector<VoxelEdit> door;
   for (i32 z = 0; z < 16; ++z) door.push_back({{2, 0, z}, make_vox(MaterialId::Steel, true)});
   CHECK(w.set_voxels(door, kEditUntracked | kEditIsolated) == 16);
@@ -497,6 +497,154 @@ TEST_CASE("memory: a bounded change archive forgets the regions seen least recen
   CHECK(t.w.memory().archive == mem);  // (the arena never grows)
 }
 
+TEST_CASE("memory: rubble goes out of range with its chunks, in the archive, and comes back with them") {
+  PillarTrip t(0.0);  // (unbounded: nothing is forgotten)
+  t.cut(1);
+  std::vector<PieceState> before = t.w.pieces();
+  REQUIRE(before.size() >= 1);
+  t.go(4, 30);  // (96 m on: pillar 1 is out of range)
+  CHECK(t.w.pieces().empty());
+  CHECK(t.w.stats().archived_pieces == static_cast<i64>(before.size()));
+  const int unloaded = t.count(WorldEvent::Kind::PieceRemoved);
+  t.go(1, 30);
+  const std::vector<PieceState> after = t.w.pieces();
+  MESSAGE("pillar 1's rubble: " << before.size() << " pieces archived out of range, " << after.size() << " back (" << unloaded << " unloaded)");
+  REQUIRE(after.size() == before.size());
+  f64 worst = 0.0;
+  for (size_t k = 0; k < before.size(); ++k) {
+    CHECK(after[k].id == before[k].id);
+    worst = std::max(worst, norm(after[k].pos - before[k].pos));
+  }
+  CHECK(worst < 0.01);
+  CHECK(t.w.stats().archived_pieces == 0);
+  // saved while it is out of range, and loaded in a session of the same world: it comes back there too
+  t.go(4, 30);
+  REQUIRE(t.w.stats().archived_pieces == static_cast<i64>(before.size()));
+  const std::vector<u8> delta = t.w.save_delta();
+  PillarTrip t2(0.0);
+  t2.go(4, 5);
+  REQUIRE(t2.w.load_delta(delta));
+  CHECK(t2.w.stats().archived_pieces == static_cast<i64>(before.size()));
+  t2.go(1, 30);
+  const std::vector<PieceState> again = t2.w.pieces();
+  REQUIRE(again.size() == before.size());
+  for (size_t k = 0; k < before.size(); ++k) CHECK(norm(again[k].pos - before[k].pos) < 0.01);
+}
+
+namespace {
+
+// A lift a source makes: a concrete tower (1 m square, 3 m) in chunk (0, 0, 0), a timber car (1
+// m square) beside it - a grid of the source's - on a slider the source makes, its drive going
+// up 2 m and down every 4 s; ground along x for 256 m.
+class LiftSource final : public ChunkSource {
+ public:
+  bool generate(const IVec3& cc, std::vector<Vox>& out) const override {
+    out.assign(kChunkVox, kAir);
+    bool any = false;
+    for (int x = 0; x < kChunk; ++x)
+      for (int y = 0; y < kChunk; ++y)
+        for (int z = 0; z < kChunk; ++z) {
+          const IVec3 p{cc[0] * kChunk + x, cc[1] * kChunk + y, cc[2] * kChunk + z};
+          Vox v = kAir;
+          if (p[2] < 0 && p[2] >= -8) v = kRock;
+          if (p[0] >= 4 && p[0] < 12 && p[1] >= 4 && p[1] < 12 && p[2] >= 0 && p[2] < 24) v = kConcrete;
+          if (v != kAir) {
+            out[size_t(chunk_index(p))] = v;
+            any = true;
+          }
+        }
+    return any;
+  }
+  IVec3 chunk_lo() const override { return {0, 0, -1}; }
+  IVec3 chunk_hi() const override { return {64, 2, 2}; }
+  std::vector<SourceGrid> grids(const IVec3& cc) const override {
+    if (cc != IVec3{0, 0, 0}) return {};
+    SourceGrid g;
+    g.id = 1;
+    g.origin = V3{kH * 13, kH * 4, kH * 1};
+    return {g};
+  }
+  bool generate_grid(u32 id, VoxelGrid& out) const override {
+    if (id != 1) return false;
+    box(out, {0, 0, 0}, {8, 8, 2}, make_vox(MaterialId::Wood, false));
+    return true;
+  }
+  std::vector<SourceJoint> joints(const IVec3& cc) const override {
+    if (cc != IVec3{0, 0, 0}) return {};
+    SourceJoint j;
+    j.id = 1;
+    const V3 p{kH * 12, kH * 8, kH * 1};  // (the gap between the tower's face and the car)
+    j.desc.type = JointType::Slider;
+    j.desc.a.kind = JointAnchor::Kind::Grid;
+    j.desc.a.id = kWorldGrid;
+    j.desc.a.point = p;
+    j.desc.b.kind = JointAnchor::Kind::Grid;
+    j.desc.b.id = 1;
+    j.desc.b.point = p;
+    j.desc.axis = V3{0, 0, 1};
+    j.desc.drive.kind = JointDrive::Kind::Oscillate;
+    j.desc.drive.target2 = 2.0;
+    j.desc.drive.period = 4.0;
+    j.desc.drive.speed = 2.0;
+    j.desc.drive.max = 20000.0;
+    return {j};
+  }
+};
+
+}  // namespace
+
+TEST_CASE("memory: a machine out of range is archived with its joint, and comes back running its program") {
+  World w;
+  VoxelGrid g;
+  g.h = kH;
+  w.load(std::move(g));
+  StreamConfig sc;
+  sc.load_radius = 20.0;
+  sc.evict_radius = 28.0;
+  sc.chunks_per_tick = 400;
+  w.enable_streaming(std::make_shared<LiftSource>(), sc);
+  Run r;
+  w.set_focus(V3{2.0, 2.0, 0.0});
+  run(w, 150, &r);
+  REQUIRE(w.pieces().size() == 1);
+  REQUIRE(w.joints().size() == 1);
+  const JointId j = w.joints().front();
+  JointState s;
+  REQUIRE(w.joint(j, &s));
+  const f64 goal = [&] {
+    JointDrive d;
+    d.kind = JointDrive::Kind::Oscillate;
+    d.target2 = 2.0;
+    d.period = 4.0;
+    f64 x = 0.0, rate = 0.0;
+    d.goal(w.time(), &x, &rate);
+    return x;
+  }();
+  MESSAGE("the source's lift: its car at " << s.value << " m on its slider (its program: " << goal << ")");
+  CHECK(std::abs(s.value - goal) < 0.05);
+  // away: the lift is archived with its joint (it keeps nothing resident)
+  w.set_focus(V3{200.0, 2.0, 0.0});
+  run(w, 60, &r);
+  CHECK(w.pieces().empty());
+  CHECK(w.joints().empty());
+  CHECK(w.stats().archived_pieces == 1);
+  // back: it comes back as it was, with its joint (not a second one from the source), and runs on
+  w.set_focus(V3{2.0, 2.0, 0.0});
+  run(w, 120, &r);
+  REQUIRE(w.pieces().size() == 1);
+  REQUIRE(w.joints().size() == 1);
+  CHECK(w.joints().front() == j);
+  REQUIRE(w.joint(j, &s));
+  JointDrive d;
+  d.kind = JointDrive::Kind::Oscillate;
+  d.target2 = 2.0;
+  d.period = 4.0;
+  f64 x = 0.0, rate = 0.0;
+  d.goal(w.time(), &x, &rate);
+  MESSAGE("back after " << w.time() << " s: the car at " << s.value << " m (its program: " << x << ")");
+  CHECK(std::abs(s.value - x) < 0.05);
+}
+
 TEST_CASE("memory: an unbounded change archive keeps every change (a bounded level streamed from a file)") {
   PillarTrip t(0.0);
   for (int k = 1; k <= 10; ++k) t.cut(k);
@@ -699,6 +847,38 @@ TEST_CASE("world: a blast in the air loads what is around it by its energy") {
   CHECK(strong > 0);
 }
 
+TEST_CASE("world: what a blast's load breaks off flies off with the momentum it gave it") {
+  // (a masonry wall 2.2 m behind a blast in the air: nothing is shattered, the wall is broken by
+  // the blast's load - and its parts move off away from the blast, as it pushed them)
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-8, -8, -4}, {56, 40, 0}, kRock);
+  box(g, {0, 20, 0}, {48, 23, 24}, make_vox(MaterialId::Masonry, false));
+  g.compact();
+  World w;
+  w.load(std::move(g));
+  w.bake();
+  w.blast({3.0, kH * 21.5 - 2.2, 1.5}, 1.0, 1e7);
+  f64 best = 0.0, m_best = 0.0;
+  for (int t = 0; t < 30; ++t) {
+    w.tick();
+    // (the pieces' momentum away from the blast, per their mass, as they come loose)
+    f64 p = 0.0, m = 0.0;
+    for (const PieceState& ps : w.pieces()) {
+      const Body* b = w.piece(ps.id);
+      p += b->mass * ps.vel.y;
+      m += b->mass;
+    }
+    if (m > 0.0 && p / m > best) {
+      best = p / m;
+      m_best = m;
+    }
+  }
+  MESSAGE("blast 2.2 m in front of a wall: its parts moved off at up to " << best << " m/s on average (" << m_best << " kg)");
+  CHECK(m_best > 100.0);
+  CHECK(best > 1.0);
+}
+
 TEST_CASE("world: every cascade gets its own break rounds, however long a structure lives") {
   // (a wall carrying a slab, holed by one small blast after another: the holes add up until it
   // gives way - long after the first cascades used up max_rounds between them)
@@ -829,4 +1009,36 @@ TEST_CASE("world: a frame left hanging by one face of its support is still judge
   CHECK(!w.pieces().empty());
   CHECK(w.stats().solving == 0);
   CHECK(w.stats().solves_abandoned == 0);
+}
+
+TEST_CASE("world: every world has its own materials") {
+  // the same cantilever (a 2 m concrete arm from an anchored rock wall) in two worlds, the
+  // second's concrete a tenth as strong: its root is ten times as utilized; the process's
+  // concrete, and a third world made after, are as they were
+  auto root = [](World& w) {
+    VoxelGrid g;
+    g.h = kH;
+    box(g, {-8, -8, -4}, {24, 8, 0}, kRock);
+    box(g, {-8, -2, 0}, {0, 2, 32}, kRock);
+    box(g, {0, -2, 26}, {16, 2, 30}, kConcrete);
+    g.compact();
+    w.load(std::move(g));
+    // (no design: the arm as it is)
+    return w.probe_utilization(IVec3{1, 0, 28});
+  };
+  World a, b;
+  Material weak = b.materials()[MaterialId::Concrete];
+  weak.ft *= 0.1;
+  weak.fb *= 0.1;
+  weak.fc *= 0.1;
+  weak.cohesion *= 0.1;
+  b.set_material(MaterialId::Concrete, weak);
+  const f64 ua = root(a), ub = root(b);
+  World c;
+  const f64 uc = root(c);
+  MESSAGE("cantilever root utilization: " << ua << " in a world of standard concrete, " << ub << " in one of weak concrete, " << uc
+                                          << " in a world made after");
+  CHECK(ub == doctest::Approx(10.0 * ua).epsilon(0.02));
+  CHECK(uc == ua);
+  CHECK(material(MaterialId::Concrete).ft == a.materials()[MaterialId::Concrete].ft);
 }

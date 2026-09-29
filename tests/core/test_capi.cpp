@@ -418,22 +418,31 @@ TEST_CASE("capi: an oriented grid on the world grid, its events, pieces of two s
   svxc_destroy(w);
 }
 
-TEST_CASE("capi: grids of their own voxel size and priority, moved; a kinematic lift carrying a box a controller rides") {
+TEST_CASE("capi: grids of their own voxel size and priority, moved; a lift's car on a driven slider a controller rides") {
   svxc_world* w = svxc_create(0.125);
-  // the level: 8 m of rock ground, a lift (a 2 m deck held by its drive, 0.25 m up)
+  // the level: 8 m of rock ground, a lift's car (a 2 m timber deck, a voxel up) on a slider held
+  // by the ground under it
   std::vector<uint8_t> g(64 * 64 * 4, svxc_vox(SVXC_ROCK, 1));
   svxc_load_box(w, g.data(), 64, 64, 4, -32, -32, -4);
-  const double p0[3] = {0.0, 0.0, 0.25}, q0[4] = {0, 0, 0, 1};
-  const uint32_t lift = svxc_add_kinematic(w, p0, q0, 1);
-  REQUIRE(lift != 0);
-  std::vector<uint8_t> deck(16 * 16 * 2, svxc_vox(SVXC_STEEL, 1));
+  std::vector<uint8_t> deck(16 * 16 * 2, svxc_vox(SVXC_WOOD, 0));
   svxc_grid_desc dd{};
   dd.rot[3] = 1.0;
-  dd.body = lift;
   dd.base = 1;
-  const uint32_t dg = svxc_add_grid_desc(w, deck.data(), 16, 16, 2, -8, -8, 0, &dd);
+  const uint32_t dg = svxc_add_grid_desc(w, deck.data(), 16, 16, 2, -8, -8, 1, &dd);
   REQUIRE(dg != 0);
-  CHECK(svxc_grid_body(w, dg) == lift);
+  svxc_joint_desc jd;
+  svxc_joint_defaults(&jd);
+  jd.type = SVXC_JOINT_SLIDER;
+  jd.a.kind = SVXC_ANCHOR_GRID;
+  jd.a.id = 0;
+  jd.b.kind = SVXC_ANCHOR_GRID;
+  jd.b.id = dg;
+  jd.a.point[2] = jd.b.point[2] = 0.0;  // (the gap between the ground's voxel and the car's)
+  jd.drive.kind = SVXC_DRIVE_TARGET;
+  jd.drive.max = 20000.0;
+  jd.drive.speed = 0.5;
+  const uint32_t slider = svxc_add_joint(w, &jd);
+  REQUIRE(slider != 0);
   CHECK(svxc_bake(w) == 1);
   // a fine grid (0.0625 m) of priority 2, of this session
   std::vector<uint8_t> blk(8 * 8 * 8, svxc_vox(SVXC_STEEL, 1));
@@ -448,7 +457,6 @@ TEST_CASE("capi: grids of their own voxel size and priority, moved; a kinematic 
   REQUIRE(fine != 0);
   CHECK(svxc_grid_voxel_size(w, fine) == 0.0625);
   CHECK(svxc_grid_priority(w, fine) == 2);
-  CHECK(svxc_grid_body(w, fine) == 0);
   const double o2[3] = {3.0, 0.0, 0.5}, r2[4] = {0, 0, 0, 1};
   CHECK(svxc_set_grid_frame(w, fine, o2, r2) == 1);
   double at[3], rot[4];
@@ -461,56 +469,52 @@ TEST_CASE("capi: grids of their own voxel size and priority, moved; a kinematic 
     moved += e.kind == SVXC_GRID_MOVED && e.id == fine ? 1 : 0;
   }
   CHECK(moved == 1);
-  uint32_t ids[4];
-  CHECK(svxc_kinematics(w, ids, 4) == 1);
-  CHECK(ids[0] == lift);
-  const double up[3] = {0.0, 0.0, 0.5}, none[3] = {0, 0, 0};
-  REQUIRE(svxc_set_kinematic_velocity(w, lift, up, none) == 1);
+  // the car rises at 0.5 m/s towards 2 m
+  svxc_tick(w);
+  jd.drive.target = 2.0;
+  REQUIRE(svxc_set_joint_drive(w, slider, &jd.drive) == 1);
   for (int t = 0; t < 60; ++t) svxc_tick(w);
-  double kp[3], kv[3];
-  REQUIRE(svxc_kinematic(w, lift, kp, nullptr, kv, nullptr) == 1);
-  CHECK(kp[2] == doctest::Approx(0.75).epsilon(1e-9));
-  CHECK(kv[2] == doctest::Approx(0.5).epsilon(1e-9));
-  double gv[3];
-  const double pt[3] = {0.5, 0.0, 0.9};
-  svxc_grid_velocity(w, dg, pt, gv);
-  CHECK(gv[2] == doctest::Approx(0.5).epsilon(1e-9));
-  // a controller's box standing on the deck: it rides it
-  const double mn[3] = {-0.2, -0.2, 0.75 + 0.1875 + 0.01}, mx[3] = {0.2, 0.2, 0.75 + 0.1875 + 1.8}, fall[3] = {0.0, 0.0, -0.1};
+  CHECK(svxc_time(w) == doctest::Approx(61.0 / 60.0).epsilon(1e-9));
+  svxc_joint_state s;
+  REQUIRE(svxc_joint(w, slider, &s) == 1);
+  CHECK(s.value == doctest::Approx(0.5).epsilon(0.05));
+  REQUIRE(s.piece_b != 0);
+  // a controller's box standing on the car: it rides it (the car's top at 2.5 h + its move)
+  const double top = 2.5 * 0.125 + s.value;
+  const double mn[3] = {-0.2, -0.2, top + 0.01}, mx[3] = {0.2, 0.2, top + 1.8}, fall[3] = {0.0, 0.0, -0.1};
   svxc_collision c;
   svxc_collide_ex(w, mn, mx, fall, &c);
   CHECK(c.on_ground == 1);
-  CHECK(c.ground == dg);
-  CHECK(c.ground_velocity[2] == doctest::Approx(0.5).epsilon(1e-9));
+  CHECK(c.ground_piece == s.piece_b);
+  CHECK(c.ground_velocity[2] == doctest::Approx(0.5).epsilon(0.05));
   svxc_sweep_hit sh;
   REQUIRE(svxc_sweep_ex(w, mn, mx, fall, &sh) == 1);
-  CHECK(sh.grid == dg);
-  CHECK(sh.velocity[2] == doctest::Approx(0.5).epsilon(1e-9));
-  // saved and restored with its motion (the level makes the lift again)
+  CHECK(sh.piece == s.piece_b);
+  CHECK(sh.velocity[2] == doctest::Approx(0.5).epsilon(0.05));
+  // a box sunk into the car rises out of it
+  const double mn2[3] = {-0.2, -0.2, top - 0.1}, mx2[3] = {0.2, 0.2, top + 1.7};
+  CHECK(svxc_overlaps(w, mn2, mx2) == 1);
+  const double rise = svxc_depenetrate(w, mn2, mx2, 0.5);
+  CHECK(rise >= 0.1);
+  CHECK(rise < 0.2);
+  // the grids' changes saved and restored
   size_t n = 0;
   const uint8_t* bytes = svxc_save_delta(w, &n);
   const std::vector<uint8_t> delta(bytes, bytes + n);
   svxc_world* w2 = svxc_create(0.125);
   svxc_load_box(w2, g.data(), 64, 64, 4, -32, -32, -4);
-  REQUIRE(svxc_add_kinematic(w2, p0, q0, 1) == lift);
-  REQUIRE(svxc_add_grid_desc(w2, deck.data(), 16, 16, 2, -8, -8, 0, &dd) == dg);
+  REQUIRE(svxc_add_grid_desc(w2, deck.data(), 16, 16, 2, -8, -8, 1, &dd) == dg);  // (the level's grids)
   CHECK(svxc_bake(w2) == 1);
   REQUIRE(svxc_load_delta(w2, delta.data(), delta.size()) == 0);
-  double kp2[3], kv2[3];
-  REQUIRE(svxc_kinematic(w2, lift, kp2, nullptr, kv2, nullptr) == 1);
-  CHECK(kp2[2] == kp[2]);
-  CHECK(kv2[2] == kv[2]);
   CHECK(svxc_grid_voxel_size(w2, fine) == 0.0625);
-  CHECK(svxc_state_hash(w2) == svxc_state_hash(w));
+  double at2[3], rot2[4];
+  REQUIRE(svxc_grid_frame(w2, fine, at2, rot2) == 1);
+  CHECK(at2[0] == 3.0);
   svxc_destroy(w2);
-  // released, it falls as a piece
-  REQUIRE(svxc_remove_kinematic(w, lift, 1) == 1);
-  CHECK(svxc_kinematics(w, ids, 4) == 0);
-  CHECK(svxc_poll_pieces(w) == 1);
   svxc_destroy(w);
 }
 
-TEST_CASE("capi: joints - a hinged block swinging, its state, a motor, breaking") {
+TEST_CASE("capi: joints - a hinged block swinging, its state, a drive, breaking") {
   svxc_world* w = svxc_create(0.125);
   std::vector<uint8_t> g(64 * 64 * 4, svxc_vox(SVXC_ROCK, 1));
   svxc_load_box(w, g.data(), 64, 64, 4, -32, -32, -4);
@@ -542,8 +546,16 @@ TEST_CASE("capi: joints - a hinged block swinging, its state, a motor, breaking"
   CHECK(s.type == SVXC_JOINT_HINGE);
   CHECK(s.piece_b != 0);
   CHECK(std::abs(s.value) > 0.2);  // (it swung down about its hinge)
-  // a motor holds it level against its weight
-  CHECK(svxc_set_joint_motor(w, j, 1, 0.0, 1e5) == 1);
+  // a drive at speed 0 holds it against its weight
+  svxc_joint_drive dr = d.drive;
+  CHECK(dr.kind == SVXC_DRIVE_OFF);
+  CHECK(dr.period == 10.0);
+  dr.kind = SVXC_DRIVE_SPEED;
+  dr.speed = 0.0;
+  dr.max = 1e5;
+  CHECK(svxc_set_joint_drive(w, j, &dr) == 1);
+  dr.kind = 7;
+  CHECK(svxc_set_joint_drive(w, j, &dr) == 0);
   for (int t = 0; t < 30; ++t) svxc_tick(w);
   svxc_joint_state s2;
   REQUIRE(svxc_joint(w, j, &s2) == 1);

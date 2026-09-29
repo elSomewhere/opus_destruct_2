@@ -173,11 +173,11 @@ void World::refresh_strengths(const std::vector<GVox>& voxels) {
       // (free voxels of other grids around it: its junctions)
       if (oriented_ > 0) {
         const f64 hp = G.h;
-        const V3 X = lxf_of(p.grid).to(V3{hp * p.p[0], hp * p.p[1], hp * p.p[2]});  // (in its body's frame)
+        const V3 X = xf_of(p.grid).to(V3{hp * p.p[0], hp * p.p[1], hp * p.p[2]});
         const IVec3 cc = chunk_of(p.p);
         for (u16 o : near_grids(p.grid, key3(cc[0], cc[1], cc[2]))) {
           const f64 ho = h_of(o), r = (0.5 + std::clamp(cfg_.junction_reach, 0.0, 2.0)) * std::max(hp, ho);
-          const V3 L = o == 0 ? X : lxf_of(o).from(X);
+          const V3 L = o == 0 ? X : xf_of(o).from(X);
           // (every voxel of o in the box of half side r around it)
           const IVec3 vlo = voxel_of(L - V3{r, r, r}, ho), vhi = voxel_of(L + V3{r, r, r}, ho);
           for (i32 x = vlo[0]; x <= vhi[0]; ++x)
@@ -202,9 +202,9 @@ void World::refresh_strengths(const std::vector<GVox>& voxels) {
       const f32 ft = B.ft, fb = B.fb, fc = B.fc, coh = B.coh;
       const u16 g = s->bgrid[size_t(b)];
       if (j0 == j1)
-        section_strengths(&s->face_p[size_t(f0)], &s->face_axis[size_t(f0)], size_t(f1 - f0), [&](const IVec3& q) { return voxel_at(GVox{q, g}); }, B);
+        section_strengths(mats(), &s->face_p[size_t(f0)], &s->face_axis[size_t(f0)], size_t(f1 - f0), [&](const IVec3& q) { return voxel_at(GVox{q, g}); }, B);
       else
-        section_strengths_general(g, s->face_p.data() + f0, s->face_axis.data() + f0, size_t(f1 - f0), s->jref.data() + j0, size_t(j1 - j0), at, B,
+        section_strengths_general(mats(), g, s->face_p.data() + f0, s->face_axis.data() + f0, size_t(f1 - f0), s->jref.data() + j0, size_t(j1 - j0), at, B,
                                   std::clamp(cfg_.junction_samples, 1, 7));
       if (B.ft != ft || B.fb != fb || B.fc != fc || B.coh != coh) s->rejudge = true;
     }
@@ -312,8 +312,7 @@ void World::add_external_loads() {
       if (!s || !nodes || fi >= static_cast<i32>(nodes->size())) continue;
       const i32 i = (*nodes)[size_t(fi)];
       if (i < 0) continue;
-      V3 p = voxel_centre(GVox{l.voxel, static_cast<u16>(g)}), F = l.force;
-      to_body(s->body, &F, &p);
+      const V3 p = voxel_centre(GVox{l.voxel, static_cast<u16>(g)}), F = l.force;
       const V3 M = cross(p - s->P.nodes[size_t(i)].c, F);
       f64* a = &s->acc[6 * size_t(i)];
       a[0] += F.x;
@@ -352,8 +351,8 @@ void World::finish_tick_changes() {
     if (!grids_[g]) continue;
     for (u64 k : grids_[g]->g.take_dirty()) {
       grid_dirty_.push_back(GridChunk{grids_[g]->id, unkey3(k)});
-      // (the world's lattice sees a static grid's voxels too: the systems of it hear of them)
-      if (grids_[g]->body == 0 && !systems_.empty()) {
+      // (the world's lattice sees a grid's voxels too: the systems of it hear of them)
+      if (!systems_.empty()) {
         const GridState& st = *grids_[g];
         const f64 h = st.g.h;
         const IVec3 c = unkey3(k);

@@ -43,9 +43,9 @@ for), stored in 32³ chunks. Voxel `p` (integers) is the cube centred at `h p`; 
 is one byte: 0 air, else `1 + material` in the low 7 bits and bit 7 **anchored**
 (`make_vox(material, anchored)`).
 
-- **Anchored** voxels are supports: bedrock, foundations, and kinematic parts a host moves
-  itself. They never move and never break (carves can remove them unless their material is
-  indestructible).
+- **Anchored** voxels are supports: bedrock, foundations (and a Doom level's movers, which the
+  harness writes itself). They never move and never break (carves can remove them unless their
+  material is indestructible).
 - **Free** voxels are structure: they are simulated.
 - Every two face-adjacent solid voxels are **bonded**, unless both are anchored or the bond was
   broken (a bit per voxel face).
@@ -57,22 +57,26 @@ every respect. Where the voxels of two grids meet they are bonded by **junctions
 and pieces span grids; where they overlap, the grid of higher priority keeps its voxels. A grid
 can be placed anew. See [`GRIDS.md`](GRIDS.md).
 
-**Motion.** A **kinematic body** is a rigid frame the host drives (a door, a lift, a drawbridge, a
-crane's jib): its grids move with it, push and carry pieces, and its structures are loaded by the
-motion. **Joints** hold pieces, grids' voxels, kinematic bodies and the world together (hinges,
-sliders, ropes, rods, welds; limits, motors, a breaking strength), and load what they hold on to.
-See [`MOTION.md`](MOTION.md).
+**Motion.** What moves by design is pieces on **joints**: joints hold pieces, grids' voxels and
+the world together (hinges, sliders, ropes, rods, welds; limits, a breaking strength) and load
+what they hold on to; a hinge's or a slider's **drive** moves it at a speed, to a target, or on a
+program of the world's clock. A machine - a lift's car, a turntable, a drawbridge, a crane's jib -
+is pieces on driven joints held by structures: what rides on it is carried, and it comes down
+with what holds it. See [`MOTION.md`](MOTION.md).
 
-**Materials** live in a process-wide registry (`svx/material/material.hpp`): eleven presets
-(reinforced concrete, concrete, steel, masonry, soil, rock, indestructible bedrock, wood, stone,
-glass, reinforcing bar), up to 127 in all. A material has stiffness (E, G), density, interface
+**Materials** live in tables (`svx/material/material.hpp`): every world has its own
+(`World::materials`, `set_material`, `register_material`), made from the process's
+(`default_materials`: what a host sets up at startup) when the world is made, so worlds may
+differ in their materials. Eleven presets (reinforced concrete, concrete, steel, masonry, soil,
+rock, indestructible bedrock, wood, stone, glass, reinforcing bar), up to 127 in all. A material has stiffness (E, G), density, interface
 strengths (tension, flexural tension, crushing, Mohr–Coulomb cohesion and friction), a fracture
 energy, and a rubble size (the fragment spacing per axis). A bond's section takes its strengths
 from the materials of its faces, so a composite section (concrete with bars in it) is as strong
 as its parts. **Ductile** materials (steel, bars) bend rather than shatter: they are not
 pulverized or carved by impacts. **Reinforcement** voxels (bars) join the fragments of the
-material around them, tying a member together. Register or override materials at startup,
-before any world steps.
+material around them, tying a member together. Register or override a world's materials before
+it loads (what it builds from them - fragments, structures, pieces - keeps what it was built
+with).
 
 **Fragments** are the pre-scored rubble pieces the free voxels are grouped into (a jittered
 Voronoi partition per material, within each chunk). Fragments never break; **bonds** between
@@ -85,7 +89,11 @@ that lose their supports leave as pieces, and the rest is solved again.
 
 **Pieces** are rigid bodies made of fragments, and they keep their bonds. After each contact
 solve, a piece's stress is checked under its contact forces and inertia. If bonds break, it
-splits (the step is solved again with the parts), and crushed material turns to dust.
+splits (the step is solved again with the parts), and crushed material turns to dust. A piece
+that may move more than half a voxel in a substep looks along its motion: the nearest faces its
+samples would reach become speculative contacts (`rigid.speculative`), so a fast piece stops at
+a thin wall instead of passing through it. What a blast's load breaks off a structure moves off
+with the momentum the blast gave its fragments.
 
 **The design pass** (`bake`, and first touch for streamed chunks) solves every structure under
 its own weight and strengthens members above `design_utilization`, so that a level stands as
@@ -121,8 +129,9 @@ for (;;) {
 | Call | Effect |
 |---|---|
 | `carve(pos, radius)` | Removes the voxels in a sphere at the next tick. Indestructible materials are left. |
-| `blast(pos, radius, energy)` | Carves, throws the fragments around the crater as pieces, and loads the structures near it (J). |
-| `set_voxels(edits, flags)` | Writes voxels now. Structures there are extracted again and pieces near are woken. `kEditIsolated`: the written voxels bond to nothing (doors, lifts). `kEditUntracked`: not in the persistence delta (parts the host rebuilds on load). Free voxels written into the air become a falling piece, which is how to drop or spawn objects. |
+| `blast(pos, radius, energy)` | Carves, throws the fragments around the crater as pieces, and loads the structures near it (J): what the load breaks off moves off with the blast's momentum. |
+| `set_piece_keep(piece, keep)` | A piece the host keeps: never culled over the pieces' budget (a joint's pieces are kept anyway). |
+| `set_voxels(edits, flags)` | Writes voxels now. Structures there are extracted again and pieces near are woken. `kEditIsolated`: the written voxels bond to nothing (a level's movers). `kEditUntracked`: not in the persistence delta (parts the host rebuilds on load). Free voxels written into the air become a falling piece, which is how to drop or spawn objects. |
 | `apply_impulse(piece, point, J)` | Pushes a piece (N s at a world point): throws, explosions, a character's push. |
 | `remove_piece(piece)` | Removes a piece (`PieceRemoved`, `Removed`). |
 | `set_params(...)` | Runtime knobs: `fragility` (divides every strength), `impact` (scales contact loads), `dif` (dynamic increase factor), `paused`. |
@@ -174,8 +183,8 @@ The core never meshes. A host can:
   opts)` gives each shape's vertices in its lattice; `shapes[k].xf.to(v)` puts them in the shape
   frame (the identity for the first). Draw it every frame at `pos + rot (s - com)`. A piece never
   changes shape: a new shape comes as a new piece (`Split`).
-- Mesh an oriented grid's changed chunks in its lattice and draw them with its frame (a
-  kinematic body's grids: with its pose each frame; [`GRIDS.md`](GRIDS.md) §6).
+- Mesh an oriented grid's changed chunks in its lattice and draw them with its frame
+  ([`GRIDS.md`](GRIDS.md) §6).
 - Draw joints from `joint(id, &state)`: a rope between its ends.
 - Use `Crack`, `Dust` and `Impact` for particles, decals, sound and camera shake.
 
@@ -194,8 +203,16 @@ must be resident: one point per player, camera or AI of interest.
 - Chunks within `load_radius` are generated, a budgeted number per tick.
 - Chunks beyond `evict_radius` are evicted. Their changes go to the change archive and come
   back with them. The archive is bounded; see §4 (Memory).
-- Chunks are never evicted under a moving piece. Sleeping rubble in chunks being evicted is
-  unloaded with them (`PieceRemoved`, `Unloaded`), so rubble never pins the world.
+- Chunks are never evicted under a moving piece. Sleeping rubble in chunks being evicted goes
+  with them into the change archive (`PieceRemoved`, `Unloaded`), so rubble never pins the world,
+  and comes back where it lay when its chunks do (`PieceAdded`, the same ids). What is wholly out
+  of range - a machine running there (with its joints and what it carries), debris flying off -
+  is archived as it is, and comes back as it was, a machine's drive on its program. Pieces are
+  grouped by their joints (and, out of range, what touches them): a group goes and comes back
+  whole, with its region's changes, in the archive's budget, and is forgotten with its region.
+- A source places joints with `ChunkSource::joints(chunk)` (`SourceJoint`: a stable id and a
+  `JointDesc` on the grids at home in the chunk, or the world grid's voxels): made when the
+  chunk's grids are, not while the machine is archived, again when it was forgotten.
 - Structures reaching into chunks that are not resident are held there (the unknown world is a
   support).
 - A generated structure is designed the first time something touches it.
@@ -210,14 +227,19 @@ the level bounds them.
 ### Persistence
 
 `save_delta()` is a binary delta of the changed chunks (voxels, broken bonds and junctions,
-design classes) against the regenerable base world, and of the oriented grids (the level's
-changed, the session's whole). `load_delta()` applies one:
+design classes) against the regenerable base world, of the oriented grids (the level's changed,
+the session's whole), and of the session: the world's clock (`World::time`), the pieces (all of
+each: its shapes, voxels, fragments, bonds and layers, its pose, motion and sleep; kept with
+their ids), the joints (their anchors, settings, drives), the sleeping pieces' dead loads, and a
+streamed world's pieces archived out of range. `load_delta()` applies one:
 
-- Load the same base world (and the level's oriented grids, in the same order), `bake()`, then
-  `load_delta()`.
+- Load the same base world (its oriented grids in the same order, its joints), `bake()`, then
+  `load_delta()`: the session's pieces and joints take the place of the ones there are (the
+  level's joints, made again).
 - A malformed delta is refused whole: nothing is applied.
-
-Pieces in flight are not part of a delta.
+- A saved session goes on as it would have: its pieces where they were, a machine on its
+  program. (The solver's warm starts are not saved: close, not the same bits. The environment's
+  transient state - heat, smoke - is not either.)
 
 ### Determinism
 
@@ -230,7 +252,7 @@ Given the same world, configuration and commands at the same ticks, a session is
 This is what lockstep networking and replays need (see `game/include/svx/game/replay.hpp`).
 Things that break it:
 
-- changing the material registry while worlds step;
+- changing a world's materials while it steps;
 - changing `WorldConfig` at different ticks;
 - feeding commands in a different order.
 
@@ -253,10 +275,10 @@ however long it runs, and nothing lives on after what it belongs to:
 | State | What bounds it | Beyond the bound |
 |---|---|---|
 | Resident voxels (the grid) | The level; for streamed worlds the radii and `max_resident_mb` | Chunks farthest from the focus are evicted |
-| **Change archive** (streamed chunks changed and out of range) | `StreamConfig::archive_mb`: one arena allocated once, pages of 1 KB | Whole regions are forgotten, least recently seen first; they come back as generated |
+| **Change archive** (streamed chunks changed and out of range, and the pieces out of range with them) | `StreamConfig::archive_mb`: one arena allocated once, pages of 1 KB | Whole regions are forgotten, least recently seen first, their pieces with them; they come back as generated |
 | Fragment caches (derived from the grid) | `MemoryBudget::fragment_cache_mb` | Unheld ones dropped, least recently used first (rebuilt identically on demand) |
 | Registered structures (graphs, matrices, preconditioners) | `MemoryBudget::structure_mb` | Idle ones dropped, longest idle first (extracted again when touched) |
-| Rigid pieces | `max_bodies` and `MemoryBudget::piece_mb` | The smallest culled, sleeping first (`PieceRemoved`, `Culled`) |
+| Rigid pieces | `max_bodies` and `MemoryBudget::piece_mb` | The smallest culled, sleeping first (`PieceRemoved`, `Culled`); never a joint's, nor one the host keeps |
 | Warm starts, reference loads | `MemoryBudget::cache_mb`; streamed: resident chunks only | Only the registered structures' kept |
 | Output the host does not take | `MemoryBudget::max_events`; changed chunks deduplicated | The oldest cosmetic events go |
 
@@ -365,8 +387,10 @@ points, without touching the core. `svx_env` ([`ENV.md`](ENV.md)) is built on th
 - Oriented grids (`svxc_add_grid`, `svxc_add_grid_desc`, `svxc_set_grid_frame`,
   `svxc_remove_grid`, voxels, layers and loads per grid, pieces' shapes, `svxc_sweep`,
   `svxc_collide_ex`): [`GRIDS.md`](GRIDS.md) §10.
-- Kinematic bodies (`svxc_add_kinematic`, `svxc_drive_kinematic`, ...) and joints
-  (`svxc_add_joint`, ...): [`MOTION.md`](MOTION.md) §3.
+- Joints and their drives (`svxc_add_joint`, `svxc_set_joint_drive`, ...), riding pieces
+  (`svxc_collide_ex`, `svxc_overlaps`, `svxc_depenetrate`): [`MOTION.md`](MOTION.md) §3.
+- Materials: the process's (`svxc_material_set`, `_get`, `_find`: what a world starts with) and
+  each world's own (`svxc_world_material_set`, `_get`, `_find`).
 
 `examples/c_api/main.c` is a complete C host.
 
@@ -396,17 +420,13 @@ Things a harness should not do:
 
 ## 8. Known limits
 
-- `collide` and `sweep` stop at the grids' voxels only. Pieces are obstacles for rays, not for
-  box sweeps.
-- Fire, smoke and water act on the world grid's static voxels only; oriented grids' static
-  voxels neither burn nor hold water (pieces do, whatever grid they came from). More limits of
-  grids are in [`GRIDS.md`](GRIDS.md) §8.
-- Materials are process-wide, not per world.
-- Pieces are not persisted in deltas, and sleeping rubble is unloaded with its chunks.
-- Contacts are found at the end of each substep: a piece faster than about 15 m/s can pass
-  through a wall one voxel thick (speeds are capped at `rigid.max_speed`, 25 m/s).
-- What a blast's loads break off a structure leaves at rest; only the fragments it shatters are
-  thrown (with the blast's push on nearby pieces on top).
+- Continuous collision is against the grids: two pieces both faster than about 7.5 m/s (a voxel a
+  substep between them) can pass through each other's thin parts. A speculative contact stops a
+  fast piece at the face it would reach, without the restitution of a slower impact.
+- A saved session goes on close to how it would have, not in the same bits (the solver's warm
+  starts are not saved); the environment's transient state (heat, smoke) is not saved.
+- Water and smoke see the grids at the world grid's resolution. More limits of grids are in
+  [`GRIDS.md`](GRIDS.md) §12, of joints and machines in [`MOTION.md`](MOTION.md) §5.
 - Structures larger than `structure_max_nodes` (60,000 fragments or clusters) or
   `structure_max_radius` (60 m) around the event are solved in part, with their frontier held
   fixed.

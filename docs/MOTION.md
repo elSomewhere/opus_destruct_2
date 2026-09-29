@@ -1,58 +1,15 @@
-# Motion: kinematic bodies and joints
+# Motion: joints and machines
 
-The static world stands still and pieces fall. Between the two are the things that move by
-design: a door on its hinge, a lift, a drawbridge, a crane swinging a wrecking ball, a chain.
-The core has two means for them:
-
-- **Kinematic bodies** (§1): rigid frames the host drives. Their grids move with them; pieces
-  are pushed and carried by them; their structures are loaded by the motion and break like any.
-- **Joints** (§2): constraints between two things (pieces, voxels of grids, kinematic bodies,
-  the world): hinges, sliders, ropes, rods, welds. Their loads go into what they hold on to, and
-  they give way.
+The static world stands still and pieces fall. What moves by design - a door on its hinge, a
+lift, a drawbridge, a turntable, a crane swinging a wrecking ball, a chain - is pieces too:
+free parts held to structures by **joints** (§1), some of them **driven** (§2). Nothing moves
+that the physics does not move: a machine's parts have mass, what they carry loads them, their
+joints load the structures they hold on to, and when a structure gives way (shot, blasted,
+burnt) what it held comes down with it.
 
 Grids are in [`GRIDS.md`](GRIDS.md); the core's method in [`V2_DESIGN.md`](V2_DESIGN.md).
 
-## 1. Kinematic bodies
-
-- **A body** is a pose (`Pose {pos, rot}`) the host sets (`add_kinematic(pose, base)`), and the
-  grids that belong to it (`GridDesc::body`: their frames are in its frame). Its anchored voxels
-  are held by its drive: they are its supports.
-- **Driving.** Each tick, a body moves steadily from where it was to where it is going:
-  - `drive_kinematic(id, target)`: where it is at the end of the next tick (it stays there
-    unless driven again);
-  - `set_kinematic_velocity(id, v, w)`: a velocity it keeps from the next tick until driven or
-    given another (zero: it stops).
-
-  Its pose within the tick is interpolated (position linearly, rotation by nlerp), and its
-  angular velocity is taken from the rotation between the poses with the bundled deterministic
-  math, so a session is bit-identical on every platform and thread count.
-- **Pieces meet it as a moving surface.** Its grids are placed at each substep's pose, and each
-  contact with them has the surface's velocity there (`v + w × (X − c)`): a lift carries a crate
-  up, a turntable turns what stands on it, a moving wall pushes a crate along the ground. The
-  settling of resting pieces is relative to the surface they rest on (a crate on a conveyor is
-  carried at its speed, not held back), and a piece on a moving surface never sleeps.
-- **Its structures are solved in its frame.** Their geometry does not change as it moves; their
-  body loads are gravity turned into the frame, less the frame's acceleration, and the Euler and
-  centrifugal loads of its rotation: `R⁻¹(g − a) − α × c − ω × (ω × c)` per unit mass at the
-  node's centre `c`. What rests on them, joints and blasts load them through the frame
-  (`to_body`). A drawbridge's deck bends less as it rises (at 80°: a tenth of its bending flat);
-  an arm spun up breaks off by its inertia, and what breaks off moves on with the body's motion
-  where it was.
-- **A sudden start is a hard load.** A drive that jumps to a speed in one tick is a large
-  acceleration over that tick (the structure feels it): ramp a drive (the game's machines ease
-  their motion).
-- **Removing it.** `remove_kinematic(id)` removes it with its grids; `remove_kinematic(id,
-  true)` releases them: they fall as one piece with its velocity field (it breaks where the
-  pieces' checks find it in parts), and joints on their voxels hold on to that piece.
-- **Queries.** `kinematic(id, &state)` (pose, velocity, angular velocity, grids),
-  `kinematics()`, `grid_body(grid)`, `grid_velocity(grid, X)`. `collide` and `sweep` report the
-  velocity of what a box stands on or touches: a character controller rides a lift by adding
-  `ground_velocity × dt` to its next move.
-- **Persistence.** A body of the level (`base`) is added again by the level, before
-  `load_delta`; its pose and motion (the velocity it keeps, or the pose it is driven to) are
-  saved. A body of the session is saved whole. A level's body removed is saved as removed.
-
-## 2. Joints
+## 1. Joints
 
 ```cpp
 JointDesc d;
@@ -75,96 +32,141 @@ const JointId hinge = world.add_joint(d);
     `length`), a rod (the length both ways). A distance joint may stretch like a spring
     (`stiffness` N/m, `damping` N s/m): a crane's wire rope passes a shock on to the jib over the
     time it stretches, not in one substep.
-- **Limits and motors.** A hinge's turn (b's reference turned about the axis from a's, from
-  where it was made) and a slider's move (along a's axis) can be limited (`limited`, `lower`,
-  `upper`) and driven by a motor (`motor_speed` rad/s or m/s, at most `motor_max` N m or N):
-  `set_joint_motor`, `set_joint_limits`.
+- **Limits.** A hinge's turn (b's reference turned about the axis from a's, from where it was
+  made) and a slider's move (along a's axis) can be limited (`limited`, `lower`, `upper`):
+  `set_joint_limits`.
 - **Ends** (`JointAnchor`):
-  - `World`: a point fixed in the world;
   - `Grid`: a voxel of a grid (the world grid's too): its structure holds it (it takes the load),
-    it moves with its kinematic body, and it goes with the piece it breaks off in;
+    and it goes with the piece it breaks off in;
   - `Piece`: a voxel of a piece: it goes with the part it is in when the piece breaks;
-  - `Kinematic`: a kinematic body's frame (its drive holds it; not a voxel of it).
+  - `World`: a point fixed in the world (an indestructible hold: for tests and scripted scenes;
+    a level's machines hold on to structures).
 - **Following the voxels.** An end on a voxel follows it: into the piece it breaks off in (a
   hinge on a door leaf that comes loose, a lamp's rope when its beam falls), into the part of a
   piece it stays with when the piece splits. When the voxel is gone (carved, burnt, crushed) the
   joint lets go (`JointBroken` with strength 0).
 - **Breaking.** Beyond `break_force` (N) or `break_torque` (N m) it gives way (`JointBroken`,
   its force). A rope of 5 kN under a 1 t block gives way.
-- **Loads.** A joint's force loads what its ends hold on to: the structure of a grid's voxel (a
-  weight on a rope from a cantilever loads its root; a kinematic body's structures in its frame),
-  a piece's bonds (its stress checks). A sleeping piece keeps pulling on what it hangs from (a
-  dead load).
-- **In the level.** A free part held by a joint (a door leaf, a pendulum's bob, a crane's
-  ball) is kept by the design pass, which removes free parts that stand on nothing, and comes
-  loose as a piece in the first tick, hanging on its joint.
+- **Loads.** A joint's force and torque load what its ends hold on to: the structure of a grid's
+  voxel (a weight on a rope from a cantilever loads its root; a motor's reaction twists what it
+  is mounted on), a piece's bonds (its stress checks). A joint whose pieces sleep keeps carrying
+  what it carried when they fell asleep.
+- **In the level.** A free part held by a joint (a door leaf, a pendulum's bob, a lift's car) is
+  kept by the design pass, which removes free parts that stand on nothing, and comes loose as a
+  piece in the first tick, on its joint. (A free part a voxel away from what it moves along
+  bonds to nothing: junctions reach half a voxel.)
 - **Solving.** Joints are solved with the contacts (sequential impulses, warm-started): after
   each sweep of the contacts, every joint in id order, the same on every thread count. A point
   and a lock of rotation are solved as 3 × 3 blocks, a hinge's two square turns and a slider's two
-  square moves as 2 × 2 blocks, a motor and a limit as single clamped rows, a rope speculatively
+  square moves as 2 × 2 blocks, a drive and a limit as single clamped rows, a rope speculatively
   (it may tighten within a substep, not overshoot). Their position error is removed on pseudo
   velocities after the solve (split impulse: no energy is added), `rigid.joint_baumgarte` of it
   per substep beyond `rigid.joint_slop`. What hangs on a joint is held for sleep (it sleeps when
   still), but not settled like rubble on a floor (a pendulum swings on).
 - **State.** `joint(id, &state)`: its ends in the world, the force and torque it carried in the
   last substep, its hinge angle, slider offset or rope length, the pieces its ends are on.
-- **Joints are of the session.** Like pieces, they are not saved in deltas: a level makes its
-  joints again when it loads.
 
-Measured (`tests/core/test_joints.cpp`): a rod pendulum let go level keeps its length to 5 mm
-through the bottom of its swing, and pulls its weight on average (678 N for 674 N); a hinged door stops at its
-limit (1.2003 rad for 1.2) and does not sag; a slider's motor holds 0.50 m/s; a joint session is
+## 2. Drives and machines
+
+A hinge's or a slider's **drive** (`JointDrive`, `JointDesc::drive`, `set_joint_drive`) is a
+motor of limited strength (`max`: N m, N):
+
+- `Speed`: at `speed` (rad/s, m/s);
+- `Target`: to `target` (rad, m) and held there - a servo: it asks for `stiffness` times its error
+  (1/s), at most `speed`;
+- `Oscillate`: from `target` to `target2` and back every `period` s, eased (`phase` s in) - a
+  machine's program on the **world's clock** (`World::time()`: simulated time since the level
+  loaded; paused ticks do not count, a saved session's is restored). The servo follows the
+  program's rate and position.
+
+A drive weaker than its load stalls (a car too heavy for its winch sinks to its limit); one that
+meets an obstacle pushes with at most its strength. A **machine** is pieces on driven joints held
+by structures - the game's `machines` world (§4) has a lift, a turntable, a drawbridge and a crane:
+
+- **What rides on it** is carried: it settles relative to the part it rests on (a crate on a
+  turntable is not held back), never sleeps while the machine runs, and a machine at work wakes
+  what it touches however slowly it moves. A machine at its target, still, sleeps like rubble.
+- **Characters ride it.** `collide`, `sweep`, `overlaps` and `depenetrate` see the pieces'
+  voxels (turned cubes, as the oriented grids'): `CollideResult::ground_piece` and
+  `ground_velocity` (its velocity under the box: `v + w × (X − x)`) - a controller adds
+  `ground_velocity × dt` to its next move, and lifts the box out of a car that rose into it
+  (`depenetrate`) before it moves on.
+- **It comes down with what holds it.** Its joints hold on to structure voxels: shoot the voxel
+  and the joint lets go; cut the tower under the lift and the car goes with the falling part it
+  hangs on. Its parts are pieces: they break like any (the drawbridge's deck, the crane's jib).
+- **Its supports must carry it.** A joint loads the fragment its voxel is in: a turntable's motor
+  spinning up twists its pedestal; a drawbridge's hinge on the corner of a concrete abutment tears
+  it out; a jib's hinge seated in the top fragment of a concrete mast breaks that fragment out
+  (it is a quarter of the mast's section); a steel mast standing on rock snaps at the rock (the
+  joint is as strong as the rock in tension). The `machines` world's supports are engineered: an
+  RC pedestal a metre square and a motor sized to the disc's inertia, steel seats (a cap on the
+  crane's RC mast, a hinge seat set into the abutment) that spread a hinge's load over the
+  section. (Bullets and craters do not remove steel: a support meant to be shot away is concrete,
+  masonry or timber; steel gives way to the loads a blast puts on it.)
+- **Kept.** A joint's pieces are never culled over `max_bodies` or the pieces' budget (nor are
+  pieces the host keeps: `set_piece_keep`).
+- **Saved.** Pieces, joints and the world's clock are in deltas: a machine comes back where it
+  was, on its program (CORE.md §4).
+- **Streamed.** A machine wholly out of range is archived with its joints and what it carries
+  (the change archive's budget) and comes back, running its program, when its chunks are
+  resident again; a chunk source places machines with `ChunkSource::joints` (CORE.md §4).
+
+Measured (`tests/core/test_joints.cpp`, `test_machines.cpp`): a rod pendulum let go level keeps
+its length to 5 mm through the bottom of its swing, and pulls its weight on average (678 N for 674
+N); a hinged door stops at its limit (1.2003 rad for 1.2); a slider's drive holds 0.50 m/s; a
+servo lifts 0.5 t to 1.1996 m for a target of 1.2 and follows a program within 1.1 mm; a drive of
+2 kN under 4.9 kN stalls; a lift's car carries a crate 2 m up and down (the slider carries their
+6066 N); a turntable turns a crate 1 m out at its speed (0.471 m/s for 0.471); a character rides
+a car 3 m up and down; the anchor voxel shot away, the car falls; a session with machines is
 bit-identical on 1 and 4 threads.
 
 ## 3. The C API
 
-`svx/svx_core.h`:
-
-- **Kinematic bodies:** `svxc_add_kinematic`, `svxc_remove_kinematic`, `svxc_drive_kinematic`,
-  `svxc_set_kinematic_velocity`, `svxc_kinematic`, `svxc_kinematics`; grids join a body through
-  `svxc_add_grid_desc` (`svxc_grid_desc::body`); `svxc_grid_body`, `svxc_grid_velocity`,
-  `svxc_collide_ex` / `svxc_sweep_ex` (the velocity of what a box stands on or touches).
-- **Joints:** `svxc_joint_desc` (`svxc_joint_defaults` fills a ball joint, axis z, length −1: the
-  ends' distance, a rope), `svxc_add_joint`, `svxc_remove_joint`, `svxc_set_joint_motor`,
-  `svxc_set_joint_limits`, `svxc_joint` (`svxc_joint_state`), `svxc_joints`; the event
-  `SVXC_JOINT_BROKEN`.
+`svx/svx_core.h`: `svxc_joint_desc` (`svxc_joint_defaults` fills a ball joint, axis z, length −1:
+the ends' distance, a rope, its drive off), `svxc_joint_drive`, `svxc_add_joint`,
+`svxc_remove_joint`, `svxc_set_joint_drive`, `svxc_set_joint_limits`, `svxc_joint`
+(`svxc_joint_state`), `svxc_joints`, `svxc_time`; the event `SVXC_JOINT_BROKEN`; riding:
+`svxc_collide_ex` / `svxc_sweep_ex` (`ground_piece`, `piece`, their velocity), `svxc_overlaps`,
+`svxc_depenetrate`; `svxc_set_piece_keep`.
 
 ## 4. The game
 
-- **Machines.** `Game::add_machine(body, drive)` drives a kinematic body every tick with a
-  `MachineDrive`, a function of time (the same in every session and replay):
-  - `Oscillate`: along an axis, out by the amplitude (m) and back, eased;
-  - `Spin`: about an axis at the amplitude (rad/s);
-  - `Swing`: about an axis, out by the amplitude (rad) and back, eased.
 - **Drops.** `Game::add_drop` drops an object in when play starts (after the bake and a saved
-  session's changes): crates on a turntable.
-- **Procedural worlds** carry kinematic bodies (`ProcBody`: pose, grids, drive), joints and drops:
-  `load_procedural(game, make_procedural(kind, seed))`.
+  session's changes; a played session's drops are among its pieces, not dropped again).
+- **Procedural worlds** carry grids, joints and drops: `load_procedural(game, make_procedural(kind,
+  seed))`.
 - **The `machines` world** (`?world=machines`, `svx_engine_demo --world machines`):
-  - a lift beside a concrete tower, rising to its top and down again every 12 s;
-  - a turntable with crates dropped on it;
-  - a drawbridge raised 70° and lowered every 16 s;
-  - a crane: a jib on a mast swinging a 3 t steel ball on a 5 m wire rope into a turned masonry
+  - a lift beside a reinforced concrete tower: a timber car on a slider held by the tower's face,
+    rising to its top and down again every 12 s;
+  - a turntable: a timber disc on a hinge held by a pedestal under its centre, turning at 0.4
+    rad/s, crates dropped on it;
+  - a drawbridge: a timber deck on a hinge in a steel seat in its abutment, raised 70° and lowered
+    every 16 s;
+  - a crane: a steel jib on a hinge in the steel cap of a reinforced concrete mast, swinging 125°
+    and back every 10 s, a 1 t steel ball on a 5 m wire rope from its tip, into a turned masonry
     wall;
-  - a pendulum on a 3 m rod from a steel frame;
-  - a chain of four wooden links on rods from a gallows;
-  - a wooden door on a hinge in a brick wall.
+  - a pendulum on a 3 m rod from a timber frame's beam, a chain of four wooden links from a timber
+    gallows, a wooden door on a hinge in a brick wall.
 
-  `tests/game/test_game.cpp` checks it: its machines move, its free parts hang on their joints,
-  the ball knocks the wall down, and the session is bit-identical on 1 and 4 threads.
-- **The browser** draws a kinematic body's grids with their frames, interpolated like pieces, and
-  the ropes and rods (distance joints) as thin tubes (`joints` messages); the player rides what
-  they stand on. `node web/scripts/machines-wasm.mjs http://localhost:5190/` checks it: the grids
-  and ropes draw, and the player dropped on the lift rides it up and down (0.44 to 4.92 m).
+  `tests/game/test_game.cpp` checks it: its machines follow their programs, its joints hold, the
+  ball knocks the wall down, a session saved at 3 s comes back as it was, the session is
+  bit-identical on 1 and 4 threads - and the machines come down with what holds them: the lift's
+  slider shot off the tower (the car falls from 1.3 m to the ground), the pendulum's beam shot at
+  its pivot (the bob falls), a rocket at the crane mast's foot (the jib comes down from 8.2 m), a
+  rocket at the drawbridge's seat (the deck falls), a rocket on the turntable (its disc breaks).
+- **The browser** draws the machines' parts as pieces and the ropes and rods (distance joints) as
+  thin tubes (`joints` messages); the pieces' voxels come with their meshes (`occupancy`) and the
+  player's collision sweeps them where they are drawn, riding what they stand on.
+  `node web/scripts/machines-wasm.mjs http://localhost:5190/` checks it: the player dropped on the
+  lift's car rides it up and down (0.31 to 4.80 m), and on the turntable goes round with it (1.65
+  rad in 4 s at 0.4 rad/s).
 
 ## 5. Known limits
 
-- **A kinematic body passes through the static world** (and other bodies): the host drives it
-  where it wants. Pieces caught between it and the static world are squeezed out.
-- **Joints are not saved** in deltas (a level makes them again; a joint of the session is lost,
-  like the pieces it held).
-- **Water and smoke** do not see a kinematic body's grids (they move); fire burns in them, but
-  only their own flames heat them.
+- **A `World` anchor is indestructible** (a point fixed in the world): a level's machines hold on
+  to structures instead.
 - **A rigid rope is rigid.** A ball stopped short by a wall pulls on what it hangs from within a
   substep: give ropes a `stiffness`.
-- **Kinematic bodies come from the host,** not from streamed sources.
+- **A joint on a static voxel of a chunk that goes out of range is dropped** with its chunk (a
+  source's is made again with its grids; one the host made is not).
+- **A chunk source's joint holds on to the grids at home in its chunk** (or the world grid).

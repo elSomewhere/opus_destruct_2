@@ -268,6 +268,7 @@ void World::rebuild_body_graph(Body& b) {
   if (!b.graph) b.graph = std::make_shared<BodyGraph>();
   BodyGraph& G = *b.graph;
   G.P = StressProblem{};
+  G.P.mats = mats_.get();
   const i32 nf = static_cast<i32>(b.frags.size());
   // fragment-level bonds from the shapes
   std::vector<SecAcc> fine;
@@ -436,9 +437,9 @@ void World::rebuild_body_graph(Body& b) {
     A.strength_b = nstr[size_t(A.b)];
     SBond B = A.finish(hx, xf, JS, G.P.nodes[size_t(A.a)].c, &G.P.nodes[size_t(A.b)].c, nmat[size_t(A.a)], nstr[size_t(A.a)]);
     if (A.js.empty())
-      section_strengths(A.faces.data(), A.fax.data(), A.faces.size(), [&](const IVec3& p) { return piece_voxel_at(b, A.grid, p); }, B);
+      section_strengths(mats(), A.faces.data(), A.fax.data(), A.faces.size(), [&](const IVec3& p) { return piece_voxel_at(b, A.grid, p); }, B);
     else
-      section_strengths_general(A.grid, A.faces.data(), A.fax.data(), A.faces.size(), A.js.data(), A.js.size(), at, B, JS);
+      section_strengths_general(mats(), A.grid, A.faces.data(), A.fax.data(), A.faces.size(), A.js.data(), A.js.size(), at, B, JS);
     B.tag = static_cast<i32>(G.P.bonds.size());
     G.P.bonds.push_back(B);
     for (size_t k = 0; k < A.faces.size(); ++k) {
@@ -490,7 +491,7 @@ void World::refragment_body(Body& b) {
         const IVec3 p = S.voxel(k);
         ++nf[size_t(f)].count;
         ++S.count;
-        accumulate_voxel(material(vox_mat(S.vox[size_t(k)])).rho * h * h * h, V3{h * p[0], h * p[1], h * p[2]}, h,
+        accumulate_voxel(mats()[vox_mat(S.vox[size_t(k)])].rho * h * h * h, V3{h * p[0], h * p[1], h * p[2]}, h,
                          sums[size_t(f)].data());
         const IVec3 l{p[0] - S.lo[0], p[1] - S.lo[1], p[2] - S.lo[2]};
         for (int a = 0; a < 3; ++a)
@@ -634,7 +635,7 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
     for (i32 k = 0; k < static_cast<i32>(G.P.bonds.size()); ++k) {
       const SBond& B = G.P.bonds[size_t(k)];
       if (B.broken || G.P.nodes[size_t(B.a)].gone) continue;
-      const f64 phi = bond_utilization(B, G.P.bond_load(k, G.u), par_.fragility, &modes[size_t(k)]);
+      const f64 phi = bond_utilization(B, G.P.bond_load(k, G.u), par_.fragility, mats(), &modes[size_t(k)]);
       maxphi = std::max(maxphi, phi);
       if (phi >= 1.0) over.push_back({phi, k});
     }
@@ -664,7 +665,7 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
         // takes out of the motion.
         const SBond& B = G.P.bonds[size_t(k)];
         const f64 crush = modes[size_t(k)] == FailMode::Crush ? cfg_.crush_energy : 1.0;
-        const f64 cost = cfg_.fracture_energy * crush * B.area * std::min(material(B.ma).Gf, material(B.mb).Gf) * B.strength;
+        const f64 cost = cfg_.fracture_energy * crush * B.area * std::min(mats()[B.ma].Gf, mats()[B.mb].Gf) * B.strength;
         if (spent + cost > energy) {
           poor = true;
           break;
@@ -830,7 +831,7 @@ bool World::pulverize(Body& b, const std::vector<i32>& crushed) {
       if (f < 0 || !kill[size_t(f)]) continue;
       // (ductile material yields where brittle material crushes: the bars of a crushed concrete
       // fragment stay, the concrete around them falls away as dust)
-      if (material(vox_mat(S.vox[size_t(i)])).ductile) continue;
+      if (mats()[vox_mat(S.vox[size_t(i)])].ductile) continue;
       const IVec3 p = S.voxel(i);
       at[size_t(f)] += S.xf.to(V3{S.h * p[0], S.h * p[1], S.h * p[2]});
       ++cnt[size_t(f)];
@@ -951,6 +952,7 @@ std::unique_ptr<Body> World::sub_body(const Body& parent, const std::vector<SVox
     c->x = parent.to_world(rebase.to(c->com));
   }
   c->parent = parent.announced ? parent.id : parent.parent;
+  c->keep = parent.keep;
   const V3 vp = use_pre ? parent.v_pre : parent.v;
   const V3 wp = use_pre ? parent.w_pre : parent.w;
   c->v = vp + cross(wp, c->x - parent.x);
@@ -1346,7 +1348,7 @@ void World::carve_bodies(const V3& c, f64 r) {
             const i32 i = S.index(p);
             if (i < 0 || !vox_solid(S.vox[size_t(i)])) continue;
             if (norm(V3{h * x, h * y, h * z} - s) > r) continue;
-            if (material(vox_mat(S.vox[size_t(i)])).ductile) continue;  // (as in the world)
+            if (mats()[vox_mat(S.vox[size_t(i)])].ductile) continue;  // (as in the world)
             S.vox[size_t(i)] = kAir;
             S.frag[size_t(i)] = 0;
             for (auto& l : S.layer)
@@ -1466,13 +1468,21 @@ void World::remove_bodies(std::vector<i64> ids, PieceEnd end) {
 void World::limit_bodies() {
   // Beyond max_bodies, or beyond the pieces' memory budget, the smallest pieces are culled:
   // sleeping ones first (rubble at rest), then moving ones (the finest debris of a collapse).
+  // Kept pieces are not: the host's, and a joint's (a machine's parts, what hangs on it).
   const i64 budget = static_cast<i64>(cfg_.memory.piece_mb * 1048576.0);
   i64 bytes = 0;
   for (const auto& bp : rigid_.bodies) bytes += body_bytes(*bp);
   i32 excess = static_cast<i32>(rigid_.bodies.size()) - cfg_.max_bodies;
   if (excess <= 0 && bytes <= budget) return;
+  std::vector<i64> jointed;
+  for (const Joint& j : rigid_.joints)
+    if (!j.broken)
+      for (const i64 id : {j.a.body, j.b.body})
+        if (id != 0) jointed.push_back(id);
+  std::sort(jointed.begin(), jointed.end());
   std::vector<std::tuple<int, i32, i64>> cand;  // (awake, voxels, id)
-  for (const auto& bp : rigid_.bodies) cand.push_back({bp->asleep ? 0 : 1, bp->count, bp->id});
+  for (const auto& bp : rigid_.bodies)
+    if (!bp->keep && !std::binary_search(jointed.begin(), jointed.end(), bp->id)) cand.push_back({bp->asleep ? 0 : 1, bp->count, bp->id});
   std::sort(cand.begin(), cand.end());
   std::vector<i64> ids;
   for (const auto& [awake, voxels, id] : cand) {

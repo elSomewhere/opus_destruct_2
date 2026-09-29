@@ -1,9 +1,12 @@
 // structvox — materials (docs/V2_DESIGN.md §1).
 //
 // A voxel stores a material id (7 bits: up to 127 materials). The properties of each id live in a
-// process-wide registry that the host fills at startup: the seven standard presets below are
-// registered by default (ids 0..6), and a host may override them or register its own. The
-// registry must not change while a World steps (it is read concurrently, without locks).
+// table (MaterialTable): the standard presets below are registered by default, and a host may
+// override them or register its own. Every World has its own table (World::materials), made from
+// the process's (default_materials: what a host sets up at startup) when the world is made, so
+// that worlds may differ in their materials. A world's table must not change while it steps (it
+// is read concurrently, without locks); what a world built from it (fragments, structures)
+// keeps the properties it was built with.
 //
 // SI units (Pa, kg/m^3, J/m^2). Strengths are section strengths of the bonds between fragments
 // (pre-scored rubble pieces), not textbook material strengths: a fragment interface is a weak
@@ -11,6 +14,7 @@
 // equilibrium solve); it is never seen as deformation.
 #pragma once
 
+#include <array>
 #include <string>
 
 #include "svx/base/types.hpp"
@@ -64,18 +68,41 @@ struct Material {
 // Other modules keep their own per-material properties (the fire module: combustion and heat;
 // renderers: colours), keyed by the same ids and names.
 
-// The properties of id (the fallback, id 0's, for ids never registered).
-const Material& material(MaterialId id);
-inline const Material& material(u8 id) { return material(static_cast<MaterialId>(id)); }
+// The properties of every material id. Properties that are not positive and finite are replaced
+// by defaults; fragment sizes are clamped to 1..64 voxels.
+class MaterialTable {
+ public:
+  MaterialTable();  // the standard presets
+  // The properties of id (the fallback, id 0's, for ids never registered).
+  const Material& operator[](MaterialId id) const {
+    const int i = static_cast<int>(id);
+    return (i < kMaxMaterials && used_[size_t(i)]) ? m_[size_t(i)] : m_[0];
+  }
+  const Material& operator[](u8 id) const { return (*this)[static_cast<MaterialId>(id)]; }
+  // Takes the next free id after the presets and the ones taken; false (and *id left) when all
+  // kMaxMaterials ids are taken.
+  bool add(const Material& m, MaterialId* id);
+  void set(MaterialId id, const Material& m);  // override (e.g. a preset's strengths)
+  bool registered(MaterialId id) const;
+  MaterialId find(const char* name, bool* ok = nullptr) const;  // (not found: Concrete, *ok false)
+  void reset();                                                 // back to the standard presets only
 
-// Registry (setup time only). register_material takes the next free id after the presets and
-// the ones taken; returns false (and leaves *id) when all kMaxMaterials ids are taken.
-// Properties that are not positive and finite are replaced by defaults; fragment sizes are
-// clamped to 1..64 voxels.
-bool register_material(const Material& m, MaterialId* id);
-void set_material(MaterialId id, const Material& m);  // override (e.g. a preset's strengths)
-bool material_registered(MaterialId id);
-MaterialId material_from_name(const char* name, bool* ok = nullptr);  // (not found: Concrete, *ok false)
-void reset_materials();  // back to the standard presets only
+ private:
+  std::array<Material, kMaxMaterials> m_;
+  std::array<bool, kMaxMaterials> used_{};
+};
+
+// The process's table: the materials a World starts with (a host sets it up at startup, before it
+// makes worlds). A world reads its own (World::materials).
+MaterialTable& default_materials();
+
+// The process's table (setup time only).
+inline const Material& material(MaterialId id) { return default_materials()[id]; }
+inline const Material& material(u8 id) { return default_materials()[id]; }
+inline bool register_material(const Material& m, MaterialId* id) { return default_materials().add(m, id); }
+inline void set_material(MaterialId id, const Material& m) { default_materials().set(id, m); }
+inline bool material_registered(MaterialId id) { return default_materials().registered(id); }
+inline MaterialId material_from_name(const char* name, bool* ok = nullptr) { return default_materials().find(name, ok); }
+inline void reset_materials() { default_materials().reset(); }
 
 }  // namespace svx

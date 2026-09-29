@@ -315,7 +315,6 @@ TEST_CASE("game: an oriented grid is meshed where its frame puts it, felt by the
   CHECK(views[0].origin.x == origin.x);
   CHECK(views[0].rot.z == rot.z);
   CHECK(views[0].voxel_size == h);
-  CHECK(views[0].body == 0);
   CHECK(g.take_grid_views().empty());  // (unchanged: not again)
   // the client's collision: its chunks' occupancy in its lattice
   std::vector<u8> bits(kChunkVox / 8);
@@ -338,41 +337,158 @@ TEST_CASE("game: an oriented grid is meshed where its frame puts it, felt by the
   CHECK(g.grid_chunk_occupancy(id, chunk_of(on), bits.data()) == 0);
 }
 
-TEST_CASE("game: the machines world - its machines move, its free parts hang on their joints, the ball knocks the wall") {
-  auto run = [](int threads, i32* pieces, i32* joints, i64* wall, f64* lift_top) {
+TEST_CASE("game: the machines world - its machines run on their drives, its free parts hang on their joints, the ball knocks the wall") {
+  struct Run {
+    i32 pieces = 0, joints = 0;
+    i64 wall = 0;
+    f64 lift = 0.0, bridge = 0.0, spin = 0.0, jib = 0.0;
+    u64 hash = 0;
+  };
+  auto run = [](int threads) {
     set_num_threads(threads);
+    Run r;
     Game g;
     load_procedural(g, make_procedural("machines", 1));
     g.bake();
-    CHECK(g.machine_count() == 4);
-    // (the crane's wall: grid 8, the level's grids after the free parts on joints)
-    auto wall_voxels = [&]() { return g.world().grid(8)->solid_count(); };
+    // (the joints in the order the level made them: the lift's slider, the turntable's hinge, the
+    // drawbridge's, the jib's, the rope, the rod, the chain's four, the door's hinge; the crane's
+    // wall is grid 6, after the car, the disc, the deck, the jib and the ball)
+    CHECK(g.world().joints().size() == 11);
+    auto wall_voxels = [&]() { return g.world().grid(6)->solid_count(); };
     const i64 wall0 = wall_voxels();
-    f64 top = 0.0;
     for (int t = 0; t < 600; ++t) {
       g.tick();
-      KinematicState k;
-      REQUIRE(g.world().kinematic(1, &k));
-      top = std::max(top, k.pose.pos.z);
+      JointState s;
+      if (g.world().joint(1, &s)) r.lift = std::max(r.lift, s.value);
+      if (g.world().joint(3, &s)) r.bridge = std::max(r.bridge, s.value);
+      if (g.world().joint(4, &s)) r.jib = std::max(r.jib, s.value);
     }
-    *pieces = static_cast<i32>(g.world().pieces().size());
-    *joints = static_cast<i32>(g.world().joints().size());
-    *wall = wall0 - wall_voxels();
-    *lift_top = top;
-    return g.session_hash();
+    JointState s;
+    if (g.world().joint(2, &s))
+      if (const Body* b = g.world().piece(s.piece_b)) r.spin = b->w.z;
+    r.pieces = static_cast<i32>(g.world().pieces().size());
+    r.joints = static_cast<i32>(g.world().joints().size());
+    r.wall = wall0 - wall_voxels();
+    r.hash = g.session_hash();
+    return r;
   };
   const int hw = num_threads();
-  i32 p1, j1, p4, j4;
-  i64 w1, w4;
-  f64 top1, top4;
-  const u64 a = run(1, &p1, &j1, &w1, &top1), b = run(4, &p4, &j4, &w4, &top4);
+  const Run a = run(1), b = run(4);
   set_num_threads(hw);
-  MESSAGE("machines after 10 s: " << p1 << " pieces, " << j1 << " joints, the wall lost " << w1 << " voxels, the lift up to " << top1 << " m");
-  CHECK(j1 == 7);                        // (the rope, the rod, the chain's four, the door's hinge)
-  CHECK(p1 >= 10);                       // (the ball, the bob, the links, the door, the crates: and the wall's rubble)
-  CHECK(w1 > 100);                       // (the wrecking ball went through it)
-  CHECK(top1 == doctest::Approx(4.75).epsilon(0.001));
-  CHECK(a == b);
+  MESSAGE("machines after 10 s: " << a.pieces << " pieces, " << a.joints << " joints, the wall lost " << a.wall << " voxels; the lift up to "
+                                  << a.lift << " m, the drawbridge to " << a.bridge << " rad, the jib to " << a.jib << " rad, the turntable at "
+                                  << a.spin << " rad/s");
+  CHECK(a.joints == 11);                               // (all hold)
+  CHECK(a.pieces >= 15);                               // (the machines' parts, the hanging ones, the crates: and the wall's rubble)
+  CHECK(a.wall > 100);                                 // (the wrecking ball went through it)
+  CHECK(a.lift == doctest::Approx(4.5).epsilon(0.01));  // (its program: up 4.5 m in 6 s)
+  CHECK(a.bridge > 1.0);                               // (raised on its program: 1.2 rad at 8 s)
+  CHECK(a.jib > 2.0);                                  // (swung round: 2.2 rad at 5 s)
+  CHECK(a.spin == doctest::Approx(0.4).epsilon(0.05));
+  CHECK(a.hash == b.hash);
+}
+
+TEST_CASE("game: the machines come down with what holds them - shot, carved, blasted") {
+  Game g;
+  load_procedural(g, make_procedural("machines", 1));
+  g.bake();
+  for (int t = 0; t < 120; ++t) g.tick();
+  // (the joints: 1 the lift's slider, 2 the turntable's hinge, 3 the drawbridge's, 4 the jib's,
+  // 5 the rope, 6 the pendulum's rod)
+  auto piece_z = [&](JointId j) {
+    JointState s;
+    if (!g.world().joint(j, &s)) return -1.0;
+    const Body* b = g.world().piece(s.piece_b);
+    return b ? b->x.z : -1.0;
+  };
+  JointState s;
+  REQUIRE(g.world().joint(1, &s));
+  const i64 car = s.piece_b;
+  REQUIRE(g.world().joint(4, &s));
+  const i64 jib = s.piece_b;
+  REQUIRE(g.world().joint(6, &s));
+  const i64 bob = s.piece_b;
+  REQUIRE(g.world().joint(3, &s));
+  const i64 deck = s.piece_b;
+  const f64 car0 = piece_z(1), jib0 = piece_z(4), deck0 = piece_z(3);
+  // the lift's slider shot off the tower's face, the pendulum's beam shot at its pivot, a rocket
+  // at the crane mast's foot, one at the drawbridge's hinge seat
+  g.carve(V3{15.9375, 6.5, 0.1875}, 0.35);
+  g.carve(V3{30.6875, 27.9375, 5.4375}, 0.35);
+  g.blast(V3{12.6, 27.94, 0.5}, 0.6, 3e5);
+  g.blast(V3{42.0, 6.5, 1.9}, 0.5, 2e5);
+  for (int t = 0; t < 240; ++t) g.tick();
+  auto z_of = [&](i64 id) {
+    const Body* b = g.world().piece(id);
+    if (b) return b->x.z;
+    // (broken up: the highest of its parts - pieces that came of it - is where it went)
+    f64 z = -1.0;
+    for (const PieceState& p : g.world().pieces()) {
+      i64 up = g.world().piece(p.id)->parent;
+      for (int k = 0; k < 16 && up != 0 && up != id; ++k) {
+        const Body* a = g.world().piece(up);
+        up = a ? a->parent : 0;
+      }
+      if (up == id) z = std::max(z, p.pos.z);
+    }
+    return z;
+  };
+  MESSAGE("shot away: the lift's car from z " << car0 << " to " << z_of(car) << ", the jib from " << jib0 << " to " << z_of(jib) << ", the pendulum's bob to "
+                                             << z_of(bob) << ", the drawbridge's deck from " << deck0 << " to " << z_of(deck) << "; joints left "
+                                             << g.world().joints().size());
+  CHECK_FALSE(g.world().joint(1, &s));  // (the slider let go)
+  CHECK_FALSE(g.world().joint(6, &s));  // (the rod let go)
+  CHECK(z_of(car) < 0.4);
+  CHECK(z_of(jib) < jib0 - 2.0);
+  CHECK(z_of(bob) < 0.6);
+  CHECK(z_of(deck) < deck0 - 0.5);
+  // the turntable, blasted: its disc breaks
+  REQUIRE(g.world().joint(2, &s));
+  const i64 disc = s.piece_b;
+  const i32 voxels0 = g.world().piece(disc)->count;
+  g.blast(V3{31.5, 8.0, 0.9}, 0.5, 2e5);
+  for (int t = 0; t < 60; ++t) g.tick();
+  const Body* d = g.world().piece(disc);
+  MESSAGE("the turntable blasted: its disc of " << voxels0 << " voxels now " << (d ? d->count : 0));
+  CHECK((d == nullptr || d->count < voxels0));
+}
+
+TEST_CASE("game: the machines world saved in play comes back as it was - its pieces, machines and clock") {
+  Game a;
+  load_procedural(a, make_procedural("machines", 1));
+  a.bake();
+  for (int t = 0; t < 180; ++t) a.tick();
+  const std::vector<u8> delta = a.save_delta();
+  // (the level made again, as a host loads it, then the saved session)
+  Game b;
+  load_procedural(b, make_procedural("machines", 1));
+  b.bake();
+  REQUIRE(b.load_delta(delta));
+  MESSAGE("machines saved at 3 s: " << delta.size() << " bytes, " << a.world().pieces().size() << " pieces, " << a.world().joints().size()
+                                    << " joints; restored " << b.world().pieces().size() << " pieces, " << b.world().joints().size() << " joints");
+  CHECK(b.world().pieces().size() == a.world().pieces().size());
+  CHECK(b.world().joints().size() == a.world().joints().size());
+  CHECK(b.world().time() == a.world().time());
+  // (its voxels, pieces and joints as they were: the environment's transient state - fire's step
+  // clock, smoke - is not part of a delta)
+  CHECK(b.world().state_hash() == a.world().state_hash());
+  i32 same = 0;
+  for (const PieceState& p : a.world().pieces()) {
+    const Body* pb = b.world().piece(p.id);
+    same += pb && pb->x.x == p.pos.x && pb->x.y == p.pos.y && pb->x.z == p.pos.z && pb->v.z == p.vel.z ? 1 : 0;
+  }
+  CHECK(same == static_cast<i32>(a.world().pieces().size()));
+  for (JointId id : a.world().joints()) {
+    JointState x, y;
+    REQUIRE(b.world().joint(id, &y));
+    a.world().joint(id, &x);
+    CHECK(x.value == y.value);
+    CHECK(x.piece_b == y.piece_b);
+  }
+  // (and no crates dropped in again: the session had its drops - they would come as new grids)
+  const std::vector<GridId> grids = b.world().grids();
+  b.tick();
+  CHECK(b.world().grids() == grids);
 }
 
 TEST_CASE("game: the far render tier draws the oriented grids of a streamed world too") {

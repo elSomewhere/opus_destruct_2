@@ -7,8 +7,10 @@
 // (split impulse: the correction adds no energy). Joints are solved one after another in id order
 // after each sweep of the contacts: the same on every thread count.
 #include <algorithm>
+#include <array>
 #include <cmath>
 
+#include "svx/base/dmath.hpp"
 #include "svx/base/rotation.hpp"
 #include "svx/phys/rigid.hpp"
 
@@ -77,6 +79,19 @@ V3 capped(const V3& v, f64 cap) {
 
 }  // namespace
 
+void JointDrive::goal(f64 t, f64* x, f64* rate) const {
+  if (kind != Kind::Oscillate || !(period > 0.0)) {
+    *x = target;
+    *rate = 0.0;
+    return;
+  }
+  // (eased: from target to target2 and back, a cosine)
+  constexpr f64 kTau = 6.283185307179586;
+  const f64 a = kTau * (t + phase) / period;
+  *x = target + (target2 - target) * 0.5 * (1.0 - dm::cos(a));
+  *rate = (target2 - target) * 0.5 * dm::sin(a) * kTau / period;
+}
+
 void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw) {
   jprep_.assign(joints.size(), JointPrep{});
   joint_dt_ = dt;
@@ -111,9 +126,6 @@ void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw) {
       }
     } else {
       P.pa = j.a.p;
-      P.fva = j.a.v;
-      P.fwa = j.a.w;
-      P.fca = j.a.c;
     }
     if (ib >= 0) {
       const Body& B = *bodies[size_t(ib)];
@@ -127,9 +139,6 @@ void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw) {
       }
     } else {
       P.pb = j.b.p;
-      P.fvb = j.b.v;
-      P.fwb = j.b.w;
-      P.fcb = j.b.c;
     }
     if (P.ia < 0 && P.ib < 0) continue;  // (both immovable now: nothing to solve)
     P.on = true;
@@ -208,16 +217,19 @@ void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw) {
         if (P.value > j.upper) P.eax = pull(P.value - j.upper, t == JointType::Slider ? slop : 0.0);
       }
     }
+    // the drive's goal now
+    const bool driven = (t == JointType::Hinge || t == JointType::Slider) && j.drive.kind != JointDrive::Kind::Off && j.drive.max > 0.0;
+    if (driven) j.drive.goal(time, &P.goal, &P.goal_rate);
     // warm start (the rows that do not act now start from nothing)
-    if (!j.motor) j.drive = 0.0;
+    if (!driven) j.motor = 0.0;
     if (P.lim == 0 && t != JointType::Distance) j.limit = 0.0;
     j.lin *= warm;
     j.ang *= warm;
     j.axial *= warm;
     j.limit *= warm;
-    j.drive *= warm;
+    j.motor *= warm;
     // (apply them as the rows do)
-    const f64 lim_drive = j.limit + j.drive;
+    const f64 lim_drive = j.limit + j.motor;
     V3 J = j.lin, L = j.ang;
     if (t == JointType::Hinge) L += P.ax * lim_drive;
     if (t == JointType::Slider) J += P.ax * lim_drive;
@@ -247,10 +259,10 @@ void RigidWorld::solve_joints() {
     Joint& j = joints[k];
     Body* A = P.ia >= 0 ? bodies[size_t(P.ia)].get() : nullptr;
     Body* B = P.ib >= 0 ? bodies[size_t(P.ib)].get() : nullptr;
-    auto va = [&](const V3& X) { return A ? A->v + cross(A->w, X - A->x) : P.fva + cross(P.fwa, X - P.fca); };
-    auto vb = [&](const V3& X) { return B ? B->v + cross(B->w, X - B->x) : P.fvb + cross(P.fwb, X - P.fcb); };
-    auto wa = [&]() { return A ? A->w : P.fwa; };
-    auto wb = [&]() { return B ? B->w : P.fwb; };
+    auto va = [&](const V3& X) { return A ? A->v + cross(A->w, X - A->x) : V3{}; };
+    auto vb = [&](const V3& X) { return B ? B->v + cross(B->w, X - B->x) : V3{}; };
+    auto wa = [&]() { return A ? A->w : V3{}; };
+    auto wb = [&]() { return B ? B->w : V3{}; };
     // (linear impulse Jl at the arms and angular Ja: on b, the opposite on a)
     auto apply = [&](const V3& Jl, const V3& Ja) {
       if (B) {
@@ -265,19 +277,28 @@ void RigidWorld::solve_joints() {
       P.L += Ja;
     };
     const JointType t = j.type;
-    // the motor, then the limit: the motion along (hinge: about) the axis
-    if ((t == JointType::Hinge || t == JointType::Slider) && (j.motor || P.lim != 0)) {
+    // the drive, then the limit: the motion along (hinge: about) the axis
+    const bool driven = j.drive.kind != JointDrive::Kind::Off && j.drive.max > 0.0;
+    if ((t == JointType::Hinge || t == JointType::Slider) && (driven || P.lim != 0)) {
       const bool turn = t == JointType::Hinge;
       auto rate = [&]() { return turn ? dot(P.ax, wb() - wa()) : dot(P.ax, vb(P.pb) - va(P.pb)); };
       auto push = [&](f64 l) {
         if (turn) apply(V3{}, P.ax * l);
         else apply(P.ax * l, V3{});
       };
-      if (j.motor) {
-        const f64 lim = std::max(0.0, j.motor_max) * joint_dt_;
-        const f64 nd = std::clamp(j.drive + P.kax * (j.motor_speed - rate()), -lim, lim);
-        push(nd - j.drive);
-        j.drive = nd;
+      if (driven) {
+        // the rate it asks for: its speed, or towards its goal (a hinge the short way round)
+        const f64 top = std::abs(j.drive.speed);
+        f64 want = j.drive.speed;
+        if (j.drive.kind != JointDrive::Kind::Speed) {
+          f64 e = P.goal - P.value;
+          if (turn) e = std::remainder(e, 6.283185307179586);
+          want = std::clamp(P.goal_rate + j.drive.stiffness * e, -top, top);
+        }
+        const f64 lim = j.drive.max * joint_dt_;
+        const f64 nd = std::clamp(j.motor + P.kax * (want - rate()), -lim, lim);
+        push(nd - j.motor);
+        j.motor = nd;
       }
       if (P.lim == 2) {
         const f64 l = -P.kax * rate();
@@ -412,10 +433,7 @@ void RigidWorld::finish_joints(f64 dt) {
   for (size_t k = 0; k < joints.size(); ++k) {
     const JointPrep& P = jprep_[k];
     Joint& j = joints[k];
-    if (!P.on) {
-      j.force = j.torque = V3{};
-      continue;
-    }
+    if (!P.on) continue;  // (its bodies asleep: it carries what it carried when they fell asleep)
     j.force = P.J * (1.0 / dt);
     // (the turn it gives b about its anchor)
     j.torque = P.L * (1.0 / dt);
@@ -428,16 +446,30 @@ void RigidWorld::joint_partner_speeds(std::vector<f64>& partner) const {
   for (size_t k = 0; k < joints.size(); ++k) {
     const JointPrep& P = jprep_[k];
     if (!P.on) continue;
-    auto speed = [&](i32 i, const V3& fv, const V3& fw, const V3& fc, const V3& X) {
-      if (i >= 0) {
-        const Body& b = *bodies[size_t(i)];
-        return norm(b.v_pre) + b.radius * norm(b.w_pre);
-      }
-      return norm(fv + cross(fw, X - fc));
+    auto speed = [&](i32 i) {
+      if (i < 0) return 0.0;
+      const Body& b = *bodies[size_t(i)];
+      return norm(b.v_pre) + b.radius * norm(b.w_pre);
     };
-    const f64 sa = speed(P.ia, P.fva, P.fwa, P.fca, P.pa), sb = speed(P.ib, P.fvb, P.fwb, P.fcb, P.pb);
+    const f64 sa = speed(P.ia), sb = speed(P.ib);
     if (P.ia >= 0) partner[size_t(P.ia)] = std::max(partner[size_t(P.ia)], sb);
     if (P.ib >= 0) partner[size_t(P.ib)] = std::max(partner[size_t(P.ib)], sa);
+  }
+}
+
+bool RigidWorld::driving(const Joint& j, const JointPrep& P) {
+  if (!P.on || j.drive.kind == JointDrive::Kind::Off || !(j.drive.max > 0.0)) return false;
+  if (j.type != JointType::Hinge && j.type != JointType::Slider) return false;
+  switch (j.drive.kind) {
+    case JointDrive::Kind::Speed:
+      return j.drive.speed != 0.0;
+    case JointDrive::Kind::Oscillate:
+      return true;
+    default: {
+      f64 e = P.goal - P.value;
+      if (j.type == JointType::Hinge) e = std::remainder(e, 6.283185307179586);
+      return std::abs(e) > 1e-3;
+    }
   }
 }
 
@@ -449,33 +481,59 @@ void RigidWorld::wake_jointed() {
   for (const Joint& j : joints) {
     if (j.broken) continue;
     const i32 ia = j.a.body != 0 ? index_of(j.a.body) : -1, ib = j.b.body != 0 ? index_of(j.b.body) : -1;
-    auto moving = [&](const JointEnd& e, i32 i) {
-      if (i >= 0) {
-        const Body& b = *bodies[size_t(i)];
-        return !b.asleep && norm(b.v) + b.radius * norm(b.w) > 2.0 * sleep_speed_;
-      }
-      return e.body == 0 && (norm2(e.v) > 0.0 || norm2(e.w) > 0.0);
+    auto moving = [&](i32 i) {
+      if (i < 0) return false;
+      const Body& b = *bodies[size_t(i)];
+      return !b.asleep && norm(b.v) + b.radius * norm(b.w) > 2.0 * sleep_speed_;
     };
-    if (ia >= 0 && bodies[size_t(ia)]->asleep && moving(j.b, ib)) wake(*bodies[size_t(ia)]);
-    if (ib >= 0 && bodies[size_t(ib)]->asleep && moving(j.a, ia)) wake(*bodies[size_t(ib)]);
+    if (ia >= 0 && bodies[size_t(ia)]->asleep && moving(ib)) wake(*bodies[size_t(ia)]);
+    if (ib >= 0 && bodies[size_t(ib)]->asleep && moving(ia)) wake(*bodies[size_t(ib)]);
   }
+}
+
+std::vector<std::array<i32, 2>> RigidWorld::joint_bodies() const {
+  // (by id: the body list may have changed since the joints were prepared - a fracture)
+  std::vector<std::array<i32, 2>> out(joints.size(), {-1, -1});
+  for (size_t k = 0; k < joints.size(); ++k) {
+    const Joint& j = joints[k];
+    if (j.broken) continue;
+    for (int e = 0; e < 2; ++e) {
+      const i64 id = e ? j.b.body : j.a.body;
+      if (id == 0) continue;
+      const auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
+      if (it != bodies.end() && (*it)->id == id) out[k][size_t(e)] = static_cast<i32>(it - bodies.begin());
+    }
+  }
+  return out;
+}
+
+std::vector<u8> RigidWorld::machine_parts() const {
+  std::vector<u8> out(bodies.size(), 0);
+  const std::vector<std::array<i32, 2>> ends = joint_bodies();
+  for (size_t k = 0; k < joints.size() && k < jprep_.size(); ++k) {
+    if (!driving(joints[k], jprep_[k])) continue;
+    for (const i32 i : ends[k])
+      if (i >= 0) out[size_t(i)] = 1;
+  }
+  return out;
 }
 
 std::vector<u8> RigidWorld::hanging(const std::vector<u8>& held) const {
   std::vector<u8> out(bodies.size(), 0);
+  const std::vector<std::array<i32, 2>> ends = joint_bodies();
   for (int pass = 0; pass < 16; ++pass) {
     bool more = false;
-    for (size_t k = 0; k < jprep_.size() && k < joints.size(); ++k) {
-      const JointPrep& P = jprep_[k];
-      if (!P.on || joints[k].broken) continue;
+    for (size_t k = 0; k < joints.size(); ++k) {
+      const i32 ia = ends[k][0], ib = ends[k][1];
+      if (joints[k].broken || (ia < 0 && ib < 0)) continue;
       // (an end held by what does not move, by what rests, or by what hangs itself)
-      auto holds = [&](i32 i) { return i < 0 || held[size_t(i)] || out[size_t(i)]; };
-      if (P.ib >= 0 && !out[size_t(P.ib)] && holds(P.ia)) {
-        out[size_t(P.ib)] = 1;
+      auto holds = [&](i32 i) { return i < 0 || bodies[size_t(i)]->asleep || held[size_t(i)] || out[size_t(i)]; };
+      if (ib >= 0 && !out[size_t(ib)] && holds(ia)) {
+        out[size_t(ib)] = 1;
         more = true;
       }
-      if (P.ia >= 0 && !out[size_t(P.ia)] && holds(P.ib)) {
-        out[size_t(P.ia)] = 1;
+      if (ia >= 0 && !out[size_t(ia)] && holds(ib)) {
+        out[size_t(ia)] = 1;
         more = true;
       }
     }
@@ -490,12 +548,15 @@ void RigidWorld::joint_stillness() {
     return (it != bodies.end() && (*it)->id == id) ? static_cast<i32>(it - bodies.begin()) : -1;
   };
   std::vector<std::pair<i32, i32>> pairs;
-  for (const Joint& j : joints) {
+  for (size_t k = 0; k < joints.size(); ++k) {
+    const Joint& j = joints[k];
     if (j.broken) continue;
     const i32 ia = j.a.body != 0 ? index_of(j.a.body) : -1, ib = j.b.body != 0 ? index_of(j.b.body) : -1;
-    // (a moving frame keeps what hangs on it awake)
-    if (ia >= 0 && j.b.body == 0 && (norm2(j.b.v) > 0.0 || norm2(j.b.w) > 0.0)) bodies[size_t(ia)]->still = 0;
-    if (ib >= 0 && j.a.body == 0 && (norm2(j.a.v) > 0.0 || norm2(j.a.w) > 0.0)) bodies[size_t(ib)]->still = 0;
+    // (a drive at work keeps its ends awake: running, or short of its target)
+    if (k < jprep_.size() && driving(j, jprep_[k])) {
+      if (ia >= 0) bodies[size_t(ia)]->still = 0;
+      if (ib >= 0) bodies[size_t(ib)]->still = 0;
+    }
     if (ia >= 0 && ib >= 0 && !bodies[size_t(ia)]->asleep && !bodies[size_t(ib)]->asleep) pairs.push_back({ia, ib});
   }
   // (the least still of a chain holds the rest)

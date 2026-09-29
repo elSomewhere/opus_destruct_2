@@ -4,8 +4,8 @@
  *
  * Units: metres, kilograms, seconds; z is up. Voxel p (integer coordinates) is the cube of side
  * h centred at h p. A voxel byte is 0 for air, else 1 + material id in the low 7 bits and bit 7
- * set for an anchored voxel (a support that never moves: bedrock, foundations, kinematic
- * parts): svxc_vox(material, anchored).
+ * set for an anchored voxel (a support that never moves: bedrock, foundations): svxc_vox(material,
+ * anchored).
  *
  * Grids (docs/GRIDS.md): the world grid (id 0) has the world's axes; oriented grids are voxel
  * lattices of the same voxel size placed with a frame of their own (their voxel p is centred at
@@ -27,7 +27,8 @@ extern "C" {
 
 typedef struct svxc_world svxc_world;
 
-/* ---- voxels and materials (the registry is process-wide; change it before worlds step) */
+/* ---- voxels and materials: the process's table (svxc_material_*) is what a world starts with
+ * when it is made; each world has its own after (svxc_world_material_*) */
 
 static inline uint8_t svxc_vox(int material, int anchored) {
   return (uint8_t)(((1 + material) & 0x7F) | (anchored ? 0x80 : 0));
@@ -68,6 +69,11 @@ void svxc_materials_reset(void);          /* back to the standard presets */
 /* ---- worlds */
 
 svxc_world* svxc_create(double voxel_size); /* h (m): 0.125 is the tuned default */
+/* The world's own materials (a copy of the process's when it was made): as svxc_material_*.
+ * Changed before svxc_load: what the world builds from them keeps what it was built with. */
+int svxc_world_material_set(svxc_world* w, int id, const svxc_material* m);
+int svxc_world_material_get(svxc_world* w, int id, svxc_material* out);
+int svxc_world_material_find(svxc_world* w, const char* name);
 void svxc_destroy(svxc_world* w);
 void svxc_set_threads(int threads);         /* the shared pool (1 = serial); results never depend on it */
 
@@ -109,8 +115,11 @@ void svxc_enable_streaming(svxc_world* w, svxc_generate_fn fn, void* user, const
 void svxc_set_focus(svxc_world* w, const double* xyz, int count); /* count points, xyz each */
 
 /* Persistence: the changes since load as a delta against the base world (valid until the next
- * save); applying one after the same load (returns 0, or -1 for a malformed delta: nothing
- * applied). svxc_modified: 1 if there is anything to save. */
+ * save): the grids' changes, and the session - its pieces (all of each: shapes, voxels, bonds,
+ * pose, motion, sleep), joints and clock. Applying one after the same load (the host makes the
+ * level again - its grids and joints - then loads the delta: the session's pieces and joints take
+ * the place of the level's) returns 0, or -1 for a malformed delta: nothing applied.
+ * svxc_modified: 1 if there is anything to save. */
 const uint8_t* svxc_save_delta(svxc_world* w, size_t* size);
 int svxc_load_delta(svxc_world* w, const uint8_t* data, size_t size);
 int svxc_modified(svxc_world* w);
@@ -138,54 +147,46 @@ int svxc_set_grid_layer(svxc_world* w, uint32_t grid, int layer, const int32_t* 
 uint8_t svxc_grid_layer(svxc_world* w, uint32_t grid, int layer, int x, int y, int z);
 /* Loads on voxels of grids (grids: n ids, or NULL for the world grid's). */
 void svxc_set_grid_loads(svxc_world* w, uint64_t group, const uint32_t* grids, const int32_t* xyz, const double* forces, int n);
-/* A grid in full (svxc_add_grid_desc): its frame (in its kinematic body's frame; body 0: the
- * world's), voxel size (0: the world's; a finer grid has finer surfaces, its rubble keeps the
- * world's size in metres), priority (where grids of one body overlap, the higher keeps its voxels,
- * then the newer), kinematic body (0: the static world) and whether it is the level's. */
+/* A grid in full (svxc_add_grid_desc): its frame, voxel size (0: the world's; a finer grid has
+ * finer surfaces, its rubble keeps the world's size in metres), priority (where grids overlap,
+ * the higher keeps its voxels, then the newer) and whether it is the level's. */
 typedef struct svxc_grid_desc {
   double origin[3];
   double rot[4]; /* x, y, z, w */
   double voxel_size;
   int priority;
-  uint32_t body;
   int base;
 } svxc_grid_desc;
 uint32_t svxc_add_grid_desc(svxc_world* w, const uint8_t* voxels, int nx, int ny, int nz, int ox, int oy, int oz, const svxc_grid_desc* d);
-/* Places a grid anew (in its body's frame): what it was bonded to lets go, it bonds where it is
- * (GRID_MOVED). 1, or 0: refused. */
+/* Places a grid anew: what it was bonded to lets go, it bonds where it is (GRID_MOVED). 1, or 0:
+ * refused. */
 int svxc_set_grid_frame(svxc_world* w, uint32_t id, const double origin[3], const double rot[4]);
 double svxc_grid_voxel_size(svxc_world* w, uint32_t id); /* (0: none) */
 int svxc_grid_priority(svxc_world* w, uint32_t id);
-uint32_t svxc_grid_body(svxc_world* w, uint32_t id);      /* its kinematic body (0: the static world) */
-/* The velocity of a grid at a world point: its kinematic body's motion there (0: static). */
-void svxc_grid_velocity(svxc_world* w, uint32_t id, const double point[3], double vel[3]);
 
-/* ---- kinematic bodies (docs/MOTION.md §1): rigid frames the host drives (doors, lifts, drawbridges,
- * cranes' arms); their grids (svxc_grid_desc.body) move with them. Pieces are pushed and carried
- * by them; their structures stand on their anchored voxels (what the drive holds) and break under
- * gravity, what rests on them and the inertia of the motion. */
-uint32_t svxc_add_kinematic(svxc_world* w, const double pos[3], const double rot[4], int base); /* its id, or 0 */
-/* Removes it with its grids; release: its grids fall as one piece with its velocity instead. */
-int svxc_remove_kinematic(svxc_world* w, uint32_t id, int release);
-/* Where it is at the end of the next tick (it moves there steadily during the tick). */
-int svxc_drive_kinematic(svxc_world* w, uint32_t id, const double pos[3], const double rot[4]);
-/* A velocity it keeps from the next tick until driven or given another (zero: it stops). */
-int svxc_set_kinematic_velocity(svxc_world* w, uint32_t id, const double vel[3], const double ang[3]);
-/* Its pose and the last tick's velocity (any output may be NULL): 1, or 0: none. */
-int svxc_kinematic(svxc_world* w, uint32_t id, double pos[3], double rot[4], double vel[3], double ang[3]);
-int svxc_kinematics(svxc_world* w, uint32_t* out, int max); /* ids (ascending) into out: their count */
-
-/* ---- joints (docs/MOTION.md §2): hold two things together - pieces, grids' voxels (their
- * structures take the load), kinematic bodies, the world. An end on a voxel follows it into the
- * piece it breaks off in; the joint gives way beyond its strength, or when its voxel is gone
- * (SVXC_JOINT_BROKEN). Not saved in deltas. */
+/* ---- joints (docs/MOTION.md): hold two things together - pieces, grids' voxels (their
+ * structures take the load), the world. A machine is pieces on driven joints (a lift's car on a
+ * slider, a turntable on a hinge). An end on a voxel follows it into the piece it breaks off in;
+ * the joint gives way beyond its strength, or when its voxel is gone (SVXC_JOINT_BROKEN). */
 enum { SVXC_JOINT_BALL = 0, SVXC_JOINT_HINGE, SVXC_JOINT_SLIDER, SVXC_JOINT_FIXED, SVXC_JOINT_DISTANCE };
-enum { SVXC_ANCHOR_WORLD = 0, SVXC_ANCHOR_GRID, SVXC_ANCHOR_PIECE, SVXC_ANCHOR_KINEMATIC };
+enum { SVXC_ANCHOR_WORLD = 0, SVXC_ANCHOR_GRID, SVXC_ANCHOR_PIECE };
 typedef struct svxc_anchor {
   int kind;        /* SVXC_ANCHOR_* */
-  uint64_t id;     /* the grid (0: the world grid), piece or kinematic body */
+  uint64_t id;     /* the grid (0: the world grid) or piece */
   double point[3]; /* where, in the world now (a grid's or piece's: at a solid voxel of it) */
 } svxc_anchor;
+/* A joint's drive: a motor of limited strength moving a hinge's turn (rad) or a slider's move (m)
+ * at a speed, or to a target (a servo), or between two targets and back every period on the
+ * world's clock (a machine's program: svxc_time). */
+enum { SVXC_DRIVE_OFF = 0, SVXC_DRIVE_SPEED, SVXC_DRIVE_TARGET, SVXC_DRIVE_OSCILLATE };
+typedef struct svxc_joint_drive {
+  int kind;               /* SVXC_DRIVE_* */
+  double speed;           /* rad/s, m/s: its speed (SPEED), the fastest it goes (TARGET, OSCILLATE) */
+  double max;             /* N m, N: the most it gives */
+  double target, target2; /* (TARGET: target) (OSCILLATE: from target to target2 and back, eased) */
+  double period, phase;   /* s (OSCILLATE) */
+  double stiffness;       /* 1/s: how hard it closes on its target */
+} svxc_joint_drive;
 typedef struct svxc_joint_desc {
   int type; /* SVXC_JOINT_* */
   svxc_anchor a, b;
@@ -195,14 +196,14 @@ typedef struct svxc_joint_desc {
   double stiffness, damping; /* (distance) stretching beyond its length: N/m, N s/m (0: rigid) */
   int limited;         /* (hinge: b's turn from now, rad; slider: its move, m) */
   double lower, upper;
-  int motor;           /* (hinge: rad/s, N m; slider: m/s, N) */
-  double motor_speed, motor_max;
+  svxc_joint_drive drive; /* (hinge, slider) */
   double break_force, break_torque; /* N, N m (0: never) */
 } svxc_joint_desc;
-void svxc_joint_defaults(svxc_joint_desc* d); /* a ball joint, axis z, length -1, a rope, no limit, no motor */
+/* a ball joint, axis z, length -1, a rope, no limit, its drive off (speed 1, period 10 s, stiffness 4/s) */
+void svxc_joint_defaults(svxc_joint_desc* d);
 uint32_t svxc_add_joint(svxc_world* w, const svxc_joint_desc* d); /* its id, or 0: refused */
 int svxc_remove_joint(svxc_world* w, uint32_t id);
-int svxc_set_joint_motor(svxc_world* w, uint32_t id, int on, double speed, double max);
+int svxc_set_joint_drive(svxc_world* w, uint32_t id, const svxc_joint_drive* d);
 int svxc_set_joint_limits(svxc_world* w, uint32_t id, int on, double lower, double upper);
 typedef struct svxc_joint_state {
   int type;
@@ -223,7 +224,10 @@ enum { SVXC_EDIT_UNTRACKED = 1, SVXC_EDIT_ISOLATED = 2 };
 int svxc_set_voxels(svxc_world* w, const int32_t* xyz, const uint8_t* values, int n, unsigned flags);
 int svxc_apply_impulse(svxc_world* w, int64_t piece, const double point[3], const double impulse[3]);
 int svxc_remove_piece(svxc_world* w, int64_t piece);
+/* A piece the host keeps: never culled (a joint's pieces are kept anyway); its parts keep it. */
+int svxc_set_piece_keep(svxc_world* w, int64_t piece, int keep);
 void svxc_tick(svxc_world* w);
+double svxc_time(svxc_world* w); /* the world's clock: s simulated since the level loaded (paused ticks do not count) */
 
 /* ---- extension points (docs/CORE.md §5): layers, damage, loads, piece forces, systems */
 
@@ -350,20 +354,21 @@ typedef struct svxc_hit {
   int shape;     /* (a piece) its shape hit */
 } svxc_hit;
 svxc_hit svxc_raycast(svxc_world* w, const double origin[3], const double dir[3], double max_dist);
-/* Moves the box [mn, mx] by move as far as the world's voxels let it (x, then y, then z); out:
- * the move made (3) and on_ground (1). */
+/* Moves the box [mn, mx] by move as far as the world's voxels (grids and pieces) let it (x, then
+ * y, then z); out: the move made (3) and on_ground (1). */
 void svxc_collide(svxc_world* w, const double mn[3], const double mx[3], const double move[3], double out[4]);
-/* How far the box [mn, mx] moves along move (any direction) before it touches a grid's voxels:
- * out[0] the free fraction (1: nothing), out[1..3] the touched surface's normal, out[4] its grid
- * id; returns 1 if it touches. */
+/* How far the box [mn, mx] moves along move (any direction) before it touches a grid's or a
+ * piece's voxels: out[0] the free fraction (1: nothing), out[1..3] the touched surface's normal,
+ * out[4] its grid id (0 for a piece); returns 1 if it touches. */
 int svxc_sweep(svxc_world* w, const double mn[3], const double mx[3], const double move[3], double out[5]);
-/* The same, with what a controller riding kinematic bodies needs: the grid stood on and its
- * velocity under the box (add ground_velocity x dt to the next move); the touched surface's
- * velocity. */
+/* The same, with what a controller riding machines needs: what it stands on (a grid, or a piece:
+ * a lift's car, a turntable) and its velocity under the box (add ground_velocity x dt to the next
+ * move); the touched surface and its velocity. */
 typedef struct svxc_collision {
   double move[3];
   int on_ground;
-  uint32_t ground;
+  uint32_t ground;      /* the grid stood on (ground_piece 0) ... */
+  int64_t ground_piece; /* ... or the piece */
   double ground_velocity[3];
 } svxc_collision;
 void svxc_collide_ex(svxc_world* w, const double mn[3], const double mx[3], const double move[3], svxc_collision* out);
@@ -371,10 +376,15 @@ typedef struct svxc_sweep_hit {
   int hit;
   double t; /* the free fraction (1: nothing) */
   double normal[3];
-  uint32_t grid;
+  uint32_t grid; /* the grid touched (piece 0) ... */
+  int64_t piece; /* ... or the piece */
   double velocity[3];
 } svxc_sweep_hit;
 int svxc_sweep_ex(svxc_world* w, const double mn[3], const double mx[3], const double move[3], svxc_sweep_hit* out);
+/* Whether the box overlaps a grid's or a piece's voxels (1), and how far it must rise to overlap
+ * nothing (0: it does not; -1: not within max_rise): a rider lifted out of a rising car. */
+int svxc_overlaps(svxc_world* w, const double mn[3], const double mx[3]);
+double svxc_depenetrate(svxc_world* w, const double mn[3], const double mx[3], double max_rise);
 
 typedef struct svxc_stats {
   double tick_ms, structural_ms, rigid_ms, stream_ms, memory_mb;

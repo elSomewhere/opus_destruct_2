@@ -1,10 +1,11 @@
 #!/usr/bin/env node
 /**
- * Browser run of the machines world on the real engine (?engine=wasm): kinematic bodies and
- * joints (docs/MOTION.md). Their grids are drawn with their frames as they move, the ropes and
- * rods of the joints are drawn, and the player rides the lift: dropped onto its deck, they go up
- * and down with it (the client's collision against the moving grid, and its velocity). Screenshots;
- * fails on console / page / WebGPU errors (a WASM abort included) or a failed check.
+ * Browser run of the machines world on the real engine (?engine=wasm): machines are pieces on
+ * driven joints (docs/MOTION.md). The ropes and rods of the joints are drawn, the pieces' voxels
+ * reach the client's collision, and the player rides the machines: dropped onto the lift's car,
+ * they go up and down with it; onto the turntable, they go round with it (the client's collision
+ * against the moving pieces, and their velocity). Screenshots; fails on console / page / WebGPU
+ * errors (a WASM abort included) or a failed check.
  * Usage (dev server running): node scripts/machines-wasm.mjs [baseUrl] [outDir]
  */
 import { mkdirSync } from 'node:fs';
@@ -42,13 +43,13 @@ try {
     try {
       ok = await page.evaluate(() => {
         const s = window.__structvox?.state();
-        return !!s && s.ready && s.engine !== null && s.render !== null && s.render.gridChunksDrawn > 0;
+        return !!s && s.ready && s.engine !== null && s.render !== null && s.pieceBodies > 0;
       });
     } catch (e) {
       if (!/Execution context was destroyed|Cannot find context/.test(String(e))) throw e;
     }
     if (ok) break;
-    if (Date.now() - t0 > 120000) throw new Error('machines world did not load');
+    if (Date.now() - t0 > 120000) throw new Error(`machines world did not load (${errors.slice(0, 3).join(' | ') || 'no errors'})`);
     await sleep(200);
   }
   await sleep(1500);
@@ -71,16 +72,17 @@ try {
   await view('turntable', [24, -2, 5], 60, -15);
   await view('frames', [34, 20, 4], 90, -5);
   const r = await page.evaluate(() => {
-    const s = window.__structvox.state().render;
-    return { grids: s.gridChunks, drawn: s.gridChunksDrawn, ropes: window.__structvox.renderer.ropes.count };
+    const s = window.__structvox.state();
+    return { islands: s.render.islands, ropes: window.__structvox.renderer.ropes.count, pieces: s.pieceBodies };
   });
-  check('the bodies\' grids are drawn', r.grids > 0, `${r.grids} grid chunks held`);
+  check('the pieces are drawn', r.islands >= 10, `${r.islands} pieces held (the machines' parts, the hanging ones, the crates, the wall's rubble)`);
   check('the ropes and rods are drawn', r.ropes >= 6, `${r.ropes} (the crane's rope, the pendulum's rod, the chain's four)`);
-  // the player dropped onto the lift's deck (at (17.35, 6.5)), riding it for 12 s: up and down
+  check("the pieces' voxels reach the client's collision", r.pieces >= 10, `${r.pieces} pieces (the machines' parts, the hanging ones, the crates)`);
+  // the player dropped onto the lift's car (at (17.3, 6.45)), riding it for 12 s: up and down
   await page.evaluate(() => {
     const api = window.__structvox;
     api.noclip(false);
-    api.teleport(17.35, 6.5, 6.0);
+    api.teleport(17.3, 6.45, 6.0);
     api.look(180, -10);
   });
   const zs = [];
@@ -94,8 +96,35 @@ try {
   }
   const lo = Math.min(...zs.slice(10)), hi = Math.max(...zs.slice(10));
   const x = await page.evaluate(() => window.__structvox.state().player);
-  check('the player rides the lift', hi - lo > 3.0 && Math.abs(x[0] - 17.35) < 1.3 && Math.abs(x[1] - 6.5) < 1.3,
+  check('the player rides the lift', hi - lo > 3.0 && Math.abs(x[0] - 17.3) < 1.3 && Math.abs(x[1] - 6.45) < 1.3,
     `feet from ${lo.toFixed(2)} to ${hi.toFixed(2)} m, on the ground ${grounded} of 60 samples, at (${x[0].toFixed(2)}, ${x[1].toFixed(2)})`);
+  // onto the turntable (its axis at (29.94, 7.94), 0.4 rad/s), 1.4 m out between two crates: round with it
+  const c = [29.94, 7.94];
+  await page.evaluate((p) => {
+    const api = window.__structvox;
+    api.teleport(p[0], p[1], 1.5);
+  }, [c[0] + 1.4 * Math.cos(1.05), c[1] + 1.4 * Math.sin(1.05)]);
+  await sleep(1000);
+  const angle = async () => {
+    const p = await page.evaluate(() => window.__structvox.state().player);
+    return [Math.atan2(p[1] - c[1], p[0] - c[0]), Math.hypot(p[0] - c[0], p[1] - c[1]), p[2]];
+  };
+  const a0 = await angle();
+  let turned = 0;
+  let prev = a0[0];
+  for (let k = 0; k < 20; ++k) {
+    await sleep(200);
+    const a = await angle();
+    let d = a[0] - prev;
+    if (d > Math.PI) d -= 2 * Math.PI;
+    if (d < -Math.PI) d += 2 * Math.PI;
+    turned += d;
+    prev = a[0];
+    if (k === 10) await page.screenshot({ path: `${outDir}/turntable-ride.png` });
+  }
+  const a1 = await angle();
+  check('the player rides the turntable', turned > 1.0 && a1[1] < 3.0 && a1[2] < 1.5,
+    `turned ${turned.toFixed(2)} rad in 4 s (0.4 rad/s), ${a1[1].toFixed(2)} m from its axis, feet at ${a1[2].toFixed(2)} m`);
   check('no console/page/WebGPU errors', errors.length === 0, errors.length ? errors.slice(0, 5).join(' | ') : 'none');
 } finally {
   await browser.close();
