@@ -133,3 +133,37 @@ TEST_CASE("drive city: streamed, its traffic drives the lanes around the viewer 
   CHECK(fallen == 0);
   CHECK(wrecks <= total / 3);
 }
+
+TEST_CASE("drive city: the player's car stays in the world while the host's viewer lags behind it") {
+  // (a slow page stops sending its viewer: the car driven on must not be archived out of range
+  // with the rubble there, nor its traffic left behind)
+  Game game;
+  std::shared_ptr<GameSource> src = make_drive_city(11);
+  StreamConfig sc;
+  sc.load_radius = 60.0;
+  sc.evict_radius = 80.0;
+  sc.chunks_per_tick = 64;
+  game.load_streaming(src, h, sc);
+  TrafficConfig tc;
+  tc.enabled = false;
+  game.set_traffic(tc);
+  const V3 eye = src->spawn_pos();
+  game.set_viewer(eye);
+  for (int t = 0; t < 60; ++t) game.tick();
+  // (on the avenue's lane beside the spawn, along +x)
+  const u32 id = game.spawn_vehicle({VehicleKind::Sedan, Paint::Blue}, V3{eye.x + 3, eye.y + 5, eye.z}, 0.0);
+  REQUIRE(id != 0);
+  for (int t = 0; t < 60; ++t) game.tick();
+  REQUIRE(game.enter_vehicle(id));
+  game.drive({1.0, 0.0, 0.0, false});
+  f64 far = 0.0;
+  VehicleView v;
+  for (int t = 0; t < 60 * 12; ++t) {
+    game.tick();  // (the viewer is never sent again)
+    REQUIRE(game.vehicle(id, &v));
+    far = std::max(far, std::hypot(v.pos.x - eye.x, v.pos.y - eye.y));
+  }
+  MESSAGE("driven " << far << " m from where the host's viewer stayed; " << v.wheels << " wheels, damage " << v.damage);
+  CHECK(far > sc.evict_radius + 20.0);
+  CHECK(game.player_vehicle() == id);
+}

@@ -282,6 +282,12 @@ std::vector<WheelView> Game::wheel_views() const {
   return out;
 }
 
+const Body* Game::player_car() const {
+  if (!player_vehicle_) return nullptr;
+  const auto it = vehicles_.find(player_vehicle_);
+  return it != vehicles_.end() && it->second.chassis ? world_.piece(it->second.chassis) : nullptr;
+}
+
 u32 Game::vehicle_near(const V3& pos, f64 reach) const {
   u32 best = 0;
   f64 bd = reach * reach;
@@ -486,6 +492,14 @@ void Game::drive_vehicle(Vehicle& v, const Body& b, f64 dt) {
 
 void Game::vehicles_before_tick() {
   sync_vehicles();
+  // The player's car is a focus of the streaming, whatever the host's viewer says: a host that
+  // falls behind (a slow page stops sending its viewer) must not see the car it drives go out of
+  // range - archived with the rubble there - or driven off the world it keeps.
+  {
+    std::vector<V3> focus{viewer_};
+    if (const Body* b = player_car()) focus.push_back(b->x);
+    if (viewer_set_ || focus.size() > 1) world_.set_focus(focus);
+  }
   if (vehicles_.empty()) return;
   const f64 dt = world_.config().dt;
   // (the ground the player drives on is there before the car is: what it will reach in the next

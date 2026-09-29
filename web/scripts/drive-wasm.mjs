@@ -94,6 +94,12 @@ try {
   // (the avenue's lanes are to the player's left as they spawn, looking along +x)
   await page.evaluate((p) => window.__structvox.spawnVehicle(1, 4, p[0] + 3, p[1] + 5, p[2], 0), p0);
   await sleep(1500);
+  // (the car dropped in: the nearest, not one of the traffic's)
+  const near = (await vehicles())
+    .map((v) => ({ id: v.id, kind: v.kind, flags: v.flags, d: Math.hypot(v.pos[0] - p0[0] - 3, v.pos[1] - p0[1] - 5) }))
+    .sort((a, b) => a.d - b.d)
+    .slice(0, 3);
+  console.log(`dropped at ${[p0[0] + 3, p0[1] + 5].map((x) => x.toFixed(1))}; nearest: ${near.map((v) => `${v.id} ${v.kind} f${v.flags} ${v.d.toFixed(1)} m`).join(', ')}`);
   const entered = await page.evaluate(() => window.__structvox.enterVehicle());
   check(entered, 'took the wheel of the nearest car');
   let s = await state();

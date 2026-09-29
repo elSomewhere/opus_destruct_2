@@ -319,6 +319,7 @@ class Game {
   // (fresh: a new piece - its shapes' meshes may be ones made before for the same voxels: a
   // vehicle of a kind dropped in again; body: its body's paint, the same mesh re-tinted)
   ChunkMesh piece_mesh(const Body& b, bool fresh = false, Paint body = Paint::None) const;
+  const Body* player_car() const;  // (the chassis of the player's vehicle, if they drive one)
   ChunkMesh shape_mesh(const Body& b, size_t shape, bool fresh = false, Paint body = Paint::None) const;
   struct ShapeMeshMemo {
     IVec3 lo{0, 0, 0}, dim{0, 0, 0};

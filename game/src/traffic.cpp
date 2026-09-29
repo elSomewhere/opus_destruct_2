@@ -241,7 +241,9 @@ void Game::step_traffic() {
   traffic_clock_ += world_.config().dt;
   if (!roads || traffic_clock_ < 0.5) return;
   traffic_clock_ = 0.0;
-  const V3 at = viewer_;
+  // (about the player's car when they drive: the host's viewer may lag behind it)
+  const Body* car = player_car();
+  const V3 at = car ? car->x : viewer_;
   // (within the resident ground, and gone before they reach its edge: beyond it there is
   // nothing yet to drive on)
   const f64 radius = std::max(10.0, std::min(traffic_.radius, stream_.load_radius - 20.0));

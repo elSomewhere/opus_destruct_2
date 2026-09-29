@@ -163,7 +163,9 @@ lamps and trees; blocks of apartment buildings, shops with glass fronts, houses 
 office towers, warehouses, parks and car parks - masonry, reinforced concrete, glass, timber,
 steel, all destructible, painted. Its lanes, turns, signals (a 34 s cycle) and parking spots
 are a `RoadNetwork`. The ground ahead of the player's car is made resident before it gets
-there, whatever its speed.
+there, whatever its speed, and the car itself is a focus of the streaming (and the centre of
+the traffic) whatever the host's viewer says: a host that falls behind never sees the car it
+drives archived out of range.
 
 ## Using it
 
@@ -262,7 +264,8 @@ Measured natively on 4 threads in the drive city: a building's first touch is ~0
   drive replays bit for bit and a saved session restores its vehicles; driven into a wall, its
   front crumples.
 - `tests/game/test_drive_city.cpp`: lanes on asphalt between kerbs, markings, parking, turns
-  that lead on; streamed traffic drives and parks, nothing falls through the road.
+  that lead on; streamed traffic drives and parks, nothing falls through the road; the
+  player's car stays in the world while the host's viewer lags far behind it.
 - `web/test/vehicles.test.ts`: the front end's vehicle poses, the car to take, the wheel mesh.
 
 ## Limits
