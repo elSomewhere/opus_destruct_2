@@ -456,6 +456,16 @@ void World::wheels_follow_splits() {
 void World::wheel_structure_loads(f64 dt_sub) {
   (void)dt_sub;
   const f64 imp = par_.impact;
+  // (a wheel rolling onto a fragment is a load that moves, not a blow: it counts as an impact
+  // - a load case solved at once - only beyond 2.5 x its share of its chassis' weight: a landing,
+  // a kerb struck at speed. Otherwise its load creeps, and is solved again as loads do.)
+  std::vector<std::pair<i64, i32>> on;  // (chassis, its wheels on the ground)
+  for (const Wheel& w : rigid_.wheels)
+    if (!w.broken && w.contact && w.body != 0) {
+      auto it = std::lower_bound(on.begin(), on.end(), std::make_pair(w.body, 0));
+      if (it == on.end() || it->first != w.body) it = on.insert(it, {w.body, 0});
+      ++it->second;
+    }
   for (const Wheel& w : rigid_.wheels) {
     if (w.broken || !w.contact || w.ground_body != 0 || !live(w.ground_grid)) continue;
     const V3 F = w.force * -imp;  // (on the ground)
@@ -480,7 +490,12 @@ void World::wheel_structure_loads(f64 dt_sub) {
     a[4] += M.y;
     a[5] += M.z;
     const f64 mag = norm(F);
-    if (mag > st->peak_mag[size_t(i)]) {
+    f64 share = 0.0;
+    if (const Body* b = rigid_.find(w.body)) {
+      const auto it = std::lower_bound(on.begin(), on.end(), std::make_pair(w.body, 0));
+      if (it != on.end() && it->first == w.body) share = imp * b->mass * rigid_.par.gravity / it->second;
+    }
+    if (mag > 2.5 * share && mag > st->peak_mag[size_t(i)]) {
       st->peak_mag[size_t(i)] = mag;
       f64* pk = &st->peak[6 * size_t(i)];
       pk[0] = F.x;

@@ -426,9 +426,11 @@ Things a harness should not do:
 
 ## 8. Known limits
 
-- Continuous collision is against the grids: two pieces both faster than about 7.5 m/s (a voxel a
-  substep between them) can pass through each other's thin parts. A speculative contact stops a
-  fast piece at the face it would reach, without the restitution of a slower impact.
+- Continuous collision (speculative contacts) is along a piece's motion in the substep, against
+  the grids and between pieces (a pair that may close more than half a voxel looks along its
+  relative motion: a car at 100 km/h stops at a loose slab 12.5 cm thick, and at another car's
+  one-voxel panels). It stops a fast piece at the face it would reach, without the restitution
+  of a slower impact; a piece that spins fast about a far axis can still step over a thin part.
 - A saved session goes on close to how it would have, not in the same bits (the solver's warm
   starts are not saved); the environment's transient state (heat, smoke) is not saved.
 - Water and smoke see the grids at the world grid's resolution. More limits of grids are in

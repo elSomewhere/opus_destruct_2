@@ -1274,9 +1274,10 @@ void RigidWorld::sleep_update(f64 dt) {
     else if ((b.held > 0 || (!hung.empty() && hung[i])) && b.sleep_ema < sleep_speed) b.still += steps;
     else b.still = std::max(0, b.still - 2 * steps);
   }
-  // (bodies joined sleep together; one joined to a moving frame never sleeps)
-  if (!joints.empty()) joint_stillness();
+  // (bodies joined sleep together - a driven car's parts too; one joined to a moving frame
+  // never sleeps)
   if (!wheels.empty()) wheel_stillness();
+  if (!joints.empty()) joint_stillness();
   for (size_t i = 0; i < bodies.size(); ++i) {
     Body& b = *bodies[i];
     if (b.asleep) continue;
@@ -1315,6 +1316,7 @@ void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<int(f64
 void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const std::function<int(f64)>& fracture) {
   busy_ = busy();
   set_step(dt);
+  if (!joints.empty()) wake_jointed();  // (woken between steps: the host's, a piece's edit)
   using Clock = std::chrono::steady_clock;
   auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
   const auto t0 = Clock::now();

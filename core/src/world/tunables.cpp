@@ -42,6 +42,8 @@ const Field kFields[] = {
     SVX_T_I32("idle_drop_ticks", idle_drop_ticks),
     SVX_T_F64("load_trigger", load_trigger),
     SVX_T_F64("load_trigger_abs", load_trigger_abs),
+    SVX_T_I32("load_trigger_gap", load_trigger_gap),
+    SVX_T_I32("load_trigger_gap_nodes", load_trigger_gap_nodes),
     SVX_T_F64("dead_load_ema", dead_load_ema),
     SVX_T_I32("max_bodies", max_bodies),
     SVX_T_I32("body_stress_maxit", body_stress_maxit),

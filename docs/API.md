@@ -179,7 +179,11 @@ come to rest as rubble (docs/V2_DESIGN.md §4–5).
 
 Pieces load what they touch: contact impulses on a standing structure become impact load cases
 (landings) or dead loads (resting rubble) of the fragments they touch, so rubble piling on a
-floor can bring it down. Bedrock and ground absorb landings.
+floor can bring it down. Bedrock and ground absorb landings. A car's wheels load what they
+stand on as a load that moves (a blow only beyond 2.5 x their share of its weight: a landing);
+a large structure under a load that creeps - a car crossing a bridge - is solved again at most
+every `load_trigger_gap` ticks (6), at once for a change of 4 x its trigger, an impact, or while
+it is breaking.
 
 ### Sector movers (**ext**)
 

@@ -112,26 +112,28 @@ TEST_CASE("drive city: streamed, its traffic drives the lanes around the viewer 
   const V3 eye = src->spawn_pos();
   game.set_viewer(eye);
   for (int t = 0; t < 20; ++t) game.tick();  // (the ground around it)
-  i32 moving = 0, total = 0, parked = 0, wrecks = 0, fallen = 0;
+  i32 moving = 0, total = 0, parked = 0, wrecks = 0, fallen = 0, lost = 0;
   for (int t = 0; t < 900; ++t) {
     game.tick();
     if (t % 300 != 299) continue;
-    moving = total = parked = wrecks = fallen = 0;
+    moving = total = parked = wrecks = fallen = lost = 0;
     for (const VehicleView& v : game.vehicles()) {
       ++total;
       if (v.flags & VehicleView::kParked) ++parked;
       if (v.flags & VehicleView::kWreck) ++wrecks;
       if (!(v.flags & VehicleView::kParked) && std::abs(v.speed) > 2.0) ++moving;
       if (v.chassis && v.pos.z < -0.5) ++fallen;
+      if (!(v.flags & VehicleView::kWreck)) lost += v.parts0 - v.parts;  // (driving shakes no doors off)
     }
     MESSAGE("after " << (t + 1) / 60.0 << " s: " << total << " vehicles, " << parked << " parked, " << moving << " driving, " << wrecks
-                     << " wrecks, " << fallen << " below the road");
+                     << " wrecks, " << fallen << " below the road, " << lost << " parts lost but by wrecks");
   }
   CHECK(total > 8);
   CHECK(parked > 3);
   CHECK(moving > 3);
   CHECK(fallen == 0);
   CHECK(wrecks <= total / 3);
+  CHECK(lost == 0);
 }
 
 TEST_CASE("drive city: the player's car stays in the world while the host's viewer lags behind it") {
@@ -166,4 +168,58 @@ TEST_CASE("drive city: the player's car stays in the world while the host's view
   MESSAGE("driven " << far << " m from where the host's viewer stayed; " << v.wheels << " wheels, damage " << v.damage);
   CHECK(far > sc.evict_radius + 20.0);
   CHECK(game.player_vehicle() == id);
+}
+
+TEST_CASE("drive city: a car left behind goes out of range with its parts, and comes back with them on") {
+  Game game;
+  std::shared_ptr<GameSource> src = make_drive_city(11);
+  StreamConfig sc;
+  sc.load_radius = 60.0;
+  sc.evict_radius = 80.0;
+  sc.chunks_per_tick = 400;
+  game.load_streaming(src, h, sc);
+  TrafficConfig tc;
+  tc.enabled = false;
+  game.set_traffic(tc);
+  const V3 eye = src->spawn_pos();
+  game.set_viewer(eye);
+  for (int t = 0; t < 60; ++t) game.tick();
+  const u32 id = game.spawn_vehicle({VehicleKind::Pickup, Paint::Green}, V3{eye.x + 3, eye.y + 5, eye.z}, 0.0);
+  REQUIRE(id != 0);
+  for (int t = 0; t < 180; ++t) game.tick();
+  VehicleView v;
+  REQUIRE(game.vehicle(id, &v));
+  const i32 parts0 = v.parts0;
+  REQUIRE(parts0 > 0);
+  REQUIRE(v.parts == parts0);
+  const V3 at = v.pos;
+  // the viewer goes: the car, asleep, is archived with its parts on their joints
+  game.set_viewer(V3{eye.x + 400, eye.y, eye.z});
+  int gone = -1;
+  for (int t = 0; t < 900 && gone < 0; ++t) {
+    game.tick();
+    if (!game.vehicle(id, &v)) gone = t;
+  }
+  REQUIRE(gone >= 0);
+  // and comes back: the car where it was, its parts on it, latched shut
+  game.set_viewer(eye);
+  int back = -1;
+  for (int t = 0; t < 900 && back < 0; ++t) {
+    game.tick();
+    if (game.vehicle(id, &v) && v.chassis != 0) back = t;
+  }
+  REQUIRE(back >= 0);
+  for (int t = 0; t < 30; ++t) game.tick();
+  REQUIRE(game.vehicle(id, &v));
+  i32 latched = 0;
+  for (JointId j : game.world().joints()) {
+    JointState s;
+    if (game.world().joint(j, &s) && s.piece_a == v.chassis && s.latched) ++latched;
+  }
+  MESSAGE("archived after " << gone << " ticks, back after " << back << ": " << v.parts << " of " << parts0 << " parts on, " << latched
+                            << " latched, " << std::hypot(v.pos.x - at.x, v.pos.y - at.y) << " m from where it was left");
+  CHECK(v.parts == parts0);
+  CHECK(latched >= 3);  // (its doors, bonnet and tailgate)
+  CHECK(std::hypot(v.pos.x - at.x, v.pos.y - at.y) < 0.5);
+  CHECK(v.damage < 0.02);
 }

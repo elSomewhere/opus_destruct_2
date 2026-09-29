@@ -32,7 +32,8 @@ constexpr u8 kPieceVersion = 2;            // (1: no speed limit)
 constexpr u32 kSessionMagic = 0x53534553;  // "SESS"
 // (an archived group's record; the session of a delta's trailer v3 is a group of v1, of v4 v2)
 // v1: pieces, joints, dead loads. v2: the joints' collide flags and break angles; the wheels.
-constexpr u8 kGroupVersion = 2;
+// v3: the joints' latches.
+constexpr u8 kGroupVersion = 3;
 constexpr i64 kMaxCells = i64(1) << 24;    // (a piece's box at most: 16 M cells)
 
 // Runs of equal values (a piece's box is mostly air): count, value.
@@ -282,6 +283,8 @@ std::vector<u8> World::joint_record(size_t k) const {
   putf(out, j.value);
   out.push_back(j.collide ? 1 : 0);
   putf(out, j.break_angle);
+  putf(out, j.latch);
+  out.push_back(j.latched ? 1 : 0);
   for (const JointRec::End* E : {&r.a, &r.b}) {
     out.push_back(static_cast<u8>(E->kind));
     put32(out, E->grid);
@@ -317,6 +320,12 @@ bool World::read_joint_record(Rd& in, JointRec* r, Joint* j, u8 version) const {
     j->break_angle = in.f64_();
     if (col > 1 || !std::isfinite(j->break_angle) || j->break_angle < 0.0) return false;
     j->collide = col != 0;
+  }
+  if (version >= 3) {
+    j->latch = in.f64_();
+    const u8 lat = in.u8_();
+    if (lat > 1 || !std::isfinite(j->latch) || j->latch < 0.0) return false;
+    j->latched = lat != 0;
   }
   if (!in.ok || j->id == 0 || type > static_cast<u8>(JointType::Distance) || lim > 1 || dk > static_cast<u8>(JointDrive::Kind::Oscillate)) return false;
   for (f64* x : fs)
@@ -590,7 +599,7 @@ bool World::read_session(Rd& in, SessionDelta* s, u32 version) const {
   s->next_joint = in.u32_();
   if (version >= 4) s->next_wheel = in.u32_();
   if (!in.ok || s->steps < 0 || s->next_id < 1) return false;
-  if (!read_group(in, s, version >= 4 ? 2 : 1)) return false;
+  if (!read_group(in, s, version >= 5 ? 3 : version >= 4 ? 2 : 1)) return false;
   const u32 na = in.u32_();
   if (!in.ok || u64(na) * 20 > in.b.size()) return false;
   for (u32 k = 0; k < na; ++k) {

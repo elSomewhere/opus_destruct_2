@@ -217,7 +217,8 @@ for (;;) {
 - **Chunk records** (delta format version 4) end with the chunk's junction breaks. Version 3
   records load with none.
 - **The grids' part.** An optional trailer after the world grid's records:
-  - magic `SVXG` (0x47585653), version 3;
+  - magic `SVXG` (0x47585653), version 5 (4: the session has the wheels and the joints'
+    collide flags and break angles; 5: the joints' latches);
   - the ids of the level's grids that were removed;
   - per grid: its id, flags (the level's; moved), its frame (origin xyz and rotation xyzw as f64),
     voxel size and priority, and its chunk records. A level's grid saves its changed chunks (and
@@ -226,7 +227,8 @@ for (;;) {
     sleeping pieces' dead loads, and a streamed world's pieces archived out of range.
   - A world of the world grid alone, with no pieces or joints, saves exactly as before, with no
     trailer. Version 1 trailers (grids of the world's voxel size) and version 2 trailers (of the
-    kinematic bodies there were: read if they had none) still load.
+    kinematic bodies there were: read if they had none) still load, as do 3 and 4 (joints
+    without latches, sessions without wheels).
 - **Loading.**
   - Load the level (the world grid, then its grids in the same order, then its joints), `bake`,
     `load_delta`: the session's pieces and joints take the place of the level's joints.

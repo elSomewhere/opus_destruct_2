@@ -613,7 +613,7 @@ unsigned svx_vehicle_near(svx_engine* e, double x, double y, double z, double re
 
 int svx_vehicles(svx_engine* e) {
   const std::vector<VehicleView> vs = e->eng.vehicles();
-  constexpr size_t kStride = 34;
+  constexpr size_t kStride = 36;
   e->vehicles.assign(kStride * vs.size(), 0.0);
   f64* o = e->vehicles.data();
   for (const VehicleView& v : vs) {
@@ -643,6 +643,8 @@ int svx_vehicles(svx_engine* e) {
     o[28] = v.wheels;
     o[29] = v.damage;
     o[33] = v.redline;
+    o[34] = v.parts;
+    o[35] = v.parts0;
     o += kStride;
   }
   return static_cast<int>(vs.size());

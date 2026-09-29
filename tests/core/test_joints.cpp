@@ -153,6 +153,72 @@ TEST_CASE("joints: a door on a hinge swings when pushed, stops at its limit, and
   CHECK(norm(s.b - s.a) < 0.01);
 }
 
+TEST_CASE("joints: a latched door holds shut against a nudge, a hard knock opens its latch and it swings within its limits; saved, a latch is kept") {
+  auto build = [](World& w) {
+    w.load(ground());
+    w.bake();
+    // the door of the test above, on a hinge that opens one way (0 .. 1.2 rad), latched shut
+    const GridId g = object(w, V3{0.0, 0.0, 0.1}, {0, 0, 0}, {8, 2, 16}, MaterialId::Wood);
+    JointDesc d;
+    d.type = JointType::Hinge;
+    const V3 pin{-0.5 * h, 0.5 * h, 0.1 + 7.5 * h};
+    d.a = at_world(pin);
+    d.b = at_grid(g, pin);
+    d.axis = V3{0, 0, 1};
+    d.limited = true;
+    d.lower = 0.0;
+    d.upper = 1.2;
+    d.latch = 3000.0;
+    return w.add_joint(d);
+  };
+  World w;
+  const JointId j = build(w);
+  REQUIRE(j != 0);
+  for (int t = 0; t < 30; ++t) w.tick();
+  JointState s;
+  REQUIRE(w.joint(j, &s));
+  CHECK(s.latched);
+  const i64 door = w.pieces().front().id;
+  // a nudge at its free edge: it stays shut
+  REQUIRE(w.apply_impulse(door, V3{1.0, 0.0, 1.0}, V3{0.0, 3.0, 0.0}));
+  f64 top = 0.0;
+  for (int t = 0; t < 60; ++t) {
+    w.tick();
+    REQUIRE(w.joint(j, &s));
+    top = std::max(top, std::abs(s.value));
+  }
+  MESSAGE("nudged: turned at most " << top << " rad, latched " << s.latched);
+  CHECK(s.latched);
+  CHECK(top < 0.01);
+  const std::vector<u8> shut = w.save_delta();
+  // knocked hard: the latch gives way (not the hinge: what the latch held is not its to break
+  // on), and it swings open to its stop
+  REQUIRE(w.apply_impulse(door, V3{1.0, 0.0, 1.0}, V3{0.0, 60.0, 0.0}));
+  top = 0.0;
+  for (int t = 0; t < 240; ++t) {
+    w.tick();
+    REQUIRE(w.joint(j, &s));
+    top = std::max(top, s.value);
+  }
+  MESSAGE("knocked: turned up to " << top << " rad (limit 1.2), latched " << s.latched);
+  CHECK_FALSE(s.latched);
+  CHECK(top > 0.8);
+  CHECK(top < 1.2 + 0.05);
+  // (saved shut and open: each comes back as it was)
+  const std::vector<u8> open = w.save_delta();
+  World a, b;
+  REQUIRE(build(a) != 0);
+  REQUIRE(build(b) != 0);
+  // (a fresh world's own door and joint are replaced by the saved ones)
+  REQUIRE(a.load_delta(shut));
+  REQUIRE(b.load_delta(open));
+  JointState sa, sb;
+  REQUIRE(a.joint(j, &sa));
+  REQUIRE(b.joint(j, &sb));
+  CHECK(sa.latched);
+  CHECK_FALSE(sb.latched);
+}
+
 TEST_CASE("joints: a slider carries a block along its axis at its drive's speed, to its limit") {
   World w;
   w.load(ground());

@@ -915,9 +915,10 @@ export interface JointsMessage {
  * centre of mass xyz, frame rotation xyzw (x forward, y left, z up), velocity xyz, speed (m/s
  * forward), engine rpm, gear (-1 reverse, 0 neutral, 1..), controls (throttle, brake, steer,
  * handbrake), flags (VehicleFlag), the driver's seat xyz, half extent xyz (its box about its
- * frame's origin, z up from the ground), wheels on, damage 0..1, frame origin xyz, redline.
+ * frame's origin, z up from the ground), wheels on, damage 0..1, frame origin xyz, redline, parts
+ * still on (doors, bonnet, bumpers, ...: pieces of their own, on joints to the chassis), parts built.
  */
-export const VEHICLE_STRIDE = 34;
+export const VEHICLE_STRIDE = 36;
 export const VehicleFlag = { Player: 1, Npc: 2, Parked: 4, Wreck: 8 } as const;
 
 /**

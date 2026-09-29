@@ -31,6 +31,8 @@ function vehicle(id: number, origin: Vec3, yawDeg: number, speed = 0): Float64Ar
   v[28] = 4;
   v.set(origin, 30);
   v[33] = 6500;
+  v[34] = 7; // parts on (one of its eight come off)
+  v[35] = 8;
   return v;
 }
 
@@ -54,6 +56,8 @@ test('vehicles: poses come one tick behind, interpolated; the seat is kept in th
   const v = t.vehicles.get(1)!;
   assert.equal(t.player, 1);
   assert.equal(v.chassis, 101);
+  assert.equal(v.parts, 7);
+  assert.equal(v.partsBuilt, 8);
   assert.ok(Math.abs(v.seat[0] + 0.15) < 1e-9 && Math.abs(v.seat[1] - 0.37) < 1e-9 && Math.abs(v.seat[2] - 0.9) < 1e-9);
   // halfway between the samples, a tick behind
   const p = t.pose(v, 10 + 1 / 60 + 0.5 / 60);

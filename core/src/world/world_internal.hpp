@@ -656,6 +656,7 @@ struct World::Structure {
   std::vector<f64> ext, ext_solved, acc, peak;  // external loads (6 per node)
   std::vector<f64> pending;        // an impact load case waiting for the running solve
   bool pending_impact = false, reload = false;
+  i64 solved_at = -(i64(1) << 40);  // (the tick its last solve converged: creeping loads wait a while)
   bool transient = false;          // ext_solved is an impact load case (not the steady state)
   std::vector<f64> peak_mag;
   bool solving = true, stale = false, shock = true, dead = false;

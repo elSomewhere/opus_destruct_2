@@ -52,6 +52,10 @@ struct JointDesc {
   // (hinge) It gives way once turned this far from where it was made, either way (rad; 0: never):
   // a plastic hinge's rotation capacity, a door torn off its hinge.
   f64 break_angle = 0.0;
+  // (hinge) A latch holds it shut - it does not turn at all - until the torque about its axis
+  // passes this (N m; 0: none); then it swings within its limits (a car's door, its bonnet). What
+  // the latch holds is not its hinge's to break on.
+  f64 latch = 0.0;
 };
 
 // Wheels (docs/VEHICLES.md): ids from 1.

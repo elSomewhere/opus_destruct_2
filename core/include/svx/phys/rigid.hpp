@@ -362,8 +362,8 @@ class RigidWorld {
   void solve_joints_position(std::vector<V3>& pv, std::vector<V3>& pw);
   void finish_joints(f64 dt);
   void joint_partner_speeds(std::vector<f64>& partner) const;  // (the squeeze guard)
-  void wake_jointed();     // a sleeper joined to a body in motion, or to a moving frame, wakes
-  void joint_stillness();  // joined bodies count towards sleep together (sleep_update)
+  void wake_jointed();     // a sleeper joined to a body awake wakes (and what is joined to it)
+void joint_stillness();  // joined bodies count towards sleep together (sleep_update)
   static bool driving(const Joint& j, const JointPrep& P);  // its drive at work (running, or short of its target)
   // wheels (wheel.cpp): per wheel, its rows this substep
   struct WheelPrep {

@@ -555,6 +555,8 @@ export class Game {
           flags: v.flags,
           damage: v.damage,
           wheels: v.wheels,
+          parts: v.parts,
+          partsBuilt: v.partsBuilt,
           chassis: v.chassis,
         })),
       spawnVehicle: (kind, paint, x, y, z, yawDeg) => this.engine.spawnVehicle(kind, paint, [x, y, z], (yawDeg * Math.PI) / 180),
@@ -613,7 +615,21 @@ export interface StructvoxDebugApi {
   setDebugView(v: DebugView): void;
   load(kind: ProceduralKind, seed: number): void;
   /** The vehicles (as the last `vehicles` message had them). */
-  vehicles(): { id: number; kind: string; pos: number[]; yaw: number; speed: number; gear: number; rpm: number; flags: number; damage: number; wheels: number; chassis: number }[];
+  vehicles(): {
+    id: number;
+    kind: string;
+    pos: number[];
+    yaw: number;
+    speed: number;
+    gear: number;
+    rpm: number;
+    flags: number;
+    damage: number;
+    wheels: number;
+    parts: number;
+    partsBuilt: number;
+    chassis: number;
+  }[];
   spawnVehicle(kind: number, paint: number, x: number, y: number, z: number, yawDeg: number): void;
   /** Takes the wheel of a vehicle (the nearest within 50 m if no id); false if there is none. */
   enterVehicle(id?: number): boolean;

@@ -4,7 +4,7 @@
  * the city and its traffic, takes the wheel of the nearest car, drives it (scripted controls
  * through the debug handle), rams a van dropped in its way, backs up and J-turns it with the
  * handbrake, gets out. Screenshots of each; fails on console / page / WebGPU errors, or when the car does not
- * drive, crumple or let the player out. Usage (dev server running, e.g. `npm run dev -- --port 5190`):
+ * drive, crumple, lose parts in the crash (and none before) or let the player out. Usage (dev server running, e.g. `npm run dev -- --port 5190`):
  *   node scripts/drive-wasm.mjs [baseUrl] [outDir]
  * Env: CHROME_PATH (browser binary), SMOKE_HEADFUL=1 (show the window).
  */
@@ -121,6 +121,7 @@ try {
   const mine = () => vehicles().then((l) => l.find((v) => v.id === s.driving));
   let car = await mine();
   console.log(`car: ${JSON.stringify(car)}`);
+  check(car !== undefined && car.partsBuilt >= 5 && car.parts === car.partsBuilt, `its doors, bonnet, boot and bumpers on (${car?.parts} of ${car?.partsBuilt})`);
   await shot('drive-02-chase');
 
   // full throttle down the road, some 25 m - short of the next junction, where cross traffic
@@ -138,6 +139,7 @@ try {
     if (!car || car.pos[0] - x0 > 25 || car.speed > 14) break;
   }
   check(car !== undefined && top > 3, `the car drives (up to ${top.toFixed(1)} m/s, now ${car?.speed.toFixed(1)})`);
+  check(car !== undefined && car.parts === car.partsBuilt, `driving shook none of its parts off (${car?.parts} of ${car?.partsBuilt})`);
   console.log(`camera: ${JSON.stringify((await state()).cameraDistance)}`);
   await shot('drive-03-speed');
   // a van dropped 30 m ahead in its lane, rammed (the car stopped first: it is where it is when
@@ -177,6 +179,9 @@ try {
   // (a car wrecked before - damage 1 - crumples still: the van shows it)
   const vd = await vanDamage();
   check(car !== undefined && (car.damage > damage0 || vd > 0), `the crash crumpled it (damage ${damage0.toFixed(2)} -> ${car?.damage.toFixed(2)}, the van ${vd.toFixed(2)})`);
+  const vanNow = (await vehicles()).find((v) => v.id === van);
+  const off = (car ? car.partsBuilt - car.parts : 0) + (vanNow ? vanNow.partsBuilt - vanNow.parts : 0);
+  check(off > 0, `parts came off in the crash (the car ${car?.parts} of ${car?.partsBuilt} on, the van ${vanNow?.parts} of ${vanNow?.partsBuilt})`);
   await page.evaluate(() => window.__structvox.camera('far'));
   await sleep(500);
   await shot('drive-08-wreck');

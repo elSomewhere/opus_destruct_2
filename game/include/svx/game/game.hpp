@@ -118,6 +118,7 @@ struct VehicleView {
   V3 origin;                    // its frame's origin (world): on the ground under the middle between its axles
   V3 half_extent;               // m: its box about its frame's origin (x, y), from the ground (z)
   i32 wheels = 0;               // wheels still on
+  i32 parts = 0, parts0 = 0;    // its parts still on (doors, bonnet, bumpers, ...), of those it was built with
   f64 damage = 0.0;             // 0 .. 1: how much of it is crumpled or gone
   f64 redline = 0.0;            // its engine's (rpm)
   static constexpr u8 kPlayer = 1, kNpc = 2, kParked = 4, kWreck = 8;
@@ -398,9 +399,11 @@ class Game {
     // (its damage, measured when its chassis last changed: the piece, its voxels, its folds)
     mutable f64 damage = 0.0;
     mutable i64 damage_chassis = 0;
-    mutable i32 damage_count = -1, damage_reshapes = -1;
+    mutable i32 damage_count = -1, damage_reshapes = -1, damage_parts = -1;
   };
-  f64 body_damage(const Vehicle& v, const Body& b) const;
+  f64 body_damage(const Vehicle& v, const Body& b, i32 part_voxels) const;
+  std::vector<i64> vehicle_parts(const Vehicle& v) const;  // (its parts' pieces still on it)
+  void remove_vehicle_bodies(const Vehicle& v);           // (its wheels, parts and chassis)
   u32 spawn_vehicle_internal(const VehicleSpec& spec, const V3& pos, f64 yaw, u8 flags);  // (not logged: traffic)
   void vehicles_before_tick();      // controls -> wheel inputs, drag, anti-roll
   void vehicles_after_tick();       // the registry from the wheels, drivetrains, wrecks, traffic

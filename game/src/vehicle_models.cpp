@@ -11,6 +11,7 @@
 #include "svx/game/vehicles.hpp"
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <functional>
 
@@ -25,6 +26,7 @@ class Canvas {
     for (int a = 0; a < 3; ++a) dim_[a] = hi[a] - lo[a] + 1;
     vox_.assign(size_t(dim_[0]) * size_t(dim_[1]) * size_t(dim_[2]), kAir);
     paint_.assign(vox_.size(), 0);
+    part_.assign(vox_.size(), 0);
   }
   bool in(const IVec3& p) const {
     for (int a = 0; a < 3; ++a)
@@ -36,11 +38,136 @@ class Canvas {
     if (!in(p)) return;
     vox_[idx(p)] = make_vox(m, false);
     paint_[idx(p)] = static_cast<u8>(c);
+    part_[idx(p)] = 0;  // (the body's: what is built over a part's voxel is the body's)
   }
   void clear(const IVec3& p) {
     if (!in(p)) return;
     vox_[idx(p)] = kAir;
     paint_[idx(p)] = 0;
+    part_[idx(p)] = 0;
+  }
+  // Parts (1..): the solid voxels in [lo, hi] that `pick` takes leave the body for part `id`.
+  void mark(const IVec3& lo, const IVec3& hi, u8 id, const std::function<bool(const IVec3&)>& pick) {
+    for (i32 x = lo[0]; x <= hi[0]; ++x)
+      for (i32 y = lo[1]; y <= hi[1]; ++y)
+        for (i32 z = lo[2]; z <= hi[2]; ++z)
+          if (in({x, y, z}) && vox_solid(vox_[idx({x, y, z})]) && pick({x, y, z})) part_[idx({x, y, z})] = id;
+  }
+  u8 part(const IVec3& p) const { return in(p) ? part_[idx(p)] : 0; }
+  // Part `id` is one piece: its largest connected run of voxels; the rest go back to the body.
+  void keep_largest(u8 id) {
+    std::vector<i32> comp(vox_.size(), -1);
+    std::vector<i32> sizes;
+    std::vector<IVec3> stack;
+    for (i32 x = lo_[0]; x <= hi_[0]; ++x)
+      for (i32 y = lo_[1]; y <= hi_[1]; ++y)
+        for (i32 z = lo_[2]; z <= hi_[2]; ++z) {
+          const size_t i0 = idx({x, y, z});
+          if (part_[i0] != id || !vox_solid(vox_[i0]) || comp[i0] >= 0) continue;
+          const i32 k = static_cast<i32>(sizes.size());
+          sizes.push_back(0);
+          comp[i0] = k;
+          stack.assign(1, IVec3{x, y, z});
+          while (!stack.empty()) {
+            const IVec3 p = stack.back();
+            stack.pop_back();
+            ++sizes.back();
+            for (int a = 0; a < 3; ++a)
+              for (int s = -1; s <= 1; s += 2) {
+                IVec3 q = p;
+                q[a] += s;
+                if (!in(q) || part(q) != id || !vox_solid(get(q)) || comp[idx(q)] >= 0) continue;
+                comp[idx(q)] = k;
+                stack.push_back(q);
+              }
+          }
+        }
+    if (sizes.size() <= 1) return;
+    const i32 best = static_cast<i32>(std::max_element(sizes.begin(), sizes.end()) - sizes.begin());
+    for (size_t i = 0; i < vox_.size(); ++i)
+      if (part_[i] == id && comp[i] != best) part_[i] = 0;
+  }
+  // The body is one piece: runs of its voxels cut off from its largest by the parts (a corner's
+  // column the bumper and the tailgate held) go with the part they touch most.
+  void orphans_to_parts() {
+    std::vector<i32> comp(vox_.size(), -1);
+    std::vector<std::vector<IVec3>> runs;
+    std::vector<IVec3> stack;
+    for (i32 x = lo_[0]; x <= hi_[0]; ++x)
+      for (i32 y = lo_[1]; y <= hi_[1]; ++y)
+        for (i32 z = lo_[2]; z <= hi_[2]; ++z) {
+          const size_t i0 = idx({x, y, z});
+          if (part_[i0] != 0 || !vox_solid(vox_[i0]) || comp[i0] >= 0) continue;
+          const i32 k = static_cast<i32>(runs.size());
+          runs.emplace_back();
+          comp[i0] = k;
+          stack.assign(1, IVec3{x, y, z});
+          while (!stack.empty()) {
+            const IVec3 p = stack.back();
+            stack.pop_back();
+            runs.back().push_back(p);
+            for (int a = 0; a < 3; ++a)
+              for (int s = -1; s <= 1; s += 2) {
+                IVec3 q = p;
+                q[a] += s;
+                if (!in(q) || part(q) != 0 || !vox_solid(get(q)) || comp[idx(q)] >= 0) continue;
+                comp[idx(q)] = k;
+                stack.push_back(q);
+              }
+          }
+        }
+    if (runs.size() <= 1) return;
+    size_t body = 0;
+    for (size_t k = 1; k < runs.size(); ++k)
+      if (runs[k].size() > runs[body].size()) body = k;
+    for (size_t k = 0; k < runs.size(); ++k) {
+      if (k == body) continue;
+      std::array<i32, 256> touch{};
+      for (const IVec3& p : runs[k])
+        for (int a = 0; a < 3; ++a)
+          for (int s = -1; s <= 1; s += 2) {
+            IVec3 q = p;
+            q[a] += s;
+            if (vox_solid(get(q)) && part(q) != 0) ++touch[part(q)];
+          }
+      const u8 to = static_cast<u8>(std::max_element(touch.begin(), touch.end()) - touch.begin());
+      if (touch[to] > 0)
+        for (const IVec3& p : runs[k]) part_[idx(p)] = to;
+    }
+  }
+  void unmark(u8 id) {
+    for (u8& x : part_)
+      if (x == id) x = 0;
+  }
+  i32 count(u8 id) const {
+    i32 n = 0;
+    for (size_t i = 0; i < vox_.size(); ++i) n += vox_solid(vox_[i]) && part_[i] == id ? 1 : 0;
+    return n;
+  }
+  // Where part `id` meets the body nearest `near` (voxels): the middle of the face between a
+  // voxel of it and a voxel of the body (in voxels; false: it does not touch the body).
+  bool seam(u8 id, const V3& near, V3* out) const {
+    bool any = false;
+    f64 best = 0.0;
+    for (i32 x = lo_[0]; x <= hi_[0]; ++x)
+      for (i32 y = lo_[1]; y <= hi_[1]; ++y)
+        for (i32 z = lo_[2]; z <= hi_[2]; ++z) {
+          if (part_[idx({x, y, z})] != id || !vox_solid(vox_[idx({x, y, z})])) continue;
+          for (int a = 0; a < 3; ++a)
+            for (int s = -1; s <= 1; s += 2) {
+              IVec3 q{x, y, z};
+              q[a] += s;
+              if (!vox_solid(get(q)) || part(q) != 0) continue;
+              const V3 m{0.5 * (x + q[0]), 0.5 * (y + q[1]), 0.5 * (z + q[2])};
+              const f64 d = norm2(m - near);
+              if (!any || d < best) {
+                any = true;
+                best = d;
+                *out = m;
+              }
+            }
+        }
+    return any;
   }
   // [lo, hi] inclusive
   void box(const IVec3& lo, const IVec3& hi, MaterialId m, Paint c = Paint::None) {
@@ -62,7 +189,8 @@ class Canvas {
   }
   const IVec3& lo() const { return lo_; }
   const IVec3& hi() const { return hi_; }
-  VoxelGrid grid() const {
+  // The body's voxels (0), or a part's.
+  VoxelGrid grid(u8 id = 0) const {
     VoxelGrid g;
     g.h = kVehicleVoxel;
     const int L = g.add_layer({"paint", true, LayerBind::Solid});
@@ -70,7 +198,7 @@ class Canvas {
       for (i32 y = lo_[1]; y <= hi_[1]; ++y)
         for (i32 z = lo_[2]; z <= hi_[2]; ++z) {
           const size_t i = idx({x, y, z});
-          if (!vox_solid(vox_[i])) continue;
+          if (!vox_solid(vox_[i]) || part_[i] != id) continue;
           g.set(x, y, z, vox_[i]);
           if (paint_[i]) g.set_layer(L, {x, y, z}, paint_[i]);
         }
@@ -85,6 +213,7 @@ class Canvas {
   IVec3 lo_, hi_, dim_;
   std::vector<Vox> vox_;
   std::vector<u8> paint_;
+  std::vector<u8> part_;  // (0: the body's; k: part k's)
 };
 
 // A body's envelope and how its shell is made (voxels of the model's frame).
@@ -178,6 +307,160 @@ void wheel(Canvas& c, VehicleModel& m, i32 ax, i32 wy, i32 mount_z, f64 radius, 
   }
 }
 
+// ---------------------------------------------------------------------------------------------
+// Parts that come off (docs/VEHICLES.md): their voxels are marked in the canvas as the shell is
+// made (before what is inside it: they take the shell's voxels only); where each is held is found
+// when the model is done - the seam with the body nearest each point asked for.
+
+struct PartPlan {
+  VehiclePart part;
+  u8 id = 0;
+  V3 hinge_near;  // (voxels)
+};
+
+struct Parts {
+  std::vector<PartPlan> plans;
+  u8 add(const VehiclePart& p, const V3& hinge_near) {
+    PartPlan pp;
+    pp.part = p;
+    pp.id = static_cast<u8>(plans.size() + 1);
+    pp.hinge_near = hinge_near;
+    plans.push_back(pp);
+    return pp.id;
+  }
+  // (the model done: each part one piece, on its seams; one that does not touch the body - or is
+  // too small to be one - stays the body's)
+  void finish(Canvas& c, VehicleModel& m) {
+    c.orphans_to_parts();
+    for (const PartPlan& pp : plans) {
+      c.keep_largest(pp.id);
+      V3 h;
+      if (c.count(pp.id) < 12 || !c.seam(pp.id, pp.hinge_near, &h)) {
+        c.unmark(pp.id);
+        continue;
+      }
+      VehiclePart P = pp.part;
+      P.voxels = c.grid(pp.id);
+      P.hinge = h * kVehicleVoxel;
+      m.parts.push_back(std::move(P));
+    }
+  }
+};
+
+// How strongly parts hold (N, N m): a latch lets go in a hard knock (driving - a door's 16 kg
+// thrown about in a hard turn, a bonnet's 35 kg over a bump - is a tenth of it); a hinge or a
+// bumper's mounts in a crash (the car's deceleration times the part's share of it passes through
+// them: a part pressed on by what the car hit carries the whole impact).
+constexpr f64 kDoorHinge = 14e3, kDoorHingeTorque = 4e3, kDoorLatch = 1.5e3;
+constexpr f64 kLidHinge = 10e3, kLidHingeTorque = 6e3, kLidLatch = 1.2e3;
+
+// A door each side: the shell's two outermost voxels in y between x `rear` and `front`, from
+// `z0` up to under the roof's edge (above the belt line only to `glass_front`: the window's
+// frame). Hinged at its front edge (a vertical axis), latched shut; it swings out.
+void doors(Canvas& c, Parts& ps, const Envelope& e, i32 rear, i32 front, i32 glass_front, i32 z0) {
+  for (int s : {1, -1}) {
+    VehiclePart P;
+    P.kind = PartKind::Door;
+    P.hinged = true;
+    P.axis = V3{0.0, 0.0, 1.0};
+    // (the door reaches back from its hinge: out, on the left (+y), is a turn of -z)
+    P.lower = s > 0 ? -1.2 : 0.0;
+    P.upper = s > 0 ? 0.0 : 1.2;
+    P.break_force = kDoorHinge;
+    P.break_torque = kDoorHingeTorque;
+    P.latch = kDoorLatch;
+    const f64 zmid = 0.5 * (z0 + e.belt);
+    const u8 id = ps.add(P, V3{front + 0.5, static_cast<f64>(s * e.hw), zmid});
+    c.mark({rear, s > 0 ? 1 : -e.hw - 1, z0}, {front, s > 0 ? e.hw + 1 : -1, c.hi()[2]}, id, [&](const IVec3& p) {
+      const i32 w = e.half_width(p[0], p[2]);
+      return std::abs(p[1]) >= w - 1 && p[2] <= e.top_at(p[0]) - 2.0 && (p[2] <= e.belt || p[0] <= glass_front);
+    });
+  }
+}
+
+// A lid on the top of the shell between x0 and x1 (a bonnet, a boot lid), all but its outer
+// voxels each side: hinged across (y) at its rear end (a bonnet) or its front (a boot), latched
+// shut; it opens upward.
+void lid(Canvas& c, Parts& ps, const Envelope& e, PartKind kind, i32 x0, i32 x1, bool hinge_rear) {
+  VehiclePart P;
+  P.kind = kind;
+  P.hinged = true;
+  P.axis = V3{0.0, 1.0, 0.0};
+  // (reaching forward from its hinge, it opens with a turn of -y; reaching back, of +y)
+  P.lower = hinge_rear ? -1.1 : 0.0;
+  P.upper = hinge_rear ? 0.0 : 1.1;
+  P.break_force = kLidHinge;
+  P.break_torque = kLidHingeTorque;
+  P.latch = kLidLatch;
+  const i32 hx = hinge_rear ? x0 : x1;
+  const u8 id = ps.add(P, V3{hx + (hinge_rear ? -0.5 : 0.5), 0.0, e.top_at(hx)});
+  c.mark({x0, -e.hw, e.bottom}, {x1, e.hw, c.hi()[2]}, id,
+         [&](const IVec3& p) { return std::abs(p[1]) <= e.half_width(p[0], p[2]) - 2 && p[2] >= e.top_at(p[0]) - 1.5; });
+}
+
+// A bumper: the plastic of the shell's lowest band (`height` voxels over its floor) at its front
+// or its rear, on a fixed joint in its middle (where it meets the body: the grille, the tail, the
+// frame's rails).
+void bumper(Canvas& c, Parts& ps, const Envelope& e, bool front, i32 height = 4, f64 force = 25e3, f64 torque = 6e3) {
+  VehiclePart P;
+  P.kind = PartKind::Bumper;
+  P.break_force = force;
+  P.break_torque = torque;
+  const i32 xa = front ? e.x1 - 2 : e.x0, xb = front ? e.x1 : e.x0 + 2;
+  const u8 id = ps.add(P, V3{front ? e.x1 - 1.0 : e.x0 + 1.0, 0.0, e.bottom + height + 0.5});
+  c.mark({xa, -e.hw, e.bottom}, {xb, e.hw, e.bottom + height}, id, [&](const IVec3& p) { return vox_mat(c.get(p)) == MaterialId::Plastic; });
+}
+
+// A box body's rear doors (a van's, a lorry's): two leaves of its rear face between z0 and z1,
+// hinged at their outer edges, latched shut; they swing out.
+void rear_doors(Canvas& c, Parts& ps, const Envelope& e, i32 z0, i32 z1) {
+  for (int s : {1, -1}) {
+    VehiclePart P;
+    P.kind = PartKind::Door;
+    P.hinged = true;
+    P.axis = V3{0.0, 0.0, 1.0};
+    // (the leaf reaches in from its hinge: out (-x) on the left is a turn of -z)
+    P.lower = s > 0 ? -1.5 : 0.0;
+    P.upper = s > 0 ? 0.0 : 1.5;
+    P.break_force = kDoorHinge;
+    P.break_torque = kDoorHingeTorque;
+    P.latch = kDoorLatch;
+    const f64 w = e.half_width(e.x0, (z0 + z1) / 2);
+    const u8 id = ps.add(P, V3{static_cast<f64>(e.x0), s * (w - 0.5), 0.5 * (z0 + z1)});
+    c.mark({e.x0, s > 0 ? 0 : -e.hw, z0}, {e.x0 + 1, s > 0 ? e.hw : -1, z1}, id,
+           [&](const IVec3& p) { return std::abs(p[1]) <= e.half_width(p[0], p[2]) - 1; });
+  }
+}
+
+// A pickup's tailgate: the bed's rear wall above z0, hinged at its foot (on the bed's rear sill,
+// under it), latched shut; it drops back.
+void tailgate(Canvas& c, Parts& ps, const Envelope& e, i32 z0) {
+  VehiclePart P;
+  P.kind = PartKind::Tailgate;
+  P.hinged = true;
+  P.axis = V3{0.0, 1.0, 0.0};
+  // (it reaches up from its hinge: back (-x) is a turn of -y)
+  P.lower = -1.6;
+  P.upper = 0.0;
+  P.break_force = kLidHinge;
+  P.break_torque = kLidHingeTorque;
+  P.latch = kLidLatch;
+  const u8 id = ps.add(P, V3{static_cast<f64>(e.x0), 0.0, z0 - 0.5});
+  c.mark({e.x0, -e.hw, z0}, {e.x0 + 1, e.hw, c.hi()[2]}, id, [&](const IVec3& p) { return std::abs(p[1]) <= e.half_width(p[0], p[2]) - 1; });
+}
+
+// Cargo: a crate strapped down onto what is under it (a fixed joint at its foot that a hard
+// stop or a knock breaks).
+void cargo(Canvas& c, Parts& ps, const IVec3& lo, const IVec3& hi) {
+  c.box(lo, hi, MaterialId::Wood);
+  VehiclePart P;
+  P.kind = PartKind::Cargo;
+  P.break_force = 2.5e3;
+  P.break_torque = 1e3;
+  const u8 id = ps.add(P, V3{0.5 * (lo[0] + hi[0]), 0.5 * (lo[1] + hi[1]), lo[2] - 0.5});
+  c.mark(lo, hi, id, [](const IVec3&) { return true; });
+}
+
 // Seats: a cushion and a backrest (y from its outboard side inwards, x its front).
 void seat(Canvas& c, i32 xf, i32 y0, i32 y1, i32 floor, i32 cushion, i32 back) {
   c.fill_air({xf - 5, y0, floor + 1}, {xf, y1, cushion}, MaterialId::Plastic, Paint::Graphite);
@@ -243,6 +526,14 @@ VehicleModel sedan(Paint paint) {
   k.pillars = {{-7, -5}};
   Canvas c({-38, -15, 0}, {37, 15, 25});
   shell(c, e, [&](const IVec3& p, const Facing& f) { return car_skin(e, k, paint, p, f); });
+  // what comes off: four doors, the bonnet, the boot lid, the bumpers
+  Parts ps;
+  doors(c, ps, e, -4, 12, 3, e.bottom + 2);
+  doors(c, ps, e, -18, -8, -8, e.bottom + 2);
+  lid(c, ps, e, PartKind::Bonnet, 16, 33, true);
+  lid(c, ps, e, PartKind::Boot, -34, -25, false);
+  bumper(c, ps, e, true);
+  bumper(c, ps, e, false);
   // the frame: rails, cross members, the firewall, the engine between the front wheels
   c.box2({-36, 8, 4}, {35, 9, 5}, MaterialId::CarFrame, Paint::Graphite);
   for (i32 x : {-30, -21, -8, 8, 22, 31}) c.fill_air({x, -13, 4}, {x, 13, 4}, MaterialId::CarFrame, Paint::Graphite);
@@ -257,6 +548,7 @@ VehicleModel sedan(Paint paint) {
   WheelSlot base;
   wheel(c, m, 22, 12, 11, 0.32, 0.22, false, true, base);
   wheel(c, m, -21, 12, 11, 0.32, 0.22, true, false, base);
+  ps.finish(c, m);
   m.voxels = c.grid();
   m.tuning = VehicleTuning{};
   m.half_extent = V3{2.35, 0.95, 1.5};
@@ -286,6 +578,12 @@ VehicleModel compact(Paint paint) {
   k.pillars = {{-9, -7}};
   Canvas c({-33, -14, 0}, {32, 14, 26});
   shell(c, e, [&](const IVec3& p, const Facing& f) { return car_skin(e, k, paint, p, f); });
+  // (a three-door hatch: a long door each side, the bonnet, the bumpers)
+  Parts ps;
+  doors(c, ps, e, -6, 11, 6, e.bottom + 2);
+  lid(c, ps, e, PartKind::Bonnet, 17, 28, true);
+  bumper(c, ps, e, true);
+  bumper(c, ps, e, false);
   c.box2({-31, 7, 4}, {30, 8, 5}, MaterialId::CarFrame, Paint::Graphite);
   for (i32 x : {-26, -19, -6, 8, 20, 27}) c.fill_air({x, -12, 4}, {x, 12, 4}, MaterialId::CarFrame, Paint::Graphite);
   c.fill_air({14, -12, 4}, {15, 12, 13}, MaterialId::Sheet, Paint::Graphite);
@@ -299,6 +597,7 @@ VehicleModel compact(Paint paint) {
   base.damping = 2.6e3;
   wheel(c, m, 20, 11, 11, 0.3, 0.2, true, true, base);  // (front wheel drive)
   wheel(c, m, -19, 11, 11, 0.3, 0.2, false, false, base);
+  ps.finish(c, m);
   m.voxels = c.grid();
   VehicleTuning t;
   t.torque = 190.0;
@@ -351,6 +650,12 @@ VehicleModel van(Paint paint) {
     if (r.first == MaterialId::Sheet && f.side && p[2] == 12) r.second = Paint::Trim;
     return r;
   });
+  // (the cab's doors, the cargo's two rear doors, the bumpers)
+  Parts ps;
+  doors(c, ps, e, 11, 23, 23, e.bottom + 2);
+  rear_doors(c, ps, e, e.bottom + 5, 30);
+  bumper(c, ps, e, true);
+  bumper(c, ps, e, false);
   c.box2({-39, 9, 5}, {38, 10, 6}, MaterialId::CarFrame, Paint::Graphite);
   for (i32 x : {-32, -24, -12, 0, 12, 26, 34}) c.fill_air({x, -14, 5}, {x, 14, 5}, MaterialId::CarFrame, Paint::Graphite);
   c.fill_air({8, -14, 5}, {9, 14, 31}, MaterialId::Sheet, Paint::Graphite);  // (the bulkhead behind the cab)
@@ -364,6 +669,7 @@ VehicleModel van(Paint paint) {
   base.inertia = 1.6;
   wheel(c, m, 26, 12, 12, 0.34, 0.22, false, true, base);
   wheel(c, m, -24, 12, 12, 0.34, 0.22, true, false, base);
+  ps.finish(c, m);
   m.voxels = c.grid();
   VehicleTuning t;
   t.torque = 330.0;
@@ -421,6 +727,18 @@ VehicleModel pickup(Paint paint) {
     if (p[0] == -10 && f.rear && p[2] > 18 && p[2] < 26 && std::abs(p[1]) < 11) r = {MaterialId::Window, Paint::None};
     return r;
   });
+  // (the cab's doors, the bonnet, the tailgate on the bed's rear sill, the bumpers - the rear's
+  // under the sill)
+  Parts ps;
+  doors(c, ps, e, -8, 14, 6, e.bottom + 2);
+  lid(c, ps, e, PartKind::Bonnet, 17, 38, true);
+  bumper(c, ps, e, true);
+  bumper(c, ps, e, false, 1);
+  for (i32 x = e.x0; x <= e.x0 + 2; ++x) {
+    const i32 w = e.half_width(x, e.bed_z);
+    c.box({x, -w, e.bed_z}, {x, w, e.bed_z}, MaterialId::CarFrame, Paint::Graphite);
+  }
+  tailgate(c, ps, e, e.bed_z + 1);
   c.box2({-42, 9, 6}, {41, 10, 7}, MaterialId::CarFrame, Paint::Graphite);
   for (i32 x : {-36, -26, -14, 0, 14, 27, 36}) c.fill_air({x, -14, 6}, {x, 14, 6}, MaterialId::CarFrame, Paint::Graphite);
   c.fill_air({15, -14, 6}, {16, 14, 17}, MaterialId::Sheet, Paint::Graphite);
@@ -435,6 +753,10 @@ VehicleModel pickup(Paint paint) {
   wheel(c, m, 27, 12, 14, 0.38, 0.26, true, true, base);  // (four wheel drive)
   wheel(c, m, -26, 12, 14, 0.38, 0.26, true, false, base);
   c.box2({-27, 14, 14}, {-25, 14, 15}, MaterialId::CarFrame, Paint::Graphite);  // (the rear struts' tops on the bed's walls)
+  // two crates strapped down in the bed
+  cargo(c, ps, {-38, -9, 8}, {-32, -3, 13});
+  cargo(c, ps, {-29, 2, 8}, {-23, 8, 13});
+  ps.finish(c, m);
   m.voxels = c.grid();
   VehicleTuning t;
   t.torque = 430.0;
@@ -483,6 +805,8 @@ VehicleModel truck(Paint paint) {
   k.tail_z1 = -2;
   Canvas c({-60, -19, 0}, {59, 19, 58});
   shell(c, cab, [&](const IVec3& p, const Facing& f) { return car_skin(cab, k, paint, p, f); });
+  Parts ps;
+  doors(c, ps, cab, 39, 50, 50, cab.bottom + 2);
   // the box on the frame behind it
   Envelope box;
   box.x0 = -58;
@@ -498,6 +822,7 @@ VehicleModel truck(Paint paint) {
     if (f.bottom) return {MaterialId::Sheet, Paint::Graphite};
     return {MaterialId::Sheet, (p[2] >= 50 || p[2] <= 16) ? paint : Paint::White};
   });
+  rear_doors(c, ps, box, box.bottom + 4, 54);
   // the frame: two heavy rails the length of it, cross members, the engine under the cab
   c.box2({-58, 9, 9}, {57, 11, 13}, MaterialId::CarFrame, Paint::Graphite);
   for (i32 x : {-52, -40, -28, -16, -4, 8, 20, 32, 45, 54}) c.fill_air({x, -13, 10}, {x, 13, 12}, MaterialId::CarFrame, Paint::Graphite);
@@ -505,8 +830,15 @@ VehicleModel truck(Paint paint) {
   c.fill_air({44, -16, 27}, {48, 16, 30}, MaterialId::Plastic, Paint::Graphite);
   seat(c, 41, 3, 15, 9, 20, 32);
   seat(c, 41, -15, -3, 9, 20, 32);
-  // bumper
+  // bumper: a steel beam bolted to the rails' ends
   c.box({57, -17, 10}, {59, 17, 14}, MaterialId::CarFrame, Paint::Trim);
+  {
+    VehiclePart P;
+    P.kind = PartKind::Bumper;
+    P.break_force = 60e3;
+    P.break_torque = 15e3;
+    c.mark({57, -17, 10}, {59, 17, 14}, ps.add(P, V3{56.5, 10.0, 11.5}), [](const IVec3&) { return true; });
+  }
   WheelSlot base;
   base.stiffness = 160e3;
   base.damping = 14e3;
@@ -527,6 +859,7 @@ VehicleModel truck(Paint paint) {
   }
   wheel(c, m, -30, 14, 17, 0.5, 0.32, true, false, base);
   wheel(c, m, -47, 14, 17, 0.5, 0.32, true, false, base);
+  ps.finish(c, m);
   m.voxels = c.grid();
   VehicleTuning t;
   t.torque = 1100.0;

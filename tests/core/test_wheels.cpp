@@ -111,6 +111,66 @@ TEST_CASE("wheels: a chassis settles on its springs at its static sag, and sleep
   CHECK(w.piece(id)->asleep);
 }
 
+TEST_CASE("wheels: a car's door sleeps with it and wakes with it - woken still, the car does not hang its weight on it") {
+  World w;
+  w.load(ground());
+  w.bake();
+  const V3 at{0, 0, 0.75};
+  const TestCar c = car(w, at);
+  // a door beside the chassis slab (a grid of its own in its frame), on a latched hinge too weak
+  // to carry the car (1.1 t): asleep, a door is a static support to the solver
+  VoxelGrid g;
+  g.h = h;
+  box(g, {-4, 7, 0}, {4, 8, 6}, make_vox(MaterialId::CarFrame, false));
+  g.compact();
+  const GridId door = w.add_grid(GridFrame{at + V3{0, 0, 0.5 * h}, kId}, std::move(g), false);
+  REQUIRE(door != 0);
+  JointDesc d;
+  d.type = JointType::Hinge;
+  const V3 pin = at + V3{0, 0, 0.5 * h} + V3{3 * h, 6.5 * h, 0.0};
+  d.a.kind = d.b.kind = JointAnchor::Kind::Grid;
+  d.a.id = c.grid;
+  d.b.id = door;
+  d.a.point = d.b.point = pin;
+  d.axis = V3{0, 0, 1};
+  d.limited = true;
+  d.lower = -1.2;
+  d.upper = 0.0;
+  d.latch = 800.0;
+  d.break_force = 3000.0;
+  d.collide = false;
+  const JointId j = w.add_joint(d);
+  REQUIRE(j != 0);
+  REQUIRE(w.loosen_grid(c.grid) != 0);
+  REQUIRE(w.loosen_grid(door) != 0);
+  for (int t = 0; t < 480; ++t) w.tick();
+  const i64 id = chassis(w, c);
+  REQUIRE(id != 0);
+  REQUIRE(w.piece(id)->asleep);
+  const std::vector<i64> on = w.joined_pieces(id);
+  REQUIRE(on.size() == 1);
+  CHECK(w.piece(on[0])->asleep);
+  // woken still (a nudge of nothing): its door wakes with it
+  REQUIRE(w.apply_impulse(id, w.piece(id)->x, V3{1e-6, 0.0, 0.0}));
+  f64 most = 0.0;
+  JointState s;
+  for (int t = 0; t < 30; ++t) {
+    w.tick();
+    REQUIRE(w.joint(j, &s));
+    most = std::max(most, norm(s.force));
+  }
+  MESSAGE("woken still: its door's hinge carried at most " << most << " N");
+  CHECK(most < 2000.0);
+  CHECK(s.latched);
+  // driven off, the door comes along, shut
+  drive(w, c, 600.0, 0.0, 0.0);
+  for (int t = 0; t < 120; ++t) w.tick();
+  REQUIRE(w.joint(j, &s));
+  CHECK(norm(w.piece(id)->v) > 1.0);
+  CHECK(s.latched);
+  CHECK(std::abs(s.value) < 0.01);
+}
+
 TEST_CASE("wheels: driven, a car accelerates; braked, it stops; steered, it turns") {
   World w;
   w.load(ground());

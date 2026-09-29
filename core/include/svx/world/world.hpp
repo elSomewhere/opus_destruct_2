@@ -92,6 +92,7 @@ struct JointState {
   V3 force, torque; // what b received through it in the last substep (a: the opposite; N, N m)
   f64 value = 0.0;  // (hinge) b's turn from its start (rad); (slider) b's move (m); (distance) the ends' distance (m)
   i64 piece_a = 0, piece_b = 0;  // the pieces its ends are on now (0: a grid, the world)
+  bool latched = false;          // (hinge) held shut by its latch still
 };
 
 // A wheel now (World::wheel; docs/VEHICLES.md).
@@ -165,6 +166,11 @@ struct WorldConfig {
   i32 idle_drop_ticks = 1800;      // idle structures without loads are dropped after this
   f64 load_trigger = 0.25;         // re-solve when a node's external load changes by this x its weight ...
   f64 load_trigger_abs = 800.0;    // ... plus this (N)
+  // A load that creeps on a large structure (a car driving over a bridge: its wheels cross a
+  // fragment every few ticks) is solved again at most every this many ticks; a change of 4 x the
+  // trigger, an impact, a structure breaking or one of fewer nodes (cheap to solve) at once.
+  i32 load_trigger_gap = 6;
+  i32 load_trigger_gap_nodes = 400;
   f64 dead_load_ema = 0.25;        // smoothing of resting contact loads per tick
   // pieces
   i32 max_bodies = 3000;           // beyond: the smallest sleeping pieces are culled (PieceEnd::Culled)
@@ -505,6 +511,8 @@ class World {
   bool set_joint_drive(JointId id, const JointDrive& drive);
   bool set_joint_limits(JointId id, bool on, f64 lower, f64 upper);
   bool joint(JointId id, JointState* out) const;  // false: none (broken, removed)
+  // The pieces joined to a piece by joints that hold (ascending): a car's parts still on it.
+  std::vector<i64> joined_pieces(i64 piece) const;
   std::vector<JointId> joints() const;            // ascending ids
 
   // ---- wheels (docs/VEHICLES.md)

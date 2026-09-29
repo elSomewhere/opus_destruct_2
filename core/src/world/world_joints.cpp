@@ -132,6 +132,8 @@ JointId World::add_joint_impl(const JointDesc& d, JointId want) {
   j.break_torque = std::max(0.0, d.break_torque);
   j.break_angle = std::isfinite(d.break_angle) ? std::max(0.0, d.break_angle) : 0.0;
   j.collide = d.collide;
+  j.latch = d.type == JointType::Hinge && std::isfinite(d.latch) ? std::max(0.0, d.latch) : 0.0;
+  j.latched = j.latch > 0.0;
   j.rel = conj(Q[0]) * Q[1];
   r.id = j.id;
   // (in id order: the solver's order, the same on every run)
@@ -217,9 +219,24 @@ bool World::joint(JointId id, JointState* out) const {
     out->value = j.value;
     out->piece_a = jrecs_[k].a.piece > 0 ? jrecs_[k].a.piece : 0;
     out->piece_b = jrecs_[k].b.piece > 0 ? jrecs_[k].b.piece : 0;
+    out->latched = j.latched;
     return true;
   }
   return false;
+}
+
+std::vector<i64> World::joined_pieces(i64 piece) const {
+  std::vector<i64> out;
+  if (piece <= 0) return out;
+  for (size_t k = 0; k < jrecs_.size(); ++k) {
+    if (rigid_.joints[k].broken) continue;
+    const i64 a = jrecs_[k].a.piece, b = jrecs_[k].b.piece;
+    if (a == piece && b > 0 && b != piece) out.push_back(b);
+    else if (b == piece && a > 0 && a != piece) out.push_back(a);
+  }
+  std::sort(out.begin(), out.end());
+  out.erase(std::unique(out.begin(), out.end()), out.end());
+  return out;
 }
 
 std::vector<JointId> World::joints() const {

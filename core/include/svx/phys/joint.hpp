@@ -69,6 +69,10 @@ struct Joint {
   f64 break_force = 0.0, break_torque = 0.0;  // it gives way beyond (N, N m; 0: never)
   f64 break_angle = 0.0;  // (hinge) it gives way turned this far from its start, either way (rad; 0: never)
   bool collide = true;    // its ends' bodies collide with each other (a welded part: not)
+  // (hinge) A latch: it is held shut - turns not at all from where it was made - until the torque
+  // about its axis passes this (N m; 0: none), then swings within its limits (a car's door).
+  f64 latch = 0.0;
+  bool latched = false;
   Quat rel;  // (fixed, slider) b's rotation relative to a's that it holds: conj(qa) qb
 
   // the solver's state

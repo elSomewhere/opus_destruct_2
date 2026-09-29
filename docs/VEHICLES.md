@@ -1,8 +1,9 @@
 # Vehicles
 
 Drivable, fully physical vehicles in the destructible voxel world: cars that drive on cast
-wheels, crumple in crashes (car against car, car against wall), lose their wheels, break
-through walls at speed, and fill an endless procedural city with traffic. This document
+wheels, crumple in crashes (car against car, car against wall), lose their wheels, doors,
+bonnets and bumpers, break through walls at speed, and fill an endless procedural city with
+traffic. This document
 describes how it works, layer by layer, and how to use it.
 
 | Layer | Where | What |
@@ -11,6 +12,7 @@ describes how it works, layer by layer, and how to use it.
 | Wheels | `core/src/phys/wheel.cpp`, `core/src/world/world_wheels.cpp` | the cast-wheel constraint: suspension, bump stop, tyre, brake; breakage |
 | Crash damage | `core/src/phys/rigid.cpp` (crush patches), `core/src/world/world_crumple.cpp` | force-capped crumple contacts, the crumple pass, punch-through |
 | In-place edits | `core/src/world/world_pieces.cpp` | a car keeps its id through crumpling and damage |
+| Parts | `game/src/vehicle_models.cpp`, `core/src/phys/joint.cpp` | doors, bonnet, boot, bumpers, cargo on latched hinges and fixed joints |
 | Game | `game/src/vehicles.cpp`, `vehicle_models.cpp`, `traffic.cpp` | models, drivetrain, player driving, traffic |
 | City | `game/src/drive_city.cpp` | the endless city with roads, lanes, signals, parking |
 | C ABI | `game/src/api/svx_api.cpp`, `core/src/capi/svx_core.cpp` | vehicles, wheels, drive, shoot, traffic |
@@ -129,20 +131,72 @@ piece id, its place and its motion (mass and contact samples are rebuilt); a car
 in two keeps its id on the part with its wheels. Each changed piece is announced once per tick
 (`PieceReshaped`; the game remeshes it: `GameEvent::Remesh`).
 
-**Damage** (`VehicleView::damage`, the HUD's): how much of the body is not as it was built -
-its model's voxels gone or changed in its lattice, and cells filled that were empty (the folds) -
-with a fifth of it changed counting as a wreck. A scrape shows a little, a crash into a wall at
-60 km/h about half.
+**Damage** (`VehicleView::damage`, the HUD's): how much of the car is not as it was built -
+its body's voxels gone or changed in its lattice, cells filled that were empty (the folds), and
+the voxels of its parts no longer on it - with a fifth of it changed counting as a wreck. A
+scrape shows a little, a crash into a wall at 60 km/h about two thirds (its bumper off).
+
+## Parts that come off
+
+In a real crash the connections fail first: a door is torn off its hinges, a bonnet's latch
+pops, a bumper's mounts shear. So a car's doors, bonnet, boot lid, tailgate, bumpers and the
+cargo strapped in a pickup's bed are **grids of their own** in the car's frame (`VehiclePart`,
+`VehicleModel::parts`), their voxels beside the body's along their seams, held to it by joints
+made before any of it comes loose (the joints hold on to their ends' voxels and go with the
+pieces they become):
+
+- **hinged parts** (doors on a vertical axis at their front edge, a van's and a lorry's rear
+  doors at their outer edges, a bonnet at its rear, a boot lid at its front, a tailgate at its
+  foot) are on a `Hinge` joint with a **latch** (`JointDesc::latch`, N m): latched, the hinge
+  does not turn at all; the latch holds up to its strength about the axis and, knocked past
+  it, gives way - what it could not hold passes on, and the part swings within its limits (a
+  door out, never in; a bonnet up). A hinge that is turned past its stop, or pulled or twisted
+  beyond its strength (what the latch held does not count), tears: the part is loose.
+- **bumpers** (and the cargo's straps) are on `Fixed` joints that shear beyond their
+  strength (a bumper takes a car's deceleration times its share of the car; the first to meet
+  a wall, it comes off).
+
+A part does not collide with its car while its joint holds (`collide = false`: a door welded
+into its frame); once loose it is rubble like any piece - it collides with the car it came off,
+lies on the road, and is archived with its region. The strengths are set so that driving (full
+throttle, a handbrake turn, an emergency stop, the traffic's driving) shakes nothing loose, a
+knock pops latches, and a crash tears off what it hits: a van at 40 km/h into a car's side
+takes its door off; a car into a wall at 60 km/h loses its bumper.
+
+**One latch, one hinge**: a second joint as the latch (a ball joint on the far edge of the
+door) over-constrains the hinge: its stop and the ball's slop disagree by a millimetre, and the
+two fight with growing impulses until something breaks. A latch on the hinge itself - its free
+turn held as a stop until the torque passes the latch's strength - does not.
+
+**Sleep**: a car at rest sleeps with its parts; a body woken (driven, hit, woken by one moving
+near) wakes what is joined to it and what is joined to that (`RigidWorld::wake_jointed`, each
+substep and in the solve) - a sleeping body is a static support to the solver, and a car woken
+still would hang its weight on its sleeping doors. A driven wheel keeps its chassis awake
+before joined bodies' stillness is shared (`wheel_stillness`, then `joint_stillness`).
+
+The registry needs nothing more: a car's parts are the pieces joined to its chassis
+(`World::joined_pieces`, `Game::vehicle_parts`; `VehicleView::parts` and `parts0`). A car
+removed (or gone out of range untouched) takes the parts still on it along; a car archived
+out of range goes with its parts as one joint group, and comes back with them, latches and all
+(the joints' latches are in sessions and the archive: `kGroupVersion` 3, deltas v5).
 
 ## The game
 
 **Models** (`game/src/vehicle_models.cpp`): a compact, a sedan, a van, a pickup and a truck,
 built from 6.25 cm voxels - a sheet-metal shell (tumblehome, rounded corners, wheel arches)
 over a car frame, an engine block, glass, bumpers, lamps and seats, painted in the `paint`
-layer (`svx::Paint`). Each has its wheel slots (mount, radius, suspension) and its tuning.
+layer (`svx::Paint`). Each has its wheel slots (mount, radius, suspension), its tuning and its
+parts (above): a sedan four doors, a bonnet, a boot lid and two bumpers; a compact two doors;
+a van its cab's doors and two rear doors; a pickup a tailgate and two crates in its bed; a
+lorry its cab's doors, its box's rear doors and a steel bumper. A part's voxels are marked as
+the shell is made (the shell's alone: what is built inside it afterwards is the body's), and
+where it is held is found when the model is done - the seam with the body nearest the point
+asked for; the body stays one piece (a corner cut off by two parts goes with the one it
+touches most).
 
 **Driving** (`game/src/vehicles.cpp`). `Game::spawn_vehicle` drops the model in as a grid of
-its own on its wheels (group = the vehicle's id, tag = kind, paint, slot, flags). Each tick,
+its own on its wheels (group = the vehicle's id, tag = kind, paint, slot, flags), its parts as
+grids beside it on their joints. Each tick,
 before the physics: the controls (the player's `Game::drive`, or a driver's) become wheel
 inputs - an engine with a torque curve through an automatic gearbox (it shifts on road speed;
 traction control; a launch clutch; engine braking), brakes with a front bias, a handbrake on
@@ -186,7 +240,8 @@ for (const WheelView& w : game.wheel_views()) { /* draw a tyre at w.centre, w.ro
 ```
 
 C ABI (`svx_api.h`): `svx_spawn_vehicle`, `svx_enter_vehicle`, `svx_exit_vehicle`,
-`svx_drive`, `svx_vehicles` / `svx_vehicles_data` (34 doubles each), `svx_wheels` /
+`svx_drive`, `svx_vehicles` / `svx_vehicles_data` (36 doubles each: the last two its parts on
+and built), `svx_wheels` /
 `svx_wheels_data` (15 doubles each), `svx_vehicle_near`, `svx_shoot`, `svx_set_traffic`, and
 the `drive` level of `svx_load_procedural`. The core's own C API (`svx_core.h`) has the wheels
 (`svxc_add_wheel`, `svxc_wheel_state`, ...).
@@ -208,7 +263,8 @@ the `drive` level of `svx_load_procedural`. The core's own C API (`svx_core.h`) 
 A gamepad drives too (RT/LT, left stick, A handbrake, Y in/out, right stick looks).
 
 - A car's body is its chassis piece (a detached event, debris poses; remeshed when it
-  crumples); its **wheels** are drawn from the `vehicles` message - a tyre on a five-spoke
+  crumples), its doors, bonnet and bumpers pieces of their own (painted, drawn like any piece);
+  its **wheels** are drawn from the `vehicles` message - a tyre on a five-spoke
   rim, turned and spun, the spokes blurred when fast - interpolated one engine tick behind
   like the pieces.
 - **Cameras** (`driving.ts`): the chase camera lags the car's heading and shows part of a
@@ -227,7 +283,8 @@ A gamepad drives too (RT/LT, left stick, A handbrake, Y in/out, right stick look
   the latest state rather than a backlog.
 
 Browser check: `node scripts/drive-wasm.mjs` (dev server running) takes the wheel of a car,
-drives, slides, rams a van, gets out - screenshots, and it fails on any console error.
+drives, slides, rams a van, gets out - screenshots, and it fails on any console error, or if
+driving shakes a part off or the crash takes none.
 
 ## Performance
 
@@ -248,6 +305,15 @@ What a crash costs is kept to what changed:
   fragmenter reads each cell's Voronoi seed from a table instead of hashing it for every
   voxel, and the structure takes its new strengths in place.
 
+- **A car on a bridge** loads its deck through its wheels. A wheel rolling onto a fragment is a
+  load that moves, not a blow (an impact load case only beyond 2.5 x its share of the car's
+  weight: a landing, a kerb struck at speed), and a large structure (400 nodes or more) under a
+  creeping load is solved again at most every `load_trigger_gap` ticks (0.1 s; at once for a
+  change of 4 x its trigger, an impact, or while it breaks). A sedan crossing the 20 m concrete
+  bridge: 69 solves of it instead of 220, 2.3 ms a tick mean instead of 4.7 (0.3 median).
+- **Parts** make a car up to nine pieces on joints: the traffic of the drive city (some 18
+  cars) ticks in 2.5 ms mean natively, 0.6 ms more than cars of one piece (the driving cars'
+  parts are awake with them; a parked car sleeps with its parts).
 - **Streaming while driving**: the chunk mesher finds a direction's visible faces with word
   operations on bit columns of the chunk's solidity and looks at those alone (the meshes are
   bit for bit the same): meshing what streams in at 80 km/h is ~2 ms a tick, not ~25 ms.
@@ -263,22 +329,34 @@ Measured natively on 4 threads in the drive city: a building's first touch is ~0
   masonry where concrete stops it; a head-on crash is deterministic.
 - `tests/core/test_capi.cpp`: a chassis on four wheels settles, drives, loses a wheel.
 - `tests/core/test_joints.cpp`: a steel arm bent past its strength folds down on a plastic
-  hinge and tears off only once turned past its capacity; without hinges it snaps at once.
-- `tests/game/test_vehicles.cpp`: every model is connected and heavy enough; a car settles,
-  shifts up, steers, brakes and reverses; every kind drives off without tipping; a player's
-  drive replays bit for bit and a saved session restores its vehicles; driven into a wall, its
-  front crumples.
+  hinge and tears off only once turned past its capacity; without hinges it snaps at once; a
+  latched door holds against a nudge, a hard knock opens its latch and it swings to its stop,
+  and a session keeps its latch shut or open.
+- `tests/core/test_wheels.cpp`: a car's door sleeps and wakes with it - woken still, the car
+  does not hang its weight on its sleeping door; driven off, the door comes along, shut.
+- `tests/game/test_vehicles.cpp`: every model is connected and heavy enough; every model's
+  parts are grids of their own beside its body, held at their seams, the body and its parts
+  one connected vehicle; a car settles, shifts up, steers, brakes and reverses; every kind
+  drives off without tipping; a player's drive replays bit for bit and a saved session
+  restores its vehicles with their parts latched; driven into a wall, its front crumples and
+  its bumper comes off; a pickup driven hard keeps its parts and cargo, a van at 40 km/h into a
+  car's side tears its door off (the car keeps its id), and a removed car takes the parts
+  still on it along; at 100 km/h a car does not pass through a loose slab 12.5 cm thick; a car
+  driven over a bridge has its deck solved again a few times a second, not at every fragment.
 - `tests/game/test_drive_city.cpp`: lanes on asphalt between kerbs, markings, parking, turns
-  that lead on; streamed traffic drives and parks, nothing falls through the road; the
-  player's car stays in the world while the host's viewer lags far behind it.
+  that lead on; streamed traffic drives and parks, nothing falls through the road, and no
+  driving car loses a part; the player's car stays in the world while the host's viewer lags
+  far behind it; a car left behind is archived with its parts and comes back with them on.
 - `web/test/vehicles.test.ts`: the front end's vehicle poses, the car to take, the wheel mesh.
 
 ## Limits
 
 - Plastic hinges form in static structures; a steel piece (already loose) that is overloaded
   in bending breaks at its bonds.
-- Car bodies are one grid: panels come off by fracture (a split keeps the car's id on the part
-  with its wheels), not on hinges of their own.
+- A part is held at one point of its seam (a door's two hinges are one hinge joint): a part
+  crushed at that voxel comes off; one crushed elsewhere stays on, crumpled. Parts do not
+  collide with their car while they hold: a door pushed in by a crash transfers the push
+  through its hinge until it gives way.
 - Crumpling folds along lattice axes: a side impact folds a door in, a frontal one the front;
   a very oblique blow folds along the axis nearest to it.
 - The first touch of a large building is a hitch (above): its design runs at once, on the

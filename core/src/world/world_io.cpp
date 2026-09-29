@@ -200,8 +200,9 @@ namespace {
 //   (v3) the session (world_session.cpp): the world's clock, the next ids, the pieces, the joints
 //     and the sleeping pieces' dead loads
 //   (v4) as v3; the session also has the wheels, the joints their collide flags and break angles
+//   (v5) as v4; the joints also have their latches
 constexpr u32 kGridsMagic = 0x47585653;  // "SVXG"
-constexpr u32 kGridsVersion = 4;
+constexpr u32 kGridsVersion = 5;
 
 using world_detail::put32;
 using world_detail::put64;

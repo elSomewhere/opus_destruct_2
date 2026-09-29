@@ -46,6 +46,9 @@ export interface VehicleState {
   halfExtent: Vec3;
   wheels: number;
   damage: number;
+  /** Its parts still on (doors, bonnet, bumpers, ...), of those it was built with. */
+  parts: number;
+  partsBuilt: number;
   prev: Sample | null;
   cur: Sample;
   seen: number;
@@ -171,6 +174,8 @@ export class VehicleTracker {
           halfExtent: [1, 1, 1],
           wheels: 0,
           damage: 0,
+          parts: 0,
+          partsBuilt: 0,
           prev: null,
           cur,
           seen: stamp,
@@ -198,6 +203,8 @@ export class VehicleTracker {
       v.halfExtent = [f(25), f(26), f(27)];
       v.wheels = f(28);
       v.damage = f(29);
+      v.parts = f(34);
+      v.partsBuilt = f(35);
       v.redline = f(33) > 0 ? f(33) : 6500;
       v.seen = stamp;
     }

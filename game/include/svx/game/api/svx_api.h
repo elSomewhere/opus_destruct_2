@@ -196,13 +196,14 @@ void svx_exit_vehicle(svx_engine* e);
 unsigned svx_player_vehicle(svx_engine* e);
 void svx_drive(svx_engine* e, double throttle, double brake, double steer, int handbrake);
 unsigned svx_vehicle_near(svx_engine* e, double x, double y, double z, double reach);
-/* The vehicles now (after a tick): count, then svx_vehicles_data holds 34 doubles each: id, chassis
+/* The vehicles now (after a tick): count, then svx_vehicles_data holds 36 doubles each: id, chassis
  * (its piece: the id of its detached event and poses; 0 none yet), kind, paint, centre of mass
  * xyz, frame rotation xyzw (x forward, y left, z up), velocity xyz, speed (m/s forward), engine
  * rpm, gear (-1 reverse, 0 neutral, 1..), controls (throttle, brake, steer, handbrake), flags (1
  * the player's, 2 a driver's, 4 parked, 8 a wreck), the driver's seat xyz, half extent xyz (its
  * box about its frame's origin, z from the ground), wheels on, damage 0..1, its frame's origin
- * xyz (world), its engine's redline (rpm). */
+ * xyz (world), its engine's redline (rpm), its parts still on (doors, bonnet, bumpers, ...: pieces
+ * of their own on joints to the chassis) and those it was built with. */
 int svx_vehicles(svx_engine* e);
 const double* svx_vehicles_data(svx_engine* e);
 /* Their wheels (to draw): count, then svx_wheels_data holds 15 doubles each: vehicle id, wheel id,

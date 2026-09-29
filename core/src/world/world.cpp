@@ -974,6 +974,7 @@ void World::step_structures() {
       s.P.current(s.u);
       s.P.stop();
       ++st_.solves;
+      s.solved_at = st_.ticks;
       // a stale preconditioner (many changes since it was built): rebuild it for the next solve
       if (s.P.running() == false && s.run_iters + r.iters > 60) s.P.invalidate();
       s.run_iters = 0;
@@ -1727,6 +1728,7 @@ void World::finish_loads(int substeps) {
     if (s.stale) continue;
     const size_t n = s.P.nodes.size();
     bool trigger = false, impact = false;
+    f64 worst = 0.0;  // (the largest change, x its trigger)
     for (size_t i = 0; i < n; ++i) {
       f64* e = &s.ext[6 * i];
       const f64* a = &s.acc[6 * i];
@@ -1737,6 +1739,7 @@ void World::finish_loads(int substeps) {
       const f64* es = &s.ext_solved[6 * i];
       const f64 d = std::sqrt((e[0] - es[0]) * (e[0] - es[0]) + (e[1] - es[1]) * (e[1] - es[1]) + (e[2] - es[2]) * (e[2] - es[2]));
       if (d > thr) trigger = true;
+      worst = std::max(worst, d / thr);
       const f64 steady = std::sqrt(e[0] * e[0] + e[1] * e[1] + e[2] * e[2]);
       if (s.peak_mag[i] > 2.0 * steady + thr) impact = true;
     }
@@ -1755,6 +1758,12 @@ void World::finish_loads(int substeps) {
       s.pending_impact = true;
       ++st_.impacts;
     }
+    // (a creeping load on a large structure - a car over a bridge - is solved again at most every
+    // load_trigger_gap ticks: its wheels cross a fragment every few ticks, and a solve of the
+    // whole bridge each time is wasted work; what it breaks, it breaks a tenth of a second later)
+    if (trigger && !impact && worst < 4.0 && s.rounds == 0 && static_cast<i32>(n) >= cfg_.load_trigger_gap_nodes &&
+        st_.ticks - s.solved_at < cfg_.load_trigger_gap)
+      trigger = false;
     if ((impact || trigger) && !s.P.running()) {
       s.ext_solved = s.pending_impact ? s.pending : s.ext;
       s.transient = s.pending_impact;

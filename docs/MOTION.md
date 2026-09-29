@@ -46,7 +46,15 @@ const JointId hinge = world.add_joint(d);
   piece it stays with when the piece splits. When the voxel is gone (carved, burnt, crushed) the
   joint lets go (`JointBroken` with strength 0).
 - **Breaking.** Beyond `break_force` (N) or `break_torque` (N m) it gives way (`JointBroken`,
-  its force). A rope of 5 kN under a 1 t block gives way.
+  its force). A rope of 5 kN under a 1 t block gives way. A hinge also gives way turned past
+  `break_angle` from where it was made (a plastic hinge torn through, a door torn off).
+- **Latches.** A hinge with a `latch` (N m) is held shut - it does not turn at all - until the
+  torque about its axis passes the latch's strength: then the latch gives way, what it could
+  not hold passes on (a door knocked open swings), and the hinge turns within its limits from
+  then on. What the latch held does not count towards the hinge's `break_torque`
+  (`JointState::latched`; sessions keep it). A car's doors and bonnet (docs/VEHICLES.md).
+- **Collision.** `collide = false`: its two ends' pieces do not collide with each other while it
+  holds (a part welded into its frame); once it gives way they do.
 - **Loads.** A joint's force and torque load what its ends hold on to: the structure of a grid's
   voxel (a weight on a rope from a cantilever loads its root; a motor's reaction twists what it
   is mounted on), a piece's bonds (its stress checks). A joint whose pieces sleep keeps carrying
@@ -62,7 +70,12 @@ const JointId hinge = world.add_joint(d);
   (it may tighten within a substep, not overshoot). Their position error is removed on pseudo
   velocities after the solve (split impulse: no energy is added), `rigid.joint_baumgarte` of it
   per substep beyond `rigid.joint_slop`. What hangs on a joint is held for sleep (it sleeps when
-  still), but not settled like rubble on a floor (a pendulum swings on).
+  still), but not settled like rubble on a floor (a pendulum swings on). Pieces joined sleep
+  together, and wake together: a piece woken wakes the pieces joined to it, and theirs, before
+  it is solved (asleep, a piece is a static support: a car woken still would hang on its
+  sleeping door).
+- **Queries.** `joints()`, `joint(id, &state)`, `joined_pieces(piece)`: the pieces joined to a
+  piece by joints that hold (a car's parts still on it).
 - **State.** `joint(id, &state)`: its ends in the world, the force and torque it carried in the
   last substep, its hinge angle, slider offset or rope length, the pieces its ends are on.
 

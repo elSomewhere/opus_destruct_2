@@ -273,9 +273,7 @@ void Game::step_traffic() {
     const auto it = vehicles_.find(id);
     if (it == vehicles_.end()) continue;
     if (it->second.spot) parked_spots_.erase(it->second.spot);
-    for (WheelId w : it->second.wheels)
-      if (w) world_.remove_wheel(w);
-    if (it->second.chassis) world_.remove_piece(it->second.chassis);
+    remove_vehicle_bodies(it->second);
     vehicles_.erase(it);
   }
   if (!traffic_.enabled) return;

@@ -78,9 +78,29 @@ struct WheelSlot {
   bool driven = false, steered = false;
 };
 
+// A part of a vehicle that comes off (docs/VEHICLES.md): a door, the bonnet, the boot lid, a
+// tailgate, a bumper, the cargo strapped in its bed. A grid of its own in the model's frame (its
+// voxels next to the body's along its seam), held by joints that give way before the body does -
+// in a crash the connections fail first. A hinged part is held shut by its latch; knocked hard
+// enough about its hinge the latch lets go and it swings within its limits, and it is torn off
+// its hinge beyond; a bumper (or cargo's strap) is a fixed joint.
+enum class PartKind : u8 { Door, Bonnet, Boot, Tailgate, Bumper, Cargo, Count };
+
+struct VehiclePart {
+  PartKind kind = PartKind::Door;
+  VoxelGrid voxels;            // (in the model's frame, as its body's; a "paint" layer)
+  bool hinged = false;
+  V3 hinge;                    // m, the model's frame: where it is held (on its seam with the body)
+  V3 axis{0, 0, 1};            // (hinged) the hinge's axis (the model's frame)
+  f64 lower = 0.0, upper = 0.0;  // (hinged) its swing about the axis from shut (rad)
+  f64 latch = 0.0;             // (hinged) N m about its hinge: its latch lets go beyond
+  f64 break_force = 0.0, break_torque = 0.0;  // N, N m: its hinge (or fixed joint) gives way beyond
+};
+
 struct VehicleModel {
   VehicleSpec spec;
-  VoxelGrid voxels;            // (voxel size kVehicleVoxel; voxel p centred at h p in its frame; a "paint" layer)
+  VoxelGrid voxels;            // its body (voxel size kVehicleVoxel; voxel p centred at h p in its frame; a "paint" layer)
+  std::vector<VehiclePart> parts;  // what comes off it (in the same frame: the body and its parts are the whole vehicle)
   std::vector<WheelSlot> wheels;
   VehicleTuning tuning;
   f64 wheel_break = 0.0;       // N: its wheels come off beyond (0: never)

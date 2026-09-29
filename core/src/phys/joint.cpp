@@ -206,8 +206,12 @@ void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw) {
         else if (L < j.min_length - slop) P.eax = pull(L - j.min_length, slop);
       }
     }
-    // the limit that bears (the nearer bound), and how far past it the ends are
-    if (j.limited && (t == JointType::Hinge || t == JointType::Slider)) {
+    // the limit that bears (the nearer bound), and how far past it the ends are; latched shut, a
+    // hinge is held where it was made
+    if (t == JointType::Hinge && j.latched) {
+      P.lim = 2;
+      P.eax = pull(P.value, 0.0);
+    } else if (j.limited && (t == JointType::Hinge || t == JointType::Slider)) {
       if (j.lower >= j.upper) {
         P.lim = 2;
         P.eax = pull(P.value - j.lower, t == JointType::Slider ? slop : 0.0);
@@ -301,7 +305,13 @@ void RigidWorld::solve_joints() {
         j.motor = nd;
       }
       if (P.lim == 2) {
-        const f64 l = -P.kax * rate();
+        f64 l = -P.kax * rate();
+        if (t == JointType::Hinge && j.latched) {
+          // (a latch holds up to its strength; beyond, it gives way - finish_joints - and what it
+          // could not hold passes on: a door knocked open swings)
+          const f64 cap = j.latch * joint_dt_;
+          l = std::clamp(j.limit + l, -cap, cap) - j.limit;
+        }
         j.limit += l;
         push(l);
       } else if (P.lim != 0) {
@@ -438,7 +448,17 @@ void RigidWorld::finish_joints(f64 dt) {
     // (the turn it gives b about its anchor)
     j.torque = P.L * (1.0 / dt);
     j.value = P.value;
-    if ((j.break_force > 0.0 && norm(j.force) > j.break_force) || (j.break_torque > 0.0 && norm(j.torque) > j.break_torque)) j.broken = true;
+    // (a latched hinge: what its latch holds shut is not its hinge's; past its strength the latch
+    // gives way, and it swings from the next substep)
+    V3 held = j.torque;
+    if (j.type == JointType::Hinge && j.latched) {
+      held -= P.ax * dot(P.ax, j.torque);
+      if (std::abs(j.limit) >= j.latch * dt * (1.0 - 1e-9)) {  // (it held all it could)
+        j.latched = false;
+        j.limit = 0.0;
+      }
+    }
+    if ((j.break_force > 0.0 && norm(j.force) > j.break_force) || (j.break_torque > 0.0 && norm(held) > j.break_torque)) j.broken = true;
     // (a hinge turned past its capacity: a plastic hinge torn through, a door off its hinge)
     if (j.type == JointType::Hinge && j.break_angle > 0.0 && std::abs(P.value) > j.break_angle) j.broken = true;
   }
@@ -476,20 +496,29 @@ bool RigidWorld::driving(const Joint& j, const JointPrep& P) {
 }
 
 void RigidWorld::wake_jointed() {
+  // A body awake (hit, driven, pushed by the host, woken by one moving near) wakes what is joined
+  // to it, and what is joined to that: asleep, a body is a static support to the solver, and would
+  // pin what it holds - a car's chassis would hang its weight on its doors.
   auto index_of = [&](i64 id) -> i32 {
     const auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
     return (it != bodies.end() && (*it)->id == id) ? static_cast<i32>(it - bodies.begin()) : -1;
   };
+  std::vector<std::pair<i32, i32>> pairs;
   for (const Joint& j : joints) {
-    if (j.broken) continue;
-    const i32 ia = j.a.body != 0 ? index_of(j.a.body) : -1, ib = j.b.body != 0 ? index_of(j.b.body) : -1;
-    auto moving = [&](i32 i) {
-      if (i < 0) return false;
-      const Body& b = *bodies[size_t(i)];
-      return !b.asleep && norm(b.v) + b.radius * norm(b.w) > 2.0 * sleep_speed_;
-    };
-    if (ia >= 0 && bodies[size_t(ia)]->asleep && moving(ib)) wake(*bodies[size_t(ia)]);
-    if (ib >= 0 && bodies[size_t(ib)]->asleep && moving(ia)) wake(*bodies[size_t(ib)]);
+    if (j.broken || j.a.body == 0 || j.b.body == 0) continue;
+    const i32 ia = index_of(j.a.body), ib = index_of(j.b.body);
+    if (ia >= 0 && ib >= 0) pairs.push_back({ia, ib});
+  }
+  // (chains through sleepers: until no pair is half asleep)
+  for (bool more = true; more;) {
+    more = false;
+    for (const auto& [a, b] : pairs) {
+      Body& A = *bodies[size_t(a)];
+      Body& B = *bodies[size_t(b)];
+      if (A.asleep == B.asleep) continue;
+      wake(A.asleep ? A : B);
+      more = true;
+    }
   }
 }
 

@@ -19,9 +19,9 @@ namespace {
 // The models are built once per kind (in a placeholder paint, sprayed per vehicle).
 constexpr Paint kModelPaint = Paint::Red;
 
-// A model's voxels in a paint of its own.
-VoxelGrid sprayed(const VehicleModel& m, Paint p) {
-  VoxelGrid g = m.voxels;
+// A model's voxels (its body's, a part's) in a paint of its own.
+VoxelGrid sprayed(const VoxelGrid& voxels, Paint p) {
+  VoxelGrid g = voxels;
   if (p == kModelPaint) return g;
   const int L = g.layer_index("paint");
   if (L < 0) return g;
@@ -84,15 +84,42 @@ u32 Game::spawn_vehicle_internal(const VehicleSpec& spec0, const V3& pos, f64 ya
   d.frame = GridFrame{pos + V3{0.0, 0.0, 0.05}, q};
   d.voxel_size = kVehicleVoxel;
   d.base = false;
-  const GridId gid = world_.add_grid(d, sprayed(m, spec.paint));
+  const GridId gid = world_.add_grid(d, sprayed(m.voxels, spec.paint));
   if (gid == 0) return 0;
+  const M3 R = to_matrix(q);
+  // its parts: grids of their own beside its body's, on joints to it (a latched hinge, or a fixed
+  // joint) made before any of it comes loose - a joint holds on to its ends' voxels and goes with
+  // the pieces they become. They do not collide with the body while they hold.
+  std::vector<GridId> parts;
+  for (const VehiclePart& P : m.parts) {
+    const GridId pg = world_.add_grid(d, sprayed(P.voxels, spec.paint));
+    if (pg == 0) continue;
+    JointDesc j;
+    j.type = P.hinged ? JointType::Hinge : JointType::Fixed;
+    j.a = JointAnchor{JointAnchor::Kind::Grid, gid, d.frame.origin + R * P.hinge};
+    j.b = JointAnchor{JointAnchor::Kind::Grid, pg, j.a.point};
+    j.axis = R * P.axis;
+    j.limited = P.hinged;
+    j.lower = P.lower;
+    j.upper = P.upper;
+    j.break_force = P.break_force;
+    j.break_torque = P.break_torque;
+    j.latch = P.hinged ? P.latch : 0.0;
+    // (a hinge forced past its stop is torn through)
+    j.break_angle = P.hinged ? std::max(std::abs(P.lower), std::abs(P.upper)) + 0.35 : 0.0;
+    j.collide = false;
+    if (world_.add_joint(j) == 0) {
+      world_.remove_grid(pg);
+      continue;
+    }
+    parts.push_back(pg);
+  }
   const u32 id = next_vehicle_++;
   Vehicle v;
   v.id = id;
   v.spec = spec;
   v.flags = flags;
   v.home = pos;
-  const M3 R = to_matrix(q);
   const f64 static_load = 9.81 * 1200.0 / 4.0;
   for (size_t k = 0; k < m.wheels.size(); ++k) {
     const WheelSlot& s = m.wheels[k];
@@ -121,12 +148,15 @@ u32 Game::spawn_vehicle_internal(const VehicleSpec& spec0, const V3& pos, f64 ya
     wd.tag = tag.pack();
     v.wheels.push_back(world_.add_wheel(wd));
   }
-  // (a piece at once, whole, its wheels on it: nothing to solve - no structure holds a car)
+  // (a piece at once, whole, its wheels on it: nothing to solve - no structure holds a car;
+  // its parts pieces on their joints)
   v.chassis = world_.loosen_grid(gid);
   if (v.chassis != 0) {
     world_.set_piece_max_speed(v.chassis, 90.0);
     if (const Body* b = world_.piece(v.chassis)) v.voxels0 = b->count;
   }
+  for (GridId pg : parts)
+    if (const i64 pp = world_.loosen_grid(pg)) world_.set_piece_max_speed(pp, 90.0);
   vehicles_[id] = std::move(v);
   return id;
 }
@@ -135,13 +165,24 @@ bool Game::remove_vehicle(u32 id) {
   const auto it = vehicles_.find(id);
   if (it == vehicles_.end()) return false;
   if (log_) log_->push({world_.ticks(), Command::Type::Vehicle, {2.0, static_cast<f64>(id), 0.0, 0.0, 0.0, 0.0}});
-  for (WheelId w : it->second.wheels)
-    if (w) world_.remove_wheel(w);
-  if (it->second.chassis) world_.remove_piece(it->second.chassis);
-  // (a grid not come loose yet goes with its wheels' mounts: nothing holds it)
+  remove_vehicle_bodies(it->second);
   if (player_vehicle_ == id) player_vehicle_ = 0;
   vehicles_.erase(it);
   return true;
+}
+
+std::vector<i64> Game::vehicle_parts(const Vehicle& v) const {
+  // (the pieces on joints to its chassis: its parts still on; ascending)
+  return v.chassis ? world_.joined_pieces(v.chassis) : std::vector<i64>{};
+}
+
+void Game::remove_vehicle_bodies(const Vehicle& v) {
+  // its wheels, its parts still on, its chassis (parts come off are rubble now: they stay)
+  for (WheelId w : v.wheels)
+    if (w) world_.remove_wheel(w);
+  for (i64 p : vehicle_parts(v)) world_.remove_piece(p);
+  if (v.chassis) world_.remove_piece(v.chassis);
+  // (a grid not come loose yet goes with its wheels' mounts: nothing holds it)
 }
 
 bool Game::enter_vehicle(u32 id) {
@@ -229,6 +270,13 @@ bool Game::vehicle(u32 id, VehicleView* out) const {
   o.half_extent = m.half_extent;
   o.redline = m.tuning.redline;
   for (WheelId w : v.wheels) o.wheels += w != 0 ? 1 : 0;
+  // (its parts still on, and their voxels: those come off, or broken off, are gone from it)
+  const std::vector<i64> on = vehicle_parts(v);
+  i32 on_voxels = 0;
+  for (i64 p : on)
+    if (const Body* pb = world_.piece(p)) on_voxels += pb->count;
+  o.parts = static_cast<i32>(on.size());
+  o.parts0 = static_cast<i32>(m.parts.size());
   o.flags = static_cast<u8>((v.id == player_vehicle_ ? VehicleView::kPlayer : 0) | ((v.flags & WheelTag::kTagNpc) ? VehicleView::kNpc : 0) |
                             ((v.flags & WheelTag::kTagParked) ? VehicleView::kParked : 0) | (v.wreck ? VehicleView::kWreck : 0));
   const Body* b = v.chassis ? world_.piece(v.chassis) : nullptr;
@@ -240,11 +288,12 @@ bool Game::vehicle(u32 id, VehicleView* out) const {
     o.speed = dot(b->v, rotate(q, V3{1.0, 0.0, 0.0}));
     o.seat = b->lattice_to_world(0, m.driver_seat);
     o.origin = b->lattice_to_world(0, V3{});
-    if (v.damage_chassis != v.chassis || v.damage_count != b->count || v.damage_reshapes != v.reshapes) {
-      v.damage = body_damage(v, *b);
+    if (v.damage_chassis != v.chassis || v.damage_count != b->count || v.damage_reshapes != v.reshapes || v.damage_parts != on_voxels) {
+      v.damage = body_damage(v, *b, on_voxels);
       v.damage_chassis = v.chassis;
       v.damage_count = b->count;
       v.damage_reshapes = v.reshapes;
+      v.damage_parts = on_voxels;
     }
     o.damage = v.damage;
   }
@@ -286,11 +335,12 @@ std::vector<WheelView> Game::wheel_views() const {
   return out;
 }
 
-f64 Game::body_damage(const Vehicle& v, const Body& b) const {
-  // How much of its body is not as it was built: its model's voxels gone or changed in its
-  // lattice (crumpled back, torn off, turned to dust), and cells filled that were empty (the
-  // folds piled up) - a fifth of it changed is a wreck. (A scrape folds a few columns; a crash
-  // at 50 km/h a good part of the front.)
+f64 Game::body_damage(const Vehicle& v, const Body& b, i32 part_voxels) const {
+  // How much of it is not as it was built: its body's voxels gone or changed in its lattice
+  // (crumpled back, torn off, turned to dust), cells filled that were empty (the folds piled
+  // up), and its parts' voxels no longer on it (a door, a bumper come off) - a fifth of it
+  // changed is a wreck. (A scrape folds a few columns; a crash at 50 km/h a good part of the
+  // front.)
   const VehicleModel& m = vehicle_model(v.spec.kind);
   if (b.shapes.empty()) return 1.0;
   const BodyShape& S = b.shapes.front();
@@ -308,6 +358,10 @@ f64 Game::body_damage(const Vehicle& v, const Body& b) const {
   }
   for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i)
     if (vox_solid(S.vox[size_t(i)]) && !vox_solid(m.voxels.get(S.voxel(i)))) ++changed;
+  i64 parts0 = 0;
+  for (const VehiclePart& P : m.parts) parts0 += P.voxels.solid_count();
+  total += parts0;
+  changed += std::max<i64>(0, parts0 - part_voxels);
   return total > 0 ? std::clamp(static_cast<f64>(changed) / (0.2 * static_cast<f64>(total)), 0.0, 1.0) : 0.0;
 }
 
