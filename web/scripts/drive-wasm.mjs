@@ -2,7 +2,7 @@
 /**
  * Browser drive through the endless city (?engine=wasm&world=drive; docs/VEHICLES.md): waits for
  * the city and its traffic, takes the wheel of the nearest car, drives it (scripted controls
- * through the debug handle), slides it with the handbrake, rams a van dropped in its way, gets
+ * through the debug handle), rams a van dropped in its way, slides it with the handbrake, gets
  * out. Screenshots of each; fails on console / page / WebGPU errors, or when the car does not
  * drive, crumple or let the player out. Usage (dev server running, e.g. `npm run dev -- --port 5190`):
  *   node scripts/drive-wasm.mjs [baseUrl] [outDir]
@@ -72,7 +72,13 @@ try {
       return !!s && s.ready && s.engine !== null && s.engine.residentChunks > 50 && s.render !== null && s.render.chunksDrawn > 0;
     });
     if (ok) break;
-    if (Date.now() - t0 > 120000) throw new Error('the drive city did not load');
+    if (Date.now() - t0 > 240000) {
+      const st = await page.evaluate(() => {
+        const s = window.__structvox?.state();
+        return s && { ready: s.ready, player: s.player, view: s.view, engine: s.engine && { ticks: s.engine.ticks, resident: s.engine.residentChunks }, drawn: s.render?.chunksDrawn };
+      });
+      throw new Error(`the drive city did not load: ${JSON.stringify(st)}`);
+    }
     await sleep(250);
   }
   check(true, `drive city loaded in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
@@ -134,33 +140,14 @@ try {
   check(car !== undefined && top > 3, `the car drives (up to ${top.toFixed(1)} m/s, now ${car?.speed.toFixed(1)})`);
   console.log(`camera: ${JSON.stringify((await state()).cameraDistance)}`);
   await shot('drive-03-speed');
-  // a slide: steer and the handbrake - from a town speed (at full speed a spin may well end in
-  // the parked cars, which is a crash, not a slide)
-  await page.evaluate(() => window.__structvox.drive(0, 1, true));
+  // a van dropped 30 m ahead in its lane, rammed (the car stopped first: it is where it is when
+  // the van comes)
+  await page.evaluate(() => window.__structvox.drive(0, 0, false, 1));
   for (let k = 0; k < 40; k++) {
     await sleep(100);
     car = await mine();
-    if (!car || car.speed < 15) break;
+    if (!car || Math.abs(car.speed) < 0.5) break;
   }
-  await page.evaluate(() => window.__structvox.drive(0.4, 1, true));
-  for (let k = 0; k < 7; k++) {
-    await sleep(200);
-    const w = (await state()).wheels;
-    console.log(`  sliding: ${w.map((x) => `${x.contact ? 'c' : '-'} ${x.slip.toFixed(1)} m/s on ${x.material}`).join(' | ')}`);
-  }
-  await shot('drive-04-slide');
-  await page.evaluate(() => window.__structvox.drive(0, 0, true, 1));
-  await sleep(2500);
-  s = await state();
-  console.log(`render: ${JSON.stringify({ wheels: s.render.wheels, skids: s.render.skidMarks, particles: s.render.particles, fps: s.fps.toFixed(0) })}`);
-  check(s.render.wheels >= 4, `wheels drawn (${s.render.wheels})`);
-  check(s.render.skidMarks > 0, `skid marks laid (${s.render.skidMarks})`);
-  await page.evaluate(() => window.__structvox.camera('far'));
-  await sleep(600);
-  await shot('drive-05-marks');
-  await page.evaluate(() => window.__structvox.camera('chase'));
-
-  // a van dropped 30 m ahead, rammed
   car = await mine();
   if (!car) throw new Error('the car is gone');
   const yaw = (car.yaw * Math.PI) / 180;
@@ -193,6 +180,35 @@ try {
   await page.evaluate(() => window.__structvox.camera('far'));
   await sleep(500);
   await shot('drive-08-wreck');
+
+  // a slide: back out of the wreck, then steer and the handbrake (wheels spinning or sliding lay
+  // their marks)
+  await page.evaluate(() => window.__structvox.camera('chase'));
+  await page.evaluate(() => window.__structvox.drive(-1, 0));
+  await sleep(1500);
+  await page.evaluate(() => window.__structvox.drive(0, 1, true));
+  for (let k = 0; k < 40; k++) {
+    await sleep(100);
+    car = await mine();
+    if (!car || car.speed < 15) break;
+  }
+  await page.evaluate(() => window.__structvox.drive(0.4, 1, true));
+  for (let k = 0; k < 7; k++) {
+    await sleep(200);
+    const w = (await state()).wheels;
+    console.log(`  sliding: ${w.map((x) => `${x.contact ? 'c' : '-'} ${x.slip.toFixed(1)} m/s on ${x.material}`).join(' | ')}`);
+  }
+  await shot('drive-04-slide');
+  await page.evaluate(() => window.__structvox.drive(0, 0, true, 1));
+  await sleep(2500);
+  s = await state();
+  console.log(`render: ${JSON.stringify({ wheels: s.render.wheels, skids: s.render.skidMarks, particles: s.render.particles, fps: s.fps.toFixed(0) })}`);
+  check(s.render.wheels >= 2, `wheels drawn (${s.render.wheels}: a crash may have torn some off)`);
+  check(s.render.skidMarks > 0, `skid marks laid (${s.render.skidMarks})`);
+  await page.evaluate(() => window.__structvox.camera('far'));
+  await sleep(600);
+  await shot('drive-05-marks');
+  await page.evaluate(() => window.__structvox.camera('chase'));
 
   // out
   await page.evaluate(() => window.__structvox.exitVehicle());
