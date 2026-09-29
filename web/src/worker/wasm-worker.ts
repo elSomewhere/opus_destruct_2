@@ -163,10 +163,18 @@ let vehiclesLive = false; // (likewise the vehicles)
  */
 let poseSeq = 0;
 let poseAcked = -1;
-const POSE_LAG = 12;
+const POSE_LAG = 6;
+/** This tick's pose batch: debris and vehicles go together or not at all (a car's body and its wheels, its camera). */
+let posesHeldNow = false;
 
 function posesHeld(): boolean {
-  return poseAcked >= 0 && poseSeq - poseAcked > POSE_LAG;
+  return posesHeldNow;
+}
+
+/** Starts a tick's pose batch: its sequence number, unless the page is too far behind. */
+function beginPoses(): void {
+  posesHeldNow = poseAcked >= 0 && poseSeq - poseAcked > POSE_LAG;
+  if (!posesHeldNow) ++poseSeq;
 }
 let config: InitConfig = { voxelSize: 0.125, threads: 1, memoryMB: 1024, params: { ...DEFAULT_PARAMS } };
 let params: EngineParams = { ...DEFAULT_PARAMS };
@@ -480,7 +488,7 @@ function flushVehicles(): void {
   const nw = m._svx_wheels(eng);
   const bw = m._svx_wheels_data(eng) >> 3;
   const wheels = m.HEAPF64.slice(bw, bw + nw * WHEEL_STRIDE);
-  postToMain({ type: 'vehicles', vehicles, wheels, player: m._svx_player_vehicle(eng) >>> 0, seq: ++poseSeq });
+  postToMain({ type: 'vehicles', vehicles, wheels, player: m._svx_player_vehicle(eng) >>> 0, seq: poseSeq });
 }
 
 /** A piece event's voxels for the client's collision (svx_event_occupancy), if it has them. */
@@ -582,7 +590,7 @@ function flushDebris(): void {
   const poses = m.HEAPF64.slice(b, b + n * DEBRIS_STRIDE);
   if (poses.length > 0 && poses.length === debrisSent.length && poses.every((v, i) => v === debrisSent[i])) return;
   debrisSent = poses.slice();
-  postToMain({ type: 'debris', poses, seq: ++poseSeq });
+  postToMain({ type: 'debris', poses, seq: poseSeq });
 }
 
 /** Water surface meshes of chunks whose water changed, and chunks whose water is gone. */
@@ -922,6 +930,7 @@ function loop(): void {
       mod._svx_tick(eng);
       const t1 = performance.now();
       flushEvents();
+      beginPoses();
       flushDebris();
       flushVehicles();
       flushEnv();

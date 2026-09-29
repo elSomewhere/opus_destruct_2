@@ -55,6 +55,13 @@ try {
   });
   page.on('pageerror', (e) => errors.push(`pageerror ${e.message}`));
   await page.goto(`${base}?engine=wasm&world=drive&seed=1`, { waitUntil: 'load' });
+  // (software WebGPU: fewer pixels, or the page falls far behind the engine)
+  if (containerArgs().length > 0) {
+    while (!(await page.evaluate(() => !!window.__structvox))) await sleep(200);
+    await page.evaluate(() => {
+      window.__structvox.renderer.renderScale = 0.5;
+    });
+  }
   const t0 = Date.now();
   for (;;) {
     const ok = await page.evaluate(() => {
@@ -89,8 +96,12 @@ try {
   await sleep(1500);
   const entered = await page.evaluate(() => window.__structvox.enterVehicle());
   check(entered, 'took the wheel of the nearest car');
-  await sleep(1000);
   let s = await state();
+  // (the engine's word comes with its next vehicles message: a slow page takes a while)
+  for (let k = 0; k < 40 && s.engineDriving !== s.driving; k++) {
+    await sleep(250);
+    s = await state();
+  }
   check(s.driving !== 0 && s.engineDriving === s.driving, `driving vehicle ${s.driving} (engine: ${s.engineDriving})`);
   const mine = () => vehicles().then((l) => l.find((v) => v.id === s.driving));
   let car = await mine();
@@ -107,10 +118,15 @@ try {
     console.log(`  ${(k + 1) * 0.5} s: ${car ? `${car.speed.toFixed(1)} m/s, gear ${car.gear}, ${car.rpm.toFixed(0)} rpm, x ${car.pos[0].toFixed(1)}, wheels ${car.wheels}, damage ${car.damage.toFixed(2)}` : 'gone'} (tick ${e?.ticks})`);
   }
   check(car !== undefined && car.speed > 3, `the car drives (${car?.speed.toFixed(1)} m/s)`);
+  console.log(`camera: ${JSON.stringify((await state()).cameraDistance)}`);
   await shot('drive-03-speed');
   // a slide: steer and the handbrake
   await page.evaluate(() => window.__structvox.drive(0.4, 1, true));
-  await sleep(1400);
+  for (let k = 0; k < 7; k++) {
+    await sleep(200);
+    const w = (await state()).wheels;
+    console.log(`  sliding: ${w.map((x) => `${x.contact ? 'c' : '-'} ${x.slip.toFixed(1)} m/s on ${x.material}`).join(' | ')}`);
+  }
   await shot('drive-04-slide');
   await page.evaluate(() => window.__structvox.drive(0, 0, true, 1));
   await sleep(2500);
@@ -151,8 +167,11 @@ try {
 
   // out
   await page.evaluate(() => window.__structvox.exitVehicle());
-  await sleep(1500);
   s = await state();
+  for (let k = 0; k < 40 && (s.driving !== 0 || s.engineDriving !== 0); k++) {
+    await sleep(250);
+    s = await state();
+  }
   check(s.driving === 0 && s.engineDriving === 0, 'got out');
   await page.evaluate(() => window.__structvox.look(-160, -10));
   await sleep(800);

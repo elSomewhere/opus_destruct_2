@@ -57,14 +57,15 @@ export class SkidMarks {
     }
     const alpha = Math.min(0.85, 0.25 + 0.6 * intensity);
     const pos: Vec3 = [contact[0] + up[0] * LIFT, contact[1] + up[1] * LIFT, contact[2] + up[2] * LIFT];
-    if (!last || nowS - last.t > 0.2) {
+    if (!last || nowS - last.t > 0.5) {
       this.tracks.set(wheel, { pos, alpha: 0, t: nowS });
       return;
     }
     const d: Vec3 = [pos[0] - last.pos[0], pos[1] - last.pos[1], pos[2] - last.pos[2]];
     const len = Math.hypot(d[0], d[1], d[2]);
     if (len < 0.12) return; // (too short a stretch yet: wait for more)
-    if (len > 3) {
+    // (further than a car goes in the time: it was put elsewhere - a new mark)
+    if (len > 1 + 70 * (nowS - last.t)) {
       this.tracks.set(wheel, { pos, alpha: 0, t: nowS });
       return;
     }

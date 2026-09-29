@@ -60,6 +60,8 @@ export class Driving {
   /** The last pose of the driven vehicle (where the player gets out if it is gone). */
   lastPose: Pose | null = null;
   lastSeat: Vec3 | null = null;
+  /** (debugging) the chase camera's distances: wanted, free of walls, and now. */
+  camInfo = { want: 0, free: 0, now: 0 };
 
   get driving(): boolean {
     return this.vehicle !== 0;
@@ -203,9 +205,11 @@ export class Driving {
     const dir: Vec3 = [cp * Math.cos(yaw), cp * Math.sin(yaw), -Math.sin(pitch)];
     // kept out of walls: the way from the car back to the camera, through the world's voxels
     let free = dist;
-    if (occupancy?.ready) free = Math.max(0.8, clearance(occupancy, look, [-dir[0], -dir[1], -dir[2]], dist, voxelSize) - 0.3);
+    // (never nearer than just behind the car itself: from inside it, it would not be seen)
+    if (occupancy?.ready) free = Math.max(Math.min(dist, he[0] + 0.6), clearance(occupancy, look, [-dir[0], -dir[1], -dir[2]], dist, voxelSize) - 0.3);
     if (this.camDist === 0 || free < this.camDist) this.camDist = free;
     else this.camDist += (free - this.camDist) * (1 - Math.exp(-dt * 2.5));
+    this.camInfo = { want: dist, free, now: this.camDist };
     const eye: Vec3 = [look[0] - dir[0] * this.camDist, look[1] - dir[1] * this.camDist, look[2] - dir[2] * this.camDist];
     return { cam: { eye, forward: dir, fovY: this.fov }, jolt };
   }

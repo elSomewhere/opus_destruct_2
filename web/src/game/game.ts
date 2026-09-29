@@ -586,6 +586,10 @@ export class Game {
         driving: this.driving.vehicle,
         engineDriving: this.tracker.player,
         camera: this.driving.mode,
+        cameraDistance: { ...this.driving.camInfo },
+        wheels: [...this.tracker.wheels.values()]
+          .filter((w) => w.vehicle === this.driving.vehicle)
+          .map((w) => ({ contact: w.contact, slip: w.slip, material: w.material })),
       }),
     };
   }
@@ -629,5 +633,9 @@ export interface StructvoxDebugApi {
     driving: number;
     engineDriving: number;
     camera: CameraMode;
+    /** The chase camera's distances (m): wanted, free of walls, now. */
+    cameraDistance: { want: number; free: number; now: number };
+    /** The player's car's wheels. */
+    wheels: { contact: boolean; slip: number; material: number }[];
   };
 }
