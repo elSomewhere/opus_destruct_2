@@ -5,9 +5,11 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdio>
 #include <cstring>
 #include <optional>
 
+#include "svx/base/diag.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/base/rotation.hpp"
 #include "svx/game/replay.hpp"
@@ -129,6 +131,9 @@ void Game::load_streaming(std::shared_ptr<const GameSource> src, f64 h, const St
   far_ = far;
   world_.enable_streaming(src, sc);
   world_.set_focus(viewer_);
+  // (a world with roads has traffic: its vehicles' models made now, not at the first of each)
+  if (src->roads())
+    for (int k = 0; k < static_cast<int>(VehicleKind::Count); ++k) (void)vehicle_model(static_cast<VehicleKind>(k));
 }
 
 bool Game::load_delta(const std::vector<u8>& bytes) {
@@ -274,14 +279,32 @@ void Game::tick() {
   }
   // movers first: their voxels are in place when the world's commands and pieces see them
   if (!par_.paused && !movers_.empty()) step_movers();
+  using PClock = std::chrono::steady_clock;
+  const auto p0 = PClock::now();
   if (!par_.paused) vehicles_before_tick();
+  const auto p1 = PClock::now();
   world_.tick();
+  const auto p2 = PClock::now();
   if (!par_.paused) check_movers_hit();
   if (!par_.paused) vehicles_after_tick();
+  const auto p3 = PClock::now();
   for (Fading& f : fading_) f.t += world_.config().dt;
   fading_.erase(std::remove_if(fading_.begin(), fading_.end(), [&](const Fading& f) { return f.t >= fade_time; }), fading_.end());
   drain_world_events();
+  const auto p4 = PClock::now();
   if (source_) far_update();
+  const auto p5 = PClock::now();
+  // (SVX_PROFILE_GAME: the phases of the ticks over 40 ms)
+  static const bool gprof = diag("SVX_PROFILE_GAME");
+  if (gprof) {
+    auto ms = [](auto a, auto b) { return std::chrono::duration<double, std::milli>(b - a).count(); };
+    if (ms(p0, p5) > 40.0) {
+      const WorldStats& w = world_.stats();
+      std::printf("  [game] %.0f ms: before %.1f world %.1f (stream %.1f events %.1f rigid %.1f loads %.1f struct %.1f systems %.1f upkeep %.1f) after %.1f drain %.1f far %.1f\n",
+                  ms(p0, p5), ms(p0, p1), ms(p1, p2), w.stream_ms, w.event_ms, w.rigid_ms, w.loads_ms, w.structural_ms, w.systems_ms, w.upkeep_ms, ms(p2, p3),
+                  ms(p3, p4), ms(p4, p5));
+    }
+  }
   if (const WaterSystem* ws = env_.water()) {
     // (a chunk's water surface also shows at its neighbours' faces)
     for (u64 k : world_.take_layer_changes(ws->water_layer())) {
@@ -357,11 +380,16 @@ void Game::drain_world_events() {
       if (fresh[k]) todo.push_back(k);
     }
   std::vector<ChunkMesh> meshes(evs.size());
+  // (a vehicle's chassis: its body's paint - its mesh is its kind's, re-tinted)
+  std::vector<Paint> body(evs.size(), Paint::None);
+  for (size_t k : todo)
+    for (const auto& [vid, v] : vehicles_)
+      if (v.chassis == evs[k].id) body[k] = v.spec.paint;
   std::optional<SerialScope> serial_all;
   if (!mesh_base_.concurrent) serial_all.emplace();  // (providers with unsynchronized caches)
   parallel_for(static_cast<i64>(todo.size()), 4, [&](i64 k0, i64 k1) {
     SerialScope serial;
-    for (i64 k = k0; k < k1; ++k) meshes[todo[size_t(k)]] = piece_mesh(*fresh[todo[size_t(k)]]);
+    for (i64 k = k0; k < k1; ++k) meshes[todo[size_t(k)]] = piece_mesh(*fresh[todo[size_t(k)]], true, body[todo[size_t(k)]]);
   });
   for (size_t k = 0; k < evs.size(); ++k) {
     const WorldEvent& e = evs[k];
@@ -447,11 +475,11 @@ void Game::drain_world_events() {
   }
 }
 
-ChunkMesh Game::piece_mesh(const Body& b) const {
+ChunkMesh Game::piece_mesh(const Body& b, bool fresh, Paint body) const {
   // each of its shapes (one per grid it came from), in world coordinates at its pose now
   ChunkMesh out;
   for (size_t k = 0; k < b.shapes.size(); ++k) {
-    ChunkMesh m = shape_mesh(b, k);
+    ChunkMesh m = shape_mesh(b, k, fresh, body);
     const u32 base = static_cast<u32>(out.vertices.size());
     out.vertices.insert(out.vertices.end(), m.vertices.begin(), m.vertices.end());
     for (u32 i : m.indices) out.indices.push_back(base + i);
@@ -459,7 +487,7 @@ ChunkMesh Game::piece_mesh(const Body& b) const {
   return out;
 }
 
-ChunkMesh Game::shape_mesh(const Body& b, size_t k) const {
+ChunkMesh Game::shape_mesh(const Body& b, size_t k, bool fresh, Paint body) const {
   MeshOptions mo;
   mo.texels_per_metre = mesh_base_.texels_per_metre;
   mo.texture = mesh_base_.texture;
@@ -495,7 +523,61 @@ ChunkMesh Game::shape_mesh(const Body& b, size_t k) const {
       return base_tex ? base_tex(p, face) : static_cast<u16>(0xFF00 + static_cast<u16>(vox_mat(S.get(p))));
     };
   }
-  ChunkMesh out = mesh_shape(S, world_.voxel_size(), mo);
+  // (a large new piece - a vehicle dropped in - as one meshed before: its voxels and paint the
+  // same, nothing burning or glowing, no debug colours)
+  bool memo = fresh && S.count >= 1500 && par_.debug_view != 2 && mesh_base_.concurrent && !mesh_base_.light && !mesh_base_.texture;
+  if (const FireSystem* f = env_.fire(); memo && f && f->ok())
+    memo = S.layer[size_t(f->burn_layer())].empty() && S.layer[size_t(f->heat_layer())].empty();
+  static const std::vector<u8> no_paint;
+  const std::vector<u8>& paint0 = paint_layer_ >= 0 ? S.layer[size_t(paint_layer_)] : no_paint;
+  // (a vehicle's body paint as its kind's placeholder: one mesh per kind, re-tinted)
+  constexpr u8 kPlaceholder = static_cast<u8>(Paint::Red);
+  const u8 bp = static_cast<u8>(body);
+  std::vector<u8> normalized;
+  if (memo && bp != 0 && bp != kPlaceholder) {
+    normalized = paint0;
+    for (u8& x : normalized)
+      if (x == bp) x = kPlaceholder;
+  }
+  const std::vector<u8>& paint = normalized.empty() ? paint0 : normalized;
+  const u16 tex_body = static_cast<u16>(kPaintTexture + bp), tex_placeholder = static_cast<u16>(kPaintTexture + kPlaceholder);
+  auto retint = [](ChunkMesh& m, u16 from, u16 to) {
+    if (from == to) return;
+    for (MeshVertex& v : m.vertices)
+      if (v.texture == from) v.texture = to;
+  };
+  u64 key = 0;
+  ChunkMesh out;
+  bool found = false;
+  if (memo) {
+    key = 0xCBF29CE484222325ull ^ static_cast<u64>(std::llround(S.h * 1e6));
+    for (int a = 0; a < 3; ++a) key = (key ^ static_cast<u64>(static_cast<u32>(S.lo[a]) * 31u + static_cast<u32>(S.dim[a]))) * 0x100000001B3ull;
+    for (Vox x : S.vox) key = (key ^ x) * 0x100000001B3ull;
+    for (u8 x : paint) key = (key ^ x) * 0x100000001B3ull;
+    std::lock_guard<std::mutex> lock(*shape_memo_mu_);
+    const auto it = shape_memo_.find(key);
+    if (it != shape_memo_.end() && it->second.lo == S.lo && it->second.dim == S.dim && it->second.h == S.h && it->second.vox == S.vox &&
+        it->second.paint == paint) {
+      out = it->second.mesh;
+      found = true;
+    }
+  }
+  if (found && bp != 0) retint(out, tex_placeholder, tex_body);
+  if (!found) {
+    out = mesh_shape(S, world_.voxel_size(), mo);
+    if (memo) {
+      std::lock_guard<std::mutex> lock(*shape_memo_mu_);
+      if (shape_memo_.size() >= 48) shape_memo_.clear();  // (a bound: the kinds and paints seen lately)
+      ShapeMeshMemo& m = shape_memo_[key];
+      m.lo = S.lo;
+      m.dim = S.dim;
+      m.h = S.h;
+      m.vox = S.vox;
+      m.paint = paint;
+      m.mesh = out;
+      if (bp != 0) retint(m.mesh, tex_body, tex_placeholder);
+    }
+  }
   // to world coordinates at the piece's pose now (through the shape's place in the piece)
   const M3 R = S.xf.identity ? to_matrix(b.q) : to_matrix(b.q) * S.xf.R;
   const V3 off = to_matrix(b.q) * (S.xf.off - b.com);

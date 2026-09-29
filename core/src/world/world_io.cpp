@@ -1861,6 +1861,7 @@ void World::design_structure(Structure& s, bool dry) {
   static const bool dbg = diag("SVX_DEBUG_DESIGN");
   f64 maxphi = 0.0;
   i32 over = 0;
+  std::vector<u8> strengthened(dry ? 0 : n, 0);
   for (i32 b = 0; b < static_cast<i32>(s.P.bonds.size()); ++b) {
     const SBond& B = s.P.bonds[size_t(b)];
     if (B.broken) continue;
@@ -1876,6 +1877,7 @@ void World::design_structure(Structure& s, bool dry) {
       const i32 nd = side == 0 ? B.a : B.b;
       if (nd < 0) continue;
       design_node(s, nd, cls, &st_.strengthened_voxels);
+      strengthened[size_t(nd)] = 1;
     }
   }
   if (dbg) {
@@ -1887,6 +1889,19 @@ void World::design_structure(Structure& s, bool dry) {
     std::printf("  [design%s] s%lld: %zu nodes (%d truncated), pcg %d rel %.1e conv %d, max phi %.2f, %d bonds over target\n", dry ? " check" : "",
                 static_cast<long long>(s.id), n, s.truncated ? 1 : 0, r.iters, r.rel_res, r.converged ? 1 : 0, maxphi, over);
   if (dry) return;
+  // (the new strengths in place - the nodes' weakest fragments', the bonds' weaker ends' - as an
+  // extraction would find them: the structure stands designed, and starts from this solution)
+  for (size_t i = 0; i < n; ++i) {
+    if (!strengthened[i]) continue;
+    f64 st = 1e30;
+    for (i32 k = s.fstart[i]; k < s.fstart[i + 1]; ++k)
+      if (s.frags[size_t(k)].idx >= 0) st = std::min(st, class_mult(frag_class(s.frags[size_t(k)])));
+    if (st < 1e30) s.nstrength[i] = st;
+  }
+  for (SBond& B : s.P.bonds)
+    if (strengthened[size_t(B.a)] || (B.b >= 0 && strengthened[size_t(B.b)]))
+      B.strength = std::min(s.nstrength[size_t(B.a)], B.b >= 0 ? s.nstrength[size_t(B.b)] : 1e9);
+  s.u = u;
   for (size_t i = 0; i < n; ++i) {
     std::array<f32, 6> w;
     for (int q = 0; q < 6; ++q) w[size_t(q)] = static_cast<f32>(u[6 * i + size_t(q)]);

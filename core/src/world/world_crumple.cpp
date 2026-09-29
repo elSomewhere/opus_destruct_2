@@ -660,6 +660,8 @@ bool World::punch(Body& b, u16 g, const V3& n, const V3& plo, const V3& phi, f64
 
 void World::reshape_in_place(Body& b) {
   const V3 com0 = b.com, x0 = b.x;
+  const i32 cooldown = b.stress_cooldown;
+  b.crumpling = cfg_.body_check_ticks;
   refragment_body(b);
   if (b.count == 0) {
     wake_around(b);
@@ -678,6 +680,7 @@ void World::reshape_in_place(Body& b) {
     return;
   }
   refresh_in_place(b, com0, x0);
+  b.stress_cooldown = cooldown;  // (its checks keep their spacing while it crumples: crumple_check_gap)
 }
 
 }  // namespace svx

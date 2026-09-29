@@ -416,6 +416,28 @@ GridId World::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId want, 
   return id;
 }
 
+i64 World::loosen_grid(GridId id) {
+  if (in_tick_) return 0;
+  const i32 s = slot_of(id);
+  if (s <= 0) return 0;
+  const u16 g = static_cast<u16>(s);
+  if (gs(g).base) return 0;
+  std::vector<u64> keys;
+  for (const auto& [k, c] : gs(g).g.chunks())
+    if (c.free_count() > 0) keys.push_back(k);
+  std::sort(keys.begin(), keys.end());
+  std::vector<FragKey> frags;
+  for (u64 k : keys) {
+    const FragChunk& fc = frag_chunk(g, unkey3(k));
+    for (i32 f = 0; f < static_cast<i32>(fc.frags.size()); ++f)
+      if (fc.frags[size_t(f)].count > 0) frags.push_back(FragKey{k, f, g});
+  }
+  // (nothing holds it: no structure of it is solved - its seeds find air)
+  for (u64 k : keys) gs(g).undesigned.erase(k);
+  const Body* b = make_body_from_world(frags, V3{}, V3{});
+  return b ? b->id : 0;
+}
+
 bool World::remove_grid(GridId id) {
   if (in_tick_ || id == kWorldGrid) return false;
   const i32 s = slot_of(id);

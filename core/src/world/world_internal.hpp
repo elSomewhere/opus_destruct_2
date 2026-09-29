@@ -667,6 +667,8 @@ struct World::Structure {
   bool multigrid = false;          // (a small structure's block-Jacobi solve did not converge)
   i32 rounds = 0, idle = 0;        // (rounds: of the break cascade in progress)
   bool truncated = false;
+  V3 centre;                       // (where it was extracted from, how far: what happens well inside
+  f64 reach = 0.0;                 // a truncated one is patched, nearer its frontier extracted again)
   // The last blast's momentum on its fragments (and where it acts): parts its load breaks off
   // take it with them, for as long as its cascade lasts (at most a second).
   struct BlastHit {

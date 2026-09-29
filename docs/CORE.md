@@ -85,7 +85,11 @@ fragments do.
 **Structures** are connected sets of fragments that reach a support. They are extracted when
 something happens to them, solved for equilibrium (K u = f: gravity, contact forces of pieces,
 blast loads) under a per-tick work budget, and judged: the worst overloaded bonds break, parts
-that lose their supports leave as pieces, and the rest is solved again.
+that lose their supports leave as pieces, and the rest is solved again. What happens later to a
+registered structure patches it: only the chunks that changed are fragmented and bonded again (a
+hole in a tower is a few chunks' work). A structure cut short by its reach
+(`structure_max_radius`) is extracted again about an event near its frontier instead, so that no
+artificial support is next to what happens.
 
 **Pieces** are rigid bodies made of fragments, and they keep their bonds. After each contact
 solve, a piece's stress is checked under its contact forces and inertia. If bonds break, it
@@ -98,6 +102,8 @@ with the momentum the blast gave its fragments.
 **The design pass** (`bake`, and first touch for streamed chunks) solves every structure under
 its own weight and strengthens members above `design_utilization`, so that a level stands as
 built. This lets level authors (or generators) build freely without engineering every column.
+A structure designed on first touch takes its new strengths in place (its bonds are not
+extracted again) and starts its solve from the design state.
 
 ## 3. Using a World (C++)
 

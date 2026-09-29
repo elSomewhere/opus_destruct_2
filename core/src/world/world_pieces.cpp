@@ -1278,12 +1278,16 @@ int World::fracture_hook(f64 dt) {
     Body& b = *rigid_.bodies[i];
     if (b.asleep || static_cast<i32>(b.frags.size()) < cfg_.min_fracture_frags) continue;
     if (b.stress_cooldown > 0) --b.stress_cooldown;
+    if (b.crumpling > 0) --b.crumpling;
     const f64 weight = b.mass * cfg_.rigid.gravity;
     // A collision: a contact closing faster than jostling in a pile does (small pieces need a
     // harder knock). Its cracks are paid from the approach's kinetic energy, so rubble cannot
     // grind itself down and a hard landing shatters what it overloads.
     const f64 v_min = std::max(cfg_.body_impact_speed, cfg_.small_impact_speed * (1.0 - b.mass / cfg_.small_piece_mass));
-    const bool impact = approach[i] > v_min && fsum[i] > cfg_.body_trigger * weight && b.stress_cooldown <= cfg_.body_check_ticks - 2;
+    // (a piece crumpling as it goes - a car along a wall - spends the collision in its folds: its
+    // checks come further apart while it does)
+    const i32 gap = b.crumpling > 0 ? std::max(2, cfg_.crumple_check_gap) : 2;
+    const bool impact = approach[i] > v_min && fsum[i] > cfg_.body_trigger * weight && b.stress_cooldown <= cfg_.body_check_ticks - gap;
     // resting on new supports (a first landing, rubble shifting under it, a load put on it):
     // checked once, again when the supporting forces changed by much of its weight
     // (or its strengths changed: damage, a fire eating into it)

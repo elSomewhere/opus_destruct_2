@@ -221,6 +221,29 @@ A gamepad drives too (RT/LT, left stick, A handbrake, Y in/out, right stick look
 Browser check: `node scripts/drive-wasm.mjs` (dev server running) takes the wheel of a car,
 drives, slides, rams a van, gets out - screenshots, and it fails on any console error.
 
+## Performance
+
+What a crash costs is kept to what changed:
+
+- **Spawning** a car is a few milliseconds: its model's fragments are made once per kind (the
+  world keeps the fragments of session grids' chunks by content), it comes loose whole as one
+  piece at once (`World::loosen_grid`: no structure is solved for it), and its mesh is its
+  kind's, re-tinted to its paint (`Game::shape_mesh`); the models are made when a world with
+  roads loads.
+- **A crumpling car** is checked for fracture on its own schedule (`crumple_check_gap`
+  substeps apart while it crumples; a first hit at once), and its mesh is built chunk by chunk
+  in parallel. A car scraping along a building at 50 km/h: ticks of 2.6 ms median, 18 ms p90.
+- **A hit on a building** patches its structure: only the changed chunks are fragmented and
+  bonded again (see [`CORE.md`](CORE.md)), not the whole building.
+- **The first touch** of a streamed building designs it once: the chunks it can reach are
+  fragmented in parallel (the flood crosses into a chunk only where free voxels meet), the
+  fragmenter reads each cell's Voronoi seed from a table instead of hashing it for every
+  voxel, and the structure takes its new strengths in place.
+
+Measured natively on 4 threads in the drive city: a building's first touch is ~0.15 s
+(median), ~0.55 s (p90), ~1.6 s for the largest office towers (34 x 34 x 56 m); later hits
+~30 ms (median), ~0.2 s on a tower (its multigrid is rebuilt).
+
 ## Tests
 
 - `tests/core/test_crumple.cpp`: a crate-like car against a reinforced-concrete wall at
@@ -245,4 +268,6 @@ drives, slides, rams a van, gets out - screenshots, and it fails on any console 
   with its wheels), not on hinges of their own.
 - Crumpling folds along lattice axes: a side impact folds a door in, a frontal one the front;
   a very oblique blow folds along the axis nearest to it.
+- The first touch of a large building is a hitch (above): its design runs at once, on the
+  simulation's threads.
 - There is no sound yet.

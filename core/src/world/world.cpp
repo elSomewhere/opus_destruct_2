@@ -186,6 +186,34 @@ FragChunk& World::frag_chunk(u16 g, const IVec3& cc) {
     it->second.used = st_.ticks;
     return it->second;
   }
+  // (a session grid's chunk - a vehicle, an object dropped in - as one fragmented before)
+  if (g != 0 && !gs(g).base && !ch->uniform && ch->free_count() > 0) {
+    const FragParams par = frag_params(g);
+    u64 hsh = key3(cc[0], cc[1], cc[2]) ^ 0x9E3779B97F4A7C15ull;
+    for (Vox x : ch->v) hsh = (hsh ^ x) * 0x100000001B3ull;
+    for (u8 x : ch->broken) hsh = (hsh ^ x) * 0x100000001B3ull;
+    hsh ^= static_cast<u64>(std::llround(par.scale * 65536.0));
+    const auto mt = frag_memo_.find(hsh);
+    const FragParams& mp = mt != frag_memo_.end() ? mt->second.par : par;
+    const bool same_par = mp.min_voxels == par.min_voxels && mp.jitter_lo == par.jitter_lo && mp.jitter_span == par.jitter_span &&
+                          mp.noise_scale == par.noise_scale && mp.salt == par.salt && mp.mats == par.mats;
+    if (mt != frag_memo_.end() && same_par && mt->second.cc == cc && mt->second.scale == par.scale && mt->second.v == ch->v &&
+        mt->second.broken == ch->broken) {
+      FragChunk copy = mt->second.frags;
+      copy.vox_version = ch->vox_version;
+      return adopt_fragments(g, key, std::move(copy));
+    }
+    FragChunk nf = fragment_chunk(vg(g), cc, par);
+    if (frag_memo_.size() >= 96) frag_memo_.clear();  // (a bound: a few dozen kinds of chunk)
+    FragMemo& m = frag_memo_[hsh];
+    m.cc = cc;
+    m.scale = par.scale;
+    m.par = par;
+    m.v = ch->v;
+    m.broken = ch->broken;
+    m.frags = nf;
+    return adopt_fragments(g, key, std::move(nf));
+  }
   return adopt_fragments(g, key, fragment_chunk(vg(g), cc, frag_params(g)));
 }
 
@@ -221,6 +249,26 @@ void World::prefragment(u16 g, const IVec3& seed, f64 max_radius) {
   std::unordered_set<u64> seen{key3(seed[0], seed[1], seed[2])};
   const VoxelGrid& G = vg(g);
   const auto& frags = gs(g).frags;
+  // (a walk crosses into a neighbouring chunk only where free voxels meet across their shared
+  // face: a dense city's next building - apart across a street, a gap, the anchored ground - is
+  // not fragmented for a walk that never gets there)
+  auto free_at = [](const Chunk* c, const IVec3& l) {
+    const Vox v = c->uniform ? c->value : c->v[size_t((l[0] * kChunk + l[1]) * kChunk + l[2])];
+    return vox_free(v);
+  };
+  auto meet = [&](const Chunk* a, const Chunk* b, int d) {
+    const int ax = d / 2, u = (ax + 1) % 3, w = (ax + 2) % 3;
+    IVec3 la{0, 0, 0}, lb{0, 0, 0};
+    la[ax] = (d & 1) ? 0 : kChunk - 1;
+    lb[ax] = (d & 1) ? kChunk - 1 : 0;
+    for (i32 i = 0; i < kChunk; ++i)
+      for (i32 j = 0; j < kChunk; ++j) {
+        la[u] = lb[u] = i;
+        la[w] = lb[w] = j;
+        if (free_at(a, la) && free_at(b, lb)) return true;
+      }
+    return false;
+  };
   for (size_t i = 0; i < queue.size() && queue.size() < kMaxFlood; ++i) {
     const IVec3 cc = queue[i];
     const Chunk* ch = G.chunk(cc);
@@ -232,7 +280,11 @@ void World::prefragment(u16 g, const IVec3& seed, f64 max_radius) {
       IVec3 q = cc;
       q[d / 2] += (d & 1) ? -1 : 1;
       if (std::abs(q[0] - seed[0]) > R || std::abs(q[1] - seed[1]) > R || std::abs(q[2] - seed[2]) > R) continue;
-      if (seen.insert(key3(q[0], q[1], q[2])).second) queue.push_back(q);
+      if (seen.count(key3(q[0], q[1], q[2]))) continue;
+      const Chunk* qc = G.chunk(q);
+      if (!qc || qc->free_count() == 0 || !meet(ch, qc, d)) continue;
+      seen.insert(key3(q[0], q[1], q[2]));
+      queue.push_back(q);
     }
   }
   if (todo.size() < kMin) return;  // (a few: the walk does them as well)
@@ -335,6 +387,8 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
   };
   frag_chunk(seed.grid, unkey3(seed.chunk));
   const V3 seed_pos = frag_com(seed);
+  s->centre = seed_pos;
+  s->reach = max_radius;
   nodemap_slot(seed) = 0;
   members.push_back(seed);
   std::vector<SecAcc> accs;
@@ -536,8 +590,8 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
     // A streamed structure touched for the first time. It is designed whole: first the chunks
     // around it are generated (it must not stand on chunks that are not there yet); then, if it
     // is still intact, it is solved under its own weight and its overloaded members strengthened,
-    // and extracted again with their new strengths. (A structure damaged before it was designed
-    // is left as it is.)
+    // its bonds taking their new strengths. (A structure damaged before it was designed is left
+    // as it is.)
     const i64 id = out->id;
     static const bool dbgd = diag("SVX_DEBUG_DESIGN");
     if (dbgd)
@@ -566,12 +620,11 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
       return again;
     }
     if (pristine(*out)) {
+      // (designed in place: extracted again, it would have the same nodes and bonds)
       design_structure(*out);
-      drop_structure(id);
-      Structure* again = extract(seed, max_nodes, max_radius, detach_free);
       static const bool dbg = diag("SVX_DEBUG_DESIGN");
-      if (dbg && again) design_structure(*again, true);
-      return again;
+      if (dbg) design_structure(*out, true);
+      return out;
     }
     for (const FragKey& f : out->frags)
       if (f.idx >= 0) gs(f.grid).undesigned.erase(f.chunk);
@@ -742,6 +795,22 @@ void World::refresh_structures() {
   fresh_from_ = next_id_;  // (structures made from here on are this refresh's: extract())
   static const bool prof = diag("SVX_PROFILE");
   for (int round = 0; round < 3; ++round) {
+    // (the seeds' chunks first: fragments rebuilt where voxels were cut - the structures that
+    // held the old ones go stale, and are patched below, not taken over and extracted again
+    // whole: a hole in a tower is a few chunks' work, not the tower's. Unless a structure cut
+    // short by its reach would then have its frontier - an artificial support - near what
+    // happened: that one is extracted again about it, as a seed's.)
+    for (const GVox& p : seeds_) {
+      if (!live(p.grid) || !vox_free(vg(p.grid).get(p.p))) continue;
+      const IVec3 cc = chunk_of(p.p);
+      const FragChunk* fc = frag_chunk_if(p.grid, key3(cc[0], cc[1], cc[2]));
+      if (!fc || fc->id.empty()) continue;  // (never fragmented: no structure holds it)
+      const u16 id = fc->id[size_t(chunk_index(p.p))];
+      if (!id) continue;
+      const Structure* o = structure(owner_of(FragKey{key3(cc[0], cc[1], cc[2]), id - 1, p.grid}));
+      if (!o || (o->truncated && norm(voxel_centre(p) - o->centre) > 0.5 * o->reach)) continue;
+      frag_chunk(p.grid, cc);
+    }
     std::vector<i64> stale;
     for (auto& s : structures_)
       if (s->stale) stale.push_back(s->id);

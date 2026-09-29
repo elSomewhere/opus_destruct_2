@@ -3,6 +3,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "svx/base/parallel.hpp"
+
 namespace svx {
 
 namespace {
@@ -221,9 +223,17 @@ ChunkMesh mesh_shape(const BodyShape& S, f64 h, const MeshOptions& opt) {
   }
   std::sort(keys.begin(), keys.end());
   keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+  // (its chunks at once when the providers allow: a car crumpling is meshed again every tick)
+  std::vector<ChunkMesh> parts(keys.size());
+  auto part = [&](i64 a, i64 b) {
+    for (i64 k = a; k < b; ++k) parts[size_t(k)] = mesh_chunk(piece, unkey3(keys[size_t(k)]), opt, false);
+  };
+  if (opt.concurrent && keys.size() > 1)
+    parallel_for(static_cast<i64>(keys.size()), 1, part);
+  else
+    part(0, static_cast<i64>(keys.size()));
   ChunkMesh out;
-  for (u64 k : keys) {
-    const ChunkMesh m = mesh_chunk(piece, unkey3(k), opt, false);
+  for (const ChunkMesh& m : parts) {
     const u32 base = static_cast<u32>(out.vertices.size());
     out.vertices.insert(out.vertices.end(), m.vertices.begin(), m.vertices.end());
     for (u32 i : m.indices) out.indices.push_back(base + i);

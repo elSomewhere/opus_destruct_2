@@ -121,6 +121,12 @@ u32 Game::spawn_vehicle_internal(const VehicleSpec& spec0, const V3& pos, f64 ya
     wd.tag = tag.pack();
     v.wheels.push_back(world_.add_wheel(wd));
   }
+  // (a piece at once, whole, its wheels on it: nothing to solve - no structure holds a car)
+  v.chassis = world_.loosen_grid(gid);
+  if (v.chassis != 0) {
+    world_.set_piece_max_speed(v.chassis, 90.0);
+    if (const Body* b = world_.piece(v.chassis)) v.voxels0 = b->count;
+  }
   vehicles_[id] = std::move(v);
   return id;
 }

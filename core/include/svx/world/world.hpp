@@ -191,6 +191,7 @@ struct WorldConfig {
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
   f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)
   i32 body_check_ticks = 12;       // steady contact: re-check every so many substeps
+  i32 crumple_check_gap = 8;       // a piece crumpling (in place): collisions re-check it every so many substeps (else 2)
   i32 rollback_part_voxels = 500;  // a part at least this large coming apart re-solves the contact step
   i32 min_body_voxels = 16;        // smaller pieces (breaking off, or coming loose) turn to dust, not rigid pieces
   // blasts
@@ -415,7 +416,10 @@ class World {
   // from it (fragments, structures, pieces) keeps the properties it was built with.
   const MaterialTable& materials() const { return *mats_; }
   bool register_material(const Material& m, MaterialId* id) { return mats_->add(m, id); }
-  void set_material(MaterialId id, const Material& m) { mats_->set(id, m); }
+  void set_material(MaterialId id, const Material& m) {
+    mats_->set(id, m);
+    frag_memo_.clear();  // (rubble sizes may have changed)
+  }
   void set_params(const WorldParams& p);
   const WorldParams& params() const { return par_; }
 
@@ -477,6 +481,10 @@ class World {
     d.base = base;
     return add_grid(d, std::move(voxels));
   }
+  // A grid of this session (not base) comes loose now, whole: all its free voxels one piece, at
+  // once - no structure is solved for it (a vehicle dropped in: its wheels, and joints, on its
+  // voxels go with it). Returns the piece (0: none - not such a grid, nothing free, a tick).
+  i64 loosen_grid(GridId id);
   // Removes an oriented grid (its voxels; pieces that broke off it stay). GridRemoved.
   bool remove_grid(GridId id);
   // Places a grid anew (it keeps its voxels, changes and design): what it was bonded to lets go,
@@ -1008,6 +1016,17 @@ class World {
   bool focus_set_ = false;
 
   FragChunk empty_frags_;                    // (frag_chunk of a chunk that is not there)
+  // Fragments of session grids' chunks by their content (fragment_chunk reads the chunk alone):
+  // the vehicles of a kind are the same voxels, fragmented once. Checked voxel for voxel.
+  struct FragMemo {
+    IVec3 cc{0, 0, 0};
+    f64 scale = 1.0;
+    FragParams par;
+    std::vector<Vox> v;
+    std::vector<u8> broken;
+    FragChunk frags;
+  };
+  std::unordered_map<u64, FragMemo> frag_memo_;
   std::vector<std::unique_ptr<Structure>> structures_;  // ascending id
   std::vector<GVox> seeds_;                  // voxels whose structures must be (re)extracted
   i64 fresh_from_ = INT64_MAX;               // (during a refresh: the first id made in it)

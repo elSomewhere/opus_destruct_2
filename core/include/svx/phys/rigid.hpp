@@ -139,6 +139,7 @@ struct Body {
   // world data (fracture layer)
   std::shared_ptr<BodyGraph> graph;
   i32 stress_cooldown = 0;
+  i32 crumpling = 0;  // (substeps its fracture checks stay spaced out: it crumpled lately)
   f64 last_load = 0.0, last_phi = 0.0;
   bool graph_dirty = true;
   bool was_asleep = false;

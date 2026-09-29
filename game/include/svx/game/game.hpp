@@ -17,6 +17,7 @@
 #include <map>
 #include <memory>
 #include <set>
+#include <mutex>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -315,8 +316,19 @@ class Game {
   void check_movers_hit();  // (after a tick: carves and blasts destroy the movers they hollowed)
   void drain_world_events();
   GridView grid_view(GridId id) const;
-  ChunkMesh piece_mesh(const Body& b) const;
-  ChunkMesh shape_mesh(const Body& b, size_t shape) const;
+  // (fresh: a new piece - its shapes' meshes may be ones made before for the same voxels: a
+  // vehicle of a kind dropped in again; body: its body's paint, the same mesh re-tinted)
+  ChunkMesh piece_mesh(const Body& b, bool fresh = false, Paint body = Paint::None) const;
+  ChunkMesh shape_mesh(const Body& b, size_t shape, bool fresh = false, Paint body = Paint::None) const;
+  struct ShapeMeshMemo {
+    IVec3 lo{0, 0, 0}, dim{0, 0, 0};
+    f64 h = 0.0;
+    std::vector<Vox> vox;
+    std::vector<u8> paint;
+    ChunkMesh mesh;  // (in its lattice)
+  };
+  mutable std::unique_ptr<std::mutex> shape_memo_mu_ = std::make_unique<std::mutex>();
+  mutable std::unordered_map<u64, ShapeMeshMemo> shape_memo_;
   void far_update();
   ChunkMesh far_mesh(i32 tx, i32 ty) const;
 

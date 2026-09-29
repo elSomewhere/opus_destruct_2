@@ -64,6 +64,7 @@ const Field kFields[] = {
     SVX_T_F64("fracture_energy", fracture_energy),
     SVX_T_F64("impact_wave_speed", impact_wave_speed),
     SVX_T_I32("body_check_ticks", body_check_ticks),
+    SVX_T_I32("crumple_check_gap", crumple_check_gap),
     SVX_T_I32("rollback_part_voxels", rollback_part_voxels),
     SVX_T_I32("min_body_voxels", min_body_voxels),
     SVX_T_F64("blast_shatter", blast_shatter),
