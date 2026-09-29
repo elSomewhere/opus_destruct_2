@@ -114,16 +114,19 @@ try {
   console.log(`car: ${JSON.stringify(car)}`);
   await shot('drive-02-chase');
 
-  // full throttle down the road (a slow machine - software WebGPU - runs the engine behind
-  // real time: what counts is that it drives)
+  // full throttle down the road (a slow page - software WebGPU - answers late: many engine
+  // seconds may pass between two looks, and the car may well have met something by the last;
+  // what counts is that it drove)
   await page.evaluate(() => window.__structvox.drive(1, 0));
+  let top = 0;
   for (let k = 0; k < 9; k++) {
     await sleep(500);
     car = await mine();
+    if (car) top = Math.max(top, car.speed);
     const e = (await state()).engine;
     console.log(`  ${(k + 1) * 0.5} s: ${car ? `${car.speed.toFixed(1)} m/s, gear ${car.gear}, ${car.rpm.toFixed(0)} rpm, x ${car.pos[0].toFixed(1)}, wheels ${car.wheels}, damage ${car.damage.toFixed(2)}` : 'gone'} (tick ${e?.ticks})`);
   }
-  check(car !== undefined && car.speed > 3, `the car drives (${car?.speed.toFixed(1)} m/s)`);
+  check(car !== undefined && top > 3, `the car drives (up to ${top.toFixed(1)} m/s, now ${car?.speed.toFixed(1)})`);
   console.log(`camera: ${JSON.stringify((await state()).cameraDistance)}`);
   await shot('drive-03-speed');
   // a slide: steer and the handbrake - from a town speed (at full speed a spin may well end in
