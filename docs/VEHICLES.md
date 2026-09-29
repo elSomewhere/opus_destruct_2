@@ -129,6 +129,11 @@ piece id, its place and its motion (mass and contact samples are rebuilt); a car
 in two keeps its id on the part with its wheels. Each changed piece is announced once per tick
 (`PieceReshaped`; the game remeshes it: `GameEvent::Remesh`).
 
+**Damage** (`VehicleView::damage`, the HUD's): how much of the body is not as it was built -
+its model's voxels gone or changed in its lattice, and cells filled that were empty (the folds) -
+with a fifth of it changed counting as a wreck. A scrape shows a little, a crash into a wall at
+60 km/h about half.
+
 ## The game
 
 **Models** (`game/src/vehicle_models.cpp`): a compact, a sedan, a van, a pickup and a truck,

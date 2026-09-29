@@ -395,7 +395,12 @@ class Game {
     V3 home;                        // (a parked car's place)
     i32 reshapes = 0;               // (its chassis crumpled: PieceReshaped)
     u64 spot = 0;                   // (a parked car's kerbside place)
+    // (its damage, measured when its chassis last changed: the piece, its voxels, its folds)
+    mutable f64 damage = 0.0;
+    mutable i64 damage_chassis = 0;
+    mutable i32 damage_count = -1, damage_reshapes = -1;
   };
+  f64 body_damage(const Vehicle& v, const Body& b) const;
   u32 spawn_vehicle_internal(const VehicleSpec& spec, const V3& pos, f64 yaw, u8 flags);  // (not logged: traffic)
   void vehicles_before_tick();      // controls -> wheel inputs, drag, anti-roll
   void vehicles_after_tick();       // the registry from the wheels, drivetrains, wrecks, traffic

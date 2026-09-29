@@ -240,9 +240,13 @@ bool Game::vehicle(u32 id, VehicleView* out) const {
     o.speed = dot(b->v, rotate(q, V3{1.0, 0.0, 0.0}));
     o.seat = b->lattice_to_world(0, m.driver_seat);
     o.origin = b->lattice_to_world(0, V3{});
-    // (crumpled: each fold a little more, whatever it lost more)
-    if (v.voxels0 > 0) o.damage = std::clamp(4.0 * (1.0 - static_cast<f64>(b->count) / v.voxels0), 0.0, 1.0);
-    o.damage = std::clamp(std::max(o.damage, v.reshapes / 20.0), 0.0, 1.0);
+    if (v.damage_chassis != v.chassis || v.damage_count != b->count || v.damage_reshapes != v.reshapes) {
+      v.damage = body_damage(v, *b);
+      v.damage_chassis = v.chassis;
+      v.damage_count = b->count;
+      v.damage_reshapes = v.reshapes;
+    }
+    o.damage = v.damage;
   }
   *out = o;
   return true;
@@ -280,6 +284,31 @@ std::vector<WheelView> Game::wheel_views() const {
       out.push_back(o);
     }
   return out;
+}
+
+f64 Game::body_damage(const Vehicle& v, const Body& b) const {
+  // How much of its body is not as it was built: its model's voxels gone or changed in its
+  // lattice (crumpled back, torn off, turned to dust), and cells filled that were empty (the
+  // folds piled up) - a fifth of it changed is a wreck. (A scrape folds a few columns; a crash
+  // at 50 km/h a good part of the front.)
+  const VehicleModel& m = vehicle_model(v.spec.kind);
+  if (b.shapes.empty()) return 1.0;
+  const BodyShape& S = b.shapes.front();
+  i64 total = 0, changed = 0;
+  for (const auto& [k, ch] : m.voxels.chunks()) {
+    const IVec3 cc = unkey3(k);
+    for (i32 i = 0; i < kChunkVox; ++i) {
+      const Vox a = ch.uniform ? ch.value : ch.v[size_t(i)];
+      if (!vox_solid(a)) continue;
+      const IVec3 l{i / (kChunk * kChunk), (i / kChunk) % kChunk, i % kChunk};  // (Chunk::v order)
+      const Vox now = S.get({cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]});
+      ++total;
+      if (!vox_solid(now) || vox_mat(now) != vox_mat(a)) ++changed;
+    }
+  }
+  for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i)
+    if (vox_solid(S.vox[size_t(i)]) && !vox_solid(m.voxels.get(S.voxel(i)))) ++changed;
+  return total > 0 ? std::clamp(static_cast<f64>(changed) / (0.2 * static_cast<f64>(total)), 0.0, 1.0) : 0.0;
 }
 
 const Body* Game::player_car() const {

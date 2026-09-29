@@ -54,6 +54,9 @@ try {
     if (process.env.SMOKE_VERBOSE) console.log(`  [page] ${t}`);
   });
   page.on('pageerror', (e) => errors.push(`pageerror ${e.message}`));
+  // (software WebGPU takes most of a small machine's cores: the engine gets two threads, or the
+  // page falls minutes behind it)
+  if (containerArgs().length > 0) await page.evaluateOnNewDocument(() => Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 2 }));
   await page.goto(`${base}?engine=wasm&world=drive&seed=1`, { waitUntil: 'load' });
   // (software WebGPU: fewer pixels, or the page falls far behind the engine)
   if (containerArgs().length > 0) {
@@ -114,17 +117,19 @@ try {
   console.log(`car: ${JSON.stringify(car)}`);
   await shot('drive-02-chase');
 
-  // full throttle down the road (a slow page - software WebGPU - answers late: many engine
-  // seconds may pass between two looks, and the car may well have met something by the last;
-  // what counts is that it drove)
+  // full throttle down the road, some 25 m - short of the next junction, where cross traffic
+  // may meet a car that runs its red light (a slow page - software WebGPU - answers late: many
+  // engine ticks may pass between two looks; what counts is that it drove)
+  const x0 = car.pos[0];
   await page.evaluate(() => window.__structvox.drive(1, 0));
   let top = 0;
-  for (let k = 0; k < 9; k++) {
-    await sleep(500);
+  for (let k = 0; k < 40; k++) {
+    await sleep(150);
     car = await mine();
     if (car) top = Math.max(top, car.speed);
     const e = (await state()).engine;
-    console.log(`  ${(k + 1) * 0.5} s: ${car ? `${car.speed.toFixed(1)} m/s, gear ${car.gear}, ${car.rpm.toFixed(0)} rpm, x ${car.pos[0].toFixed(1)}, wheels ${car.wheels}, damage ${car.damage.toFixed(2)}` : 'gone'} (tick ${e?.ticks})`);
+    console.log(`  ${car ? `${car.speed.toFixed(1)} m/s, gear ${car.gear}, ${car.rpm.toFixed(0)} rpm, x ${car.pos[0].toFixed(1)}, wheels ${car.wheels}, damage ${car.damage.toFixed(2)}` : 'gone'} (tick ${e?.ticks})`);
+    if (!car || car.pos[0] - x0 > 25 || car.speed > 14) break;
   }
   check(car !== undefined && top > 3, `the car drives (up to ${top.toFixed(1)} m/s, now ${car?.speed.toFixed(1)})`);
   console.log(`camera: ${JSON.stringify((await state()).cameraDistance)}`);
