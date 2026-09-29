@@ -1,5 +1,6 @@
 #include "svx/game/replay.hpp"
 
+#include <algorithm>
 #include <cstring>
 
 namespace svx {
@@ -8,7 +9,7 @@ namespace {
 
 constexpr u32 kMagic = 0x4C585653;  // "SVXL"
 constexpr u32 kVersion = 2;
-constexpr u8 kMaxType = static_cast<u8>(Command::Type::Tunable);
+constexpr u8 kMaxType = static_cast<u8>(Command::Type::Traffic);
 
 template <typename T>
 void put(std::vector<u8>& out, T v) {
@@ -101,6 +102,46 @@ void apply_command(Game& e, const Command& c) {
     case Command::Type::Tunable:
       e.set_tunable(static_cast<i32>(c.a[0]), c.a[1]);
       break;
+    case Command::Type::Shoot:
+      e.shoot({c.a[0], c.a[1], c.a[2]}, c.a[3], c.a[4]);
+      break;
+    case Command::Type::Vehicle: {
+      const int action = static_cast<int>(c.a[0]);
+      if (action == 1) {
+        const u32 code = static_cast<u32>(c.a[1]);
+        VehicleSpec spec;
+        spec.kind = static_cast<VehicleKind>(std::min<u32>(code & 0xFF, u32(VehicleKind::Count) - 1));
+        spec.paint = static_cast<Paint>(std::min<u32>((code >> 8) & 0xFF, u32(Paint::Count) - 1));
+        e.spawn_vehicle(spec, {c.a[2], c.a[3], c.a[4]}, c.a[5], static_cast<u8>(code >> 16));
+      } else if (action == 2) {
+        e.remove_vehicle(static_cast<u32>(c.a[1]));
+      } else if (action == 3) {
+        e.enter_vehicle(static_cast<u32>(c.a[1]));
+      } else if (action == 4) {
+        e.exit_vehicle();
+      }
+      break;
+    }
+    case Command::Type::Drive: {
+      VehicleInput in;
+      in.throttle = c.a[0];
+      in.brake = c.a[1];
+      in.steer = c.a[2];
+      in.handbrake = c.a[3] != 0.0;
+      e.drive(in);
+      break;
+    }
+    case Command::Type::Traffic: {
+      TrafficConfig t;
+      t.enabled = c.a[0] != 0.0;
+      t.cars = static_cast<i32>(c.a[1]);
+      t.parked = static_cast<i32>(c.a[2]);
+      t.near_radius = c.a[3];
+      t.radius = c.a[4];
+      t.speed_scale = c.a[5];
+      e.set_traffic(t);
+      break;
+    }
     case Command::Type::Params: {
       GameParams p;
       p.fragility = c.a[0];

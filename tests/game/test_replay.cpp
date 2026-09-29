@@ -46,7 +46,7 @@ TEST_CASE("replay: command logs round-trip bit-exactly and reject damaged input"
   std::vector<u8> cut(bytes.begin(), bytes.end() - 3);
   CHECK_FALSE(CommandLog::parse(cut, &back));
   std::vector<u8> bad = bytes;
-  bad[16 + 8] = 13;  // unknown command type
+  bad[16 + 8] = 250;  // unknown command type
   CHECK_FALSE(CommandLog::parse(bad, &back));
   bad = bytes;
   bad[0] ^= 1;  // magic

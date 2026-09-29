@@ -14,6 +14,7 @@
 
 #include <array>
 #include <functional>
+#include <map>
 #include <memory>
 #include <set>
 #include <unordered_map>
@@ -23,6 +24,7 @@
 #include "svx/env/env.hpp"
 #include "svx/game/movers.hpp"
 #include "svx/game/source.hpp"
+#include "svx/game/vehicles.hpp"
 #include "svx/mesh/mesher.hpp"
 #include "svx/world/world.hpp"
 
@@ -48,6 +50,7 @@ struct GameEvent {
   V3 pos, vel, ang, normal{0, 0, 1};
   f64 radius = 0.0, strength = 0.0;  // Crack: utilization; Impact: energy (J); Dust: 1 crushed, 0 a shard; Splash: kg m/s
   i32 voxels = 0;
+  i32 material = -1;  // Dust: its material (-1: unknown) - a car's glass shattering, a wall's brick dust
   ChunkMesh mesh;  // Detached: the piece's mesh in world coordinates at pos (drawn at its PiecePose)
   // Detached, Remesh: the piece's voxels at pos, for a front end's collision (a player stands on
   // a lift's car, rides a turntable, climbs rubble): piece_occupancy's layout.
@@ -94,6 +97,52 @@ struct GridView {
 struct Drop {
   GridDesc desc;
   VoxelGrid voxels;
+};
+
+// A vehicle for the front end (docs/VEHICLES.md): its chassis (a piece, drawn from its poses),
+// what drives it, and where its driver sits.
+struct VehicleView {
+  u32 id = 0;
+  i64 chassis = 0;              // its piece (0: not a piece yet)
+  VehicleKind kind = VehicleKind::Sedan;
+  Paint paint = Paint::None;
+  V3 pos, vel;                  // its chassis' centre of mass
+  Quat rot;                     // its frame (x forward, y left, z up) in the world
+  f64 speed = 0.0;              // m/s along its forward
+  f64 rpm = 0.0;
+  int gear = 0;                 // -1 reverse, 0 neutral, 1..
+  VehicleInput input;           // what drives it now
+  u8 flags = 0;                 // kPlayer, kNpc, kParked, kWreck
+  V3 seat;                      // the driver's seat (world)
+  V3 half_extent;               // m: its box about its frame's origin (x, y), from the ground (z)
+  i32 wheels = 0;               // wheels still on
+  f64 damage = 0.0;             // 0 .. 1: how much of it is crumpled or gone
+  static constexpr u8 kPlayer = 1, kNpc = 2, kParked = 4, kWreck = 8;
+};
+
+// A wheel for the renderer: drawn at its centre, turned (x the way it rolls, y its axle) and spun.
+struct WheelView {
+  u32 vehicle = 0;
+  WheelId id = 0;
+  V3 centre;
+  Quat rot;
+  f64 radius = 0.0, width = 0.0;
+  bool contact = false;
+  f64 slip = 0.0;               // m/s: the tyre sliding (skids, smoke)
+  int material = -1;            // what it stands on
+  f64 compression = 0.0;
+};
+
+// Traffic (a streamed city with roads, GameSource::roads): cars driving its lanes around the
+// viewer, parked cars at its kerbs. Cars out of range that nobody touched go (and come again);
+// wrecks stay (the world keeps them in its archive).
+struct TrafficConfig {
+  bool enabled = true;
+  i32 cars = 14;                // driving within range of the viewer
+  i32 parked = 18;              // parked within range
+  f64 near_radius = 45.0;       // m: not spawned nearer (out of sight)
+  f64 radius = 110.0;           // m: spawned within, removed beyond (untouched)
+  f64 speed_scale = 1.0;        // x the roads' limits
 };
 
 // A joint for the renderer: its ends in the world (a rope is drawn between them).
@@ -169,6 +218,25 @@ class Game {
   // Drops: objects dropped in when play starts (the first tick). (A level's machines are pieces
   // on driven joints: World::add_joint.)
   void add_drop(Drop&& d) { drops_.push_back(std::move(d)); }
+
+  // Vehicles (game/src/vehicles.cpp; docs/VEHICLES.md). A vehicle's id is its wheels' group;
+  // its model and flags (WheelTag: npc, parked) ride on its wheels' tags. Spawning, removing,
+  // getting in and out, the player's controls and shots are commands (logged).
+  u32 spawn_vehicle(const VehicleSpec& spec, const V3& pos, f64 yaw, u8 flags = 0);  // its id (0: refused)
+  bool remove_vehicle(u32 id);
+  bool enter_vehicle(u32 id);  // the player drives it
+  void exit_vehicle();
+  u32 player_vehicle() const { return player_vehicle_; }
+  void drive(const VehicleInput& in);  // the player's vehicle's controls (until changed)
+  u32 vehicle_near(const V3& pos, f64 reach) const;  // (0: none)
+  std::vector<VehicleView> vehicles() const;  // id order
+  std::vector<WheelView> wheel_views() const;
+  bool vehicle(u32 id, VehicleView* out) const;
+  // A bullet: an impact of this energy (J) removes what its energy density penetrates.
+  void shoot(const V3& pos, f64 radius, f64 energy);
+  void set_traffic(const TrafficConfig& c);  // (logged)
+  const TrafficConfig& traffic() const { return traffic_; }
+  int paint_layer() const { return paint_layer_; }
 
   // Movers (game/src/movers.cpp).
   i32 add_mover(const MoverDef& d);
@@ -291,6 +359,43 @@ class Game {
     Quat rot;
   };
   std::vector<Fading> fading_;
+
+  // vehicles (game/src/vehicles.cpp, traffic.cpp)
+  struct Vehicle {
+    u32 id = 0;
+    VehicleSpec spec;
+    u8 flags = 0;                   // WheelTag flags
+    std::vector<WheelId> wheels;    // by slot (0: come off)
+    i64 chassis = 0;
+    i32 voxels0 = 0;                // its voxels when it was whole
+    VehicleInput input;
+    int gear = 1;
+    f64 rpm = 0.0, shift = 0.0, steer = 0.0;
+    bool wreck = false;
+    // a driver's (traffic): the lane it drives and the one it takes on
+    u64 lane = 0, next = 0;
+    f64 stuck = 0.0;                // s it has not moved while it meant to
+    f64 hit_speed = 0.0;            // (its speed last tick: a sudden change is a collision)
+    bool touched = false;           // (a parked car or a driver's that something moved or hit)
+    V3 home;                        // (a parked car's place)
+    i32 reshapes = 0;               // (its chassis crumpled: PieceReshaped)
+    u64 spot = 0;                   // (a parked car's kerbside place)
+  };
+  u32 spawn_vehicle_internal(const VehicleSpec& spec, const V3& pos, f64 yaw, u8 flags);  // (not logged: traffic)
+  void vehicles_before_tick();      // controls -> wheel inputs, drag, anti-roll
+  void vehicles_after_tick();       // the registry from the wheels, drivetrains, wrecks, traffic
+  void sync_vehicles();             // (records for wheels' groups: loads, the archive)
+  void drive_vehicle(Vehicle& v, const Body& b, f64 dt);
+  void step_traffic();
+  void steer_driver(Vehicle& v, const Body& b);
+  std::map<u32, Vehicle> vehicles_;
+  u32 next_vehicle_ = 1;
+  u32 player_vehicle_ = 0;
+  VehicleInput player_input_;
+  int paint_layer_ = -1;
+  TrafficConfig traffic_;
+  f64 traffic_clock_ = 0.0;
+  std::set<u64> parked_spots_;      // (kerbside places with a parked car now, or one that is out of range)
 
   std::vector<Drop> drops_;
   std::vector<Mover> movers_;

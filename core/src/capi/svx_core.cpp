@@ -30,7 +30,10 @@ static_assert(SVXC_REBAR == static_cast<int>(MaterialId::Rebar) && SVXC_WOOD == 
               "svx_core.h's materials are the registry's standard ones");
 static_assert(SVXC_JOINT_DISTANCE == static_cast<int>(JointType::Distance) && SVXC_ANCHOR_PIECE == static_cast<int>(JointAnchor::Kind::Piece),
               "svx_core.h's joints are the core's");
-static_assert(SVXC_JOINT_BROKEN == static_cast<int>(WorldEvent::Kind::JointBroken), "svx_core.h's events are the core's");
+static_assert(SVXC_JOINT_BROKEN == static_cast<int>(WorldEvent::Kind::JointBroken) &&
+                  SVXC_WHEEL_DETACHED == static_cast<int>(WorldEvent::Kind::WheelDetached) &&
+                  SVXC_PIECE_RESHAPED == static_cast<int>(WorldEvent::Kind::PieceReshaped),
+              "svx_core.h's events are the core's");
 
 namespace {
 
@@ -558,6 +561,7 @@ int svxc_event_at(svxc_world* w, int i, svxc_event* out) {
   out->radius = e.radius;
   out->strength = e.strength;
   out->voxels = e.voxels;
+  out->material = e.material;
   return 1;
 }
 
@@ -774,6 +778,94 @@ int svxc_joints(svxc_world* w, uint32_t* out, int max) {
   if (out)
     for (int i = 0; i < std::min<int>(max, static_cast<int>(ids.size())); ++i) out[i] = ids[size_t(i)];
   return static_cast<int>(ids.size());
+}
+
+void svxc_wheel_defaults(svxc_wheel_desc* d) {
+  if (!d) return;
+  const WheelDesc def;
+  *d = svxc_wheel_desc{};
+  put3(d->down, def.down);
+  put3(d->axle, def.axle);
+  d->radius = def.radius;
+  d->width = def.width;
+  d->rest = def.rest;
+  d->travel = def.travel;
+  d->stiffness = def.stiffness;
+  d->damping = def.damping;
+  d->inertia = def.inertia;
+  d->grip = def.grip;
+  d->break_force = def.break_force;
+}
+
+uint32_t svxc_add_wheel(svxc_world* w, const svxc_wheel_desc* d) {
+  if (!w || !d || d->mount.kind < SVXC_ANCHOR_WORLD || d->mount.kind > SVXC_ANCHOR_PIECE) return 0;
+  WheelDesc wd;
+  wd.mount.kind = static_cast<JointAnchor::Kind>(d->mount.kind);
+  wd.mount.id = d->mount.id;
+  wd.mount.point = V3{d->mount.point[0], d->mount.point[1], d->mount.point[2]};
+  wd.down = V3{d->down[0], d->down[1], d->down[2]};
+  wd.axle = V3{d->axle[0], d->axle[1], d->axle[2]};
+  wd.radius = d->radius;
+  wd.width = d->width;
+  wd.rest = d->rest;
+  wd.travel = d->travel;
+  wd.stiffness = d->stiffness;
+  wd.damping = d->damping;
+  wd.inertia = d->inertia;
+  wd.grip = d->grip;
+  wd.break_force = d->break_force;
+  wd.group = d->group;
+  wd.tag = d->tag;
+  return w->w.add_wheel(wd);
+}
+
+int svxc_remove_wheel(svxc_world* w, uint32_t id) { return w && w->w.remove_wheel(id) ? 1 : 0; }
+
+int svxc_set_wheel_input(svxc_world* w, uint32_t id, double drive, double brake, double steer) {
+  return w && w->w.set_wheel_input(id, drive, brake, steer) ? 1 : 0;
+}
+
+int svxc_wheel(svxc_world* w, uint32_t id, svxc_wheel_state* out) {
+  WheelState s;
+  if (!w || !out || !w->w.wheel(id, &s)) return 0;
+  *out = svxc_wheel_state{};
+  out->piece = s.piece;
+  put3(out->mount, s.mount);
+  put3(out->centre, s.centre);
+  put4(out->rot, s.rot);
+  out->radius = s.radius;
+  out->width = s.width;
+  out->length = s.length;
+  out->compression = s.compression;
+  out->steer = s.steer;
+  out->spin = s.spin;
+  out->angle = s.angle;
+  out->drive = s.drive;
+  out->brake = s.brake;
+  out->contact = s.contact ? 1 : 0;
+  put3(out->point, s.point);
+  put3(out->normal, s.normal);
+  out->ground_piece = s.ground_piece;
+  out->material = s.material;
+  out->load = s.load;
+  put3(out->force, s.force);
+  out->slip_long = s.slip_long;
+  out->slip_lat = s.slip_lat;
+  out->group = s.group;
+  out->tag = s.tag;
+  return 1;
+}
+
+int svxc_wheels(svxc_world* w, uint32_t* out, int max) {
+  if (!w) return 0;
+  const std::vector<WheelId> ids = w->w.wheels();
+  if (out)
+    for (int i = 0; i < std::min<int>(max, static_cast<int>(ids.size())); ++i) out[i] = ids[size_t(i)];
+  return static_cast<int>(ids.size());
+}
+
+int svxc_set_piece_max_speed(svxc_world* w, int64_t piece, double max_speed) {
+  return w && w->w.set_piece_max_speed(piece, max_speed) ? 1 : 0;
 }
 
 void svxc_collide_ex(svxc_world* w, const double mn[3], const double mx[3], const double move[3], svxc_collision* out) {

@@ -5,6 +5,7 @@
 #include <vector>
 
 #include "svx/base/vec.hpp"
+#include "svx/game/roads.hpp"
 #include "svx/world/source.hpp"
 
 namespace svx {
@@ -13,6 +14,8 @@ class GameSource : public ChunkSource {
  public:
   virtual V3 spawn_pos() const = 0;  // feet, metres
   virtual V3 spawn_dir() const = 0;
+  // Its roads, for traffic (nullptr: none).
+  virtual const RoadNetwork* roads() const { return nullptr; }
   // Far render tier: the voxels of n coarse cells of `factor`^3 voxels each from voxel `lo`
   // (index (x * n1 + y) * n2 + z). Thin solids must survive (a cell is solid where any solid
   // covers part of it; air only where it covers the cell). Sources without a cheap coarse view

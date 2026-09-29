@@ -43,7 +43,9 @@ add_executable(svx_game_tests
   game/test_doom_textures.cpp
   game/test_game.cpp
   game/test_movers.cpp
-  game/test_replay.cpp)
+  game/test_replay.cpp
+  game/test_vehicles.cpp
+  game/test_drive_city.cpp)
 target_include_directories(svx_game_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
 target_link_libraries(svx_game_tests PRIVATE svx_game)
 target_compile_definitions(svx_game_tests PRIVATE SVX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")

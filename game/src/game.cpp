@@ -40,7 +40,10 @@ inline u8 char_light(u8 light, u8 burn) {
 
 }  // namespace
 
-Game::Game() { env_.attach(world_); }
+Game::Game() {
+  env_.attach(world_);
+  paint_layer_ = world_.add_layer({"paint", true, LayerBind::Solid});
+}
 Game::~Game() = default;
 Game::Game(Game&&) = default;
 Game& Game::operator=(Game&&) = default;
@@ -94,6 +97,13 @@ void Game::load(VoxelGrid&& g, const V3& spawn_pos, const V3& spawn_dir) {
   grid_sent_.clear();
   world_.load(std::move(g));
   world_.take_events();  // (the old level's pieces: gone with it)
+  paint_layer_ = world_.add_layer({"paint", true, LayerBind::Solid});
+  vehicles_.clear();
+  next_vehicle_ = 1;
+  player_vehicle_ = 0;
+  player_input_ = VehicleInput{};
+  parked_spots_.clear();
+  traffic_clock_ = 0.0;
   views_.clear();
   fading_.clear();
   events_.clear();
@@ -123,6 +133,11 @@ void Game::load_streaming(std::shared_ptr<const GameSource> src, f64 h, const St
 
 bool Game::load_delta(const std::vector<u8>& bytes) {
   if (!world_.load_delta(bytes)) return false;
+  // (its vehicles: from their wheels)
+  vehicles_.clear();
+  player_vehicle_ = 0;
+  player_input_ = VehicleInput{};
+  sync_vehicles();
   // (the delta's chunks hold the movers as they were when it was saved)
   for (Mover& m : movers_) set_mover_rows(m, m.rows);
   // (a session that was played had its drops: they are among its pieces)
@@ -259,8 +274,10 @@ void Game::tick() {
   }
   // movers first: their voxels are in place when the world's commands and pieces see them
   if (!par_.paused && !movers_.empty()) step_movers();
+  if (!par_.paused) vehicles_before_tick();
   world_.tick();
   if (!par_.paused) check_movers_hit();
+  if (!par_.paused) vehicles_after_tick();
   for (Fading& f : fading_) f.t += world_.config().dt;
   fading_.erase(std::remove_if(fading_.begin(), fading_.end(), [&](const Fading& f) { return f.t >= fade_time; }), fading_.end());
   drain_world_events();
@@ -357,6 +374,7 @@ void Game::drain_world_events() {
     g.radius = e.radius;
     g.strength = e.strength;
     g.voxels = e.voxels;
+    g.material = e.material;
     switch (e.kind) {
       case WorldEvent::Kind::PieceAdded:
         if (!fresh[k]) continue;  // (gone again before the harness saw it)
@@ -390,6 +408,25 @@ void Game::drain_world_events() {
         continue;  // (joints are drawn from their state each frame: it is gone from it)
       case WorldEvent::Kind::GridMoved:
         continue;  // (its new place comes with take_grid_views)
+      case WorldEvent::Kind::WheelDetached:
+        continue;  // (wheels are drawn from their state each frame; the piece it became comes as a Detached)
+      case WorldEvent::Kind::PieceReshaped: {
+        // (crumpled in place: its new mesh, drawn from its pose now on)
+        for (auto& [vid, v] : vehicles_)
+          if (v.chassis == e.id) ++v.reshapes;
+        const Body* b = world_.piece(e.id);
+        const auto vt = views_.find(e.id);
+        if (!b || vt == views_.end()) continue;
+        g.kind = GameEvent::Kind::Remesh;
+        g.pos = b->x;
+        g.vel = b->v;
+        g.ang = b->w;
+        g.voxels = b->count;
+        g.mesh = piece_mesh(*b);
+        g.occupancy = piece_occupancy(*b);
+        vt->second = {b->x, b->q};
+        break;
+      }
       case WorldEvent::Kind::GridRemoved: {
         const GridId id = static_cast<GridId>(e.id);
         for (auto it = grid_meshed_.lower_bound({id, 0}); it != grid_meshed_.end() && it->first == id;) {
@@ -437,6 +474,16 @@ ChunkMesh Game::shape_mesh(const Body& b, size_t k) const {
   if (const FireSystem* f = env_.fire(); f && f->ok() && !S.layer[size_t(f->burn_layer())].empty()) {
     const int L = f->burn_layer();
     mo.light = [&S, L](const IVec3& p, int) -> u8 { return char_light(255, S.layer_at(L, S.index(p))); };
+  }
+  if (paint_layer_ >= 0 && !S.layer[size_t(paint_layer_)].empty()) {
+    // (painted: a car's body, its trim; glowing, it shows its material's glow)
+    const int P = paint_layer_;
+    auto inner = mo.texture;
+    mo.texture = [&S, P, inner](const IVec3& p, int face) -> u16 {
+      const u8 c = S.layer_at(P, S.index(p));
+      if (c) return static_cast<u16>(kPaintTexture + c);
+      return inner ? inner(p, face) : static_cast<u16>(0xFF00 + static_cast<u16>(vox_mat(S.get(p))));
+    };
   }
   if (const FireSystem* f = env_.fire(); f && f->ok() && !S.layer[size_t(f->heat_layer())].empty()) {
     const int H = f->heat_layer();
@@ -502,8 +549,18 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
       return it == field.end() ? 0 : it->second[size_t(chunk_index(p))];
     };
   }
-  // charred voxels are darker (the burn layer)
+  // painted voxels (the paint layer: road markings, facades)
   const VoxelGrid& g = world_.grid();
+  if (paint_layer_ >= 0) {
+    const int P = paint_layer_;
+    auto inner = mo.texture;
+    mo.texture = [&g, P, inner](const IVec3& p, int face) -> u16 {
+      const u8 c = g.layer(P, p);
+      if (c) return static_cast<u16>(kPaintTexture + c);
+      return inner ? inner(p, face) : static_cast<u16>(0xFF00 + static_cast<u16>(vox_mat(g.get(p))));
+    };
+  }
+  // charred voxels are darker (the burn layer)
   if (const FireSystem* f = env_.fire(); f && f->ok()) {
     const int L = f->burn_layer();
     auto base_light = mo.light;
@@ -565,13 +622,21 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
         mg.texels_per_metre = base.texels_per_metre;
         const std::vector<u8>& field = gfield[size_t(j)];
         if (!field.empty()) mg.debug = [&field](const IVec3& p) -> u8 { return field[size_t(chunk_index(p))]; };
+        const int P = paint_layer_;
         if (fire_on) {
           const int L = fire->burn_layer(), Hl = fire->heat_layer();
           const u8 glow = glow_units(*fire);
           mg.light = [G, L](const IVec3& p, int) -> u8 { return char_light(255, G->layer(L, p)); };
-          mg.texture = [G, Hl, glow](const IVec3& p, int) -> u16 {
+          mg.texture = [G, Hl, glow, P](const IVec3& p, int) -> u16 {
             const u16 m = static_cast<u16>(vox_mat(G->get(p)));
-            return static_cast<u16>((G->layer(Hl, p) >= glow ? 0xFE00 : 0xFF00) + m);
+            if (G->layer(Hl, p) >= glow) return static_cast<u16>(0xFE00 + m);
+            const u8 c = P >= 0 ? G->layer(P, p) : 0;
+            return c ? static_cast<u16>(kPaintTexture + c) : static_cast<u16>(0xFF00 + m);
+          };
+        } else if (P >= 0) {
+          mg.texture = [G, P](const IVec3& p, int) -> u16 {
+            const u8 c = G->layer(P, p);
+            return c ? static_cast<u16>(kPaintTexture + c) : static_cast<u16>(0xFF00 + static_cast<u16>(vox_mat(G->get(p))));
           };
         }
         ChunkMesh m = mesh_chunk(*G, gc.chunk, mg, false);
@@ -888,6 +953,16 @@ u64 Game::session_hash() const {
     std::memcpy(&u, &x, sizeof u);
     return u;
   };
+  for (const auto& [id, v] : vehicles_) {
+    mix(id);
+    mix(bits(v.rpm));
+    mix(bits(v.steer));
+    mix(static_cast<u64>(static_cast<u32>(v.gear)) | (v.wreck ? 1ull << 40 : 0ull) | (static_cast<u64>(v.flags) << 48));
+    mix(v.lane);
+    mix(bits(v.input.throttle));
+    mix(bits(v.input.brake));
+  }
+  mix(player_vehicle_);
   for (const Mover& m : movers_) {
     mix(bits(m.level));
     mix(bits(m.timer));

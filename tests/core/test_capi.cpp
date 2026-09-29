@@ -593,3 +593,76 @@ TEST_CASE("capi: joints - a hinged block swinging, its state, a drive, breaking"
   CHECK(broke == 1);
   svxc_destroy(w);
 }
+
+TEST_CASE("capi: wheels - a chassis on four wheels settles, drives, loses a wheel") {
+  svxc_world* w = svxc_create(0.125);
+  std::vector<uint8_t> g(320 * 64 * 4, svxc_vox(SVXC_ASPHALT, 1));
+  svxc_load_box(w, g.data(), 320, 64, 4, -160, -32, -4);
+  CHECK(svxc_bake(w) == 1);
+  // a chassis of car frame and a sheet metal shell (6.25 cm voxels), 4 m x 1.5 m
+  const int nx = 64, ny = 24, nz = 8;
+  std::vector<uint8_t> c(size_t(nx) * ny * nz, 0);
+  for (int x = 0; x < nx; ++x)
+    for (int y = 0; y < ny; ++y)
+      for (int z = 0; z < nz; ++z) {
+        const bool shell = z == 0 || z == nz - 1 || x == 0 || x == nx - 1 || y == 0 || y == ny - 1;
+        if (shell) c[(size_t(x) * ny + y) * nz + z] = svxc_vox(z == 0 ? SVXC_CAR_FRAME : SVXC_SHEET, 0);
+      }
+  svxc_grid_desc gd{};
+  gd.rot[3] = 1.0;
+  gd.origin[2] = 0.7;
+  gd.voxel_size = 0.0625;
+  gd.base = 0;
+  const uint32_t grid = svxc_add_grid_desc(w, c.data(), nx, ny, nz, -nx / 2, -ny / 2, 0, &gd);
+  REQUIRE(grid != 0);
+  uint32_t wheel[4];
+  for (int k = 0; k < 4; ++k) {
+    svxc_wheel_desc d;
+    svxc_wheel_defaults(&d);
+    CHECK(d.radius == 0.33);
+    CHECK(d.down[2] == -1.0);
+    d.mount.kind = SVXC_ANCHOR_GRID;
+    d.mount.id = grid;
+    d.mount.point[0] = k < 2 ? 1.5 : -1.5;
+    d.mount.point[1] = (k % 2 == 0) ? 0.6 : -0.6;
+    d.mount.point[2] = 0.7;
+    d.group = 7;
+    d.tag = static_cast<uint32_t>(k);
+    d.break_force = k == 0 ? 1.0 : 0.0;  // (the front left one: it comes off at once)
+    wheel[k] = svxc_add_wheel(w, &d);
+    REQUIRE(wheel[k] != 0);
+  }
+  uint32_t ids[8];
+  CHECK(svxc_wheels(w, ids, 8) == 4);
+  int detached = 0;
+  for (int t = 0; t < 120; ++t) {
+    svxc_tick(w);
+    for (int i = 0, n = svxc_poll_events(w); i < n; ++i) {
+      svxc_event e;
+      svxc_event_at(w, i, &e);
+      detached += e.kind == SVXC_WHEEL_DETACHED && e.id == wheel[0] ? 1 : 0;
+    }
+  }
+  CHECK(detached == 1);
+  CHECK(svxc_wheels(w, ids, 8) == 3);
+  svxc_wheel_state s;
+  CHECK(svxc_wheel(w, wheel[0], &s) == 0);
+  REQUIRE(svxc_wheel(w, wheel[3], &s) == 1);
+  CHECK(s.piece != 0);
+  CHECK(s.group == 7);
+  CHECK(s.tag == 3);
+  CHECK(s.contact == 1);
+  CHECK(s.load > 0.0);
+  CHECK(s.material == SVXC_ASPHALT);
+  // driven on its rear wheels, fast: its chassis may go faster than rubble
+  CHECK(svxc_set_piece_max_speed(w, s.piece, 60.0) == 1);
+  CHECK(svxc_set_wheel_input(w, wheel[2], 800.0, 0.0, 0.0) == 1);
+  CHECK(svxc_set_wheel_input(w, wheel[3], 800.0, 0.0, 0.0) == 1);
+  for (int t = 0; t < 60; ++t) svxc_tick(w);
+  REQUIRE(svxc_wheel(w, wheel[3], &s) == 1);
+  CHECK(s.drive == 800.0);
+  CHECK(s.spin > 1.0);
+  CHECK(svxc_remove_wheel(w, wheel[1]) == 1);
+  CHECK(svxc_wheels(w, ids, 8) == 2);
+  svxc_destroy(w);
+}
