@@ -199,8 +199,9 @@ namespace {
 //   (v2) kinematic bodies removed and kept: two u32 counts (read if both 0)
 //   (v3) the session (world_session.cpp): the world's clock, the next ids, the pieces, the joints
 //     and the sleeping pieces' dead loads
+//   (v4) as v3; the session also has the wheels, the joints their collide flags and break angles
 constexpr u32 kGridsMagic = 0x47585653;  // "SVXG"
-constexpr u32 kGridsVersion = 3;
+constexpr u32 kGridsVersion = 4;
 
 using world_detail::put32;
 using world_detail::put64;
@@ -309,7 +310,8 @@ std::vector<u8> World::save_delta() const {
       if ((k >> 62) == 2) archived.push_back({k, archive_->get(k)});  // (pieces' records: the session part)
   std::sort(archived.begin(), archived.end());
   // (a world of the world grid alone, with no pieces or joints, saves as it always did)
-  if (gds.empty() && removed.empty() && archived.empty() && rigid_.bodies.empty() && jrecs_.empty() && archived_groups_.empty()) return out;
+  if (gds.empty() && removed.empty() && archived.empty() && rigid_.bodies.empty() && jrecs_.empty() && wrecs_.empty() && archived_groups_.empty())
+    return out;
   put32(out, kGridsMagic);
   put32(out, kGridsVersion);
   put32(out, static_cast<u32>(removed.size()));
@@ -357,7 +359,7 @@ bool World::load_delta(const std::vector<u8>& bytes) {
         if (in.u32_() != 0 || in.u32_() != 0) return false;
       }
       if (version >= 3) {
-        if (!read_session(in, &session)) return false;
+        if (!read_session(in, &session, version)) return false;
         has_session = true;
       }
       if (!in.ok || in.p != bytes.size()) return false;
@@ -1336,6 +1338,15 @@ u64 World::session_hash() const {
     mix(bits(j.force.y));
     mix(bits(j.force.z));
     mix(bits(j.value));
+  }
+  // the wheels: what they hang from, their spin and suspension
+  for (size_t k = 0; k < rigid_.wheels.size(); ++k) {
+    const Wheel& w = rigid_.wheels[k];
+    mix(0x5748454Cull ^ w.id);
+    mix(static_cast<u64>(wrecs_[k].mount.piece));
+    mix(bits(w.spin));
+    mix(bits(w.length));
+    mix(bits(w.load));
   }
   for (const auto& sys : systems_) mix(sys->state_hash());
   return hsh;

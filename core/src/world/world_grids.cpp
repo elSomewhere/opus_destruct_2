@@ -319,7 +319,10 @@ void World::tear_voxel(const GVox& v) {
 
 GridId World::add_grid(const GridDesc& d, VoxelGrid&& voxels) {
   if (in_tick_) return 0;
-  return add_grid_impl(d, std::move(voxels), 0, ~0ull, designed_all_);
+  // (a level's grid added after the design pass, and any grid of the session - an object dropped
+  // into a streamed world, which has no design pass: its structures are extracted at the next
+  // tick, and what touches nothing falls)
+  return add_grid_impl(d, std::move(voxels), 0, ~0ull, designed_all_ || (!d.base && source_ != nullptr));
 }
 
 GridId World::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId want, u64 home, bool seed) {

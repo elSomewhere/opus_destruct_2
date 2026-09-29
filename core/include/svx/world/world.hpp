@@ -94,6 +94,27 @@ struct JointState {
   i64 piece_a = 0, piece_b = 0;  // the pieces its ends are on now (0: a grid, the world)
 };
 
+// A wheel now (World::wheel; docs/VEHICLES.md).
+struct WheelState {
+  i64 piece = 0;        // its chassis now (0: not a piece yet - a grid dropped in comes loose at the next tick)
+  V3 mount;             // the top of its suspension (world)
+  V3 centre;            // its centre (world)
+  Quat rot;             // its orientation (world): x the way it rolls, y its axle (steered), z up; spun by its angle about y
+  f64 radius = 0.0, width = 0.0;
+  f64 length = 0.0;     // m: the suspension now
+  f64 compression = 0.0;  // 0 at full droop .. 1 at the bump stop
+  f64 steer = 0.0, spin = 0.0, angle = 0.0;  // rad, rad/s (rolling forward: positive), rad
+  f64 drive = 0.0, brake = 0.0;              // the input now (N m)
+  bool contact = false;
+  V3 point, normal;     // the contact (world)
+  i64 ground_piece = 0; // the piece it stands on (0: a grid, or nothing)
+  int material = -1;    // the surface's material (-1: none)
+  f64 load = 0.0;       // N: the suspension's force
+  V3 force;             // N: what the chassis received through it
+  f64 slip_long = 0.0, slip_lat = 0.0;  // m/s: the tyre sliding over the ground (skids, smoke)
+  u32 group = 0, tag = 0;                // the host's (WheelDesc)
+};
+
 // A chunk of a grid (World::take_changed_grid_chunks).
 struct GridChunk {
   GridId grid = 0;
@@ -208,6 +229,8 @@ struct WorldEvent {
     GridRemoved,   // id: an oriented grid gone (removed, evicted with its home chunk, or by load)
     GridMoved,     // id: an oriented grid placed anew (set_grid_frame, load_delta); pos: its origin, rot (in the world)
     JointBroken,   // id: a joint that gave way (it is gone); pos: where; strength: the force it carried (N; 0: an end lost its hold)
+    WheelDetached, // id: a wheel that came off (it is gone); parent: its chassis; pos, vel: its centre; normal: its axle; voxels: the wheel piece it became (its id; 0: none); strength: its force (N; 0: its mount was lost)
+    PieceReshaped, // id: a piece whose voxels changed in place (crumpled, dented): same id, same pose; mesh it again
   };
   Kind kind = Kind::Crack;
   PieceEnd end = PieceEnd::Split;
@@ -216,6 +239,7 @@ struct WorldEvent {
   Quat rot;
   f64 radius = 0.0, strength = 0.0;
   i32 voxels = 0;
+  i32 material = -1;  // (Dust) what it is made of (-1: unknown)
 };
 
 // A rigid piece's state. Its shape (voxels in the shape frame, phys/rigid.hpp) is placed at
@@ -302,6 +326,7 @@ struct WorldStats {
   i64 impact_breaks = 0, steady_breaks = 0;  // bonds broken in pieces by collisions / by resting loads
   i64 pulverized_voxels = 0;                 // crushed to dust
   i64 chip_releases = 0;                     // pieces going on without the chips that broke off with their contacts
+  i64 reshapes = 0, punches = 0;             // crumpling: pieces folded in place; walls a crumpling piece broke through
   i64 mode_breaks[4] = {0, 0, 0, 0};         // pieces' bonds broken by mode (none, tension, crush, shear)
   // streaming
   i64 resident_chunks = 0, archived_chunks = 0, generated_total = 0, evicted_total = 0, budget_evicted = 0;
@@ -466,6 +491,22 @@ class World {
   bool set_joint_limits(JointId id, bool on, f64 lower, f64 upper);
   bool joint(JointId id, JointState* out) const;  // false: none (broken, removed)
   std::vector<JointId> joints() const;            // ascending ids
+
+  // ---- wheels (docs/VEHICLES.md)
+  // A wheel on a sprung suspension with a tyre, hung from a chassis (a piece, or a grid of free
+  // voxels that becomes one), solved with the contacts: a vehicle is a chassis on wheels, driven
+  // through them. Its forces load what it stands on. It comes off (WheelDetached, a wheel piece)
+  // when its mount voxel is gone or its force passes its breaking strength.
+  WheelId add_wheel(const WheelDesc& d);  // 0: refused (its mount not there, from inside a tick)
+  bool remove_wheel(WheelId id);
+  // The host's input for it (until changed): drive torque (N m; negative: backwards), brake
+  // torque (N m), steer (rad, the axle turned about the suspension's axis). Wakes its chassis.
+  bool set_wheel_input(WheelId id, f64 drive, f64 brake, f64 steer);
+  bool wheel(WheelId id, WheelState* out) const;  // false: none (it came off, was removed)
+  std::vector<WheelId> wheels() const;           // ascending ids
+  // A piece's speed limit (m/s; 0: rigid.max_speed): a car's is higher than the rubble's. Its
+  // parts keep it when it breaks.
+  bool set_piece_max_speed(i64 piece, f64 max_speed);
   std::vector<GridId> grids() const;                  // the oriented grids, ascending ids
   const VoxelGrid* grid(GridId id) const;             // kWorldGrid: grid(); nullptr: none
   bool grid_frame(GridId id, GridFrame* out) const;   // in the world now (false: none)
@@ -491,8 +532,12 @@ class World {
 
   // ---- commands
   // Queued: they take effect in the next tick, in call order.
-  void carve(const V3& pos, f64 radius);              // removes the voxels in a sphere (not indestructible materials)
-  void blast(const V3& pos, f64 radius, f64 energy);  // carves, shatters around the crater, loads the structures near it (J)
+  void carve(const V3& pos, f64 radius);              // a cut: removes the voxels in a sphere (not indestructible materials)
+  // An impact of this energy (J: a bullet) in a sphere: removes the voxels whose penetration
+  // resistance (Material::penetration, J/m^3) its energy density exceeds - it holes sheet metal
+  // and brick, not a steel section or the bars in a column.
+  void shoot(const V3& pos, f64 radius, f64 energy);
+  void blast(const V3& pos, f64 radius, f64 energy);  // craters (as an impact of its energy), shatters around the crater, loads the structures near it (J)
   // Immediate. Writes voxels: structures there are extracted again, pieces near are woken
   // (voxels written into a piece push it out). Chunks not resident in a streamed world are
   // generated first. Returns the number of voxels changed.
@@ -598,7 +643,7 @@ class World {
   struct PendingEvent {
     bool blast = false;
     V3 pos;
-    f64 radius = 0.0, energy = 0.0;
+    f64 radius = 0.0, energy = 0.0;  // (a carve: energy < 0, a cut)
   };
   // Internally a grid is its slot (grids_ index; the world grid's is 0), not its id.
   // A voxel of a grid.
@@ -630,6 +675,7 @@ class World {
 
   // ---- joints (world_joints.cpp)
   struct JointRec;
+  struct WheelRec;  // (world_wheels.cpp)
   JointId add_joint_impl(const JointDesc& d, JointId want);  // (want: its id, a source's joint; 0: the next)
   size_t insert_joint(const JointRec& r, const Joint& j);     // (in id order; returns its index)
   // Each substep: the solver's ends from the anchors (their bodies' poses now); a joint whose
@@ -651,13 +697,16 @@ class World {
   std::vector<u8> piece_record(const Body& b) const;
   std::unique_ptr<Body> read_piece_record(const std::vector<u8>& rec) const;  // (nullptr: malformed)
   std::vector<u8> joint_record(size_t k) const;
-  bool read_joint_record(world_detail::Rd& in, JointRec* r, Joint* j) const;
+  bool read_joint_record(world_detail::Rd& in, JointRec* r, Joint* j, u8 version) const;  // (version: its group's)
+  std::vector<u8> wheel_record(size_t k) const;
+  bool read_wheel_record(world_detail::Rd& in, WheelRec* r, Wheel* w) const;
   std::vector<u8> session_entries() const;                          // (the delta's session part)
-  bool read_session(world_detail::Rd& in, SessionDelta* s) const;  // (checked whole; false: malformed)
+  bool read_session(world_detail::Rd& in, SessionDelta* s, u32 version) const;  // (checked whole; false: malformed; version: the trailer's)
   void apply_session(SessionDelta&& s);                             // (its pieces and joints for the ones there are)
   // (a group's pieces, the joints on them and their dead loads; read; added to the world)
-  void write_group(std::vector<u8>& out, const std::vector<const Body*>& bodies, const std::vector<size_t>& joints) const;
-  bool read_group(world_detail::Rd& in, SessionDelta* s) const;
+  void write_group(std::vector<u8>& out, const std::vector<const Body*>& bodies, const std::vector<size_t>& joints,
+                   const std::vector<size_t>& wheels) const;
+  bool read_group(world_detail::Rd& in, SessionDelta* s, u8 version) const;
   void add_group(SessionDelta& s);
   // Pieces out of range (a streamed world): a group (pieces joined by joints or touching, ids
   // sorted) archived with its joints and dead loads in the change archive's budget, with its
@@ -741,7 +790,10 @@ class World {
   // ---- structures (world.cpp)
   Structure* structure(i64 id);
   void process(const PendingEvent& e);
-  void carve_world(const V3& c, f64 r, std::vector<GVox>* removed);
+  // (energy < 0: a cut; else an impact of that energy: voxels whose penetration resistance its
+  // energy density does not reach stay)
+  void carve_world(const V3& c, f64 r, f64 energy, std::vector<GVox>* removed);
+  bool penetrates(const Material& M, f64 energy, f64 r, f64 d) const;
   void blast_world(const PendingEvent& e);
   void seed_near(const std::vector<GVox>& removed);
   void seed_fragments_near(u16 g, const V3& centre, f64 r);  // (g's fragments within the box of half side r, lattice metres)
@@ -828,7 +880,12 @@ class World {
     V3 J, p;         // (impulse on b, world point)
     f64 e = 0.0;     // (the kinetic energy it took out of the collision, b's share)
   };
-  bool split_body(Body& b, bool use_pre, bool force_replace, const std::vector<Carried>* carried = nullptr, f64 spent = 0.0);
+  // A piece in several parts (its bond graph's components; force_replace: reshaped - carved,
+  // crushed - whole or not): its parts are new pieces. A piece that keeps its identity (in_place,
+  // or keeps_identity: a chassis on its wheels, a jointed part, a kept piece) keeps its largest
+  // part - the one most of its wheels are on - edited in place; only the rest are new pieces.
+  bool split_body(Body& b, bool use_pre, bool force_replace, const std::vector<Carried>* carried = nullptr, f64 spent = 0.0, bool in_place = false);
+  bool keeps_identity(const Body& b) const;
   void wake_around(const Body& b);  // (the sleepers touching b's box)
   // A voxel of a body: its shape and cell.
   struct SVox {
@@ -836,13 +893,41 @@ class World {
     i32 cell = 0;
   };
   std::unique_ptr<Body> sub_body(const Body& parent, const std::vector<SVox>& voxels, bool use_pre);
-  void carve_bodies(const V3& c, f64 r);
+  void carve_bodies(const V3& c, f64 r, f64 energy);
   void blast_bodies(const PendingEvent& e);
   void flush_body_changes();                 // pending additions / retirements into the world
   void announce_bodies();                    // PieceAdded events for new pieces
   void remove_bodies(std::vector<i64> ids, PieceEnd end);  // PieceRemoved events (announced pieces)
   void limit_bodies();
   static i64 body_bytes(const Body& b);
+
+  // ---- wheels (world_wheels.cpp)
+  std::vector<WheelRec> wrecs_;  // their mounts, parallel to rigid_.wheels (ascending ids)
+  WheelId next_wheel_ = 1;
+  WheelId add_wheel_impl(const WheelDesc& d, WheelId want);
+  size_t insert_wheel(const WheelRec& r, const Wheel& w);  // (in id order; returns its index)
+  bool fill_wheel_mount(size_t k);   // the solver's mount from its anchor (false: its voxel is gone)
+  void update_wheel_mounts();        // (each substep; a wheel whose voxel is gone comes off)
+  void reap_wheels();                // (those that came off: WheelDetached, a wheel piece)
+  void wheels_to_piece(const Body& b);  // (mounts on voxels that went into a new piece follow it)
+  void wheels_follow_splits();          // (... into the parts of pieces split)
+  void wheel_structure_loads(f64 dt_sub);  // (the wheels' forces on the structures they stand on)
+  void wheel_piece_forces(std::vector<std::vector<PointForce>>& per, std::vector<f64>& fsum) const;
+  i64 make_wheel_body(const Wheel& w);  // (a wheel that came off, as a piece; its id, 0: none)
+
+  // ---- crumpling (world_crumple.cpp)
+  // After a substep: where a crumpling contact carried its cap, its crumpling side folds - its
+  // voxels pressed into what it hit dent in, buckle or compact, and glass near them shatters.
+  void crumple(f64 dt);
+  // (a crumpling body pressing through a static structure: what it knocks out)
+  bool punch(Body& b, u16 g, const V3& n, const V3& lo, const V3& hi, f64 force, f64 dt);
+  // A piece whose voxels changed in place (crumpled): its fragments, mass and samples again at the
+  // same place in the world; it keeps its id while it holds together (else it splits).
+  void reshape_in_place(Body& b);
+  // (its voxels changed, its lattice where it was: mass and samples again, the same place and motion)
+  void refresh_in_place(Body& b, const V3& com0, const V3& x0);
+  std::vector<i64> reshaped_;  // (pieces reshaped this tick: PieceReshaped at its end)
+  std::vector<i64> split_kept_;  // (pieces split in place, until the joints and wheels on their parts follow them)
 
   // ---- streaming (world_io.cpp)
   int stream_update();

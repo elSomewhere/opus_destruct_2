@@ -44,7 +44,17 @@ enum {
   SVXC_WOOD,
   SVXC_STONE,
   SVXC_GLASS,
-  SVXC_REBAR
+  SVXC_REBAR,
+  SVXC_STEEL_SECTION, /* smeared sections (docs/VEHICLES.md): a rolled steel member */
+  SVXC_SHEET,         /* a car's body (crumples) */
+  SVXC_CAR_FRAME,     /* a car's frame rails, floor and pillars (crumples) */
+  SVXC_ENGINE,        /* an engine block */
+  SVXC_WINDOW,        /* a car's glazing */
+  SVXC_TYRE,
+  SVXC_PLASTIC,       /* bumpers and trim (crumples) */
+  SVXC_ASPHALT,
+  SVXC_PAINT,         /* road markings */
+  SVXC_LAMP
 };
 
 typedef struct svxc_material {
@@ -56,6 +66,11 @@ typedef struct svxc_material {
   double frag[3];            /* rubble size: fragment seed spacing in voxels (x, y, z) */
   double frag_noise;         /* relative jitter of the fragment seams (0..1) */
   int indestructible;        /* carves and blasts leave it */
+  int ductile;               /* it bends where brittle material crushes: never turned to dust */
+  int reinforcement;         /* bars: part of the fragments of the material around them */
+  double crush;              /* Pa: contact pressure at which it crumples (0: it does not) */
+  double penetration;        /* J/m^3: the energy density an impact needs to remove it (0: any) */
+  double grip;               /* a tyre's friction coefficient on it (0: from friction) */
 } svxc_material;
 
 /* Registers a material (the next free id, returned; -1 when all 127 are taken) or overrides
@@ -218,6 +233,9 @@ int svxc_joints(svxc_world* w, uint32_t* out, int max);             /* ids (asce
 /* ---- commands (carve / blast: the next tick; edits: now) */
 
 void svxc_carve(svxc_world* w, double x, double y, double z, double radius);
+/* An impact of this energy (J: a bullet): removes what its energy density penetrates
+ * (svxc_material.penetration). */
+void svxc_shoot(svxc_world* w, double x, double y, double z, double radius, double energy);
 void svxc_blast(svxc_world* w, double x, double y, double z, double radius, double energy);
 enum { SVXC_EDIT_UNTRACKED = 1, SVXC_EDIT_ISOLATED = 2 };
 /* n voxels: positions xyz (3 each) and values; returns the number changed. */

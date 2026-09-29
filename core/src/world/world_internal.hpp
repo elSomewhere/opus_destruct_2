@@ -574,6 +574,38 @@ inline i32 graph_components(i32 n, const std::vector<SBond>& bonds, const std::v
   return nc;
 }
 
+// The solid voxel nearest lattice point L (metres, voxel size h): the one it is in, else the
+// nearest of its 26 neighbours.
+template <class Solid>
+inline bool nearest_solid(const V3& L, f64 h, Solid&& solid, IVec3* out, f64* dist2) {
+  const IVec3 c = voxel_of(L, h);
+  if (solid(c)) {
+    *out = c;
+    *dist2 = 0.0;
+    return true;
+  }
+  bool any = false;
+  for (int dx = -1; dx <= 1; ++dx)
+    for (int dy = -1; dy <= 1; ++dy)
+      for (int dz = -1; dz <= 1; ++dz) {
+        if (dx == 0 && dy == 0 && dz == 0) continue;
+        const IVec3 q{c[0] + dx, c[1] + dy, c[2] + dz};
+        if (!solid(q)) continue;
+        const f64 e = norm2(V3{h * q[0], h * q[1], h * q[2]} - L);
+        if (!any || e < *dist2) {
+          *out = q;
+          *dist2 = e;
+          any = true;
+        }
+      }
+  return any;
+}
+
+inline bool shape_solid(const BodyShape& S, const IVec3& p) {
+  const i32 i = S.index(p);
+  return i >= 0 && vox_solid(S.vox[size_t(i)]);
+}
+
 }  // namespace world_detail
 
 // A body's bond graph (the fracture layer's data attached to a rigid body).
@@ -666,6 +698,19 @@ struct World::JointRec {
   } a, b;
 };
 
+// A wheel's mount (docs/VEHICLES.md): the voxel it hangs from (a JointRec::End held as a Grid
+// anchor: axis = its suspension's axis down, ref = its axle, in that lattice), and the host's data.
+// (Its solver state is rigid_.wheels, in the same order.)
+struct World::WheelRec {
+  WheelId id = 0;
+  JointRec::End mount;
+  u32 group = 0, tag = 0;
+  // where it was last (its centre, orientation, motion): what comes off becomes a piece there
+  bool placed = false;
+  V3 centre, vel, ang;
+  Quat rot;
+};
+
 // A saved session's pieces and joints, read and checked before they are applied
 // (world_session.cpp).
 struct World::SessionDelta {
@@ -673,6 +718,8 @@ struct World::SessionDelta {
   JointId next_joint = 1;
   std::vector<std::unique_ptr<Body>> pieces;
   std::vector<std::pair<JointRec, Joint>> joints;
+  WheelId next_wheel = 1;
+  std::vector<std::pair<WheelRec, Wheel>> wheels;
   struct Dead {
     i64 piece = 0;
     struct Load {

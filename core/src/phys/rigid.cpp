@@ -1,5 +1,7 @@
 #include "svx/phys/rigid.hpp"
 
+#include "phys_internal.hpp"
+
 #include "svx/base/diag.hpp"
 #include "svx/base/parallel.hpp"
 
@@ -15,114 +17,23 @@ namespace svx {
 
 namespace {
 
-inline IVec3 voxel_of(const V3& s, f64 inv_h) {
-  return {static_cast<i32>(std::floor(s.x * inv_h + 0.5)), static_cast<i32>(std::floor(s.y * inv_h + 0.5)),
-          static_cast<i32>(std::floor(s.z * inv_h + 0.5))};
-}
+using namespace phys_detail;
 
-// x^k for x in [0, 1], k >= 0, by basic arithmetic only: the same bits on every platform
-// (std::pow's last bit is the library's, and the result is state). ln x by the atanh series of
-// its mantissa, e^-y by Taylor of a small part, squared up.
-f64 pow01(f64 x, f64 k) {
-  if (!(x > 0.0)) return k > 0.0 ? 0.0 : 1.0;
-  if (x >= 1.0 || !(k > 0.0)) return 1.0;
-  f64 m = x;
-  int e = 0;
-  while (m < 0.5) {  // (exact)
-    m *= 2.0;
-    ++e;
-  }
-  const f64 z = (m - 1.0) / (m + 1.0), z2 = z * z;  // (|z| <= 1/3)
-  f64 term = z, series = 0.0;
-  for (int i = 0; i < 40; ++i) {
-    series += term / static_cast<f64>(2 * i + 1);
-    term *= z2;
-  }
-  f64 y = k * (static_cast<f64>(e) * 0.69314718055994530942 - 2.0 * series);  // -k ln x >= 0
-  if (!(y < 745.0)) return 0.0;
-  int sq = 0;
-  while (y > 0.0625) {
-    y *= 0.5;
-    ++sq;
-  }
-  f64 r = 1.0, t = 1.0;
-  for (int i = 1; i <= 14; ++i) {
-    t *= -y / static_cast<f64>(i);
-    r += t;
-  }
-  for (int i = 0; i < sq; ++i) r *= r;
-  return r;
-}
+// Pieces closing faster than this (m/s) look ahead for each other (a thin panel is not passed
+// through); slower ones (rubble grinding in a pile) do not need to.
+constexpr f64 kFastPair = 4.0;
 
-inline u64 mix64(u64 x) {
-  x += 0x9E3779B97F4A7C15ull;
-  x = (x ^ (x >> 30)) * 0xBF58476D1CE4E5B9ull;
-  x = (x ^ (x >> 27)) * 0x94D049BB133111EBull;
-  return x ^ (x >> 31);
-}
-
-// The face of least penetration of point s (in a voxel frame) inside solid voxel p that leads to
-// air, per `solid`: normal (axis, sign) and depth. Returns false if every face is buried.
-template <class Solid>
-bool exit_face(const V3& s, const IVec3& p, f64 h, Solid&& solid, int* axis, int* sign, f64* depth) {
-  f64 best = 1e300;
-  bool found = false;
-  for (int a = 0; a < 3; ++a)
-    for (int sg = -1; sg <= 1; sg += 2) {
-      IVec3 nb = p;
-      nb[a] += sg;
-      if (solid(nb)) continue;
-      const f64 face = h * (p[a] + 0.5 * sg);
-      const f64 d = sg > 0 ? face - s[a] : s[a] - face;
-      if (d < best) {
-        best = d;
-        *axis = a;
-        *sign = sg;
-        found = true;
-      }
-    }
-  *depth = std::max(0.0, best);
-  return found;
-}
-
-// The first solid voxel on the segment from s along the unit direction d, within tmax (a lattice
-// of voxel size h): the distance to where it enters it, and the face it enters by (axis, and the
-// side the segment comes from: the face's normal out of the voxel). The voxel s is in is not
-// tested (it is not solid, or the caller has a contact for it).
-template <class Solid>
-bool first_solid(const V3& s, const V3& d, f64 tmax, f64 h, Solid&& solid, f64* t_hit, int* axis, int* sign, IVec3* hit) {
-  IVec3 v = voxel_of(s, 1.0 / h);
-  int step[3];
-  f64 tnext[3], tdelta[3];
-  for (int a = 0; a < 3; ++a) {
-    if (d[a] > 0.0) {
-      step[a] = 1;
-      tnext[a] = (h * (v[a] + 0.5) - s[a]) / d[a];
-      tdelta[a] = h / d[a];
-    } else if (d[a] < 0.0) {
-      step[a] = -1;
-      tnext[a] = (h * (v[a] - 0.5) - s[a]) / d[a];
-      tdelta[a] = -h / d[a];
-    } else {
-      step[a] = 0;
-      tnext[a] = tdelta[a] = 1e300;
-    }
-  }
-  for (int n = 0; n < 64; ++n) {
-    const int a = tnext[0] < tnext[1] ? (tnext[0] < tnext[2] ? 0 : 2) : (tnext[1] < tnext[2] ? 1 : 2);
-    const f64 t = tnext[a];
-    if (t > tmax) return false;
-    v[a] += step[a];
-    tnext[a] += tdelta[a];
-    if (solid(v)) {
-      *t_hit = std::max(0.0, t);
-      *axis = a;
-      *sign = -step[a];
-      *hit = v;
-      return true;
-    }
-  }
-  return false;
+// A contact's crumpling (Material::crush): the pressure it carries at most, and the sides that
+// fold - the softer side, or both when they are alike; a side that does not crumple is rigid.
+// (The pressure goes into cap until the patch's force is known: CrushPatches.)
+void set_crush(Contact& c, f64 ca, f64 cb) {
+  c.cap = 0.0;
+  c.crush = 0;
+  if (!(ca > 0.0) && !(cb > 0.0)) return;
+  const f64 p = ca > 0.0 && cb > 0.0 ? std::min(ca, cb) : (ca > 0.0 ? ca : cb);
+  c.cap = p;
+  if (ca > 0.0 && ca <= 1.5 * p) c.crush |= 1;
+  if (cb > 0.0 && cb <= 1.5 * p) c.crush |= 2;
 }
 
 void tangents(const V3& n, V3& t1, V3& t2) {
@@ -133,6 +44,173 @@ void tangents(const V3& n, V3& t1, V3& t2) {
   }
   t2 = cross(n, t1);
 }
+
+// Crumpling patches (Material::crush): the samples of a body that found one other thing (before
+// its manifold is reduced; the speculative ones as well), by what they found (a static grid) and
+// the side they face (the signed axis nearest their normal: a car against a wall and on the road
+// has two patches). A patch carries at most the crush strength of the body's side it presses
+// over that side's area there (frontal()): a car's front against a wall, its sheet metal's over
+// most of the front, its frame rails' over their ends, its engine's once the front has folded
+// back to it; two crumpling bodies, the weaker side's. The contacts its manifold keeps share that
+// force in even parts (rigid ones carry what they must).
+constexpr f64 kSpread = 0.2;     // m: the margin over which a crumpling structure spreads a load
+constexpr f64 kRigidP = 5e7;     // Pa: material that does not crumple (it is not what gives way)
+
+// The pressure a body's voxel gives way at when pressed.
+f64 give_way(const Material& M) {
+  if (M.crush > 0.0) return M.crush;
+  if (!M.ductile && M.Gf <= 10.0) return 1e4;  // (glass: it shatters)
+  return kRigidP;
+}
+
+// A body's side pressed at points P (world) along n (world, into the body): the columns of its
+// lattice along the axis nearest n, across the points' extent and the spread of a load, and in
+// each the foremost voxel near the points' depth - their mean pressure to give way at, and area.
+struct Frontal {
+  f64 pressure = 0.0, area = 0.0;
+};
+template <class Points>
+Frontal frontal(const Body& B, const V3& n, const MaterialTable& mt, const Points& points) {
+  f64 psum = 0.0, area = 0.0;
+  for (size_t k = 0; k < B.shapes.size(); ++k) {
+    const BodyShape& S = B.shapes[k];
+    const f64 h = S.h, ih = 1.0 / h;
+    const V3 nl = rotate_inv(B.lattice_rot(k), n);
+    int ax = 0;
+    for (int a = 1; a < 3; ++a)
+      if (std::abs(nl[a]) > std::abs(nl[ax])) ax = a;
+    const i32 in = nl[ax] > 0.0 ? 1 : -1;
+    const int a1 = (ax + 1) % 3, a2 = (ax + 2) % 3;
+    V3 lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
+    points([&](const V3& X) {
+      const V3 l = B.world_to_lattice(k, X) * ih;
+      for (int a = 0; a < 3; ++a) {
+        lo[a] = std::min(lo[a], l[a]);
+        hi[a] = std::max(hi[a], l[a]);
+      }
+    });
+    if (!(lo.x <= hi.x)) continue;
+    const f64 sp = 0.5 * kSpread * ih;
+    IVec3 vlo, vhi;
+    for (int a = 0; a < 3; ++a) {
+      const f64 m = a == ax ? 0.0 : sp;
+      vlo[a] = std::max(S.lo[a], static_cast<i32>(std::floor(lo[a] - m + 0.5)));
+      vhi[a] = std::min(S.lo[a] + S.dim[a] - 1, static_cast<i32>(std::floor(hi[a] + m + 0.5)));
+    }
+    // (depth: the points' cells, a cell towards what pressed them, two away)
+    const i32 outer = in < 0 ? std::min(S.lo[ax] + S.dim[ax] - 1, vhi[ax] + 1) : std::max(S.lo[ax], vlo[ax] - 1);
+    const i32 inner = in < 0 ? std::max(S.lo[ax], vlo[ax] - 2) : std::min(S.lo[ax] + S.dim[ax] - 1, vhi[ax] + 2);
+    const i32 depth = (inner - outer) * in + 1;
+    if (depth <= 0 || vlo[a1] > vhi[a1] || vlo[a2] > vhi[a2]) continue;
+    for (i32 c1 = vlo[a1]; c1 <= vhi[a1]; ++c1)
+      for (i32 c2 = vlo[a2]; c2 <= vhi[a2]; ++c2)
+        for (i32 d = 0; d < depth; ++d) {
+          IVec3 p;
+          p[ax] = outer + in * d;
+          p[a1] = c1;
+          p[a2] = c2;
+          const Vox v = S.get(p);
+          if (!vox_solid(v)) continue;
+          psum += give_way(mt[vox_mat(v)]) * h * h;
+          area += h * h;
+          break;
+        }
+  }
+  return Frontal{area > 0.0 ? psum / area : 0.0, area};
+}
+
+class CrushPatches {
+ public:
+  void clear() { ps_.clear(); }
+  // (the samples found - area: the surface each stands for, cap: its pressure - in two passes:
+  // their normals, then, the patches' planes known, their extents)
+  void normals(const std::vector<Contact>& cs, size_t from, size_t to) {
+    for (size_t k = from; k < to; ++k) {
+      Patch& P = at(key(cs[k]));
+      P.nsum += cs[k].n;
+      P.wsum += cs[k].area;
+      if (cs[k].cap > 0.0) P.psum += cs[k].cap * cs[k].area;
+    }
+    for (Patch& P : ps_) tangents(normalized(P.nsum), P.t1, P.t2);
+  }
+  void extents(const std::vector<Contact>& cs, size_t from, size_t to) {
+    for (size_t k = from; k < to; ++k) {
+      Patch& P = at(key(cs[k]));
+      const f64 a = dot(cs[k].p, P.t1), b = dot(cs[k].p, P.t2);
+      P.lo1 = std::min(P.lo1, a);
+      P.hi1 = std::max(P.hi1, a);
+      P.lo2 = std::min(P.lo2, b);
+      P.hi2 = std::max(P.hi2, b);
+    }
+  }
+  // The sides pressed (a: the body whose samples these are; b: the other, a body or none - a
+  // static grid does not crumple), from their voxels; share: the part of the patches these
+  // samples stand for (1/2 when the other body's samples found this one too).
+  void finish(const Body& A, const Body* B, const MaterialTable& mt, const std::vector<Contact>& c1, const std::vector<Contact>& c2, f64 share) {
+    for (Patch& P : ps_) {
+      if (!(P.psum > 0.0)) continue;  // (nothing crumples: no caps)
+      const V3 n = normalized(P.nsum);
+      auto points = [&](auto&& f) {
+        for (const auto* cs : {&c1, &c2})
+          for (const Contact& c : *cs)
+            if (key(c) == P.key) f(c.p);
+      };
+      const Frontal fa = frontal(A, n, mt, points);
+      f64 p = fa.pressure, area = fa.area;
+      if (B) p = std::min(p, frontal(*B, n * -1.0, mt, points).pressure);
+      if (!(area > 0.0)) {
+        // (no voxels found near the samples: the samples' own estimate)
+        area = std::min(P.wsum, (P.hi1 - P.lo1 + kSpread) * (P.hi2 - P.lo2 + kSpread));
+        p = P.psum / P.wsum;
+      }
+      P.area = share * area;
+      P.force = p * P.area;
+    }
+  }
+  void scale(f64 share) {
+    for (Patch& P : ps_) {
+      P.area *= share;
+      P.force *= share;
+    }
+  }
+  // the contacts kept (cs[from..]): their shares, and their caps for a substep of dt
+  void assign(std::vector<Contact>& cs, size_t from, f64 dt) {
+    for (Patch& P : ps_) P.kept = P.capped = 0;
+    for (size_t k = from; k < cs.size(); ++k) {
+      Patch& P = at(key(cs[k]));
+      ++P.kept;
+      if (cs[k].cap > 0.0) ++P.capped;
+    }
+    for (size_t k = from; k < cs.size(); ++k) {
+      const Patch& P = at(key(cs[k]));
+      cs[k].area = P.area / static_cast<f64>(P.kept);
+      if (cs[k].cap > 0.0) cs[k].cap = P.force * dt / static_cast<f64>(P.capped);
+    }
+  }
+
+ private:
+  struct Patch {
+    u32 key = 0;
+    size_t kept = 0, capped = 0;
+    V3 nsum, t1, t2;
+    f64 lo1 = 1e300, hi1 = -1e300, lo2 = 1e300, hi2 = -1e300;
+    f64 wsum = 0.0, psum = 0.0, area = 0.0, force = 0.0;
+  };
+  static u32 key(const Contact& c) {
+    int a = 0;
+    if (std::abs(c.n.y) > std::abs(c.n[a])) a = 1;
+    if (std::abs(c.n.z) > std::abs(c.n[a])) a = 2;
+    return 6u * c.grid + static_cast<u32>(2 * a + (c.n[a] < 0.0 ? 1 : 0));
+  }
+  Patch& at(u32 k) {
+    for (Patch& P : ps_)
+      if (P.key == k) return P;
+    ps_.push_back(Patch{});
+    ps_.back().key = k;
+    return ps_.back();
+  }
+  std::vector<Patch> ps_;
+};
 
 }  // namespace
 
@@ -207,6 +285,7 @@ void body_refresh(Body& b, f64 h, int max_points) {
     bool sharp;
   };
   std::vector<Cand> uniq;
+  f64 surface = 0.0;  // (m^2 of exposed faces)
   b.count = 0;
   for (BodyShape& S : b.shapes) {
     if (!(S.h > 0.0)) S.h = h;
@@ -226,6 +305,7 @@ void body_refresh(Body& b, f64 h, int max_points) {
           IVec3 nb = p;
           nb[a] += sg;
           if (solid(nb)) continue;
+          surface += h * h;
           const int a1 = (a + 1) % 3, a2 = (a + 2) % 3;
           for (int u = -1; u <= 1; u += 2)
             for (int w = -1; w <= 1; w += 2) {
@@ -292,12 +372,19 @@ void body_refresh(Body& b, f64 h, int max_points) {
   b.pts.clear();
   b.pt_vox.clear();
   b.pt_shape.clear();
+  b.pt_area.clear();
   b.radius = 0.0;
+  // (each candidate stands for an even share of the surface; a kept one for those strided past too)
+  const f64 each = uniq.empty() ? 0.0 : surface / static_cast<f64>(uniq.size());
+  const size_t sharp_kept = static_cast<size_t>(std::count_if(keep.begin(), keep.end(), [](const Cand* cd) { return cd->sharp; }));
+  const f64 sharp_w = sharp_kept > 0 ? each * static_cast<f64>(sharp) / static_cast<f64>(sharp_kept) : 0.0;
+  const f64 flat_w = keep.size() > sharp_kept ? each * static_cast<f64>(uniq.size() - sharp) / static_cast<f64>(keep.size() - sharp_kept) : 0.0;
   for (const Cand* cd : keep) {
     const V3 r = cd->pt - b.com;
     b.pts.push_back(r);
     b.pt_vox.push_back(cd->vox);
     b.pt_shape.push_back(cd->shape);
+    b.pt_area.push_back(static_cast<f32>(cd->sharp ? sharp_w : flat_w));
     b.radius = std::max(b.radius, norm(r));
   }
 }
@@ -357,10 +444,12 @@ void RigidWorld::integrate_velocities(f64 dt) {
     if (norm2(b.torque) > 0.0) b.w += b.inv_inertia_world() * b.torque * dt;
     b.v *= ld;
     b.w *= ad;
+    // (a body's own limit - a car's - or the rubble's)
+    const f64 top = b.max_speed > 0.0 ? b.max_speed : par.max_speed;
     const f64 s = norm(b.v);
-    if (s > par.max_speed) b.v *= par.max_speed / s;
+    if (s > top) b.v *= top / s;
     const f64 ws = norm(b.w) * std::max(b.radius, 0.1);
-    if (ws > par.max_speed) b.w *= par.max_speed / ws;
+    if (ws > top) b.w *= top / ws;
     b.v_pre = b.v;
     b.w_pre = b.w;
   }
@@ -427,6 +516,7 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
     if (!any) return;  // (everything asleep: no contacts)
   }
   refresh_boxes();
+  const MaterialTable& mt = mats ? *mats : default_materials();
   auto selected = [&](i32 i) { return !only || (*only)[size_t(i)]; };
   using CClock = std::chrono::steady_clock;
   const auto c0 = CClock::now();
@@ -455,6 +545,7 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
       return c.ch->uniform ? c.ch->value : c.ch->v[size_t(chunk_index(p))];
     };
     std::vector<Contact> spec;
+    CrushPatches crush;
     for (i64 i = b0; i < b1; ++i) {
       const i32 ia = static_cast<i32>(i);
       Body& A = *bodies[size_t(ia)];
@@ -502,6 +593,8 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
           c.shape_a = static_cast<i16>(A.pt_shape[k]);
           c.grid = G.slot;
           c.wvox = p;
+          set_crush(c, mt[vox_mat(A.shapes[A.pt_shape[k]].vox[size_t(A.pt_vox[k])])].crush, mt[vox_mat(grid_vox(s, p))].crush);
+          c.area = A.pt_area[k];
           c.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(~0ull) ^ (static_cast<u64>(k) << 1));
           if (G.slot != 0) c.key = mix64(c.key ^ (static_cast<u64>(G.slot) * 0x9E3779B97F4A7C15ull));
           out.push_back(c);
@@ -538,9 +631,17 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
           best.grid = G.slot;
           best.wvox = p;
           best.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(~1ull) ^ (static_cast<u64>(k) << 1)) ^ static_cast<u64>(G.slot);
+          set_crush(best, mt[vox_mat(A.shapes[A.pt_shape[k]].vox[size_t(A.pt_vox[k])])].crush, mt[vox_mat(grid_vox(s, p))].crush);
+          best.area = A.pt_area[k];
         }
         if (bt < 1e300) spec.push_back(best);
       }
+      crush.clear();
+      crush.normals(out, 0, out.size());
+      crush.normals(spec, 0, spec.size());
+      crush.extents(out, 0, out.size());
+      crush.extents(spec, 0, spec.size());
+      crush.finish(A, nullptr, mt, out, spec, 1.0);
       reduce_manifold(out, A.shapes.front().h);
       // (the nearest few speculative contacts: where it would strike first)
       if (!spec.empty()) {
@@ -548,11 +649,17 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
         const size_t keep = std::min(spec.size(), static_cast<size_t>(std::max(1, par.speculative_contacts)));
         out.insert(out.end(), spec.begin(), spec.begin() + static_cast<long>(keep));
       }
+      crush.assign(out, 0, step_dt_);
     }
   });
   for (auto& v : wc)
     for (const Contact& c : v) contacts_.push_back(c);
   const auto c1 = CClock::now();
+  // (the pairs a joint keeps from colliding: a car's welded parts and its frame)
+  std::vector<std::pair<i64, i64>> apart;
+  for (const Joint& j : joints)
+    if (!j.collide && !j.broken && j.a.body != 0 && j.b.body != 0) apart.push_back({std::min(j.a.body, j.b.body), std::max(j.a.body, j.b.body)});
+  std::sort(apart.begin(), apart.end());
   // body pairs: sweep over x (the order of the sweep is the pairs' order)
   std::vector<i32> order(static_cast<size_t>(nb));
   for (i32 i = 0; i < nb; ++i) order[size_t(i)] = i;
@@ -575,6 +682,7 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
         if (!selected(order[size_t(i)]) && !selected(order[j])) continue;
         if (A.family_ticks > 0 && B.family_ticks > 0 && A.family == B.family) continue;
         if (A.box_hi.y < B.box_lo.y || B.box_hi.y < A.box_lo.y || A.box_hi.z < B.box_lo.z || B.box_hi.z < A.box_lo.z) continue;
+        if (!apart.empty() && std::binary_search(apart.begin(), apart.end(), std::pair<i64, i64>{std::min(A.id, B.id), std::max(A.id, B.id)})) continue;
         out.push_back({std::min(order[size_t(i)], order[j]), std::max(order[size_t(i)], order[j])});
       }
     }
@@ -584,24 +692,40 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
   const auto c2 = CClock::now();
   std::vector<std::vector<Contact>> pc(pairs.size());
   parallel_for(static_cast<i64>(pairs.size()), 8, [&](i64 q0, i64 q1) {
-    std::vector<Contact> one;
+    std::vector<Contact> dirc[2], spec;
+    CrushPatches crush[2];
+    size_t found[2] = {0, 0};
     for (i64 q = q0; q < q1; ++q) {
       const auto& pr = pairs[size_t(q)];
       for (int dir = 0; dir < 2; ++dir) {
+        std::vector<Contact>& one = dirc[dir];
+        one.clear();
+        spec.clear();
         const i32 ia = dir == 0 ? pr.first : pr.second;
         const i32 ib = dir == 0 ? pr.second : pr.first;
         const Body& A = *bodies[size_t(ia)];
         const Body& B = *bodies[size_t(ib)];
         const M3 RB = to_matrix(B.q);
         const M3 RBt = transpose(RB);
-        f64 hb = 0.0;
-        for (const BodyShape& SB : B.shapes) hb = std::max(hb, SB.h);
-        const f64 reach2 = (B.radius + hb) * (B.radius + hb);
+        f64 hb = 0.0, hmin = 1e300;
+        for (const BodyShape& SB : B.shapes) {
+          hb = std::max(hb, SB.h);
+          hmin = std::min(hmin, SB.h);
+        }
+        // (continuous collision between pieces: a pair that may close more than half a voxel of
+        // B's in a substep looks along its relative motion - two cars at speed do not pass through
+        // each other's panels)
+        const f64 motion = (norm(A.v) + A.radius * norm(A.w) + norm(B.v) + B.radius * norm(B.w)) * step_dt_;
+        const bool fast = par.speculative && motion > 0.5 * hmin && !(A.asleep && B.asleep);
+        const f64 reach = B.radius + hb + (fast ? motion : 0.0);
+        const f64 reach2 = reach * reach;
         const auto& W = A.wpts;
         for (size_t k = 0; k < A.pts.size(); ++k) {
           const V3& X = W[k];
           if (norm2(X - B.x) > reach2) continue;
           const V3 sb = B.com + RBt * (X - B.x);  // (B's body frame)
+          const size_t before = one.size();
+          const f64 crush_a = mt[vox_mat(A.shapes[A.pt_shape[k]].vox[size_t(A.pt_vox[k])])].crush;
           for (size_t m = 0; m < B.shapes.size(); ++m) {
             const BodyShape& SB = B.shapes[m];
             const f64 h = SB.h;
@@ -632,12 +756,74 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
             c.shape_b = static_cast<i16>(m);
             c.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(static_cast<u64>(B.id)) ^ (static_cast<u64>(k) << 1));
             if (m != 0) c.key = mix64(c.key ^ (static_cast<u64>(m) * 0xC2B2AE3D27D4EB4Full));
+            set_crush(c, crush_a, mt[vox_mat(SB.vox[size_t(vi)])].crush);
+            c.area = A.pt_area[k];
             one.push_back(c);
           }
+          // (a fast sample in none of B's voxels: the nearest of B's faces it would reach this
+          // substep, moving as it moves against B)
+          if (!fast || one.size() != before) continue;
+          // (only a fast approach: pieces grinding in a pile, or sliding past each other, keep their
+          // ordinary contacts)
+          const V3 rel = (A.v + cross(A.w, X - A.x)) - (B.v + cross(B.w, X - B.x));
+          const f64 len = norm(rel) * step_dt_;
+          if (!(len > 0.5 * hmin) || !(norm2(rel) > kFastPair * kFastPair)) continue;
+          const V3 dirw = rel * (1.0 / norm(rel));
+          const V3 db = RBt * dirw;
+          Contact best;
+          f64 bt = 1e300;
+          for (size_t m = 0; m < B.shapes.size(); ++m) {
+            const BodyShape& SB = B.shapes[m];
+            const f64 h = SB.h;
+            f64 t;
+            int axis, sign;
+            IVec3 hit;
+            if (!first_solid(SB.xf.from(sb), SB.xf.dir_from(db), len + 0.5 * h, h, [&](const IVec3& qv) { return vox_solid(SB.get(qv)); }, &t, &axis,
+                             &sign, &hit) ||
+                !(t < bt))
+              continue;
+            V3 ns{0, 0, 0};
+            ns[axis] = sign;
+            const V3 n = RB * SB.xf.dir_to(ns);
+            if (!(dot(dirw, n) < -0.3)) continue;  // (head on, not grazing)
+            bt = t;
+            best.a = ia;
+            best.b = ib;
+            best.p = X;
+            best.n = n;
+            best.depth = -std::max(0.0, t * -dot(dirw, n));  // (the gap along the normal: a speculative contact)
+            best.vox_a = A.pt_vox[k];
+            best.vox_b = SB.index(hit);
+            best.shape_a = static_cast<i16>(A.pt_shape[k]);
+            best.shape_b = static_cast<i16>(m);
+            best.key = mix64(static_cast<u64>(A.id) * 0x100000001B3ull ^ mix64(static_cast<u64>(B.id) ^ 0x5BD1E995ull) ^ (static_cast<u64>(k) << 1)) ^
+                       static_cast<u64>(m);
+            set_crush(best, crush_a, mt[vox_mat(SB.get(hit))].crush);
+            best.area = A.pt_area[k];
+          }
+          if (bt < 1e300) spec.push_back(best);
         }
+        found[dir] = one.size() + spec.size();
+        crush[dir].clear();
+        crush[dir].normals(one, 0, one.size());
+        crush[dir].normals(spec, 0, spec.size());
+        crush[dir].extents(one, 0, one.size());
+        crush[dir].extents(spec, 0, spec.size());
+        crush[dir].finish(A, &B, mt, one, spec, 1.0);
         reduce_manifold(one, A.shapes.front().h);
+        if (!spec.empty()) {
+          std::sort(spec.begin(), spec.end(), [](const Contact& x, const Contact& y) { return x.depth > y.depth || (x.depth == y.depth && x.key < y.key); });
+          const size_t keep = std::min(spec.size(), static_cast<size_t>(std::max(1, par.speculative_contacts)));
+          one.insert(one.end(), spec.begin(), spec.begin() + static_cast<long>(keep));
+        }
+      }
+      // (both bodies' samples found the other: each direction's contacts stand for half the patch)
+      const f64 share = found[0] > 0 && found[1] > 0 ? 0.5 : 1.0;
+      for (int dir = 0; dir < 2; ++dir) {
+        std::vector<Contact>& one = dirc[dir];
+        crush[dir].scale(share);
+        crush[dir].assign(one, 0, step_dt_);
         for (const Contact& c : one) pc[size_t(q)].push_back(c);
-        one.clear();
       }
     }
   });
@@ -722,8 +908,10 @@ void RigidWorld::solve(f64 dt) {
     c.k2 = eff(c, c.t2);
     const f64 vn = dot(vel(c.a, c.ra) - vel(c.b, c.rb), c.n);
     c.approach = std::max(0.0, -vn);
-    c.bounce = vn < -par.bounce_speed ? -par.restitution * vn : 0.0;
+    // (a crumpling contact folds: it does not bounce)
+    c.bounce = vn < -par.bounce_speed && c.cap <= 0.0 ? -par.restitution * vn : 0.0;
     if (c.depth < 0.0) c.bounce = c.depth / dt;  // (speculative: it may close the gap this substep, no more)
+    c.crushing = false;
     c.mu = par.friction;
     c.bias = std::min(par.max_correction, par.baumgarte * std::max(0.0, c.depth - par.slop) / dt);
   }
@@ -733,12 +921,14 @@ void RigidWorld::solve(f64 dt) {
     const auto it = warm_.find(c.key);
     if (it != warm_.end()) {
       c.ln = 0.85 * it->second[0];
+      if (c.cap > 0.0) c.ln = std::min(c.ln, c.cap);
       c.l1 = 0.85 * it->second[1];
       c.l2 = 0.85 * it->second[2];
       apply(c, c.n * c.ln + c.t1 * c.l1 + c.t2 * c.l2);
     }
   }
   prepare_joints(dt, Iw);
+  prepare_wheels(dt, Iw);
   // Parallel Gauss-Seidel by graph colouring. A pair's manifold (consecutive contacts of the same
   // two bodies, or a body and the world) is solved in order as one group; the groups of one colour
   // share no awake body, so they are solved concurrently (bitwise the same in any order). Groups
@@ -809,7 +999,8 @@ void RigidWorld::solve(f64 dt) {
   for (int it = 0; it < vel_iters; ++it) {
     sweep([&](Contact& c) {
       V3 dv = vel(c.a, c.ra) - vel(c.b, c.rb);
-      const f64 ln = std::max(0.0, c.ln + c.kn * (c.bounce - dot(dv, c.n)));
+      f64 ln = std::max(0.0, c.ln + c.kn * (c.bounce - dot(dv, c.n)));
+      if (c.cap > 0.0) ln = std::min(ln, c.cap);  // (a crumpling side folds beyond its crush strength)
       apply(c, c.n * (ln - c.ln));
       c.ln = ln;
       dv = vel(c.a, c.ra) - vel(c.b, c.rb);
@@ -821,6 +1012,7 @@ void RigidWorld::solve(f64 dt) {
       c.l2 = l2;
     });
     solve_joints();
+    solve_wheels();
   }
   // Squeeze guard: a light body pinned between heavy ones can come out of the iteration with a
   // speed no contact partner has (and fly off). Contacts may slow a body down freely but speed it
@@ -847,7 +1039,10 @@ void RigidWorld::solve(f64 dt) {
     }
   }
   warm_.clear();
-  for (const Contact& c : contacts_) warm_[c.key] = {c.ln, c.l1, c.l2};
+  for (Contact& c : contacts_) {
+    warm_[c.key] = {c.ln, c.l1, c.l2};
+    c.crushing = c.cap > 0.0 && c.ln >= 0.98 * c.cap;
+  }
   // split-impulse position correction: pseudo velocities, normal only
   std::vector<V3> pv(bodies.size()), pw(bodies.size());
   auto pvel = [&](i32 i, const V3& r) -> V3 {
@@ -856,7 +1051,7 @@ void RigidWorld::solve(f64 dt) {
   };
   for (int it = 0; it < pos_iters; ++it) {
     sweep([&](Contact& c) {
-      if (c.bias <= 0.0) return;
+      if (c.bias <= 0.0 || c.crushing) return;  // (folding: its crumpling side gives way instead)
       const f64 vn = dot(pvel(c.a, c.ra) - pvel(c.b, c.rb), c.n);
       const f64 lp = std::max(0.0, c.lp + c.kn * (c.bias - vn));
       const V3 J = c.n * (lp - c.lp);
@@ -873,6 +1068,7 @@ void RigidWorld::solve(f64 dt) {
     solve_joints_position(pv, pw);
   }
   finish_joints(dt);
+  finish_wheels(dt);
   pseudo_v_.swap(pv);
   pseudo_w_.swap(pw);
 }
@@ -930,6 +1126,7 @@ const std::vector<u8>& RigidWorld::support(f64 dt) {
     }
     sup_pairs_.push_back({c.a, c.b, jz, static_cast<u8>(up_a), static_cast<u8>(up_b)});
   }
+  if (!wheels.empty()) wheel_support([&](i32 to, bool up, f64 jz) { push(to, up, jz); });
 
   if (sup_queue_.empty() || sup_pairs_.empty()) return held_;
   // the awake pairs' edges by the supporting body (a counting sort: in contact order)
@@ -1079,6 +1276,7 @@ void RigidWorld::sleep_update(f64 dt) {
   }
   // (bodies joined sleep together; one joined to a moving frame never sleeps)
   if (!joints.empty()) joint_stillness();
+  if (!wheels.empty()) wheel_stillness();
   for (size_t i = 0; i < bodies.size(); ++i) {
     Body& b = *bodies[i];
     if (b.asleep) continue;
@@ -1125,6 +1323,7 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
     static const bool sc = diag("SVX_SERIAL_COLLIDE");
     std::unique_ptr<SerialScope> ss(sc ? new SerialScope() : nullptr);
     collide(statics);
+    cast_wheels(statics);
   }
   const auto t1 = Clock::now();
   {
@@ -1203,6 +1402,7 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
     for (size_t i = 0; i < bodies.size(); ++i) fresh[i] = std::binary_search(before_ids.begin(), before_ids.end(), bodies[i]->id) ? 0 : 1;
     contacts_.swap(kept);
     collide(statics, &fresh);
+    cast_wheels(statics);
     // (warm-started from the first solve of this substep: fewer iterations do)
     const int iters = par.iterations;
     par.iterations = std::max(4, iters / 2);

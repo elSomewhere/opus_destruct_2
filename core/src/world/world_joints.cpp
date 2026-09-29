@@ -18,38 +18,6 @@ using namespace world_detail;
 
 namespace {
 
-// The solid voxel nearest lattice point L (metres, voxel size h): the one it is in, else the
-// nearest of its 26 neighbours.
-template <class Solid>
-bool nearest_solid(const V3& L, f64 h, Solid&& solid, IVec3* out, f64* dist2) {
-  const IVec3 c = voxel_of(L, h);
-  if (solid(c)) {
-    *out = c;
-    *dist2 = 0.0;
-    return true;
-  }
-  bool any = false;
-  for (int dx = -1; dx <= 1; ++dx)
-    for (int dy = -1; dy <= 1; ++dy)
-      for (int dz = -1; dz <= 1; ++dz) {
-        if (dx == 0 && dy == 0 && dz == 0) continue;
-        const IVec3 q{c[0] + dx, c[1] + dy, c[2] + dz};
-        if (!solid(q)) continue;
-        const f64 e = norm2(V3{h * q[0], h * q[1], h * q[2]} - L);
-        if (!any || e < *dist2) {
-          *out = q;
-          *dist2 = e;
-          any = true;
-        }
-      }
-  return any;
-}
-
-bool shape_solid(const BodyShape& S, const IVec3& p) {
-  const i32 i = S.index(p);
-  return i >= 0 && vox_solid(S.vox[size_t(i)]);
-}
-
 JointDrive sane_drive(JointDrive d) {
   d.max = std::max(0.0, d.max);
   d.period = std::max(1e-3, d.period);
@@ -162,6 +130,8 @@ JointId World::add_joint_impl(const JointDesc& d, JointId want) {
   j.drive = sane_drive(d.drive);
   j.break_force = std::max(0.0, d.break_force);
   j.break_torque = std::max(0.0, d.break_torque);
+  j.break_angle = std::isfinite(d.break_angle) ? std::max(0.0, d.break_angle) : 0.0;
+  j.collide = d.collide;
   j.rel = conj(Q[0]) * Q[1];
   r.id = j.id;
   // (in id order: the solver's order, the same on every run)
@@ -370,11 +340,17 @@ void World::joints_to_piece(const Body& b) {
 }
 
 void World::joints_follow_splits() {
-  if (jrecs_.empty() || pending_retire_.empty()) return;
+  if (jrecs_.empty() || (pending_retire_.empty() && split_kept_.empty())) return;
   for (size_t k = 0; k < jrecs_.size(); ++k)
     for (int e = 0; e < 2; ++e) {
       JointRec::End& E = e ? jrecs_[k].b : jrecs_[k].a;
-      if (E.piece <= 0 || !std::binary_search(pending_retire_.begin(), pending_retire_.end(), E.piece)) continue;
+      if (E.piece <= 0) continue;
+      if (!std::binary_search(pending_retire_.begin(), pending_retire_.end(), E.piece)) {
+        // (a piece split in place: an end on a part that came off follows it)
+        if (!std::binary_search(split_kept_.begin(), split_kept_.end(), E.piece)) continue;
+        const Body* b = rigid_.find(E.piece);
+        if (b && E.shape >= 0 && size_t(E.shape) < b->shapes.size() && shape_solid(b->shapes[size_t(E.shape)], E.voxel)) continue;
+      }
       // (the part its voxel is in; none: it went to dust, it was carved)
       i64 to = -1;
       i32 shape = -1;

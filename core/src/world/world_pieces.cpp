@@ -192,6 +192,7 @@ Body* World::make_body_from_world(const std::vector<FragKey>& frags, const V3& v
   Body* ptr = b.get();
   rigid_.add(std::move(b));
   if (!jrecs_.empty()) joints_to_piece(*ptr);  // (joints on its voxels hold on to it now)
+  if (!wrecs_.empty()) wheels_to_piece(*ptr);  // (wheels too: a car's chassis dropped in)
   return ptr;
 }
 
@@ -953,6 +954,7 @@ std::unique_ptr<Body> World::sub_body(const Body& parent, const std::vector<SVox
   }
   c->parent = parent.announced ? parent.id : parent.parent;
   c->keep = parent.keep;
+  c->max_speed = parent.max_speed;
   const V3 vp = use_pre ? parent.v_pre : parent.v;
   const V3 wp = use_pre ? parent.w_pre : parent.w;
   c->v = vp + cross(wp, c->x - parent.x);
@@ -966,7 +968,7 @@ std::unique_ptr<Body> World::sub_body(const Body& parent, const std::vector<SVox
   return c;
 }
 
-bool World::split_body(Body& b, bool use_pre, bool force_replace, const std::vector<Carried>* carried, f64 spent) {
+bool World::split_body(Body& b, bool use_pre, bool force_replace, const std::vector<Carried>* carried, f64 spent, bool in_place) {
   if (b.graph_dirty || !b.graph) rebuild_body_graph(b);
   BodyGraph& G = *b.graph;
   const i32 n = static_cast<i32>(G.P.nodes.size());
@@ -1029,11 +1031,32 @@ bool World::split_body(Body& b, bool use_pre, bool force_replace, const std::vec
     }
   }
   use_pre = use_pre && separated;
+  // (a piece that keeps its identity: its largest part, the one most of its wheels are on, stays)
+  i32 stay = -1;
+  if (in_place || keeps_identity(b)) {
+    std::vector<i32> wheels_on(parts.size(), 0);
+    for (const WheelRec& r : wrecs_) {
+      if (r.mount.piece != b.id || r.mount.shape < 0 || size_t(r.mount.shape) >= b.shapes.size()) continue;
+      const BodyShape& S = b.shapes[size_t(r.mount.shape)];
+      const i32 cell = S.index(r.mount.voxel);
+      if (cell < 0 || !vox_solid(S.vox[size_t(cell)])) continue;
+      const i32 f = static_cast<i32>(S.frag[size_t(cell)]) - 1;
+      const i32 c = f >= 0 ? frag_comp[size_t(f)] : -1;
+      if (c >= 0) ++wheels_on[size_t(c)];
+    }
+    for (i32 c = 0; c < static_cast<i32>(parts.size()); ++c) {
+      if (static_cast<i32>(parts[size_t(c)].size()) < cfg_.min_body_voxels) continue;
+      if (stay < 0 || wheels_on[size_t(c)] > wheels_on[size_t(stay)] ||
+          (wheels_on[size_t(c)] == wheels_on[size_t(stay)] && parts[size_t(c)].size() > parts[size_t(stay)].size()))
+        stay = c;
+    }
+  }
   // (voxels lost on the way - removed, crushed, carved (force_replace), or shards turned to dust:
   // what rested on them would hover over the gap)
   bool lost = force_replace;
-  for (auto& part : parts) {
-    if (part.empty()) continue;
+  for (i32 pc = 0; pc < static_cast<i32>(parts.size()); ++pc) {
+    auto& part = parts[size_t(pc)];
+    if (part.empty() || pc == stay) continue;
     if (nc > 1 && static_cast<i32>(part.size()) < cfg_.min_body_voxels) {
       lost = true;
       // (a shard: dust and a few chips, not a rigid piece)
@@ -1059,9 +1082,64 @@ bool World::split_body(Body& b, bool use_pre, bool force_replace, const std::vec
     }
   }
   if (lost) wake_around(b);
-  pending_retire_.push_back(b.id);
   if (nc > 1) ++st_.body_splits;
+  if (stay < 0) {
+    pending_retire_.push_back(b.id);
+    return true;
+  }
+  // the part that stays: the others' voxels (and any in no part) leave the piece, edited in place
+  std::vector<u8> mine;
+  for (size_t k = 0; k < b.shapes.size(); ++k) {
+    BodyShape& S = b.shapes[k];
+    mine.assign(S.vox.size(), 0);
+    for (const SVox& v : parts[size_t(stay)])
+      if (v.shape == k) mine[size_t(v.cell)] = 1;
+    for (size_t i = 0; i < S.vox.size(); ++i) {
+      if (mine[i] || !vox_solid(S.vox[i])) continue;
+      S.vox[i] = kAir;
+      S.frag[i] = 0;
+      S.brk[i] = 0;
+      for (auto& l : S.layer)
+        if (!l.empty()) l[i] = 0;
+    }
+  }
+  const V3 com0 = b.com, x0 = b.x;
+  if (use_pre) {
+    b.v = b.v_pre;
+    b.w = b.w_pre;
+  }
+  if (separated) {
+    b.family = b.id;
+    b.family_ticks = 1;
+  }
+  refragment_body(b);
+  refresh_in_place(b, com0, x0);
+  split_kept_.push_back(b.id);
   return true;
+}
+
+bool World::keeps_identity(const Body& b) const {
+  if (b.keep) return true;
+  for (const WheelRec& r : wrecs_)
+    if (r.mount.piece == b.id) return true;
+  for (const JointRec& r : jrecs_)
+    if (r.a.piece == b.id || r.b.piece == b.id) return true;
+  return false;
+}
+
+void World::refresh_in_place(Body& b, const V3& com0, const V3& x0) {
+  rigid_.wake(b);
+  body_refresh(b, grid_.h, cfg_.rigid.max_points);
+  // (the same place in the world: its lattice does not move, its centre of mass does)
+  b.x = x0 + rotate(b.q, b.com - com0);
+  b.v += cross(b.w, b.x - x0);
+  b.v_pre = b.v;
+  b.w_pre = b.w;
+  b.graph_dirty = true;
+  b.stress_cooldown = 0;
+  b.refresh_box();
+  reshaped_.push_back(b.id);
+  ++st_.reshapes;
 }
 
 void World::wake_around(const Body& b) {
@@ -1071,15 +1149,21 @@ void World::wake_around(const Body& b) {
 
 void World::flush_body_changes() {
   std::sort(pending_retire_.begin(), pending_retire_.end());
+  std::sort(split_kept_.begin(), split_kept_.end());
   joints_follow_splits();  // (the joints on the pieces split: onto the parts their voxels are in)
+  wheels_follow_splits();  // (and the wheels)
+  const bool kept = !split_kept_.empty();
+  split_kept_.clear();
   if (!pending_retire_.empty()) {
     remove_bodies(std::move(pending_retire_), PieceEnd::Split);
     pending_retire_.clear();
   }
   const bool joined = !jrecs_.empty() && !pending_add_.empty();
+  const bool wheeled = !wrecs_.empty() && !pending_add_.empty();
   for (auto& c : pending_add_) rigid_.add(std::move(c));
   pending_add_.clear();
-  if (joined) update_joint_ends();
+  if (joined || (kept && !jrecs_.empty())) update_joint_ends();
+  if (wheeled || (kept && !wrecs_.empty())) update_wheel_mounts();
 }
 
 namespace {
@@ -1173,8 +1257,10 @@ int World::fracture_hook(f64 dt) {
       fsum[size_t(c.b)] += norm(Fb);
     }
   }
-  // (what hangs on joints, and what they pull: a steady load)
+  // (what hangs on joints, and what they pull: a steady load; a chassis on its wheels, and what
+  // they stand on)
   if (!jrecs_.empty()) joint_piece_forces(per, fsum);
+  if (!wrecs_.empty()) wheel_piece_forces(per, fsum);
   using FClock = std::chrono::steady_clock;
   const auto f0 = FClock::now();
   // which pieces are checked (in body order)
@@ -1321,7 +1407,7 @@ int World::fracture_hook(f64 dt) {
   return result;
 }
 
-void World::carve_bodies(const V3& c, f64 r) {
+void World::carve_bodies(const V3& c, f64 r, f64 energy) {
   std::vector<i64> hit;
   for (const auto& bp : rigid_.bodies) {
     const Body& b = *bp;
@@ -1347,8 +1433,9 @@ void World::carve_bodies(const V3& c, f64 r) {
             const IVec3 p{x, y, z};
             const i32 i = S.index(p);
             if (i < 0 || !vox_solid(S.vox[size_t(i)])) continue;
-            if (norm(V3{h * x, h * y, h * z} - s) > r) continue;
-            if (mats()[vox_mat(S.vox[size_t(i)])].ductile) continue;  // (as in the world)
+            const f64 d = norm(V3{h * x, h * y, h * z} - s);
+            if (d > r) continue;
+            if (!penetrates(mats()[vox_mat(S.vox[size_t(i)])], energy, r, d)) continue;  // (as in the world)
             S.vox[size_t(i)] = kAir;
             S.frag[size_t(i)] = 0;
             for (auto& l : S.layer)
@@ -1406,7 +1493,7 @@ void World::blast_bodies(const PendingEvent& e) {
 }
 
 i64 World::body_bytes(const Body& b) {
-  i64 n = sizeof(Body) + vec_bytes(b.frags) + vec_bytes(b.pts) + vec_bytes(b.pt_vox) + vec_bytes(b.pt_shape) + vec_bytes(b.wpts) +
+  i64 n = sizeof(Body) + vec_bytes(b.frags) + vec_bytes(b.pts) + vec_bytes(b.pt_vox) + vec_bytes(b.pt_shape) + vec_bytes(b.pt_area) + vec_bytes(b.wpts) +
           vec_bytes(b.shapes);
   for (const BodyShape& S : b.shapes) {
     n += vec_bytes(S.vox) + vec_bytes(S.frag) + vec_bytes(S.brk) + vec_bytes(S.jbrk);
@@ -1463,6 +1550,15 @@ void World::remove_bodies(std::vector<i64> ids, PieceEnd end) {
     events_.push_back(std::move(ev));
   }
   rigid_.remove_if([&](const Body& b) { return std::binary_search(ids.begin(), ids.end(), b.id); });
+  // (a chassis gone other than by breaking - removed, culled, fallen out, archived - takes its
+  // wheels with it; a split's parts keep theirs: flush_body_changes)
+  if (end != PieceEnd::Split && !wrecs_.empty())
+    for (size_t k = wrecs_.size(); k-- > 0;) {
+      const i64 on = wrecs_[k].mount.piece;
+      if (on <= 0 || !std::binary_search(ids.begin(), ids.end(), on)) continue;
+      wrecs_.erase(wrecs_.begin() + static_cast<std::ptrdiff_t>(k));
+      rigid_.wheels.erase(rigid_.wheels.begin() + static_cast<std::ptrdiff_t>(k));
+    }
 }
 
 void World::limit_bodies() {
@@ -1479,6 +1575,8 @@ void World::limit_bodies() {
     if (!j.broken)
       for (const i64 id : {j.a.body, j.b.body})
         if (id != 0) jointed.push_back(id);
+  for (const Wheel& w : rigid_.wheels)  // (a vehicle's chassis)
+    if (!w.broken && w.body != 0) jointed.push_back(w.body);
   std::sort(jointed.begin(), jointed.end());
   std::vector<std::tuple<int, i32, i64>> cand;  // (awake, voxels, id)
   for (const auto& bp : rigid_.bodies)

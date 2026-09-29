@@ -27,6 +27,7 @@
 
 #include "svx/base/vec.hpp"
 #include "svx/phys/joint.hpp"
+#include "svx/phys/wheel.hpp"
 #include "svx/world/grid.hpp"
 
 namespace svx {
@@ -117,6 +118,7 @@ struct Body {
   std::vector<V3> pts;
   std::vector<i32> pt_vox;            // shape voxel index
   std::vector<u16> pt_shape;          // ... of this shape
+  std::vector<f32> pt_area;           // m^2 of its surface each stands for (a crumpling patch's shares)
   f64 radius = 0.0;                   // max |pt|
   V3 box_lo, box_hi;                  // world AABB (samples), refreshed each substep
   // sleep
@@ -133,6 +135,7 @@ struct Body {
   i64 parent = 0;
   i64 origin = 0;  // (world) the piece it was split from, until it joins the world (joints follow their voxels)
   bool keep = false;  // (world) never culled (World::set_piece_keep; a joint's pieces are kept too)
+  f64 max_speed = 0.0;  // m/s: its speed limit (0: RigidParams::max_speed; a car's is higher)
   // world data (fracture layer)
   std::shared_ptr<BodyGraph> graph;
   i32 stress_cooldown = 0;
@@ -240,6 +243,14 @@ struct Contact {
   f64 approach = 0;                  // normal approach speed before the solve (m/s, > 0 closing)
   f64 mu = 0.6;
   u64 key = 0;
+  // Crumpling (Material::crush, docs/VEHICLES.md): where a side crumples, the contact carries at
+  // most the softer side's crush strength x its share of the contact area: cap (N s this
+  // substep; 0: no cap). crush: the sides that fold (1 a, 2 b, 3 both). crushing: it carried its
+  // cap (the bodies keep closing: its crumpling side folds, no position correction).
+  f64 area = 0.0;                    // m^2 of the contact patch it stands for
+  f64 cap = 0.0;
+  u8 crush = 0;
+  bool crushing = false;
   V3 impulse() const { return n * ln + t1 * l1 + t2 * l2; }  // on a (b receives the opposite)
 };
 
@@ -252,6 +263,12 @@ class RigidWorld {
   std::vector<Joint> joints;
   // The clock (s) at the end of the substep being solved: joints' drives follow their programs by it.
   f64 time = 0.0;
+  // Wheels (phys/wheel.hpp), ascending id: cast against the statics and the bodies each substep,
+  // solved with the contacts and joints. Their mounts are set before each substep by the owner (a
+  // body not in `bodies`: the wheel is skipped).
+  std::vector<Wheel> wheels;
+  // The materials of the voxels (surfaces' tyre grip); nullptr: the process's.
+  const MaterialTable* mats = nullptr;
 
   // Contacts of the last substep's final solve (read by the fracture layer / structure loads).
   // Their body indices refer to the body list of that substep: valid until bodies are added or
@@ -347,6 +364,31 @@ class RigidWorld {
   void wake_jointed();     // a sleeper joined to a body in motion, or to a moving frame, wakes
   void joint_stillness();  // joined bodies count towards sleep together (sleep_update)
   static bool driving(const Joint& j, const JointPrep& P);  // its drive at work (running, or short of its target)
+  // wheels (wheel.cpp): per wheel, its rows this substep
+  struct WheelPrep {
+    bool on = false;                   // (mounted on an awake body)
+    bool touch = false;                // (its tyre touches something)
+    i32 ia = -1, ib = -1;              // the chassis; the body it stands on (-1: a static grid, a sleeping body)
+    f64 ma = 0.0, mb = 0.0;
+    M3 Ia, Ib;
+    V3 ra, rb;                         // arms to the contact point
+    V3 u;                              // the suspension's axis, up (world)
+    V3 fx, fy;                         // the tyre's forward and left in the contact plane
+    f64 ks = 0.0, kx = 0.0, ky = 0.0;  // row masses (inverted): suspension, longitudinal (with the spin), lateral
+    f64 gs = 0.0, bs = 0.0;            // the suspension's softness and target rate (its spring, implicit)
+    f64 gx = 0.0, gy = 0.0;            // the tyre rows' softness (slip stiffness: soft at speed)
+    f64 bump = 0.0;                    // the bump stop's target rate (compressed through its travel)
+    f64 mu = 0.0;                      // friction limit coefficient (grip x surface, falling off as it slides)
+    f64 brake = 0.0;                   // the brake's most torque impulse this substep (N m s)
+  };
+  std::vector<WheelPrep> wprep_;
+  f64 wheel_dt_ = 1.0 / 120.0;
+  void cast_wheels(const std::vector<StaticGrid>& statics);  // (the tyres against the grids and the other bodies)
+  void prepare_wheels(f64 dt, const std::vector<M3>& Iw);
+  void solve_wheels();
+  void finish_wheels(f64 dt);
+  void wheel_support(const std::function<void(i32 body, bool up, f64 jz)>& push) const;  // (sleep: what stands on its wheels is held)
+  void wheel_stillness();                                                                // (a driven or spinning wheel keeps its chassis awake)
   std::vector<u8> hanging(const std::vector<u8>& held) const;  // bodies a joint holds up (to what is held or immovable)
   std::vector<u8> machine_parts() const;                        // per body: an end of a drive at work
 };

@@ -25,7 +25,8 @@ struct svxc_world {
   std::vector<u8> piece_vox;
 };
 
-static_assert(SVXC_REBAR == static_cast<int>(MaterialId::Rebar) && SVXC_WOOD == static_cast<int>(MaterialId::Wood),
+static_assert(SVXC_REBAR == static_cast<int>(MaterialId::Rebar) && SVXC_WOOD == static_cast<int>(MaterialId::Wood) &&
+                  SVXC_LAMP == static_cast<int>(MaterialId::Lamp) && SVXC_LAMP + 1 == kStandardMaterials,
               "svx_core.h's materials are the registry's standard ones");
 static_assert(SVXC_JOINT_DISTANCE == static_cast<int>(JointType::Distance) && SVXC_ANCHOR_PIECE == static_cast<int>(JointAnchor::Kind::Piece),
               "svx_core.h's joints are the core's");
@@ -136,6 +137,11 @@ Material material_of(const svxc_material& m) {
   M.frag_z = m.frag[2];
   M.frag_noise = m.frag_noise;
   M.indestructible = m.indestructible != 0;
+  M.ductile = m.ductile != 0;
+  M.reinforcement = m.reinforcement != 0;
+  M.crush = m.crush;
+  M.penetration = m.penetration;
+  M.grip = m.grip;
   return M;
 }
 
@@ -155,6 +161,11 @@ void put_material(const Material& M, svxc_material* out) {
   out->frag[2] = M.frag_z;
   out->frag_noise = M.frag_noise;
   out->indestructible = M.indestructible ? 1 : 0;
+  out->ductile = M.ductile ? 1 : 0;
+  out->reinforcement = M.reinforcement ? 1 : 0;
+  out->crush = M.crush;
+  out->penetration = M.penetration;
+  out->grip = M.grip;
 }
 
 // (a table's: set or registered; its properties; by name)
@@ -413,6 +424,10 @@ int svxc_load_delta(svxc_world* w, const uint8_t* data, size_t size) {
 int svxc_modified(svxc_world* w) { return w && w->w.modified() ? 1 : 0; }
 
 // ---- commands
+
+void svxc_shoot(svxc_world* w, double x, double y, double z, double radius, double energy) {
+  if (w) w->w.shoot({x, y, z}, radius, energy);
+}
 
 void svxc_carve(svxc_world* w, double x, double y, double z, double radius) {
   if (w) w->w.carve({x, y, z}, radius);

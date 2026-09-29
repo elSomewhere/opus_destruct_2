@@ -439,6 +439,8 @@ void RigidWorld::finish_joints(f64 dt) {
     j.torque = P.L * (1.0 / dt);
     j.value = P.value;
     if ((j.break_force > 0.0 && norm(j.force) > j.break_force) || (j.break_torque > 0.0 && norm(j.torque) > j.break_torque)) j.broken = true;
+    // (a hinge turned past its capacity: a plastic hinge torn through, a door off its hinge)
+    if (j.type == JointType::Hinge && j.break_angle > 0.0 && std::abs(P.value) > j.break_angle) j.broken = true;
   }
 }
 

@@ -92,6 +92,9 @@ void World::load(VoxelGrid&& g) {
   jrecs_.clear();
   rigid_.joints.clear();
   next_joint_ = 1;
+  wrecs_.clear();
+  rigid_.wheels.clear();
+  next_wheel_ = 1;
   steps_ = 0;
   oriented_ = 0;
   ++grid_epoch_;
@@ -875,8 +878,9 @@ void World::step_structures() {
       detach_unsupported(s);
       continue;
     }
-    if (!r.converged && s.run_iters + r.iters > 120) {
-      // a stale preconditioner (after many breaks): rebuild it, and restart from here. A small
+    if (!r.converged && (s.run_iters + r.iters > 120 || !(r.rel_res < 10.0))) {
+      // a stale preconditioner (after many breaks; diverging: a crash's breaks at once): rebuild
+      // it, and restart from here. A small
       // structure's block-Jacobi one that did not converge meets a near-mechanism (a frame left
       // hanging by one face, a member held by a sliver of junction): its multigrid from now on
       // (rigid-body coarse spaces, the coarsest level solved exactly). What converges in neither
@@ -1487,8 +1491,10 @@ void World::structure_loads(f64 dt_sub) {
     }
   }
   if (!jrecs_.empty()) joint_structure_loads(dt_sub);
+  if (!wrecs_.empty()) wheel_structure_loads(dt_sub);
   // dead loads: bodies falling asleep keep their last contact forces on the world (what they
-  // hang on keeps its joint's pull: a joint of sleeping bodies carries what it did)
+  // hang on keeps its joint's pull: a joint of sleeping bodies carries what it did; a parked car
+  // keeps loading the bridge its wheels stand on)
   for (size_t bi = 0; bi < rigid_.bodies.size(); ++bi) {
     Body& b = *rigid_.bodies[bi];
     if (b.asleep && !b.was_asleep) {
@@ -1498,6 +1504,12 @@ void World::structure_loads(f64 dt_sub) {
         if (c.a == static_cast<i32>(bi) && c.b < 0 && finite3(c.impulse()) && live(c.grid)) {
           dl.push_back({GVox{c.wvox, c.grid}, c.p, c.impulse() * (-1.0 / dt_sub)});
           seeds_.push_back(GVox{c.wvox, c.grid});
+        }
+      for (const Wheel& w : rigid_.wheels)
+        if (w.body == b.id && !w.broken && w.contact && w.ground_body == 0 && live(w.ground_grid) && finite3(w.force)) {
+          const GVox gv{IVec3{w.ground_voxel[0], w.ground_voxel[1], w.ground_voxel[2]}, w.ground_grid};
+          dl.push_back({gv, w.point, w.force * -1.0});
+          seeds_.push_back(gv);
         }
     } else if (!b.asleep && b.was_asleep) {
       dead_loads_.erase(b.id);
@@ -1635,7 +1647,27 @@ void World::carve(const V3& pos, f64 radius) {
   PendingEvent e;
   e.pos = pos;
   e.radius = std::min(radius, cfg_.max_event_radius);
+  e.energy = -1.0;  // (a cut)
   queue_.push_back(e);
+}
+
+void World::shoot(const V3& pos, f64 radius, f64 energy) {
+  if (!in_range(pos) || !std::isfinite(radius) || radius <= 0.0 || !std::isfinite(energy) || energy < 0.0) return;
+  PendingEvent e;
+  e.pos = pos;
+  e.radius = std::min(radius, cfg_.max_event_radius);
+  e.energy = std::min(energy, 1e15);
+  queue_.push_back(e);
+}
+
+bool World::penetrates(const Material& M, f64 energy, f64 r, f64 d) const {
+  if (M.indestructible) return false;
+  if (energy < 0.0 || M.penetration <= 0.0) return true;  // (a cut; or brittle material: any impact)
+  // The impact's energy density: its energy over the sphere's volume, concentrated at its centre
+  // (1.5 x there, 0.5 x at its edge: a bullet's hole is deepest where it strikes).
+  constexpr f64 kSphere = 4.18879020478639098461;  // (4 pi / 3)
+  const f64 base = energy / std::max(1e-9, kSphere * r * r * r);
+  return base * std::max(0.5, 1.5 - d / std::max(1e-9, r)) >= M.penetration;
 }
 
 void World::blast(const V3& pos, f64 radius, f64 energy) {
@@ -1778,7 +1810,7 @@ void World::support_changed(const GVox& v, std::vector<GKey>* chunks) {
   }
 }
 
-void World::carve_world(const V3& c, f64 r, std::vector<GVox>* removed) {
+void World::carve_world(const V3& c, f64 r, f64 energy, std::vector<GVox>* removed) {
   std::vector<GKey> supports;
   // every grid the sphere reaches: the world grid, and the oriented ones it overlaps
   for (size_t gi = 0; gi < grids_.size(); ++gi) {
@@ -1802,12 +1834,14 @@ void World::carve_world(const V3& c, f64 r, std::vector<GVox>* removed) {
           const V3 p{h * x, h * y, h * z};
           // a slightly jagged crater edge (deterministic per voxel)
           const f64 jag = 1.0 + 0.18 * (unit01(mix64(key3(x, y, z) ^ salt)) - 0.5);
-          if (norm(p - cl) > r * jag) continue;
+          const f64 d = norm(p - cl);
+          if (d > r * jag) continue;
           const IVec3 q{x, y, z};
           const Vox v = G.get(q);
           if (!vox_solid(v)) continue;
-          const Material& M = mats()[vox_mat(v)];
-          if (M.indestructible || M.ductile) continue;  // (bullets and craters bend steel and bars; they do not remove it)
+          // (an impact removes what it penetrates: bullets hole sheet and brick, bend a section's
+          // steel and a column's bars; a rocket holes a section; nothing but a cut goes through plate)
+          if (!penetrates(mats()[vox_mat(v)], energy, r, d)) continue;
           if (vox_anchored(v)) support_changed(GVox{q, g}, &supports);
           G.set(q, kAir);
           removed->push_back(GVox{q, g});
@@ -1881,8 +1915,9 @@ void World::process(const PendingEvent& e) {
   ++st_.events;
   design_near(e.pos, (e.blast ? cfg_.blast_reach : 1.0) * e.radius + 1.0);
   std::vector<GVox> removed;
-  carve_world(e.pos, e.radius, &removed);
-  carve_bodies(e.pos, e.radius);
+  // (a blast craters as an impact of its energy; a carve is a cut or a shot)
+  carve_world(e.pos, e.radius, e.energy, &removed);
+  carve_bodies(e.pos, e.radius, e.energy);
   if (e.blast) {
     blast_world(e);
     blast_bodies(e);
@@ -2164,6 +2199,7 @@ void World::tick() {
   // rigid bodies (with fracture) and their loads on the structures
   const auto tr = Clock::now();
   rigid_.par = cfg_.rigid;
+  rigid_.mats = mats_.get();
   // (the violent part of a collapse, or a large pile settling: one substep a tick)
   const bool busy = rigid_.busy() || rigid_.contacts().size() > cfg_.rigid.busy_contacts;
   const int ns = busy ? 1 : std::max(1, cfg_.rigid.substeps);
@@ -2175,9 +2211,15 @@ void World::tick() {
       reap_joints();
       rigid_.time = clock0 + static_cast<f64>(k + 1) * dts;  // (the drives' clock)
     }
+    if (!wrecs_.empty()) {
+      update_wheel_mounts();  // (their mounts where the chassis are now)
+      reap_wheels();
+    }
     rigid_.substep(dts, statics_, [this](f64 dt) { return fracture_hook(dt); });
     structure_loads(dts);
+    crumple(dts);  // (what crumpled in this substep's collisions folds)
     if (!jrecs_.empty()) reap_joints();
+    if (!wrecs_.empty()) reap_wheels();
   }
   st_.rigid_ms = ms_since(tr);
   const auto tl = Clock::now();
@@ -2223,6 +2265,25 @@ void World::tick() {
   }
   enforce_budgets();
   announce_bodies();
+  // (pieces reshaped in place this tick - crumpled - once each: their hosts mesh them again)
+  if (!reshaped_.empty()) {
+    std::sort(reshaped_.begin(), reshaped_.end());
+    reshaped_.erase(std::unique(reshaped_.begin(), reshaped_.end()), reshaped_.end());
+    for (i64 id : reshaped_) {
+      const Body* b = rigid_.find(id);
+      if (!b || !b->announced) continue;
+      WorldEvent ev;
+      ev.kind = WorldEvent::Kind::PieceReshaped;
+      ev.id = id;
+      ev.pos = b->x;
+      ev.rot = b->q;
+      ev.vel = b->v;
+      ev.ang = b->w;
+      ev.voxels = b->count;
+      events_.push_back(std::move(ev));
+    }
+    reshaped_.clear();
+  }
   st_.tick_ms = ms_since(t0);
   st_.upkeep_ms = std::max(0.0, st_.tick_ms - st_.stream_ms - st_.event_ms - st_.rigid_ms - loads_ms - st_.structural_ms - st_.systems_ms);
 }

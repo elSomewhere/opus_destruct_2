@@ -10,6 +10,8 @@ add_executable(svx_core_tests
   core/test_grids.cpp
   core/test_machines.cpp
   core/test_joints.cpp
+  core/test_wheels.cpp
+  core/test_crumple.cpp
   core/test_dmath.cpp)
 target_include_directories(svx_core_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
 target_link_libraries(svx_core_tests PRIVATE svx_core)
