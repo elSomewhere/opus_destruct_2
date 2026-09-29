@@ -114,9 +114,11 @@ struct VehicleView {
   VehicleInput input;           // what drives it now
   u8 flags = 0;                 // kPlayer, kNpc, kParked, kWreck
   V3 seat;                      // the driver's seat (world)
+  V3 origin;                    // its frame's origin (world): on the ground under the middle between its axles
   V3 half_extent;               // m: its box about its frame's origin (x, y), from the ground (z)
   i32 wheels = 0;               // wheels still on
   f64 damage = 0.0;             // 0 .. 1: how much of it is crumpled or gone
+  f64 redline = 0.0;            // its engine's (rpm)
   static constexpr u8 kPlayer = 1, kNpc = 2, kParked = 4, kWreck = 8;
 };
 

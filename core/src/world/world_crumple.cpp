@@ -390,7 +390,7 @@ void World::crumple(f64 dt) {
           for (const auto& q : nb) {
             if (q[0] < vlo[a1] || q[0] > vhi[a1] || q[1] < vlo[a2] || q[1] > vhi[a2]) continue;
             const i32 fq = front[at(q[0], q[1])];
-            if (fq == INT32_MIN || dent[at(q[0], q[1])] > 0 && moved[at(q[0], q[1])] == 0) continue;  // (folded: no panel there)
+            if (fq == INT32_MIN || (dent[at(q[0], q[1])] > 0 && moved[at(q[0], q[1])] == 0)) continue;  // (folded: no panel there)
             const i32 nfq = fq + in * moved[at(q[0], q[1])];
             const i32 step = (nfc - nfq) * in;  // (> 0: this one went further back)
             const IVec3 top = cell(q[0], q[1], nfq);

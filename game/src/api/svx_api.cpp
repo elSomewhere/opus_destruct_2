@@ -10,6 +10,7 @@
 #include "svx/game/doom/movers.hpp"
 #include "svx/game/doom/world.hpp"
 #include "svx/game/city.hpp"
+#include "svx/game/drive_city.hpp"
 #include "svx/game/game.hpp"
 #include "svx/game/procgen.hpp"
 #include "svx/world/tunables.hpp"
@@ -35,6 +36,7 @@ struct svx_engine {
   std::vector<float> flames, smoke;
   std::vector<ChunkMesh> water;
   std::vector<u64> water_removed;
+  std::vector<f64> vehicles, wheels;
   MeshOptions mesh_base() const {
     MeshOptions mo;
     if (doom) {
@@ -89,6 +91,19 @@ int svx_load_procedural(svx_engine* e, const char* kind, double seed) {
   if (k == "city") {
     // the 1 km^2 city streams around the viewer (plan Phase 6), some of its buildings turned
     e->eng.load_streaming(make_city_source(seed_of(seed), 1000.0, e->h, true), e->h);
+    return 0;
+  }
+  if (k == "drive") {
+    // the endless city to drive through (docs/VEHICLES.md), its traffic around the viewer; the
+    // road ahead of a fast car is made resident before it gets there (Game::vehicles_before_tick)
+    StreamConfig sc;
+    sc.load_radius = 112.0;
+    sc.evict_radius = 144.0;
+    sc.chunks_per_tick = 16;
+    sc.archive_mb = 128.0;
+    FarConfig far;
+    far.radius = 520.0;
+    e->eng.load_streaming(make_drive_city(seed_of(seed), e->h), e->h, sc, far);
     return 0;
   }
   load_procedural(e->eng, make_procedural(k, seed_of(seed), e->h));
@@ -497,7 +512,7 @@ void svx_event_info(svx_engine* e, int i, double* out) {
   out[14] = v.radius;
   out[15] = strength;
   out[16] = v.kind == GameEvent::Kind::Crack ? 0 : v.voxels;
-  out[17] = 0;
+  out[17] = v.material;
   out[18] = static_cast<double>(v.mesh.vertices.size());
   out[19] = static_cast<double>(v.mesh.indices.size());
   out[20] = v.kind == GameEvent::Kind::Detached || v.kind == GameEvent::Kind::Remesh ? 1.0 : 0.0;
@@ -564,6 +579,114 @@ const double* svx_debris_data(svx_engine* e) { return e->debris.data(); }
 void svx_set_debris(svx_engine* e, int enabled) {
   (void)e;
   (void)enabled;
+}
+
+// Vehicles (docs/VEHICLES.md).
+
+unsigned svx_spawn_vehicle(svx_engine* e, int kind, int paint, double x, double y, double z, double yaw) {
+  VehicleSpec s;
+  s.kind = static_cast<VehicleKind>(std::clamp(kind, 0, static_cast<int>(VehicleKind::Count) - 1));
+  s.paint = static_cast<Paint>(std::clamp(paint, 1, static_cast<int>(Paint::Count) - 1));
+  return e->eng.spawn_vehicle(s, V3{x, y, z}, yaw);
+}
+
+int svx_remove_vehicle(svx_engine* e, unsigned id) { return e->eng.remove_vehicle(id) ? 1 : 0; }
+
+int svx_enter_vehicle(svx_engine* e, unsigned id) { return e->eng.enter_vehicle(id) ? 1 : 0; }
+
+void svx_exit_vehicle(svx_engine* e) { e->eng.exit_vehicle(); }
+
+unsigned svx_player_vehicle(svx_engine* e) { return e->eng.player_vehicle(); }
+
+void svx_drive(svx_engine* e, double throttle, double brake, double steer, int handbrake) {
+  VehicleInput in;
+  in.throttle = throttle;
+  in.brake = brake;
+  in.steer = steer;
+  in.handbrake = handbrake != 0;
+  e->eng.drive(in);
+}
+
+unsigned svx_vehicle_near(svx_engine* e, double x, double y, double z, double reach) {
+  return std::isfinite(reach) ? e->eng.vehicle_near(V3{x, y, z}, reach) : 0u;
+}
+
+int svx_vehicles(svx_engine* e) {
+  const std::vector<VehicleView> vs = e->eng.vehicles();
+  constexpr size_t kStride = 34;
+  e->vehicles.assign(kStride * vs.size(), 0.0);
+  f64* o = e->vehicles.data();
+  for (const VehicleView& v : vs) {
+    o[0] = static_cast<double>(v.id);
+    o[1] = static_cast<double>(v.chassis);
+    o[2] = static_cast<double>(v.kind);
+    o[3] = static_cast<double>(v.paint);
+    for (int q = 0; q < 3; ++q) {
+      o[4 + q] = v.pos[q];
+      o[11 + q] = v.vel[q];
+      o[22 + q] = v.seat[q];
+      o[25 + q] = v.half_extent[q];
+      o[30 + q] = v.origin[q];
+    }
+    o[7] = v.rot.x;
+    o[8] = v.rot.y;
+    o[9] = v.rot.z;
+    o[10] = v.rot.w;
+    o[14] = v.speed;
+    o[15] = v.rpm;
+    o[16] = v.gear;
+    o[17] = v.input.throttle;
+    o[18] = v.input.brake;
+    o[19] = v.input.steer;
+    o[20] = v.input.handbrake ? 1.0 : 0.0;
+    o[21] = v.flags;
+    o[28] = v.wheels;
+    o[29] = v.damage;
+    o[33] = v.redline;
+    o += kStride;
+  }
+  return static_cast<int>(vs.size());
+}
+
+const double* svx_vehicles_data(svx_engine* e) { return e->vehicles.data(); }
+
+int svx_wheels(svx_engine* e) {
+  const std::vector<WheelView> ws = e->eng.wheel_views();
+  constexpr size_t kStride = 15;
+  e->wheels.assign(kStride * ws.size(), 0.0);
+  f64* o = e->wheels.data();
+  for (const WheelView& w : ws) {
+    o[0] = static_cast<double>(w.vehicle);
+    o[1] = static_cast<double>(w.id);
+    for (int q = 0; q < 3; ++q) o[2 + q] = w.centre[q];
+    o[5] = w.rot.x;
+    o[6] = w.rot.y;
+    o[7] = w.rot.z;
+    o[8] = w.rot.w;
+    o[9] = w.radius;
+    o[10] = w.width;
+    o[11] = w.contact ? 1.0 : 0.0;
+    o[12] = w.slip;
+    o[13] = w.material;
+    o[14] = w.compression;
+    o += kStride;
+  }
+  return static_cast<int>(ws.size());
+}
+
+const double* svx_wheels_data(svx_engine* e) { return e->wheels.data(); }
+
+void svx_shoot(svx_engine* e, double x, double y, double z, double radius, double energy) { e->eng.shoot(V3{x, y, z}, radius, energy); }
+
+void svx_set_traffic(svx_engine* e, int enabled, int cars, int parked, double near_radius, double radius, double speed_scale) {
+  TrafficConfig c;
+  c.enabled = enabled != 0;
+  c.cars = cars;
+  c.parked = parked;
+  c.near_radius = near_radius;
+  c.radius = radius;
+  c.speed_scale = speed_scale;
+  e->eng.set_traffic(c);
 }
 
 int svx_stats_count(void) { return 51; }

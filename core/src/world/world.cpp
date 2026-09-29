@@ -3,6 +3,7 @@
 #include "svx/world/world.hpp"
 
 #include <algorithm>
+#include <map>
 #include <tuple>
 #include <chrono>
 #include <cmath>
@@ -132,6 +133,8 @@ void World::load(VoxelGrid&& g) {
   archive_->reset(0);
   focus_.clear();
   focus_set_ = false;
+  evict_scan_tick_ = -1000000;
+  evict_scan_focus_.clear();
   const std::vector<WorldEvent> keep = std::move(events_);
   st_ = WorldStats{};
   design_ = DesignReport{};
@@ -1052,10 +1055,14 @@ void World::judge(Structure& s) {
   // that are over strength (a heavily overloaded structure fails in few rounds)
   const size_t quota = std::max<size_t>(1, (over.size() + 3) / 4);
   i32 count = 0;
+  std::vector<HingeCut> hinges;
   for (size_t k = 0; k < over.size(); ++k) {
     const f64 phi = over[k].first;
     const i32 b = over[k].second;
     if ((phi < thr && k >= quota) || count >= cfg_.max_breaks_per_round) break;
+    // (a ductile section bent past its strength: a plastic hinge, if a part comes loose there)
+    HingeCut hc;
+    if (cfg_.plastic_hinges && plastic_hinge(s, b, &hc)) hinges.push_back(hc);
     s.P.remove_bond(b);
     const SBond& B = s.P.bonds[size_t(b)];
     break_structure_bond(s, b);
@@ -1065,7 +1072,61 @@ void World::judge(Structure& s) {
   }
   s.shock = true;
   ++s.rounds;
-  detach_unsupported(s);
+  detach_unsupported(s, hinges.empty() ? nullptr : &hinges);
+}
+
+bool World::plastic_hinge(const Structure& s, i32 bi, HingeCut* out) const {
+  const SBond& B = s.P.bonds[size_t(bi)];
+  const MaterialTable& M = mats();
+  if (!M[B.ma].ductile || !M[B.mb].ductile) return false;
+  const BondLoad L = s.P.bond_load(bi, s.u);
+  const BondStrength S = bond_strength(B, par_.fragility, M);
+  const f64 A = std::max(B.area, 1e-12);
+  const f64 sN = L.N / A;
+  // (1 / the section's moduli about t1 and t2, as bond_utilization weighs them)
+  const f64 w1 = B.s2 > 0 ? B.c2 / B.s2 : 0.0, w2 = B.s1 > 0 ? B.c1 / B.s1 : 0.0;
+  const f64 sb = std::abs(L.M1) * w1 + std::abs(L.M2) * w2;
+  // bending governs: it is most of what failed the section (not a pull, a shear or a twist)
+  const f64 fb = std::max(S.fb, 1e-9), ft = std::max(S.ft, 1e-9), fc = std::max(S.fc, 1e-9);
+  const f64 phi_b = sb / fb;
+  const f64 phi_n = sN >= 0.0 ? sN / ft : -sN / fc;
+  const f64 J = std::max(B.s1 + B.s2, 1e-18);
+  const f64 tau = 1.5 * std::sqrt(L.V1 * L.V1 + L.V2 * L.V2) / A + std::abs(L.T) * B.rmax / J;
+  const f64 phi_s = tau / std::max(S.coh + S.mu * std::max(0.0, -sN), 1e-9);
+  if (!(phi_b > 0.0) || phi_b < 1.5 * phi_n || phi_b < 1.5 * phi_s) return false;
+  // the way it turns: the part beyond turned on from where the solve has it (b's rotation less
+  // a's; a support does not turn), square to the bond
+  const auto rot = [&](i32 i) { return i < 0 ? V3{} : V3{s.u[6 * size_t(i) + 3], s.u[6 * size_t(i) + 4], s.u[6 * size_t(i) + 5]}; };
+  V3 w = rot(B.b) - rot(B.a);
+  w -= B.n * dot(w, B.n);
+  const V3 m = B.t1 * L.M1 + B.t2 * L.M2;
+  HingeCut h;
+  h.a = B.a;
+  h.b = B.b;
+  h.n = B.n;
+  h.grid = s.vox0[size_t(B.a)].grid;
+  h.p = B.p;
+  if (norm2(w) > 1e-30) {
+    h.axis = normalized(w);
+    // (its pivot: the section's compression edge - where b, turning about it, would press into
+    // a - so the parts fold about it rather than grind into each other)
+    V3 y = cross(h.axis, B.n);
+    const f64 yl = norm(y);
+    if (yl > 1e-9) {
+      y *= 1.0 / yl;
+      const f64 c = std::abs(dot(y, B.t1)) * B.c1 + std::abs(dot(y, B.t2)) * B.c2;
+      h.p = B.p - y * (0.9 * c);
+    }
+  } else if (norm2(m) > 1e-30) {
+    h.axis = normalized(m);
+  } else {
+    return false;
+  }
+  const f64 a1 = std::abs(dot(h.axis, B.t1)), a2 = std::abs(dot(h.axis, B.t2));
+  h.mp = std::max(0.0, cfg_.hinge_shape) * fb / std::max(a1 * w1 + a2 * w2, 1e-12);
+  h.pull = ft * A;
+  *out = h;
+  return true;
 }
 
 void World::break_structure_bond(Structure& s, i32 b) {
@@ -1102,7 +1163,7 @@ void World::dust_event(const V3& p, const V3& v, i32 voxels, bool crushed) {
   events_.push_back(std::move(ev));
 }
 
-void World::detach_unsupported(Structure& s) {
+void World::detach_unsupported(Structure& s, const std::vector<HingeCut>* hinges) {
   const i32 n = static_cast<i32>(s.P.nodes.size());
   std::vector<i32> comp;
   std::vector<u8> supported(size_t(n), 0);
@@ -1112,6 +1173,52 @@ void World::detach_unsupported(Structure& s) {
   std::vector<std::vector<i32>> pieces(static_cast<size_t>(ncomp));
   for (i32 i = 0; i < n; ++i)
     if (comp[size_t(i)] > 0 && !s.P.nodes[size_t(i)].gone) pieces[size_t(comp[size_t(i)])].push_back(i);
+  // plastic hinges between what comes loose and what holds it (or between two loose parts): one
+  // per pair, its sections' moments summed, at their moment-weighted pivot. Anchored on the
+  // voxels either side of the section, before they become pieces (the joint goes with them).
+  if (hinges && ncomp > 1) {
+    struct Pair {
+      f64 mp = 0.0, pull = 0.0;
+      V3 p, axis, n;
+      u16 grid = 0;
+    };
+    std::map<std::pair<i32, i32>, Pair> pairs;
+    for (const HingeCut& h : *hinges) {
+      const i32 ca = h.a >= 0 && h.a < n ? comp[size_t(h.a)] : 0;
+      const i32 cb = h.b >= 0 && h.b < n ? comp[size_t(h.b)] : 0;
+      if (ca == cb) continue;  // (both still held, or one part: nothing turns there)
+      // (oriented from the lower component to the higher)
+      const bool flip = ca > cb;
+      Pair& P = pairs[{std::min(ca, cb), std::max(ca, cb)}];
+      const V3 ax = P.mp > 0.0 && dot(P.axis, h.axis) < 0.0 ? h.axis * -1.0 : h.axis;
+      P.p += h.p * h.mp;
+      P.axis += ax * h.mp;
+      P.n += (flip ? h.n * -1.0 : h.n) * h.mp;
+      P.mp += h.mp;
+      P.pull += h.pull;
+      P.grid = h.grid;
+    }
+    for (auto& [key, P] : pairs) {
+      if (!(P.mp > 0.0) || norm2(P.axis) < 1e-24 || !live(P.grid)) continue;
+      const V3 at = P.p * (1.0 / P.mp);
+      const V3 nn = norm2(P.n) > 1e-24 ? normalized(P.n) : V3{0, 0, 1};
+      const f64 hh = h_of(P.grid);
+      JointDesc d;
+      d.type = JointType::Hinge;
+      d.axis = normalized(P.axis);
+      d.a.kind = d.b.kind = JointAnchor::Kind::Grid;
+      d.a.id = d.b.id = gs(P.grid).id;
+      d.a.point = at - nn * (0.5 * hh);  // (the lower component's side)
+      d.b.point = at + nn * (0.5 * hh);
+      d.drive.kind = JointDrive::Kind::Speed;
+      d.drive.speed = 0.0;
+      d.drive.max = P.mp;
+      d.break_force = P.pull;
+      d.break_angle = std::max(0.0, cfg_.hinge_rotation);
+      d.collide = false;
+      if (add_joint_impl(d, 0) != 0) ++st_.plastic_hinges;
+    }
+  }
   std::vector<i32> retire;
   const i64 sid = s.id;
   // (a blast's momentum, while its cascade lasts)

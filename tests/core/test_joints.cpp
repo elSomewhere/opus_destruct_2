@@ -6,6 +6,7 @@
 
 #include "doctest.h"
 #include "svx/base/parallel.hpp"
+#include "svx/world/tunables.hpp"
 #include "svx/world/world.hpp"
 
 using namespace svx;
@@ -556,4 +557,101 @@ TEST_CASE("joints: a session with joints is bit-identical on any thread count") 
   MESSAGE("joints session: " << a.second << " pieces, hash " << a.first);
   CHECK(a.second >= 3);
   CHECK(a.first == b.first);
+}
+
+namespace {
+
+// A steel cantilever: a 5 m arm of a 25 cm steel section (2 x 2 voxels) off a stout column, a
+// weight of `tonnes` hanging from its tip on a rope. Returns the world (baked, the rope on).
+struct Cantilever {
+  World w;
+  JointId rope = 0;
+  V3 tip;
+};
+
+void cantilever(Cantilever& c, f64 tonnes, bool hinges) {
+  World& w = c.w;
+  set_tunable(w, "plastic_hinges", hinges ? 1.0 : 0.0);
+  VoxelGrid g = ground();
+  const Vox steel = make_vox(MaterialId::SteelSection, false);
+  box(g, {-6, -5, -4}, {6, 7, 0}, make_vox(MaterialId::Rc, false));  // a concrete footing ...
+  box(g, {-2, -1, -4}, {2, 3, 64}, steel);   // ... the column set in it: 50 cm, 8 m tall
+  box(g, {2, 0, 62}, {42, 2, 64}, steel);    // the arm
+  g.compact();
+  w.load(std::move(g));
+  w.bake();
+  // the weight: a steel block (7.85 t/m^3) under the tip, well off the ground
+  const i32 side = static_cast<i32>(std::lround(std::cbrt(tonnes / 7.85) / h));
+  c.tip = V3{41 * h, 0.5 * h, 62 * h - 0.5 * h};
+  const f64 zb = 5.0;
+  const GridId wt = object(w, V3{c.tip.x, c.tip.y, zb}, {-side / 2, -side / 2, 0}, {side - side / 2, side - side / 2, side}, MaterialId::Steel);
+  JointDesc d;
+  d.type = JointType::Distance;
+  d.a = at_grid(kWorldGrid, c.tip);
+  d.b = at_grid(wt, V3{c.tip.x, c.tip.y, zb + (side - 0.5) * h});
+  d.length = norm(d.a.point - d.b.point);
+  c.rope = w.add_joint(d);
+}
+
+}  // namespace
+
+TEST_CASE("plastic hinges: a steel arm bent past its strength folds down at its root, and tears off only once turned far") {
+  Cantilever c;
+  cantilever(c, 10.0, true);
+  REQUIRE(c.rope != 0);
+  JointId hinge = 0;
+  i64 arm = 0;
+  Quat q0;
+  f64 turned = 0.0, turned_at_tear = -1.0;
+  int formed = -1, tore = -1;
+  for (int t = 0; t < 600; ++t) {
+    c.w.tick();
+    for (const WorldEvent& e : c.w.take_events())
+      if (e.kind == WorldEvent::Kind::JointBroken && hinge != 0 && e.id == static_cast<i64>(hinge) && tore < 0) {
+        tore = t;
+        turned_at_tear = turned;
+      }
+    if (hinge == 0)
+      for (JointId j : c.w.joints()) {
+        JointState s;
+        if (j == c.rope || !c.w.joint(j, &s) || s.type != JointType::Hinge) continue;
+        hinge = j;
+        formed = t;
+        arm = s.piece_a != 0 ? s.piece_a : s.piece_b;
+        if (const Body* b = c.w.piece(arm)) q0 = b->q;
+      }
+    if (arm != 0)
+      if (const Body* b = c.w.piece(arm)) {
+        const Quat dq = b->q * conj(q0);
+        turned = std::max(turned, 2.0 * std::acos(std::min(1.0, std::abs(dq.w))));
+      }
+  }
+  MESSAGE("bonds broken " << c.w.stats().bonds_broken << ", pieces " << c.w.stats().bodies << ", max util " << c.w.stats().max_utilization
+                          << ", structures " << c.w.stats().structures << ", pcg " << c.w.stats().pcg_iters << ", solves " << c.w.stats().solves);
+  MESSAGE("10 t on a 5 m arm (25 cm steel section): hinge formed at tick " << formed << ", the arm turned " << turned << " rad, tore at tick "
+                                                                         << tore << " having turned " << turned_at_tear << " rad; "
+                                                                         << c.w.stats().plastic_hinges << " hinges");
+  REQUIRE(hinge != 0);
+  CHECK(c.w.stats().plastic_hinges >= 1);
+  CHECK(arm != 0);
+  CHECK(turned > 0.1);  // (it folded down)
+  // hanging off the ground, the weight keeps pulling it round: it tears at its rotation capacity
+  CHECK(tore >= 0);
+  CHECK(turned_at_tear > 0.25);  // (not before)
+  CHECK(tore - formed > 10);     // (it hung on its hinge a while, folding)
+  // the same, without plastic hinges: it snaps off at once
+  Cantilever d;
+  cantilever(d, 5.0, false);
+  int loose = -1;
+  for (int t = 0; t < 300 && loose < 0; ++t) {
+    d.w.tick();
+    for (const WorldEvent& e : d.w.take_events())
+      if (e.kind == WorldEvent::Kind::PieceAdded && e.voxels > 100) loose = t;
+  }
+  CHECK(loose >= 0);
+  CHECK(d.w.stats().plastic_hinges == 0);
+  for (JointId j : d.w.joints()) {
+    JointState s;
+    if (d.w.joint(j, &s)) CHECK(s.type != JointType::Hinge);
+  }
 }

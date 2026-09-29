@@ -488,6 +488,8 @@ void World::enable_streaming(std::shared_ptr<const ChunkSource> src, const Strea
   generated_.clear();
   column_count_.clear();
   region_resident_.clear();
+  evict_scan_tick_ = -1000000;
+  evict_scan_focus_.clear();
   // (a bounded archive: its arena, once; an unbounded one grows)
   archive_->reset(source_ ? static_cast<size_t>(stream_.archive_mb * 1048576.0) : 0);
   if (!source_) return;
@@ -927,6 +929,9 @@ bool World::chunk_resident(const IVec3& cc) const {
   return generated_.count(key3(cc[0], cc[1], cc[2])) > 0;
 }
 
+// Ticks between the scans of the resident chunks for eviction (while the focus stays near).
+constexpr i64 kEvictScanTicks = 10;
+
 int World::stream_update() {
   if (!source_ || focus_.empty()) return 0;  // (no focus yet: nothing is loaded or evicted)
   int generated = 0;
@@ -981,6 +986,23 @@ int World::stream_update() {
     if (v.capacity() > 0) grid_.release_buffer(std::move(v));  // (generated beyond the budget: dropped)
   // pieces archived out of range whose chunks are all resident again: back
   restore_groups();
+  if (st_.ticks % 60 == 0) forget_stale_regions();
+  // (the rest walks every resident chunk: every few ticks (and on the memory budget's), or at
+  // once when a focus point moved far since - eviction has the hysteresis of its radius over
+  // the load radius to spare)
+  {
+    bool moved = evict_scan_focus_.size() != focus_.size();
+    for (size_t i = 0; i < focus_.size() && !moved; ++i) {
+      const V3 d = focus_[i] - evict_scan_focus_[i];
+      moved = d.x * d.x + d.y * d.y > 64.0;
+    }
+    if (!moved && st_.ticks - evict_scan_tick_ < kEvictScanTicks && st_.ticks % 30 != 0) {
+      st_.stream_ms = ms_since(t0);
+      return generated;
+    }
+    evict_scan_tick_ = st_.ticks;
+    evict_scan_focus_ = focus_;
+  }
   // evict far from the focus points (never under a piece, which would fall through, or a
   // structure being solved)
   // (a moving piece keeps the chunks around it; sleeping rubble does not: it is archived with
@@ -1024,14 +1046,13 @@ int World::stream_update() {
         break;
       }
   }
-  std::vector<u64> keys(generated_.begin(), generated_.end());
-  std::sort(keys.begin(), keys.end());
   std::vector<u64> out;
-  for (u64 k : keys) {
+  for (u64 k : generated_) {
     const IVec3 cc = unkey3(k);
     if (hdist(cc) <= stream_.evict_radius || busy.count(k)) continue;
     out.push_back(k);
   }
+  std::sort(out.begin(), out.end());  // (in key order, whatever the set's)
   unload_sleepers(out, chunks_of_body);
   for (u64 k : out) evict_chunk(k);
   if (!out.empty()) unload_joints();
@@ -1062,7 +1083,6 @@ int World::stream_update() {
       if (!go.empty()) unload_joints();
     }
   }
-  if (st_.ticks % 60 == 0) forget_stale_regions();
   st_.stream_ms = ms_since(t0);
   return generated;
 }

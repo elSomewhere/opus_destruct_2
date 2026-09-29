@@ -148,7 +148,8 @@ int svx_chunk_occupancy(svx_engine* e, int cx, int cy, int cz, uint8_t* out4096)
 
 /* Events: count, then per event info[21] = kind (0 detached, 1 crack, 2 impact, 3 bubble (v1), 4 splash,
  * 5 remesh: a piece's new mesh, as detached but without its effects), id,
- * pos xyz, velocity xyz, angular xyz, normal xyz, radius, strength, voxels, level, vertex count,
+ * pos xyz, velocity xyz, angular xyz, normal xyz, radius, strength, voxels, material (dust: what
+ * was crushed or shattered - a car's glass, a wall's brick; -1 unknown), vertex count,
  * index count, rigid; detached events carry a world-space mesh (pos = its centre of mass). A
  * rigid detached piece is simulated as debris: its pose comes from svx_debris until it is gone. */
 int svx_poll_events(svx_engine* e);
@@ -180,6 +181,42 @@ int svx_debris(svx_engine* e);
 const double* svx_debris_data(svx_engine* e);
 /* Rigid debris on (default) or off (detached pieces are only reported). */
 void svx_set_debris(svx_engine* e, int enabled);
+
+/* Vehicles (docs/VEHICLES.md): cars on the core's cast wheels, their chassis a rigid piece (drawn
+ * from its detached event and svx_debris poses like any piece; crumpled, it comes again as a
+ * remesh event). Kinds 0 compact, 1 sedan, 2 van, 3 pickup, 4 truck; paints svx::Paint (1..).
+ * Spawning, removing, entering, leaving and driving are logged in replays. svx_spawn_vehicle
+ * returns its id (0: refused); svx_drive sets the player's vehicle's controls (throttle -1..1:
+ * backwards reverses, or brakes while rolling forward; brake 0..1; steer -1 right .. 1 left;
+ * handbrake) until changed. svx_vehicle_near: the nearest vehicle's id within reach (0: none). */
+unsigned svx_spawn_vehicle(svx_engine* e, int kind, int paint, double x, double y, double z, double yaw);
+int svx_remove_vehicle(svx_engine* e, unsigned id);
+int svx_enter_vehicle(svx_engine* e, unsigned id);
+void svx_exit_vehicle(svx_engine* e);
+unsigned svx_player_vehicle(svx_engine* e);
+void svx_drive(svx_engine* e, double throttle, double brake, double steer, int handbrake);
+unsigned svx_vehicle_near(svx_engine* e, double x, double y, double z, double reach);
+/* The vehicles now (after a tick): count, then svx_vehicles_data holds 34 doubles each: id, chassis
+ * (its piece: the id of its detached event and poses; 0 none yet), kind, paint, centre of mass
+ * xyz, frame rotation xyzw (x forward, y left, z up), velocity xyz, speed (m/s forward), engine
+ * rpm, gear (-1 reverse, 0 neutral, 1..), controls (throttle, brake, steer, handbrake), flags (1
+ * the player's, 2 a driver's, 4 parked, 8 a wreck), the driver's seat xyz, half extent xyz (its
+ * box about its frame's origin, z from the ground), wheels on, damage 0..1, its frame's origin
+ * xyz (world), its engine's redline (rpm). */
+int svx_vehicles(svx_engine* e);
+const double* svx_vehicles_data(svx_engine* e);
+/* Their wheels (to draw): count, then svx_wheels_data holds 15 doubles each: vehicle id, wheel id,
+ * centre xyz, rotation xyzw (x the way it rolls, y its axle, turned and spun), radius, width,
+ * on the ground (1/0), slip (m/s: skids, smoke), the material under it (-1 none), suspension
+ * compression (m). */
+int svx_wheels(svx_engine* e);
+const double* svx_wheels_data(svx_engine* e);
+/* A bullet's hit (logged): holes what its energy (J) gets through within the radius (sheet
+ * metal, glass, brittle materials; not armour) - docs/VEHICLES.md. */
+void svx_shoot(svx_engine* e, double x, double y, double z, double radius, double energy);
+/* Traffic of a streamed world with roads (the "drive" city; logged): on/off, cars driving and
+ * parked around the viewer, spawned beyond near_radius and within radius (m), speed x the limits. */
+void svx_set_traffic(svx_engine* e, int enabled, int cars, int parked, double near_radius, double radius, double speed_scale);
 
 /* The number of doubles svx_stats writes. */
 int svx_stats_count(void);

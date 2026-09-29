@@ -221,6 +221,7 @@ bool Game::vehicle(u32 id, VehicleView* out) const {
   o.rpm = v.rpm;
   const VehicleModel& m = vehicle_model(v.spec.kind);
   o.half_extent = m.half_extent;
+  o.redline = m.tuning.redline;
   for (WheelId w : v.wheels) o.wheels += w != 0 ? 1 : 0;
   o.flags = static_cast<u8>((v.id == player_vehicle_ ? VehicleView::kPlayer : 0) | ((v.flags & WheelTag::kTagNpc) ? VehicleView::kNpc : 0) |
                             ((v.flags & WheelTag::kTagParked) ? VehicleView::kParked : 0) | (v.wreck ? VehicleView::kWreck : 0));
@@ -232,6 +233,7 @@ bool Game::vehicle(u32 id, VehicleView* out) const {
     o.rot = q;
     o.speed = dot(b->v, rotate(q, V3{1.0, 0.0, 0.0}));
     o.seat = b->lattice_to_world(0, m.driver_seat);
+    o.origin = b->lattice_to_world(0, V3{});
     // (crumpled: each fold a little more, whatever it lost more)
     if (v.voxels0 > 0) o.damage = std::clamp(4.0 * (1.0 - static_cast<f64>(b->count) / v.voxels0), 0.0, 1.0);
     o.damage = std::clamp(std::max(o.damage, v.reshapes / 20.0), 0.0, 1.0);
@@ -302,12 +304,19 @@ void Game::sync_vehicles() {
     groups[s.group].push_back({WheelTag::unpack(s.tag), w});
     if (s.piece != 0) chassis[s.group] = s.piece;
   }
-  // vehicles gone (their wheels all off, or out of range: they come back with them)
+  // vehicles gone: out of range (they come back with their wheels), or their body gone. One
+  // whose wheels have all come off is still one while its body is there (a wreck on its belly:
+  // its driver is in it) - but only for this session: a saved one is found by its wheels.
   for (auto it = vehicles_.begin(); it != vehicles_.end();) {
-    if (!groups.count(it->first)) {
+    Vehicle& v = it->second;
+    if (!groups.count(it->first) && !(v.chassis != 0 && world_.piece(v.chassis))) {
       if (player_vehicle_ == it->first) player_vehicle_ = 0;
       it = vehicles_.erase(it);
     } else {
+      if (!groups.count(it->first)) {
+        std::fill(v.wheels.begin(), v.wheels.end(), WheelId{0});
+        v.wreck = v.wreck || (v.flags & WheelTag::kTagNpc) != 0;
+      }
       ++it;
     }
   }

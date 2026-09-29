@@ -71,7 +71,9 @@ void building(VoxelGrid& g, Rng& rng, int ox, int oy, int bays_x, int bays_y, in
 // The yard: one of each kind of construction, to be shot at, blown up, set on fire and flooded.
 void yard(VoxelGrid& g) {
   const Vox wood = make_vox(MaterialId::Wood, false), stone = make_vox(MaterialId::Stone, false);
-  const Vox glass = make_vox(MaterialId::Glass, false), steel = make_vox(MaterialId::Steel, false);
+  // (steel members as rolled sections smeared over their voxels - docs/VEHICLES.md: a 2 x 2 voxel
+  // column is an HEB 200, not 490 kg/m of solid steel)
+  const Vox glass = make_vox(MaterialId::Glass, false), steel = make_vox(MaterialId::SteelSection, false);
   const Vox rc = make_vox(MaterialId::Rc, false), concrete = make_vox(MaterialId::Concrete, false);
   // A timber house (8 x 6 m): posts, plank walls with a door and windows, a floor of boards on
   // joists, a pitched roof of boards on rafters.
@@ -173,7 +175,7 @@ Quat turn(f64 deg, f64 x, f64 y, f64 z) {
 void angles(ProcWorld& w, Rng& rng) {
   VoxelGrid& g = w.grid;
   const f64 h = g.h;
-  const Vox rc = make_vox(MaterialId::Rc, false), steel = make_vox(MaterialId::Steel, false);
+  const Vox rc = make_vox(MaterialId::Rc, false), steel = make_vox(MaterialId::SteelSection, false);  // (sections)
   const Vox masonry = make_vox(MaterialId::Masonry, false), wood = make_vox(MaterialId::Wood, false);
   const Vox stone = make_vox(MaterialId::Stone, false);
   // (a grid at world voxel coordinates o, turned by r: its voxel p's centre is h (o + R p))
@@ -351,7 +353,7 @@ void machines(ProcWorld& w) {
   box(g, 92, 100, 220, 228, 62, 64, steel);
   {
     auto [jib, jid] = part({94, 223, 65});
-    box(jib, 0, 44, 0, 2, 0, 2, steel);
+    box(jib, 0, 44, 0, 2, 0, 2, make_vox(MaterialId::SteelSection, false));  // (a rolled section: 0.3 t, not 2.7)
     const V3 p = wp(95.5, 223.5, 64);  // (on the mast's axis, its top)
     JointDesc& d = joint(JointType::Hinge, at(kWorldGrid, p), at(jid, p));
     d.axis = V3{0, 0, 1};

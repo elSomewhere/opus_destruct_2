@@ -181,6 +181,12 @@ struct WorldConfig {
   f64 impact_round_fraction = 0.25;// an impact round breaks at least this fraction of the overloaded bonds (worst first)
   f64 crush_energy = 20.0;         // crushing a bond costs this x its fracture energy
   bool pulverize = true;           // crushed fragments turn to dust (the space they held opens)
+  // plastic hinges (ductile members failing in bending: steel sections, rebar): the part beyond
+  // turns about the section, holding hinge_shape x its elastic moment, and tears after
+  // hinge_rotation (rad)
+  bool plastic_hinges = true;
+  f64 hinge_rotation = 0.35;
+  f64 hinge_shape = 1.3;
   bool spread_contacts = true;     // stress checks share a piece's contact force over its contacts (least squares)
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
   f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)
@@ -327,6 +333,7 @@ struct WorldStats {
   i64 pulverized_voxels = 0;                 // crushed to dust
   i64 chip_releases = 0;                     // pieces going on without the chips that broke off with their contacts
   i64 reshapes = 0, punches = 0;             // crumpling: pieces folded in place; walls a crumpling piece broke through
+  i64 plastic_hinges = 0;                    // ductile sections that gave way in bending as hinges
   i64 mode_breaks[4] = {0, 0, 0, 0};         // pieces' bonds broken by mode (none, tension, crush, shear)
   // streaming
   i64 resident_chunks = 0, archived_chunks = 0, generated_total = 0, evicted_total = 0, budget_evicted = 0;
@@ -815,7 +822,19 @@ class World {
   void step_structures();                    // solves within the work budget, judging
   void judge(Structure& s);
   void break_structure_bond(Structure& s, i32 b);  // (its faces and junction samples, in the grids)
-  void detach_unsupported(Structure& s);
+  // A ductile member's section giving way in bending (docs/VEHICLES.md): the part that comes
+  // loose turns about a plastic hinge there - a hinge that holds the section's plastic moment
+  // while it turns (a friction drive at rest) and tears once turned past its rotation capacity -
+  // rather than dropping off. At the section's compression edge, about the axis it bends.
+  struct HingeCut {
+    i32 a = -1, b = -1;  // the bond's nodes (b < 0: a support)
+    u16 grid = 0;        // (slot) the grid of its section
+    V3 p, axis, n;       // the pivot (world), the axis it turns about, the bond's normal (a to b)
+    f64 mp = 0.0;        // N m: the section's plastic moment
+    f64 pull = 0.0;      // N: what tears it apart
+  };
+  bool plastic_hinge(const Structure& s, i32 b, HingeCut* out) const;
+  void detach_unsupported(Structure& s, const std::vector<HingeCut>* hinges = nullptr);
   void drop_structure(i64 id);
   // Updates a structure whose chunks were re-fragmented: nodes there retire, the new fragments
   // join with their bonds; the solver keeps its preconditioner. False: re-extract instead.
@@ -1035,6 +1054,10 @@ class World {
   StreamConfig stream_{};
   std::unordered_set<u64> generated_;
   std::unordered_map<u64, i32> column_count_;
+  // (the eviction scan: every few ticks, or at once when the focus moved far - it walks every
+  // resident chunk; eviction has the radii's hysteresis to spare)
+  i64 evict_scan_tick_ = -1000000;
+  std::vector<V3> evict_scan_focus_;
   std::unique_ptr<world_detail::ChangeArchive> archive_;
   std::unordered_map<u64, i32> region_resident_;  // region -> resident chunks
   std::unordered_map<u64, std::vector<u16>> home_grids_;  // (streamed) chunk key -> the grids at home in it
