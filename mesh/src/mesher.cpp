@@ -1,6 +1,7 @@
 #include "svx/mesh/mesher.hpp"
 
 #include <algorithm>
+#include <bit>
 #include <cmath>
 
 #include "svx/base/parallel.hpp"
@@ -81,48 +82,88 @@ ChunkMesh mesh_chunk(const VoxelGrid& g, const IVec3& cc, const MeshOptions& opt
     if (cnt > 0)
       for (int q = 0; q < 3; ++q) d[q] /= f32(cnt);
   };
+  // Solidity as bit columns along z (bit z + 1 for z in [-1, 32]): a direction's visible faces -
+  // solid, with air in front - are found with word operations, and only they are looked at.
+  static thread_local u64 occ[B * B];
+  for (int c = 0; c < B * B; ++c) {
+    const Vox* colv = &loc.v[size_t(c) * B];
+    u64 bits = 0;
+    for (int z = 0; z < B; ++z) bits |= u64(vox_solid(colv[z]) ? 1 : 0) << z;
+    occ[c] = bits;
+  }
+  auto column = [&](int x, int y) { return occ[(x + 1) * B + (y + 1)]; };
+  constexpr u64 kInner = ((u64{1} << kChunk) - 1) << 1;  // (z in [0, 32))
+  static thread_local u64 vis[kChunk * kChunk];            // (x * 32 + y: the direction's faces along z)
   for (int face = 0; face < 6; ++face) {
     const int a = face >> 1;
     const int s = (face & 1) ? 1 : -1;
     const int t1 = (a + 1) % 3, t2 = (a + 2) % 3;
+    int per_slice[kChunk] = {};
+    for (int x = 0; x < kChunk; ++x)
+      for (int y = 0; y < kChunk; ++y) {
+        const u64 c = column(x, y);
+        const u64 front = a == 0 ? column(x + s, y) : a == 1 ? column(x, y + s) : (s > 0 ? c >> 1 : c << 1);
+        const u64 f = c & ~front & kInner;
+        vis[x * kChunk + y] = f;
+        if (!f) continue;
+        if (a == 0) {
+          per_slice[x] += std::popcount(f);
+        } else if (a == 1) {
+          per_slice[y] += std::popcount(f);
+        } else {
+          for (u64 b = f; b; b &= b - 1) ++per_slice[std::countr_zero(b) - 1];
+        }
+      }
     // per slice mask of faces
     std::vector<FaceKey> mask(kChunk * kChunk);
     std::vector<u8> has(kChunk * kChunk);
     for (int d = 0; d < kChunk; ++d) {
+      if (per_slice[d] == 0) continue;
       std::fill(has.begin(), has.end(), 0);
-      for (int i = 0; i < kChunk; ++i)
-        for (int j = 0; j < kChunk; ++j) {
-          int p[3];
-          p[a] = d;
-          p[t1] = i;
-          p[t2] = j;
-          if (!solid(p[0], p[1], p[2])) continue;
-          int q[3] = {p[0], p[1], p[2]};
-          q[a] += s;
-          if (solid(q[0], q[1], q[2])) continue;
-          const IVec3 wp{base[0] + p[0], base[1] + p[1], base[2] + p[2]};
-          FaceKey k;
-          k.tex = opt.texture ? opt.texture(wp, face) : static_cast<u16>(0xFF00 + static_cast<u16>(vox_mat(loc.at(p[0], p[1], p[2]))));
-          k.light = opt.light ? opt.light(wp, face) : 255;
-          k.debug = opt.debug ? opt.debug(wp) : 0;
-          // AO: the air layer in front of the face (q), neighbours along t1 / t2
-          u8 ao = 0;
-          for (int c = 0; c < 4; ++c) {
-            const int du = (c == 1 || c == 2) ? 1 : -1;
-            const int dv = (c >= 2) ? 1 : -1;
-            int s1[3] = {q[0], q[1], q[2]}, s2[3] = {q[0], q[1], q[2]}, sc[3] = {q[0], q[1], q[2]};
-            s1[t1] += du;
-            s2[t2] += dv;
-            sc[t1] += du;
-            sc[t2] += dv;
-            const int o1 = solid(s1[0], s1[1], s1[2]), o2 = solid(s2[0], s2[1], s2[2]), oc = solid(sc[0], sc[1], sc[2]);
-            const int occ = (o1 && o2) ? 3 : (o1 + o2 + oc);
-            ao |= static_cast<u8>((3 - occ) << (2 * c));
-          }
-          k.ao = ao;
-          mask[i * kChunk + j] = k;
-          has[i * kChunk + j] = 1;
+      // (a face at (i, j) of the slice: its voxel p, the air in front of it q)
+      auto look = [&](int i, int j) {
+        int p[3];
+        p[a] = d;
+        p[t1] = i;
+        p[t2] = j;
+        int q[3] = {p[0], p[1], p[2]};
+        q[a] += s;
+        const IVec3 wp{base[0] + p[0], base[1] + p[1], base[2] + p[2]};
+        FaceKey k;
+        k.tex = opt.texture ? opt.texture(wp, face) : static_cast<u16>(0xFF00 + static_cast<u16>(vox_mat(loc.at(p[0], p[1], p[2]))));
+        k.light = opt.light ? opt.light(wp, face) : 255;
+        k.debug = opt.debug ? opt.debug(wp) : 0;
+        // AO: the air layer in front of the face (q), neighbours along t1 / t2
+        u8 ao = 0;
+        for (int c = 0; c < 4; ++c) {
+          const int du = (c == 1 || c == 2) ? 1 : -1;
+          const int dv = (c >= 2) ? 1 : -1;
+          int s1[3] = {q[0], q[1], q[2]}, s2[3] = {q[0], q[1], q[2]}, sc[3] = {q[0], q[1], q[2]};
+          s1[t1] += du;
+          s2[t2] += dv;
+          sc[t1] += du;
+          sc[t2] += dv;
+          const int o1 = solid(s1[0], s1[1], s1[2]), o2 = solid(s2[0], s2[1], s2[2]), oc = solid(sc[0], sc[1], sc[2]);
+          const int occ3 = (o1 && o2) ? 3 : (o1 + o2 + oc);
+          ao |= static_cast<u8>((3 - occ3) << (2 * c));
         }
+        k.ao = ao;
+        mask[i * kChunk + j] = k;
+        has[i * kChunk + j] = 1;
+      };
+      // (t1, t2: y, z for x faces; z, x for y faces; x, y for z faces)
+      if (a == 0) {
+        for (int y = 0; y < kChunk; ++y)
+          for (u64 b = vis[d * kChunk + y]; b; b &= b - 1) look(y, std::countr_zero(b) - 1);
+      } else if (a == 1) {
+        for (int x = 0; x < kChunk; ++x)
+          for (u64 b = vis[x * kChunk + d]; b; b &= b - 1) look(std::countr_zero(b) - 1, x);
+      } else {
+        const u64 bit = u64{1} << (d + 1);
+        for (int x = 0; x < kChunk; ++x)
+          for (int y = 0; y < kChunk; ++y)
+            if (vis[x * kChunk + y] & bit) look(x, y);
+      }
       // emit quads
       for (int i = 0; i < kChunk; ++i)
         for (int j = 0; j < kChunk; ++j) {

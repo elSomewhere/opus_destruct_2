@@ -241,6 +241,10 @@ What a crash costs is kept to what changed:
   fragmenter reads each cell's Voronoi seed from a table instead of hashing it for every
   voxel, and the structure takes its new strengths in place.
 
+- **Streaming while driving**: the chunk mesher finds a direction's visible faces with word
+  operations on bit columns of the chunk's solidity and looks at those alone (the meshes are
+  bit for bit the same): meshing what streams in at 80 km/h is ~2 ms a tick, not ~25 ms.
+
 Measured natively on 4 threads in the drive city: a building's first touch is ~0.15 s
 (median), ~0.55 s (p90), ~1.6 s for the largest office towers (34 x 34 x 56 m); later hits
 ~30 ms (median), ~0.2 s on a tower (its multigrid is rebuilt).
