@@ -19,8 +19,12 @@ const FADE_START_S = 0.25;
 const GRAVITY = 9.81;
 /** Engine tick; rigid pieces are drawn this far in the past to interpolate between poses. */
 const TICK_S = 1 / 60;
-/** A rigid piece whose first pose never arrives falls back to the ballistic path. */
-const POSE_TIMEOUT_S = 0.5;
+/**
+ * A rigid piece that pose messages keep leaving out, before its first pose, falls back to the
+ * ballistic path (a slow page gets its poses late: time alone says nothing - a car's body would
+ * fall away from its wheels).
+ */
+const POSE_MISSES = 3;
 
 type Quat = [number, number, number, number];
 
@@ -46,6 +50,8 @@ export interface GpuIsland {
   cur: PoseSample | null;
   /** Stamp of the last `debris` message that carried this piece. */
   seen: number;
+  /** Pose messages since it came that did not have it (while it has had none). */
+  missed: number;
   /** Updated by `update`. */
   model: Mat4;
   opacity: number;
@@ -125,6 +131,7 @@ export class IslandRenderer {
       prev: null,
       cur: null,
       seen: 0,
+      missed: 0,
       model: mat4(), // the detachment pose: identity
       opacity: 1,
       position: [...ev.centroid],
@@ -165,7 +172,9 @@ export class IslandRenderer {
       isl.seen = stamp;
     }
     for (const isl of this.islands.values()) {
-      if (isl.rigid && isl.cur !== null && isl.seen !== stamp) this.release(isl); // the engine removed it
+      if (!isl.rigid || isl.seen === stamp) continue;
+      if (isl.cur !== null) this.release(isl); // the engine removed it
+      else if (++isl.missed >= POSE_MISSES) isl.rigid = false; // never posed: fall back
     }
   }
 
@@ -173,7 +182,6 @@ export class IslandRenderer {
   update(nowS: number): void {
     for (const isl of this.islands.values()) {
       const t = nowS - isl.born;
-      if (isl.rigid && isl.cur === null && t > POSE_TIMEOUT_S) isl.rigid = false; // no poses: fall back
       if (isl.rigid) {
         this.poseRigid(isl, nowS);
         continue;

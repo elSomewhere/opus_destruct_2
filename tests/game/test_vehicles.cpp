@@ -314,12 +314,26 @@ TEST_CASE("vehicles: driven into a wall its front crumples - it keeps its id, is
   // (pushed at 60 km/h towards the wall 30 m ahead)
   game.world().apply_impulse(chassis, game.world().piece(chassis)->x, V3{game.world().piece(chassis)->mass * 16.7, 0, 0});
   (void)game.take_events();
-  i32 remeshed = 0;
+  i32 remeshed = 0, misplaced = 0;
   f64 peak = 0.0;
   for (int t = 0; t < 180; ++t) {
     game.tick();
     for (const GameEvent& e : game.take_events())
-      if (e.kind == GameEvent::Kind::Remesh && e.id == chassis) ++remeshed;
+      if (e.kind == GameEvent::Kind::Remesh && e.id == chassis) {
+        ++remeshed;
+        // (its new mesh where the car is: within its box of its centre)
+        V3 lo{1e9, 1e9, 1e9}, hi{-1e9, -1e9, -1e9};
+        for (const MeshVertex& mv : e.mesh.vertices) {
+          lo = V3{std::min(lo.x, f64(mv.pos[0])), std::min(lo.y, f64(mv.pos[1])), std::min(lo.z, f64(mv.pos[2]))};
+          hi = V3{std::max(hi.x, f64(mv.pos[0])), std::max(hi.y, f64(mv.pos[1])), std::max(hi.z, f64(mv.pos[2]))};
+        }
+        const V3 mid = (lo + hi) * 0.5;
+        if (e.mesh.vertices.empty() || norm(mid - e.pos) > 2.0 || hi.x - lo.x > 6.0) {
+          ++misplaced;
+          MESSAGE("remesh at " << e.pos.x << " " << e.pos.y << " " << e.pos.z << ": mesh " << e.mesh.vertices.size() << " vertices, box " << lo.x << ".." << hi.x
+                               << " x " << lo.y << ".." << hi.y << " x " << lo.z << ".." << hi.z);
+        }
+      }
     REQUIRE(game.vehicle(id, &v));
     peak = std::max(peak, v.damage);
   }
@@ -327,6 +341,7 @@ TEST_CASE("vehicles: driven into a wall its front crumples - it keeps its id, is
                                                  << v.speed << " m/s");
   CHECK(v.chassis == chassis);
   CHECK(remeshed > 0);
+  CHECK(misplaced == 0);
   CHECK(v.damage > 0.05);
   CHECK(std::abs(v.speed) < 3.0);
 }

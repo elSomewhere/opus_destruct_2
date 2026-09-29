@@ -248,18 +248,26 @@ function gridChunkKey(grid: number, x: number, y: number, z: number): string {
   return `g${grid}:${x},${y},${z}`;
 }
 
-async function ensureModule(): Promise<SvxModule> {
-  if (mod) return mod;
-  const m = (await createSvxModule()) as unknown as SvxModule;
-  mod = m;
-  // (call scratch: at least what svx_stats writes, whatever this build's count)
-  scratch = m._malloc(Math.max(64, STATS_COUNT, m._svx_stats_count()) * 8);
-  occBuf = m._malloc(4096);
-  eng = m._svx_create(config.voxelSize);
-  m._svx_set_threads(1);
-  m._svx_set_gpu_displacement(eng, config.gpuDisplacement === false ? 0 : 1);
-  applyParams(params);
-  return m;
+/**
+ * The module and its engine, made once: commands are not serialized, and `init` and the first
+ * load arrive together - two instantiations would each make an engine, and the one finishing
+ * last would replace the engine the world was loaded into with an empty one.
+ */
+let modulePromise: Promise<SvxModule> | null = null;
+function ensureModule(): Promise<SvxModule> {
+  modulePromise ??= (async () => {
+    const m = (await createSvxModule()) as unknown as SvxModule;
+    // (call scratch: at least what svx_stats writes, whatever this build's count)
+    scratch = m._malloc(Math.max(64, STATS_COUNT, m._svx_stats_count()) * 8);
+    occBuf = m._malloc(4096);
+    eng = m._svx_create(config.voxelSize);
+    m._svx_set_threads(1);
+    m._svx_set_gpu_displacement(eng, config.gpuDisplacement === false ? 0 : 1);
+    mod = m;
+    applyParams(params);
+    return m;
+  })();
+  return modulePromise;
 }
 
 function f64(i: number): number {
