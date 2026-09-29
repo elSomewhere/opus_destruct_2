@@ -12,8 +12,16 @@ namespace svx {
 namespace {
 
 // 4-lane single-precision vectors (NEON natively, SIMD128 in WASM); multiplies and adds stay
-// separate (-ffp-contract=off): bit-identical everywhere.
+// separate (-ffp-contract=off): bit-identical everywhere. (GCC does not know clang's
+// ext_vector_type - it would make f4 a plain float - but both know vector_size; a scalar is
+// broadcast with splat4, which both compile to the same lanes.)
+#if defined(__clang__)
 typedef float f4 __attribute__((ext_vector_type(4)));
+#else
+typedef float f4 __attribute__((vector_size(16)));
+#endif
+static_assert(sizeof(f4) == 4 * sizeof(float), "f4: four lanes");
+inline f4 splat4(float x) { return f4{x, x, x, x}; }
 inline f4 ld4(const f32* p) {
   f4 v;
   __builtin_memcpy(&v, p, sizeof v);
@@ -23,14 +31,14 @@ inline void st4(f32* p, f4 v) { __builtin_memcpy(p, &v, sizeof v); }
 // (y0, y1) -= B x, B column-major padded (48 floats), x 8 floats (6 used)
 inline void bsub(const f32* __restrict B, const f32* __restrict x, f4& y0, f4& y1) {
   for (int j = 0; j < 6; ++j) {
-    const f4 xj = x[j];
+    const f4 xj = splat4(x[j]);
     y0 -= ld4(B + 8 * j) * xj;
     y1 -= ld4(B + 8 * j + 4) * xj;
   }
 }
 inline void badd(const f32* __restrict B, const f32* __restrict x, f4& y0, f4& y1) {
   for (int j = 0; j < 6; ++j) {
-    const f4 xj = x[j];
+    const f4 xj = splat4(x[j]);
     y0 += ld4(B + 8 * j) * xj;
     y1 += ld4(B + 8 * j + 4) * xj;
   }
@@ -578,7 +586,7 @@ void Amg::smooth_f(const Level& L, f32* x, const f32* b, bool fresh, bool backwa
       }
       st4(sv, s0);
       st4(sv + 4, s1);
-      f4 y0 = 0.0f, y1 = 0.0f;
+      f4 y0 = splat4(0.0f), y1 = splat4(0.0f);
       badd(&L.Df[48 * size_t(i)], sv, y0, y1);
       st4(x + 8 * i, y0);
       st4(x + 8 * i + 4, y1);
@@ -623,7 +631,7 @@ void Amg::cycle_f(size_t l, const f32* b, f32* x) const {
   f32* bc = C.bf.data();
   parallel_for(C.A.n, kRowGrain, [&](i64 a0, i64 a1) {
     for (i64 a = a0; a < a1; ++a) {
-      f4 y0 = 0.0f, y1 = 0.0f;
+      f4 y0 = splat4(0.0f), y1 = splat4(0.0f);
       for (i32 e = L.Rrow[size_t(a)]; e < L.Rrow[size_t(a) + 1]; ++e) badd(&L.Rf[48 * size_t(e)], r + 8 * size_t(L.Rent[size_t(e)].first), y0, y1);
       st4(bc + 8 * a, y0);
       st4(bc + 8 * a + 4, y1);
