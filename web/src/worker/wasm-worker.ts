@@ -2,7 +2,7 @@
  * WASM engine worker: serves the engine protocol (docs/API.md) with the structvox C++ core
  * compiled to WebAssembly. The module (web/src/wasm/svx_web.{js,wasm}) is produced by
  *   cmake --preset wasm-release-threads && cmake --build --preset wasm-release-threads --target svx_web
- * and exposes the flat C ABI of core/include/svx/api/svx_api.h. Selected with ?engine=wasm.
+ * and exposes the flat C ABI of game/include/svx/game/api/svx_api.h. Selected with ?engine=wasm.
  *
  * The worker owns the simulation clock (fixed 60 Hz tick). After every tick it forwards
  * changed chunk meshes, removed chunks and events; stats go out at ~4 Hz.
@@ -22,7 +22,18 @@ import type {
   WadOptions,
   WorldInfo,
 } from '../engine/protocol.ts';
-import { DEBRIS_STRIDE, DEFAULT_PARAMS, FLAME_STRIDE, GRID_STRIDE, JOINT_STRIDE, SMOKE_STRIDE, TIMELINE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
+import {
+  DEBRIS_STRIDE,
+  DEFAULT_PARAMS,
+  FLAME_STRIDE,
+  GRID_STRIDE,
+  JOINT_STRIDE,
+  SMOKE_STRIDE,
+  TIMELINE_STRIDE,
+  VEHICLE_STRIDE,
+  VERTEX_STRIDE,
+  WHEEL_STRIDE,
+} from '../engine/protocol.ts';
 import { postToMain, reportError, serveCommands } from './host.ts';
 // Generated Emscripten ES module (see the header comment); typed by SvxModule below.
 import createSvxModule from '../wasm/svx_web.js';
@@ -113,6 +124,19 @@ interface SvxModule {
   _svx_poll_fields(e: number): number;
   _svx_field_info(e: number, i: number, out: number): void;
   _svx_field_data(e: number, i: number): number;
+  _svx_spawn_vehicle(e: number, kind: number, paint: number, x: number, y: number, z: number, yaw: number): number;
+  _svx_remove_vehicle(e: number, id: number): number;
+  _svx_enter_vehicle(e: number, id: number): number;
+  _svx_exit_vehicle(e: number): void;
+  _svx_player_vehicle(e: number): number;
+  _svx_drive(e: number, throttle: number, brake: number, steer: number, handbrake: number): void;
+  _svx_vehicle_near(e: number, x: number, y: number, z: number, reach: number): number;
+  _svx_vehicles(e: number): number;
+  _svx_vehicles_data(e: number): number;
+  _svx_wheels(e: number): number;
+  _svx_wheels_data(e: number): number;
+  _svx_shoot(e: number, x: number, y: number, z: number, r: number, energy: number): void;
+  _svx_set_traffic(e: number, enabled: number, cars: number, parked: number, near: number, radius: number, speedScale: number): void;
 }
 
 const TICK_MS = 1000 / 60;
@@ -131,6 +155,19 @@ let mod: SvxModule | null = null;
 let eng = 0;
 let scratch = 0; // 64 doubles of call scratch space
 let jointsLive = false; // (the last joints message had some: one empty follows when they are gone)
+let vehiclesLive = false; // (likewise the vehicles)
+/**
+ * Pose messages (debris, vehicles) posted and the last the page handled (frameAck): while it is
+ * more than POSE_LAG behind, poses are held back (each message carries every pose: the next one
+ * sent brings the page up to date, and it never works through a backlog).
+ */
+let poseSeq = 0;
+let poseAcked = -1;
+const POSE_LAG = 12;
+
+function posesHeld(): boolean {
+  return poseAcked >= 0 && poseSeq - poseAcked > POSE_LAG;
+}
 let config: InitConfig = { voxelSize: 0.125, threads: 1, memoryMB: 1024, params: { ...DEFAULT_PARAMS } };
 let params: EngineParams = { ...DEFAULT_PARAMS };
 let loaded = false;
@@ -431,6 +468,21 @@ function flushJoints(): void {
   postToMain({ type: 'joints', joints });
 }
 
+/** The vehicles and their wheels, while any exist (and once empty after the last). */
+function flushVehicles(): void {
+  const m = mod as SvxModule;
+  const n = m._svx_vehicles(eng);
+  if (n === 0 && !vehiclesLive) return;
+  if (n > 0 && posesHeld()) return;
+  vehiclesLive = n > 0;
+  const b = m._svx_vehicles_data(eng) >> 3;
+  const vehicles = m.HEAPF64.slice(b, b + n * VEHICLE_STRIDE);
+  const nw = m._svx_wheels(eng);
+  const bw = m._svx_wheels_data(eng) >> 3;
+  const wheels = m.HEAPF64.slice(bw, bw + nw * WHEEL_STRIDE);
+  postToMain({ type: 'vehicles', vehicles, wheels, player: m._svx_player_vehicle(eng) >>> 0, seq: ++poseSeq });
+}
+
 /** A piece event's voxels for the client's collision (svx_event_occupancy), if it has them. */
 function eventOccupancy(i: number): { occupancy?: ArrayBuffer } {
   const m = mod as SvxModule;
@@ -470,9 +522,19 @@ function flushEvents(): void {
       });
     } else if (kind === 1) {
       const voxels = f64(16);
+      const material = f64(17);
       list.push(
         voxels > 0
-          ? { kind: 'crack', pos, normal: [f64(11), f64(12), f64(13)], strength: f64(15), voxels, velocity: [f64(5), f64(6), f64(7)], radius: f64(14) }
+          ? {
+              kind: 'crack',
+              pos,
+              normal: [f64(11), f64(12), f64(13)],
+              strength: f64(15),
+              voxels,
+              velocity: [f64(5), f64(6), f64(7)],
+              radius: f64(14),
+              ...(material >= 0 ? { material } : {}),
+            }
           : { kind: 'crack', pos, normal: [f64(11), f64(12), f64(13)], strength: f64(15) },
       );
     } else if (kind === 2) {
@@ -514,12 +576,13 @@ function flushDebris(): void {
   const m = mod as SvxModule;
   const n = m._svx_debris(eng);
   if (n === 0 && debrisLive === 0) return;
+  if (n > 0 && posesHeld()) return;
   debrisLive = n;
   const b = m._svx_debris_data(eng) >> 3;
   const poses = m.HEAPF64.slice(b, b + n * DEBRIS_STRIDE);
   if (poses.length > 0 && poses.length === debrisSent.length && poses.every((v, i) => v === debrisSent[i])) return;
   debrisSent = poses.slice();
-  postToMain({ type: 'debris', poses });
+  postToMain({ type: 'debris', poses, seq: ++poseSeq });
 }
 
 /** Water surface meshes of chunks whose water changed, and chunks whose water is gone. */
@@ -683,6 +746,8 @@ function clearChunks(): void {
   debrisLive = 0; // (the front end drops the old world's pieces when it requests a load)
   if (jointsLive) postToMain({ type: 'joints', joints: new Float64Array(0) });
   jointsLive = false;
+  if (vehiclesLive) postToMain({ type: 'vehicles', vehicles: new Float64Array(0), wheels: new Float64Array(0), player: 0 });
+  vehiclesLive = false;
   debrisSent = new Float64Array(0);
   // (the old world's flames and smoke go now: a message sent before the load may still be on
   // its way)
@@ -817,6 +882,31 @@ async function handle(cmd: EngineCommand): Promise<void> {
     case 'setParams':
       applyParams(cmd.params);
       break;
+    case 'shoot':
+      if (mod && loaded) mod._svx_shoot(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius, cmd.energy);
+      break;
+    case 'spawnVehicle':
+      if (mod && loaded) mod._svx_spawn_vehicle(eng, cmd.kind | 0, cmd.paint | 0, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.yaw);
+      break;
+    case 'enterVehicle':
+      if (mod && loaded) mod._svx_enter_vehicle(eng, cmd.id >>> 0);
+      break;
+    case 'exitVehicle':
+      if (mod && loaded) mod._svx_exit_vehicle(eng);
+      break;
+    case 'drive':
+      if (mod && loaded) mod._svx_drive(eng, cmd.throttle, cmd.brake, cmd.steer, cmd.handbrake ? 1 : 0);
+      break;
+    case 'frameAck':
+      poseAcked = cmd.seq;
+      break;
+    case 'setTraffic': {
+      // (kept for the next load too: the engine keeps its traffic settings across levels)
+      const m = await ensureModule();
+      const t = cmd.traffic;
+      m._svx_set_traffic(eng, t.enabled ? 1 : 0, t.cars | 0, t.parked | 0, t.nearRadius, t.radius, t.speedScale);
+      break;
+    }
   }
 }
 
@@ -833,6 +923,7 @@ function loop(): void {
       const t1 = performance.now();
       flushEvents();
       flushDebris();
+      flushVehicles();
       flushEnv();
       flushGrids();
       flushMeshes();

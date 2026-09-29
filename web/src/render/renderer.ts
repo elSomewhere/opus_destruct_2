@@ -5,12 +5,13 @@
  * Bind groups: group 0 = frame uniforms + texture atlas + displacement fields (shared by all
  * pipelines); group 1 = per-object uniforms (model matrix, opacity, displaced flag) with
  * dynamic offsets: slot 0 is the identity used by chunks (displaced by the fields), slots
- * 1..MAX_ISLANDS belong to islands and the next MAX_GRIDS to the oriented grids (each keeps its
- * slot; only changed slots are uploaded).
+ * 1..MAX_ISLANDS belong to islands, the next MAX_GRIDS to the oriented grids (each keeps its
+ * slot; only changed slots are uploaded) and the next MAX_WHEELS to vehicles' wheels (every
+ * frame). Skid marks are drawn translucent after the opaque world.
  */
 import type { GridFrames } from '../engine/gridframes.ts';
 import type { TextureInfo, Vec3 } from '../engine/protocol.ts';
-import { DebugView, Material, VERTEX_STRIDE } from '../engine/protocol.ts';
+import { DebugView, Material, Paint, PAINT_SLOT_BASE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { GpuAtlas } from './atlas.ts';
 import { ChunkStore } from './chunks.ts';
 import { FIELD_UNIFORM_FLOATS, FieldStore, MAX_FIELDS } from './fields.ts';
@@ -20,21 +21,28 @@ import { IslandRenderer } from './islands.ts';
 import { cross, frustumPlanes, mat4, mat4LookDir, mat4Multiply, mat4PerspectiveReversedInfinite, normalize } from './math.ts';
 import { ParticleSystem } from './particles.ts';
 import { RopeRenderer } from './ropes.ts';
+import { SkidMarks } from './skids.ts';
+import { RIM_BLUR_SLOT, WheelRenderer, type WheelDraw } from './wheels.ts';
 import frameWgsl from './shaders/frame.wgsl?raw';
 import particlesWgsl from './shaders/particles.wgsl?raw';
+import skidsWgsl from './shaders/skids.wgsl?raw';
 import skyWgsl from './shaders/sky.wgsl?raw';
 import waterWgsl from './shaders/water.wgsl?raw';
 import worldWgsl from './shaders/world.wgsl?raw';
 
 const SAMPLES = 4;
 const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
+/** Palette entries (see shaders/frame.wgsl): materials, the default, paints. */
+const PALETTE_SIZE = 64;
 /** Floats in the Frame uniform (see shaders/frame.wgsl). */
-const FRAME_FLOATS = 16 + 8 * 4 + 16 * 4;
+const FRAME_FLOATS = 16 + 8 * 4 + PALETTE_SIZE * 4;
 const OBJECT_BYTES = 80; // mat4 + vec4
 /** Detached pieces drawn at once (the engine keeps up to ~3000 rigid pieces plus fading ones). */
 const MAX_ISLANDS = 4096;
 /** Oriented grids drawn at once (docs/GRIDS.md): each has a slot of its own. */
 const MAX_GRIDS = 1024;
+/** Vehicles' wheels drawn at once. */
+const MAX_WHEELS = 512;
 const MAX_VIEW_DISTANCE = 600;
 
 export interface Camera {
@@ -56,6 +64,8 @@ export interface FrameInputs {
   voxelSize: number;
   /** The oriented grids' frames (their chunks are drawn with them), placed for this frame. */
   gridFrames?: GridFrames;
+  /** Vehicles' wheels, posed for this frame. */
+  wheels?: readonly WheelDraw[];
 }
 
 export interface RenderStats {
@@ -68,15 +78,21 @@ export interface RenderStats {
   islands: number;
   islandsDrawn: number;
   particles: number;
+  wheels: number;
+  skidMarks: number;
   gpuMB: number;
   width: number;
   height: number;
 }
 
-/** Linear-space material colours (vec4 each), indexed by material id; [15] = untextured default. */
+/**
+ * Linear-space colours (vec4 each): materials by id (0..20), [31] the untextured default, paints
+ * at PAINT_SLOT_BASE + paint (cars, facades, the road's markings), [59] a wheel's blurred spokes.
+ */
 const PALETTE: Float32Array = (() => {
-  const p = new Float32Array(16 * 4).fill(1);
+  const p = new Float32Array(PALETTE_SIZE * 4).fill(1);
   const set = (i: number, r: number, g: number, b: number): void => p.set([r, g, b, 1], i * 4);
+  for (let i = 0; i < PALETTE_SIZE; i++) set(i, 0.3, 0.3, 0.3);
   set(Material.Rc, 0.3, 0.31, 0.33);
   set(Material.Concrete, 0.36, 0.35, 0.33);
   set(Material.Steel, 0.2, 0.27, 0.36);
@@ -88,8 +104,45 @@ const PALETTE: Float32Array = (() => {
   set(Material.Stone, 0.4, 0.38, 0.33);
   set(Material.Glass, 0.55, 0.7, 0.72);
   set(Material.Rebar, 0.16, 0.13, 0.11);
-  for (let i = 11; i < 15; i++) set(i, 0.3, 0.3, 0.3);
-  set(15, 0.3, 0.3, 0.3);
+  set(Material.SteelSection, 0.22, 0.24, 0.27);
+  set(Material.Sheet, 0.34, 0.35, 0.37);
+  set(Material.CarFrame, 0.05, 0.05, 0.055);
+  set(Material.Engine, 0.1, 0.1, 0.105);
+  set(Material.Window, 0.035, 0.045, 0.055);
+  set(Material.Tyre, 0.03, 0.03, 0.032);
+  set(Material.Plastic, 0.035, 0.035, 0.038);
+  set(Material.Asphalt, 0.065, 0.065, 0.07);
+  set(Material.Paint, 0.62, 0.62, 0.6);
+  set(Material.Lamp, 0.85, 0.85, 0.8);
+  const paint = (k: number, r: number, g: number, b: number): void => set(PAINT_SLOT_BASE + k, r, g, b);
+  paint(Paint.White, 0.78, 0.79, 0.78);
+  paint(Paint.Silver, 0.42, 0.44, 0.47);
+  paint(Paint.Black, 0.018, 0.018, 0.02);
+  paint(Paint.Red, 0.5, 0.02, 0.025);
+  paint(Paint.Blue, 0.02, 0.09, 0.38);
+  paint(Paint.Green, 0.04, 0.2, 0.07);
+  paint(Paint.Yellow, 0.75, 0.55, 0.03);
+  paint(Paint.Orange, 0.75, 0.22, 0.02);
+  paint(Paint.TaxiYellow, 0.8, 0.55, 0.02);
+  paint(Paint.NavyBlue, 0.015, 0.03, 0.12);
+  paint(Paint.Maroon, 0.17, 0.015, 0.025);
+  paint(Paint.Beige, 0.5, 0.43, 0.3);
+  paint(Paint.Graphite, 0.085, 0.09, 0.095);
+  paint(Paint.Teal, 0.02, 0.25, 0.25);
+  paint(Paint.Trim, 0.03, 0.03, 0.033);
+  paint(Paint.TailRed, 0.55, 0.015, 0.015);
+  paint(Paint.Amber, 0.85, 0.35, 0.02);
+  paint(Paint.Plaster, 0.6, 0.58, 0.53);
+  paint(Paint.Cream, 0.66, 0.58, 0.42);
+  paint(Paint.Terracotta, 0.45, 0.17, 0.08);
+  paint(Paint.Sand, 0.58, 0.48, 0.31);
+  paint(Paint.Slate, 0.19, 0.21, 0.25);
+  paint(Paint.Ochre, 0.55, 0.36, 0.09);
+  paint(Paint.Mint, 0.38, 0.56, 0.47);
+  paint(Paint.LineWhite, 0.72, 0.72, 0.7);
+  paint(Paint.LineYellow, 0.72, 0.48, 0.03);
+  paint(Paint.Kerb, 0.42, 0.42, 0.4);
+  set(RIM_BLUR_SLOT, 0.24, 0.245, 0.25);
   return p;
 })();
 
@@ -106,6 +159,8 @@ export class Renderer {
   readonly islands: IslandRenderer;
   readonly grids: GridRenderer;
   readonly ropes: RopeRenderer;
+  readonly wheels: WheelRenderer;
+  readonly skids: SkidMarks;
   readonly particles: ParticleSystem;
   readonly fields: FieldStore;
   private readonly canvas: HTMLCanvasElement;
@@ -127,6 +182,7 @@ export class Renderer {
   private readonly worldPipeline: GPURenderPipeline;
   private readonly particlePipeline: GPURenderPipeline;
   private readonly waterPipeline: GPURenderPipeline;
+  private readonly skidPipeline: GPURenderPipeline;
   private colorTarget: GPUTexture | null = null;
   private depthTarget: GPUTexture | null = null;
   private readonly view = mat4();
@@ -152,9 +208,9 @@ export class Renderer {
       size: FRAME_FLOATS * 4,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
     });
-    // one slot per object at the dynamic-offset alignment: (1 + MAX_ISLANDS + MAX_GRIDS) x 256 B
+    // one slot per object at the dynamic-offset alignment: (1 + MAX_ISLANDS + MAX_GRIDS + MAX_WHEELS) x 256 B
     this.objectStride = Math.max(256, device.limits.minUniformBufferOffsetAlignment);
-    this.objectData = new Float32Array(((1 + MAX_ISLANDS + MAX_GRIDS) * this.objectStride) / 4);
+    this.objectData = new Float32Array(((1 + MAX_ISLANDS + MAX_GRIDS + MAX_WHEELS) * this.objectStride) / 4);
     this.objectBuffer = device.createBuffer({
       label: 'object uniforms',
       size: this.objectData.byteLength,
@@ -298,6 +354,21 @@ export class Renderer {
       multisample,
     });
 
+    const skids = module('skids', skidsWgsl);
+    this.skidPipeline = device.createRenderPipeline({
+      label: 'skid marks',
+      layout: frameOnly,
+      vertex: {
+        module: skids,
+        entryPoint: 'vs',
+        buffers: [{ arrayStride: 16, attributes: [{ shaderLocation: 0, offset: 0, format: 'float32x4' }] }],
+      },
+      fragment: { module: skids, entryPoint: 'fs', targets: [{ format, blend: { color: premultiplied, alpha: premultiplied } }] },
+      primitive: { topology: 'triangle-list', cullMode: 'none' },
+      depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: false, depthCompare: 'greater' },
+      multisample,
+    });
+
     const particles = module('particles', particlesWgsl);
     this.particlePipeline = device.createRenderPipeline({
       label: 'particles',
@@ -327,6 +398,8 @@ export class Renderer {
     this.islands = new IslandRenderer(device, MAX_ISLANDS);
     this.grids = new GridRenderer(device, 1 + MAX_ISLANDS, MAX_GRIDS);
     this.ropes = new RopeRenderer(device);
+    this.wheels = new WheelRenderer(device, 1 + MAX_ISLANDS + MAX_GRIDS, MAX_WHEELS);
+    this.skids = new SkidMarks(device);
     this.particles = new ParticleSystem(device);
   }
 
@@ -353,6 +426,8 @@ export class Renderer {
     this.islands.clear();
     this.grids.clear();
     this.ropes.clear();
+    this.wheels.clear();
+    this.skids.clear();
     this.particles.clear();
     this.fields.clear();
   }
@@ -461,6 +536,10 @@ export class Renderer {
       hi = Math.max(hi, g.slot);
     }
     if (hi >= lo) this.device.queue.writeBuffer(this.objectBuffer, lo * this.objectStride, o, lo * stride, (hi - lo + 1) * stride);
+    // (the wheels' slots: every frame, a range of their own)
+    const wr = this.wheels.set(input.wheels ?? [], o, stride);
+    if (wr.hi >= wr.lo) this.device.queue.writeBuffer(this.objectBuffer, wr.lo * this.objectStride, o, wr.lo * stride, (wr.hi - wr.lo + 1) * stride);
+    this.skids.upload();
 
     const particleCount = this.particles.upload();
     if (this.fields.version !== this.boundFieldsVersion) this.rebuildFrameBindGroup();
@@ -496,10 +575,15 @@ export class Renderer {
     const drawn = this.chunks.draw(pass, this.planes, cam.eye, MAX_VIEW_DISTANCE, fields.count > 0 ? (mn, mx) => fields.inflation(mn, mx) : undefined);
     const pieces = this.islands.draw(pass, this.objectBindGroup, this.objectStride, this.planes, cam.eye, MAX_VIEW_DISTANCE);
     const grids = this.grids.draw(pass, this.objectBindGroup, this.objectStride, this.planes, cam.eye, MAX_VIEW_DISTANCE);
-    let triangles = drawn.triangles + pieces.triangles + grids.triangles;
+    const wheels = this.wheels.draw(pass, this.objectBindGroup, this.objectStride, this.planes, cam.eye, MAX_VIEW_DISTANCE);
+    let triangles = drawn.triangles + pieces.triangles + grids.triangles + wheels.triangles;
     if (this.ropes.count > 0) {
       pass.setBindGroup(1, this.objectBindGroup, [0]);
       triangles += this.ropes.draw(pass);
+    }
+    if (this.skids.count > 0) {
+      pass.setPipeline(this.skidPipeline);
+      triangles += this.skids.draw(pass);
     }
     if (this.water.count > 0) {
       pass.setPipeline(this.waterPipeline);
@@ -523,6 +607,8 @@ export class Renderer {
       islands: this.islands.count,
       islandsDrawn: pieces.drawn,
       particles: particleCount,
+      wheels: wheels.drawn,
+      skidMarks: this.skids.count,
       gpuMB: (this.chunks.bytes + this.grids.bytes + this.water.bytes + this.atlas.bytes) / (1024 * 1024),
       width,
       height,

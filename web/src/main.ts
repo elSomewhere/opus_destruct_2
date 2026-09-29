@@ -2,8 +2,9 @@
  * structvox front end bootstrap.
  *
  * URL parameters:
- *   ?engine=mock|wasm         engine worker (default mock; wasm needs src/worker/wasm-worker.ts)
- *   ?world=rooms|city|tower   procedural world loaded at start (default rooms)
+ *   ?engine=mock|wasm         engine worker (default wasm when it is built, else mock)
+ *   ?world=drive|rooms|city|tower|...   procedural world loaded at start (default: the drive
+ *                             city with the WASM engine, rooms with the mock)
  *   ?seed=N                   world seed (default 1)
  *   ?debug=none|utilization|fragments   initial debug view ('bubbles', from v1 links, = fragments)
  */
@@ -26,8 +27,8 @@ declare global {
 
 const VOXEL_SIZE = 0.125;
 
-function parseWorld(v: string | null): ProceduralKind {
-  return PROCEDURAL_KINDS.find((k) => k === v) ?? 'rooms';
+function parseWorld(v: string | null, engine: string): ProceduralKind {
+  return PROCEDURAL_KINDS.find((k) => k === v) ?? (engine === 'wasm' ? 'drive' : 'rooms');
 }
 
 function parseDebug(v: string | null): DebugView {
@@ -47,7 +48,7 @@ async function main(): Promise<void> {
   const overlay = new Overlay(uiRoot);
   const url = new URL(window.location.href);
   const kind = engineKindFromUrl(url);
-  const world = { kind: parseWorld(url.searchParams.get('world')), seed: Math.max(0, Math.floor(Number(url.searchParams.get('seed') ?? 1) || 0)) };
+  const world = { kind: parseWorld(url.searchParams.get('world'), kind), seed: Math.max(0, Math.floor(Number(url.searchParams.get('seed') ?? 1) || 0)) };
   const params = { ...DEFAULT_PARAMS, debugView: parseDebug(url.searchParams.get('debug')) };
 
   overlay.setLoading('Initializing WebGPU', 0.02);

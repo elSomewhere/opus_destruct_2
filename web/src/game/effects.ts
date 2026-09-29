@@ -181,6 +181,15 @@ export class Effects {
 
   /** Crushed material or a shard too small to be a piece: chips flying on with it and a cloud. */
   private dust(ev: CrackEvent): void {
+    const m = ev.material;
+    if (m === Material.Glass || m === Material.Window || m === Material.Lamp) {
+      this.shards(ev, m === Material.Lamp);
+      return;
+    }
+    if (m === Material.Sheet || m === Material.CarFrame || m === Material.Engine || m === Material.Steel || m === Material.SteelSection) {
+      this.sparks(ev.pos, ev.velocity ?? [0, 0, 0], Math.min(24, 6 + (ev.voxels ?? 1)));
+      return;
+    }
     const vox = ev.voxels ?? 1;
     const r = Math.max(0.1, ev.radius ?? 0.2);
     const v0 = ev.velocity ?? [0, 0, 0];
@@ -212,6 +221,82 @@ export class Effects {
         gravity: -0.03,
       });
     }
+  }
+
+  /** Glass shattering: glittering shards falling with what broke, a few catching the light. */
+  private shards(ev: CrackEvent, lamp: boolean): void {
+    const vox = ev.voxels ?? 1;
+    const v0 = ev.velocity ?? [0, 0, 0];
+    const n = Math.min(10 + vox * 2, 40, this.crackBudget);
+    if (n <= 0) return;
+    this.crackBudget -= n;
+    const r = Math.max(0.05, ev.radius ?? 0.1);
+    for (let k = 0; k < n; k++) {
+      const d = randomUnit();
+      const v = rand(0.6, 3.2);
+      const glint = Math.random() < 0.3;
+      this.particles.spawn({
+        pos: [ev.pos[0] + d[0] * r, ev.pos[1] + d[1] * r, ev.pos[2] + d[2] * r],
+        vel: [v0[0] * 0.7 + d[0] * v, v0[1] * 0.7 + d[1] * v, v0[2] * 0.7 + d[2] * v + 1],
+        life: rand(0.7, 1.5),
+        size: rand(0.008, 0.022),
+        color: glint ? [2.2, 2.3, 2.4, 1] : lamp ? [0.9, 0.85, 0.7, 0.9] : [0.55, 0.68, 0.72, 0.85],
+        additive: glint,
+        gravity: 1,
+        drag: 0.4,
+      });
+    }
+  }
+
+  /** Metal struck or torn: hot sparks spraying on with it (their streaks), a few falling chips. */
+  sparks(pos: Vec3, vel: Vec3, n: number): void {
+    const count = Math.min(Math.round(n), this.crackBudget);
+    if (count <= 0) return;
+    this.crackBudget -= count;
+    for (let k = 0; k < count; k++) {
+      const d = randomUnit();
+      const v = rand(2, 7);
+      this.particles.spawn({
+        pos: [pos[0] + d[0] * 0.05, pos[1] + d[1] * 0.05, pos[2] + d[2] * 0.05],
+        vel: [vel[0] * 0.6 + d[0] * v, vel[1] * 0.6 + d[1] * v, vel[2] * 0.6 + Math.abs(d[2]) * v * 0.8 + 0.5],
+        life: rand(0.2, 0.55),
+        size: rand(0.008, 0.016),
+        color: [5, 2.6, 0.9, 1],
+        additive: true,
+        gravity: 1,
+        drag: 1.2,
+      });
+    }
+    this.light(pos, Math.min(1.2, count * 0.05));
+  }
+
+  /** A sliding tyre's smoke (strength 0..1), drifting with the car. */
+  tyreSmoke(pos: Vec3, vel: Vec3, strength: number): void {
+    const d = randomUnit();
+    this.particles.spawn({
+      pos: [pos[0] + d[0] * 0.08, pos[1] + d[1] * 0.08, pos[2] + 0.08],
+      vel: [vel[0] * 0.25 + rand(-0.4, 0.4), vel[1] * 0.25 + rand(-0.4, 0.4), rand(0.3, 0.9)],
+      life: rand(1.4, 2.8),
+      size: rand(0.18, 0.3),
+      grow: 0.6 + 0.4 * strength,
+      color: [0.6, 0.6, 0.62, 0.14 + 0.16 * strength],
+      drag: 1.4,
+      gravity: -0.02,
+    });
+  }
+
+  /** Dust thrown up by a wheel spinning or sliding on soil. */
+  wheelDust(pos: Vec3, vel: Vec3, strength: number): void {
+    this.particles.spawn({
+      pos: [pos[0], pos[1], pos[2] + 0.05],
+      vel: [vel[0] * 0.3 + rand(-0.6, 0.6), vel[1] * 0.3 + rand(-0.6, 0.6), rand(0.4, 1.4)],
+      life: rand(1, 2),
+      size: rand(0.12, 0.22),
+      grow: 0.5,
+      color: [0.3, 0.23, 0.15, 0.2 + 0.2 * strength],
+      drag: 1.6,
+      gravity: 0.05,
+    });
   }
 
   /** Blast or landing debris: dust ring and camera shake by energy and distance. */

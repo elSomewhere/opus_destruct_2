@@ -1,6 +1,8 @@
 /**
  * Weapons, mapped onto the engine's damage commands (docs/API.md):
- * - pistol and shotgun are hitscan: `raycast`, then `carve` a small sphere at the hit;
+ * - pistol and shotgun are hitscan: `raycast`, then `shoot` a small sphere at the hit with the
+ *   round's energy (it holes what that gets through: brick, concrete, a car's sheet metal and
+ *   glass - not armour; docs/VEHICLES.md);
  * - the flamethrower and the water hose are short-range hitscan streams: `ignite` a sphere at
  *   the hit, or `pour` water there (and `extinguish` it) (the engine's environment, docs/ENV.md);
  * - the rocket launcher fires a visible projectile. It flies straight, so its path is
@@ -35,8 +37,11 @@ export const WEAPONS: readonly WeaponDef[] = [
 
 export const HITSCAN_RANGE = 250;
 export const PISTOL_CARVE_RADIUS = 0.15;
+/** Joules of a pistol round (9 mm) and of a shotgun pellet (00 buck). */
+export const PISTOL_ENERGY_J = 500;
 export const SHOTGUN_PELLETS = 8;
 export const SHOTGUN_CARVE_RADIUS = 0.12;
+export const PELLET_ENERGY_J = 150;
 export const SHOTGUN_SPREAD = 0.065;
 export const ROCKET_SPEED = 25;
 export const ROCKET_BLAST_RADIUS = 1.0;
@@ -140,11 +145,11 @@ export class Weapons {
     this.effects.muzzleFlash(muzzle);
     switch (this.current.id) {
       case 'pistol':
-        this.hitscan(eye, jitter(forward, 0.004), PISTOL_CARVE_RADIUS);
+        this.hitscan(eye, jitter(forward, 0.004), PISTOL_CARVE_RADIUS, PISTOL_ENERGY_J);
         this.effects.addTrauma(0.05);
         break;
       case 'shotgun':
-        for (let k = 0; k < SHOTGUN_PELLETS; k++) this.hitscan(eye, jitter(forward, SHOTGUN_SPREAD), SHOTGUN_CARVE_RADIUS);
+        for (let k = 0; k < SHOTGUN_PELLETS; k++) this.hitscan(eye, jitter(forward, SHOTGUN_SPREAD), SHOTGUN_CARVE_RADIUS, PELLET_ENERGY_J);
         this.effects.addTrauma(0.18);
         break;
       case 'rocket':
@@ -184,12 +189,12 @@ export class Weapons {
       .catch(() => undefined);
   }
 
-  private hitscan(eye: Vec3, dir: Vec3, radius: number): void {
+  private hitscan(eye: Vec3, dir: Vec3, radius: number, energy: number): void {
     this.engine
       .raycast(eye, dir, HITSCAN_RANGE)
       .then((hit: RaycastHit | null) => {
         if (!hit) return;
-        this.engine.carve(hit.pos, radius);
+        this.engine.shoot(hit.pos, radius, energy);
         this.effects.bulletImpact(hit);
       })
       .catch(() => undefined);

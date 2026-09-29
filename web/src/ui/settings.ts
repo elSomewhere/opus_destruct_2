@@ -2,7 +2,7 @@
  * Settings panel: engine tunables (sent as `setParams`), the debug view, and world
  * loading (procedural worlds, or a WAD file + map name -> `loadWad`).
  */
-import type { EngineParams, ProceduralKind, WadOptions } from '../engine/protocol.ts';
+import type { EngineParams, ProceduralKind, TrafficSettings, WadOptions } from '../engine/protocol.ts';
 import { DEBUG_VIEW_NAMES, DebugView, PROCEDURAL_KINDS } from '../engine/protocol.ts';
 import { h } from './dom.ts';
 
@@ -11,6 +11,8 @@ export interface SettingsCallbacks {
   /** An environment setting (`setEnv`) or a world tunable (`setTunable`) by name. */
   onSetting(kind: 'env' | 'tunable', name: string, value: number): void;
   onLoadProcedural(kind: ProceduralKind, seed: number): void;
+  /** Traffic of a world with roads (the `drive` city). */
+  onTraffic(traffic: TrafficSettings): void;
   onLoadWad(file: File, map: string, options: WadOptions): void;
 }
 
@@ -104,9 +106,36 @@ export class SettingsPanel {
   private readonly pausedBox: HTMLInputElement;
   private readonly sliderInputs = new Map<SliderDef['key'], { input: HTMLInputElement; value: HTMLElement }>();
 
-  constructor(parent: HTMLElement, initial: EngineParams, world: { kind: ProceduralKind; seed: number }, callbacks: SettingsCallbacks) {
+  constructor(
+    parent: HTMLElement,
+    initial: EngineParams,
+    world: { kind: ProceduralKind; seed: number },
+    trafficInitial: TrafficSettings,
+    callbacks: SettingsCallbacks,
+  ) {
     this.params = { ...initial };
     this.callbacks = callbacks;
+
+    // Traffic (the drive city): cars driving and parked around the player.
+    const traffic = { ...trafficInitial };
+    const trafficRows = [
+      namedRow({ kind: 'env', name: 'traffic', label: 'Traffic', toggle: true, value: traffic.enabled ? 1 : 0, hint: 'Cars driving the roads and parked at the kerbs' }, (v) => {
+        traffic.enabled = v !== 0;
+        callbacks.onTraffic({ ...traffic });
+      }),
+      namedRow({ kind: 'env', name: 'cars', label: 'Cars driving', min: 0, max: 40, step: 1, value: traffic.cars, hint: 'Cars driving around the player' }, (v) => {
+        traffic.cars = v;
+        callbacks.onTraffic({ ...traffic });
+      }),
+      namedRow({ kind: 'env', name: 'parked', label: 'Cars parked', min: 0, max: 60, step: 1, value: traffic.parked, hint: 'Cars parked at the kerbs around the player' }, (v) => {
+        traffic.parked = v;
+        callbacks.onTraffic({ ...traffic });
+      }),
+      namedRow({ kind: 'env', name: 'speed', label: 'Traffic speed', min: 0.3, max: 2, step: 0.05, value: traffic.speedScale, hint: 'x the roads\' speed limits' }, (v) => {
+        traffic.speedScale = v;
+        callbacks.onTraffic({ ...traffic });
+      }),
+    ];
 
     const sliders = SLIDERS.map((d) => {
       const range = d.log ? { min: 0, max: LOG_STEPS, step: 1 } : { min: d.min, max: d.max, step: d.step };
@@ -175,6 +204,8 @@ export class SettingsPanel {
       ...WORLD.map((d) => namedRow(d, (v) => callbacks.onSetting(d.kind, d.name, v))),
       h('h2', {}, 'Environment'),
       ...ENVIRONMENT.map((d) => namedRow(d, (v) => callbacks.onSetting(d.kind, d.name, v))),
+      h('h2', {}, 'Traffic'),
+      ...trafficRows,
       h('h2', {}, 'World'),
       h('div', { class: 'row' }, kindSelect, h('span', {}, 'seed'), seedInput, loadProc),
       h('h2', {}, 'Doom WAD'),
@@ -185,8 +216,10 @@ export class SettingsPanel {
         'p',
         { class: 'help' },
         'Click the view to play. WASD move, mouse look, Space jump, Shift run, 1-5 or wheel weapons ' +
-          '(pistol, shotgun, rockets, flamethrower, water hose), click fire, E use (doors, lifts, switches), ' +
-          'G debug view, V noclip, R respawn, H hud, Esc menu.',
+          '(pistol, shotgun, rockets, flamethrower, water hose), click fire, E use (doors, lifts, switches) ' +
+          'or get in and out of a car, B drop a car, G debug view, V noclip, R respawn, H hud, Esc menu. ' +
+          'Driving: W/S throttle and brake/reverse, A/D steer, Space handbrake, C camera, mouse look ' +
+          '(or a gamepad: RT/LT, left stick, A handbrake, Y in/out).',
       ),
     );
     parent.append(this.root);

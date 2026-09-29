@@ -13,6 +13,7 @@ import type {
   InitConfig,
   ProceduralKind,
   RaycastHit,
+  TrafficSettings,
   Vec3,
   WadOptions,
   WorkerMessage,
@@ -156,6 +157,38 @@ export class EngineClient {
 
   setParams(params: EngineParams): void {
     this.send({ type: 'setParams', params: { ...params } });
+  }
+
+  /** A bullet's hit: holes what its energy (J) gets through (engines without it carve). */
+  shoot(pos: Vec3, radius: number, energy: number): void {
+    this.send({ type: 'shoot', pos, radius, energy });
+  }
+
+  /** A vehicle dropped into the world (kind: VEHICLE_KINDS index; paint: `Paint`). */
+  spawnVehicle(kind: number, paint: number, pos: Vec3, yaw: number): void {
+    this.send({ type: 'spawnVehicle', kind, paint, pos, yaw });
+  }
+
+  enterVehicle(id: number): void {
+    this.send({ type: 'enterVehicle', id });
+  }
+
+  exitVehicle(): void {
+    this.send({ type: 'exitVehicle' });
+  }
+
+  /** The player's vehicle's controls (until changed). */
+  drive(throttle: number, brake: number, steer: number, handbrake: boolean): void {
+    this.send({ type: 'drive', throttle, brake, steer, handbrake });
+  }
+
+  setTraffic(traffic: TrafficSettings): void {
+    this.send({ type: 'setTraffic', traffic: { ...traffic } });
+  }
+
+  /** The last pose message handled (once per frame). */
+  frameAck(seq: number): void {
+    this.send({ type: 'frameAck', seq });
   }
 
   raycast(origin: Vec3, dir: Vec3, maxDist: number): Promise<RaycastHit | null> {

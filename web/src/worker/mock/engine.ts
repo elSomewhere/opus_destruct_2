@@ -199,6 +199,9 @@ export class MockEngine {
       case 'carve':
         this.carve(cmd.pos, cmd.radius);
         break;
+      case 'shoot':
+        this.carve(cmd.pos, cmd.radius); // (no materials' penetration here: a bullet carves)
+        break;
       case 'raycast': {
         const w = this.world;
         this.post({ type: 'raycastResult', id: cmd.id, hit: w ? raycast(w, cmd.origin, cmd.dir, cmd.maxDist) : null });

@@ -24,12 +24,22 @@ npm run dev -- --port 5190 &
 npm run smoke -- http://localhost:5190/ smoke-out     # screenshots in smoke-out/
 ```
 
-URL parameters: `?engine=mock|wasm` (default `mock`), `?world=rooms|city|tower`, `?seed=N`,
-`?debug=none|utilization|fragments` (`bubbles`, from v1 links, means `fragments`).
+URL parameters: `?engine=mock|wasm` (default: `wasm` when it is built, else `mock`),
+`?world=drive|rooms|city|tower|yard|angles|machines` (default: `drive` with the WASM engine - the
+endless city with roads, traffic and cars to drive, docs/VEHICLES.md - `rooms` with the mock),
+`?seed=N`, `?debug=none|utilization|fragments` (`bubbles`, from v1 links, means `fragments`).
 
 Controls: click the view to lock the pointer, WASD move, mouse look, Space jump, Shift run,
-1/2/3 or wheel for pistol/shotgun/rocket launcher, left click fire, G cycles the debug view,
-V noclip, R respawn, H toggles the HUD, Esc shows the settings panel.
+1-5 or wheel for pistol/shotgun/rocket launcher/flamethrower/water hose, left click fire, E use
+(doors, lifts) or get in and out of a car, B drop a car ahead, G cycles the debug view, V noclip,
+R respawn, H toggles the HUD, Esc shows the settings panel. Driving: W/S throttle and
+brake/reverse, A/D steer, Space handbrake, C camera (chase, far, roof), mouse looks around; a
+gamepad works too (RT/LT, left stick, A handbrake, Y in/out, right stick looks).
+
+Browser checks of the WASM engine (dev server running): `node scripts/drive-wasm.mjs` drives a
+car through the city, slides it, rams a van and gets out (screenshots; fails on console errors,
+or when the car does not drive, crumple or let the player out). In a container without a GPU it
+runs Chrome's WebGPU on SwiftShader (`SMOKE_SWIFTSHADER=0` turns that off).
 
 Engine knobs (settings panel, sent as `setParams`; `svx_set_params` of the v2 core):
 
@@ -80,6 +90,8 @@ src/
     atlas-pack.ts       texture atlas packing (wrapped gutters, 8-aligned, linear-space mips)
     atlas.ts            atlas upload (rgba8unorm-srgb 2D array + per-texture storage records)
     islands.ts          detached pieces: engine poses (rigid, kept as rubble) or ballistic motion
+    wheels.ts, wheel-mesh.ts   vehicles' wheels: a tyre on a five-spoke rim per wheel, spokes blurred when fast
+    skids.ts            skid marks: a ring of translucent quads on the road
                         + dithered 1.5 s fade; Map by id, fixed uniform slot per piece
     particles.ts        CPU particles, instanced camera-facing sprites
     math.ts             column-major mat4, reversed-Z infinite projection, frustum planes
@@ -88,7 +100,10 @@ src/
     game.ts             message wiring + frame loop + debug handle (window.__structvox)
     player.ts           FPS controller (z up) on engine `collide`
     stepmove.ts         step-up built from plain `collide` sweeps
-    weapons.ts          pistol/shotgun (raycast -> carve), rocket (look-ahead raycasts -> blast)
+    weapons.ts          pistol/shotgun (raycast -> shoot), rocket (look-ahead raycasts -> blast)
+    driving.ts          the player's car: controls (keys, gamepad), chase/far/roof cameras, getting out
+    vehicles.ts         the vehicles and wheels of `vehicles` messages, interpolated; the car to take
+    vehicle-effects.ts  skid marks, tyre smoke, wheel dust, crash sparks
     effects.ts          particles for hits/cracks/impacts/detachments, flash light, camera shake
     input.ts            keyboard/mouse, pointer lock
   ui/                   HUD, settings panel (setParams, world + WAD loading), overlays
@@ -128,7 +143,8 @@ additive when flagged; event dust and crack chips draw on per-frame budgets).
   each). Changing `debugView` relies on the engine re-sending meshes.
 * **Detached events:** the mesh is in world space at the moment of detachment. With `rigid`
   (the v2 engine, and the mock) the piece follows the `debris` poses (packed `Float64Array`,
-  9 doubles per piece: id, centre xyz, quaternion xyzw since detachment, opacity), interpolated
+  15 doubles per piece: id, centre xyz, quaternion xyzw since detachment, opacity, velocity xyz,
+  angular velocity xyz), interpolated
   one tick behind; pieces at rest stay as rubble until the engine drops them from the poses
   (split: the children arrive as new detached events; over the ~3000-piece budget: faded by
   opacity first). Without poses the island rotates about `centroid` with `angular` and falls

@@ -40,6 +40,17 @@ export const Material = {
   Stone: 8,
   Glass: 9,
   Rebar: 10,
+  // smeared sections (docs/VEHICLES.md): a member's real section baked into a voxel material
+  SteelSection: 11,
+  Sheet: 12,
+  CarFrame: 13,
+  Engine: 14,
+  Window: 15,
+  Tyre: 16,
+  Plastic: 17,
+  Asphalt: 18,
+  Paint: 19,
+  Lamp: 20,
 } as const;
 export type MaterialId = number;
 
@@ -55,7 +66,56 @@ export const MATERIAL_NAMES: readonly string[] = [
   'stone',
   'glass',
   'rebar',
+  'steel section',
+  'sheet metal',
+  'car frame',
+  'engine',
+  'window',
+  'tyre',
+  'plastic',
+  'asphalt',
+  'road paint',
+  'lamp',
 ];
+
+/**
+ * (front-end extension) The engine's paint layer (`svx::Paint`, game/include/svx/game/vehicles.hpp):
+ * a voxel's colour over its material's. Painted faces carry texture `TEXTURE_PAINT_BASE + paint`
+ * (palette slot PAINT_SLOT_BASE + paint): cars' paints, facades' plasters, the road's markings.
+ */
+export const Paint = {
+  None: 0,
+  White: 1,
+  Silver: 2,
+  Black: 3,
+  Red: 4,
+  Blue: 5,
+  Green: 6,
+  Yellow: 7,
+  Orange: 8,
+  TaxiYellow: 9,
+  NavyBlue: 10,
+  Maroon: 11,
+  Beige: 12,
+  Graphite: 13,
+  Teal: 14,
+  Trim: 15,
+  TailRed: 16,
+  Amber: 17,
+  Plaster: 18,
+  Cream: 19,
+  Terracotta: 20,
+  Sand: 21,
+  Slate: 22,
+  Ochre: 23,
+  Mint: 24,
+  LineWhite: 25,
+  LineYellow: 26,
+  Kerb: 27,
+} as const;
+export const PAINT_SLOT_BASE = 31;
+/** The paints a car is sprayed in. */
+export const CAR_PAINTS: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
 
 export function materialName(id: MaterialId): string {
   return MATERIAL_NAMES[id] ?? `material#${id}`;
@@ -82,8 +142,9 @@ export const DEBUG_VIEW_NAMES: Readonly<Record<DebugView, string>> = {
   [DebugView.Fragments]: 'fragments',
 };
 
-export type ProceduralKind = 'city' | 'rooms' | 'tower' | 'yard' | 'angles' | 'machines';
-export const PROCEDURAL_KINDS: readonly ProceduralKind[] = ['rooms', 'city', 'tower', 'yard', 'angles', 'machines'];
+/** `drive`: the endless city with roads and traffic (docs/VEHICLES.md); engines without it load their city. */
+export type ProceduralKind = 'drive' | 'city' | 'rooms' | 'tower' | 'yard' | 'angles' | 'machines';
+export const PROCEDURAL_KINDS: readonly ProceduralKind[] = ['drive', 'rooms', 'city', 'tower', 'yard', 'angles', 'machines'];
 
 // ---------------------------------------------------------------------------------------
 // Chunk mesh vertex format (28 bytes, interleaved, little-endian)
@@ -118,6 +179,8 @@ export const TEXTURE_MATERIAL_BASE = 0xff00;
 export const TEXTURE_GLOW_BASE = 0xfe00;
 /** (front-end extension) Water surfaces (the `water` meshes). */
 export const TEXTURE_WATER = 0xfffe;
+/** (front-end extension) Ids `TEXTURE_PAINT_BASE + p`: untextured, painted in paint p (`Paint`). */
+export const TEXTURE_PAINT_BASE = TEXTURE_MATERIAL_BASE + PAINT_SLOT_BASE;
 
 /** Doom scale: 1 texel per map unit, 32 map units per metre (plan §A4). */
 export const DOOM_TEXELS_PER_METRE = 32;
@@ -300,6 +363,85 @@ export interface SetParamsCommand {
   params: EngineParams;
 }
 
+/**
+ * (front-end extension) A bullet's hit: holes what its energy (J) gets through within the radius
+ * (sheet metal and glass of cars, brittle materials; not armour). Engines without it carve.
+ */
+export interface ShootCommand {
+  type: 'shoot';
+  pos: Vec3;
+  radius: number;
+  energy: number;
+}
+
+/** Vehicle kinds (`svx::VehicleKind`). */
+export const VEHICLE_KINDS = ['compact', 'sedan', 'van', 'pickup', 'truck'] as const;
+
+/** (front-end extension, docs/VEHICLES.md) A vehicle dropped into the world (kind: VEHICLE_KINDS index; paint: `Paint`). */
+export interface SpawnVehicleCommand {
+  type: 'spawnVehicle';
+  kind: number;
+  paint: number;
+  /** Where its frame's origin goes (on the ground under the middle between its axles). */
+  pos: Vec3;
+  /** Heading about z (radians; 0 = +x). */
+  yaw: number;
+}
+
+/** (front-end extension) The player takes the wheel of a vehicle (its id from `vehicles`). */
+export interface EnterVehicleCommand {
+  type: 'enterVehicle';
+  id: number;
+}
+
+/** (front-end extension) The player gets out (the vehicle keeps its handbrake on). */
+export interface ExitVehicleCommand {
+  type: 'exitVehicle';
+}
+
+/** (front-end extension) The player's vehicle's controls, until changed (send changes only). */
+export interface DriveCommand {
+  type: 'drive';
+  /** -1..1: backwards reverses, or brakes while rolling forward. */
+  throttle: number;
+  /** 0..1 */
+  brake: number;
+  /** -1 (right) .. 1 (left). */
+  steer: number;
+  handbrake: boolean;
+}
+
+/** Traffic of a world with roads (the `drive` city). */
+export interface TrafficSettings {
+  enabled: boolean;
+  /** Cars driving around the viewer, and parked at the kerbs. */
+  cars: number;
+  parked: number;
+  /** Metres: spawned beyond nearRadius (out of sight) and within radius; removed beyond (untouched ones). */
+  nearRadius: number;
+  radius: number;
+  /** x the roads' speed limits. */
+  speedScale: number;
+}
+
+export const DEFAULT_TRAFFIC: Readonly<TrafficSettings> = { enabled: true, cars: 14, parked: 18, nearRadius: 45, radius: 110, speedScale: 1 };
+
+/**
+ * (front-end extension) The last pose message (`debris`, `vehicles`: their `seq`) the page has
+ * handled, sent once per frame: an engine holds back further pose messages while the page is far
+ * behind (a slow frame, a busy main thread), so it gets the latest poses rather than a backlog.
+ */
+export interface FrameAckCommand {
+  type: 'frameAck';
+  seq: number;
+}
+
+/** (front-end extension) Traffic settings (recorded in replays). */
+export interface SetTrafficCommand {
+  type: 'setTraffic';
+  traffic: TrafficSettings;
+}
+
 export type EngineCommand =
   | InitCommand
   | LoadProceduralCommand
@@ -317,7 +459,14 @@ export type EngineCommand =
   | DrainCommand
   | HeatCommand
   | SetEnvCommand
-  | SetTunableCommand;
+  | SetTunableCommand
+  | ShootCommand
+  | SpawnVehicleCommand
+  | EnterVehicleCommand
+  | ExitVehicleCommand
+  | DriveCommand
+  | SetTrafficCommand
+  | FrameAckCommand;
 
 export type EngineCommandType = EngineCommand['type'];
 
@@ -494,6 +643,8 @@ export interface CrackEvent {
   voxels?: number;
   velocity?: Vec3;
   radius?: number;
+  /** (ext) Dust: what was crushed or shattered (a car's glass, a wall's brick; absent: unknown). */
+  material?: MaterialId;
 }
 
 /** Blast or virtual debris impact (camera shake and particles). Energy in joules. */
@@ -695,6 +846,8 @@ export interface DebrisMessage {
   type: 'debris';
   /** DEBRIS_STRIDE doubles per piece; transferred. */
   poses: Float64Array<ArrayBuffer>;
+  /** (front-end extension) Pose message sequence number (see FrameAckCommand). */
+  seq?: number;
 }
 
 /**
@@ -756,6 +909,41 @@ export interface JointsMessage {
   joints: Float64Array<ArrayBuffer>;
 }
 
+/**
+ * Doubles per vehicle in `VehiclesMessage.vehicles` (the `svx_vehicles_data` layout, extended): id,
+ * chassis (its piece: the id of its detached event and debris poses; 0: none yet), kind, paint,
+ * centre of mass xyz, frame rotation xyzw (x forward, y left, z up), velocity xyz, speed (m/s
+ * forward), engine rpm, gear (-1 reverse, 0 neutral, 1..), controls (throttle, brake, steer,
+ * handbrake), flags (VehicleFlag), the driver's seat xyz, half extent xyz (its box about its
+ * frame's origin, z up from the ground), wheels on, damage 0..1, frame origin xyz, redline.
+ */
+export const VEHICLE_STRIDE = 34;
+export const VehicleFlag = { Player: 1, Npc: 2, Parked: 4, Wreck: 8 } as const;
+
+/**
+ * Doubles per wheel in `VehiclesMessage.wheels`: vehicle id, wheel id, centre xyz, rotation xyzw
+ * (x the way it rolls, y its axle; turned and spun), radius, width, on the ground (1/0), slip
+ * (m/s: skids, smoke), the material under it (-1 none), suspension compression (m).
+ */
+export const WHEEL_STRIDE = 15;
+
+/**
+ * (front-end extension) The vehicles and their wheels, sent after every tick while any exist (and
+ * once empty after the last is gone). A vehicle's body is its chassis piece (a detached event
+ * and debris poses, like any piece); its wheels are drawn from this.
+ */
+export interface VehiclesMessage {
+  type: 'vehicles';
+  /** VEHICLE_STRIDE doubles per vehicle; transferred. */
+  vehicles: Float64Array<ArrayBuffer>;
+  /** WHEEL_STRIDE doubles per wheel; transferred. */
+  wheels: Float64Array<ArrayBuffer>;
+  /** The player's vehicle (0: on foot). */
+  player: number;
+  /** Pose message sequence number (see FrameAckCommand). */
+  seq?: number;
+}
+
 export interface StatsMessage {
   type: 'stats';
   stats: EngineStats;
@@ -807,7 +995,8 @@ export type WorkerMessage =
   | EnvMessage
   | WaterMessage
   | GridsMessage
-  | JointsMessage;
+  | JointsMessage
+  | VehiclesMessage;
 
 export type WorkerMessageType = WorkerMessage['type'];
 export type WorkerMessageOf<T extends WorkerMessageType> = Extract<WorkerMessage, { type: T }>;
@@ -834,6 +1023,7 @@ const WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set<WorkerMessageType>([
   'water',
   'grids',
   'joints',
+  'vehicles',
 ]);
 
 const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set<EngineCommandType>([
@@ -854,6 +1044,13 @@ const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set<EngineCommandType>([
   'heat',
   'setEnv',
   'setTunable',
+  'shoot',
+  'spawnVehicle',
+  'enterVehicle',
+  'exitVehicle',
+  'drive',
+  'setTraffic',
+  'frameAck',
 ]);
 
 function typeField(data: unknown): string | undefined {
@@ -909,6 +1106,10 @@ export function workerMessageTransferables(msg: WorkerMessage): ArrayBuffer[] {
       break;
     case 'joints':
       pushUnique(out, seen, msg.joints.buffer);
+      break;
+    case 'vehicles':
+      pushUnique(out, seen, msg.vehicles.buffer);
+      pushUnique(out, seen, msg.wheels.buffer);
       break;
     case 'env':
       pushUnique(out, seen, msg.flames.buffer);

@@ -20,6 +20,8 @@ export interface HudState {
   weapon: WeaponDef;
   weapons: readonly WeaponDef[];
   player: { pos: Vec3; onGround: boolean; noclip: boolean };
+  /** Vehicles in the world. */
+  vehicles: number;
   debugView: DebugView;
   rockets: number;
 }
@@ -76,6 +78,11 @@ export class Hud {
     this.flash.classList.toggle('on', on);
   }
 
+  /** Driving: no crosshair, no weapons. */
+  setDriving(on: boolean): void {
+    this.root.classList.toggle('driving', on);
+  }
+
   update(s: HudState): void {
     const r = s.render;
     const e = s.engine;
@@ -83,7 +90,7 @@ export class Hud {
       `${s.fps.toFixed(0).padStart(3)} fps  ${s.frameMs.toFixed(1)} ms   ${r.width}x${r.height}`,
       `gpu    ${s.gpu}`,
       `draw   ${r.chunksDrawn}/${r.chunksTotal} chunks  ${formatCount(r.triangles)} tris  ${r.gpuMB.toFixed(0)} MB`,
-      `fx     ${r.particles} particles  ${r.islandsDrawn}/${r.islands} pieces drawn  ${s.rockets} rockets`,
+      `fx     ${r.particles} particles  ${r.islandsDrawn}/${r.islands} pieces drawn  ${s.rockets} rockets  ${s.vehicles} vehicles  ${r.wheels} wheels  ${r.skidMarks} skid marks`,
       `engine ${s.engineKind}  ${s.pendingRequests} pending`,
     ];
     if (e) {

@@ -366,6 +366,7 @@ export function generateWorld(kind: ProceduralKind, seed: number, voxelSize: num
     case 'rooms':
       return rooms(seed, voxelSize);
     case 'city':
+    case 'drive': // (the mock has no roads or vehicles: its city)
       return city(seed, voxelSize);
     case 'tower':
       return tower(seed, voxelSize);
