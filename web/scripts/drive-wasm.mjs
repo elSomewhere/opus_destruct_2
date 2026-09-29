@@ -2,8 +2,8 @@
 /**
  * Browser drive through the endless city (?engine=wasm&world=drive; docs/VEHICLES.md): waits for
  * the city and its traffic, takes the wheel of the nearest car, drives it (scripted controls
- * through the debug handle), rams a van dropped in its way, slides it with the handbrake, gets
- * out. Screenshots of each; fails on console / page / WebGPU errors, or when the car does not
+ * through the debug handle), rams a van dropped in its way, backs up and J-turns it with the
+ * handbrake, gets out. Screenshots of each; fails on console / page / WebGPU errors, or when the car does not
  * drive, crumple or let the player out. Usage (dev server running, e.g. `npm run dev -- --port 5190`):
  *   node scripts/drive-wasm.mjs [baseUrl] [outDir]
  * Env: CHROME_PATH (browser binary), SMOKE_HEADFUL=1 (show the window).
@@ -62,7 +62,7 @@ try {
   if (containerArgs().length > 0) {
     while (!(await page.evaluate(() => !!window.__structvox))) await sleep(200);
     await page.evaluate(() => {
-      window.__structvox.renderer.renderScale = 0.5;
+      window.__structvox.renderer.renderScale = 0.35;
     });
   }
   const t0 = Date.now();
@@ -181,22 +181,24 @@ try {
   await sleep(500);
   await shot('drive-08-wreck');
 
-  // a slide: back out of the wreck, then steer and the handbrake (wheels spinning or sliding lay
-  // their marks)
+  // a slide: back along the lane at speed, then full lock and the handbrake - a J-turn (looks by
+  // the car's state: a slow page answers late)
   await page.evaluate(() => window.__structvox.camera('chase'));
+  car = await mine();
+  const back0 = car ? [...car.pos] : [0, 0, 0];
   await page.evaluate(() => window.__structvox.drive(-1, 0));
-  await sleep(1500);
+  for (let k = 0; k < 60; k++) {
+    await sleep(100);
+    car = await mine();
+    if (!car || car.speed < -7 || Math.hypot(car.pos[0] - back0[0], car.pos[1] - back0[1]) > 15) break;
+  }
   await page.evaluate(() => window.__structvox.drive(0, 1, true));
   for (let k = 0; k < 40; k++) {
     await sleep(100);
-    car = await mine();
-    if (!car || car.speed < 15) break;
-  }
-  await page.evaluate(() => window.__structvox.drive(0.4, 1, true));
-  for (let k = 0; k < 7; k++) {
-    await sleep(200);
     const w = (await state()).wheels;
-    console.log(`  sliding: ${w.map((x) => `${x.contact ? 'c' : '-'} ${x.slip.toFixed(1)} m/s on ${x.material}`).join(' | ')}`);
+    if (k % 4 === 0) console.log(`  sliding: ${w.map((x) => `${x.contact ? 'c' : '-'} ${x.slip.toFixed(1)} m/s on ${x.material}`).join(' | ')}`);
+    car = await mine();
+    if (!car || Math.abs(car.speed) < 1) break;
   }
   await shot('drive-04-slide');
   await page.evaluate(() => window.__structvox.drive(0, 0, true, 1));
