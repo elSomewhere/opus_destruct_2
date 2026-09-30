@@ -139,6 +139,11 @@ The middle paths:
 - **the plan alone**: `physics = false` (the level of detail) for the calm; anything that needs
   the body wakes it at once.
 
+And the other way, on stronger hardware: a deep body touching a moving piece (a car brushing
+past, rubble landing on it) is solved with the pieces at their substep, not in its own fine
+steps - its muscles damped more than the behaviours were tuned for; `rigid.mixed_substeps` 8
+steps such a tick at the fine steps' rate, everything in it (docs/MOTION.md §5).
+
 `svx_people_bench` drives the viewer through the drive city (8 m/s, traffic on, streaming) and
 reports, per policy and crowd, the whole tick and the characters' own part (the deep bodies'
 solve is in the world's), the bodies' split on average and the memory. On a 4-core container

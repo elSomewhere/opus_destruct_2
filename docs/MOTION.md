@@ -185,12 +185,20 @@ the ends' distance, a rope, its drive off), `svxc_joint_drive`, `svxc_add_joint`
   source's is made again with its grids; one the host made is not).
 - **A chunk source's joint holds on to the grids at home in its chunk** (or the world grid).
 - **An articulation near an awake piece is solved at the world's substep** (1/120 s), with the
-  world's iterations: its muscles and limits are stiffer there than in its own fine steps. The
-  knobs that scale it on stronger hardware are the world's: `rigid.substeps` (every piece's
-  substep, 2 a tick), `rigid.iterations` and `rigid.position_iterations`; `rigid.link_substeps`
-  (4) sets the fine steps of the articulations on their own (1: every articulation with the
-  pieces), `rigid.link_iterations` and `rigid.link_position_iterations` their passes. A mixed island is not fine-stepped: its pieces' contacts, crumpling and fracture
-  checks are the substep's.
+  world's iterations, not in its own fine steps (a mixed island's contacts, crumpling and
+  fracture checks are the substep's): its muscles and limits act at that substep - a muscle is
+  damped more than in the fine steps its characters were tuned in (an arm raised level by its
+  muscle overshoots 0.47 rad instead of 0.57), a supple limit turns back 0.025 rad a substep,
+  not a fine step. `rigid.mixed_substeps` takes it back: a tick in which an articulation is
+  solved with the pieces is stepped in that many substeps - everything in it, the pieces too
+  (8: 1/480 s, the fine steps' rate: the arm as on its own, to the thousandth of a radian) -
+  while the articulations on their own keep their rate in as many fewer fine steps. Off (0) by
+  default: in a city cars pass people all the time, and each such tick costs the pieces' step
+  four times over. The other knobs: `rigid.substeps` (every piece's substep, 2 a tick),
+  `rigid.iterations` and `rigid.position_iterations`; `rigid.link_substeps` (4) sets the fine
+  steps of the articulations on their own (1: every articulation with the pieces),
+  `rigid.link_iterations` and `rigid.link_position_iterations` their passes. A tick's substeps
+  are in `WorldStats::substeps` (1 in a busy one).
 
 ## 6. Articulations
 
@@ -224,7 +232,16 @@ world.articulation_state(id, &st);           // where the links are, what each f
   own, stepped `link_substeps` times a substep (4: 1/480 s) with `link_iterations` velocity and
   `link_position_iterations` position passes: joints, targets, then contacts (what the ground
   holds up last is held up). Islands are stepped in parallel, the same on any thread count. Near
-  an awake piece it is solved with it at the world's substep.
+  an awake piece it is solved with it at the world's substep (or in a tick stepped finer:
+  `rigid.mixed_substeps`, §5's limits).
+- **Warm starts.** Its joints' point rows - what carries a chain's weight - and the contacts of
+  its fine steps start each step from all of their last step's impulses (`rigid.link_warm` 1;
+  the joints' other rows, and the pieces' joints, from 0.9 of them), and its joints and targets
+  from impulses scaled to the step's length when it changed - from the fine steps to the pieces'
+  substep as a car comes near, and back. Steps this short change them little, and a share lost
+  every step is a chain of light and heavy links losing its hold: at 0.9, 30 kg hanging from four
+  1 kg rods opens their joints 0.3 m; at 1, half a millimetre. (The contacts keep in step with the
+  joints: behind them, a body at rest creeps along the ground and never sleeps.)
 - **Supple limits.** Past a limit a joint turns back at most 0.025 rad a step, in its velocity and
   position passes alike: a body folded far past its range (a corpse landing on its back) comes out
   of it over a few steps instead of being flung.

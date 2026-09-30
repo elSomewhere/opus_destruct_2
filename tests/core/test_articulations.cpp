@@ -513,6 +513,166 @@ TEST_CASE("articulations: a piece knocks a body, and a body pushes a piece") {
   CHECK(v.piece(cp)->x.x - x0 > 0.05);  // (inelastic, then sliding on the ground: about 0.1 - 0.2 m)
 }
 
+namespace {
+
+// (a piece at rest on the ground at (x, y) and a slack rope from `link_body` to it: a joint between
+// a link and a piece puts the articulation with the pieces; the rope itself never pulls)
+void tie_to_piece(World& w, i64 link_body, const V3& at, f64 x, f64 y) {
+  VoxelGrid g;
+  g.h = h;
+  box(g, {0, 0, 0}, {3, 3, 3}, make_vox(MaterialId::Concrete, false));
+  g.compact();
+  const GridId gid = w.add_grid(GridFrame{V3{x, y, 0.0}, Quat{}}, std::move(g), false);
+  REQUIRE(gid != 0);
+  const i64 p = w.loosen_grid(gid);
+  REQUIRE(p != 0);
+  w.tick();  // (announced: a joint may hold it)
+  JointDesc r;
+  r.type = JointType::Distance;
+  r.rope = true;
+  r.length = 20.0;
+  r.a.kind = JointAnchor::Kind::Link;
+  r.a.id = static_cast<u64>(link_body);
+  r.a.point = at;
+  r.b.kind = JointAnchor::Kind::Piece;
+  r.b.id = static_cast<u64>(p);
+  r.b.point = w.piece(p)->x;
+  REQUIRE(w.add_joint(r) != 0);
+}
+
+}  // namespace
+
+TEST_CASE("articulations: one solved with the pieces has their substep - or, where quality asks, the tick at the fine steps' rate") {
+  // An arm raised level by its muscle from a held shoulder: on its own (its fine steps), and tied to
+  // a piece (solved with the pieces: their substep - its muscle damped more than in the steps its
+  // characters were tuned in), and so with rigid.mixed_substeps 8 (the tick at 1/480 s: as on its own).
+  struct Run {
+    f64 overshoot = -1.0, err = 0.0;
+    int ticks = 0, at_mixed = 0, at_two = 0;
+    u64 hash = 0;
+  };
+  auto run = [](bool tied, int mixed, int threads) {
+    set_num_threads(threads);
+    World w;
+    WorldConfig cfg;
+    cfg.rigid.mixed_substeps = mixed;
+    w.configure(cfg);
+    w.load(ground());
+    w.bake();
+    ArticulationDesc d;
+    d.links.push_back(ball(V3{0, 0, 2.0}, 0.1, 0.0));  // (kinematic: a shoulder held in place)
+    const Quat down = rotation_of(V3{kPi, 0, 0});
+    const f64 len = 0.6, m = 3.0;
+    d.links.push_back(rod(V3{0, 0, 2.0 - 0.1 - 0.5 * len}, len, 0.05, m, Quat{}));
+    ArticulationJointDesc J;
+    J.parent = 0;
+    J.child = 1;
+    J.anchor_parent = V3{0, 0, -0.1};
+    J.anchor_child = V3{0, 0, 0.5 * len};
+    J.frame_parent = J.frame_child = down;
+    d.joints.push_back(J);
+    const ArticulationId id = w.add_articulation(d);
+    REQUIRE(id != 0);
+    if (tied) tie_to_piece(w, w.link_body(id, 0), V3{0, 0, 2.0}, 2.0, 2.0);
+    const Quat target = rotation_of(V3{kPi / 2, 0, 0});
+    const f64 I = m * len * len / 3.0;
+    ArticulationControl* C = w.articulation_control(id);
+    C->muscles[0].target = target;
+    C->muscles[0].stiffness = I * 15.0 * 15.0 * 4.0;
+    C->muscles[0].damping = 2.0 * I * 15.0;
+    C->muscles[0].inertia = I;
+    C->muscles[0].max_torque = 2.0 * m * 9.81 * 0.5 * len;
+    Run r;
+    for (int t = 0; t < 180; ++t) {
+      w.tick();
+      ++r.ticks;
+      if (w.stats().substeps == mixed) ++r.at_mixed;
+      if (w.stats().substeps == 2) ++r.at_two;
+      ArticulationState s;
+      REQUIRE(w.articulation_state(id, &s));
+      const V3 along = rotate(s.links[1].rot, V3{0, 0, -1});
+      r.overshoot = std::max(r.overshoot, std::asin(std::clamp(along.z, -1.0, 1.0)));
+      r.err = std::acos(std::clamp(dot(rotate(s.links[1].rot, V3{0, 0, 1}), rotate(target, V3{0, 0, 1})), -1.0, 1.0));
+    }
+    r.hash = w.session_hash();
+    return r;
+  };
+  const Run alone = run(false, 0, 0), coarse = run(true, 0, 0), fine = run(true, 8, 0), alone8 = run(false, 8, 0);
+  MESSAGE("an arm raised by its muscle overshoots level by " << alone.overshoot << " rad on its own, " << coarse.overshoot << " solved with the pieces, "
+                                                             << fine.overshoot << " so in 8 substeps a tick");
+  CHECK(coarse.at_two == coarse.ticks);  // (the pieces' substeps)
+  CHECK(fine.at_mixed == fine.ticks);    // (8: tied, it is always with the pieces)
+  CHECK(alone8.at_two == alone8.ticks);  // (on its own: the knob changes nothing)
+  CHECK(alone8.hash == alone.hash);
+  CHECK(std::abs(coarse.overshoot - alone.overshoot) > 0.05);   // (the pieces' substep: damped more)
+  CHECK(std::abs(fine.overshoot - alone.overshoot) < 0.005);    // (the fine steps' rate: as on its own)
+  CHECK(fine.err < 0.06);
+  CHECK(coarse.err < 0.06);
+  CHECK(run(true, 8, 1).hash == run(true, 8, 4).hash);  // (bit-identical on any thread count)
+  set_num_threads(0);
+}
+
+TEST_CASE("articulations: a chain of light links holds a heavy one - its joints carry it from each fine step to the next") {
+  // Four 1 kg rods and a 30 kg weight at their end, hanging from the world: at rigid.link_warm 1
+  // (its joints' point rows start each fine step from all of the last one's impulses) it hangs
+  // with its joints closed; at 0.9 - a tenth lost every fine step, 16 a tick, and two velocity
+  // passes to find it again - they open far.
+  auto hang = [](f64 warm) {
+    World w;
+    WorldConfig cfg;
+    cfg.rigid.link_warm = warm;
+    w.configure(cfg);
+    w.load(ground());
+    w.bake();
+    const f64 len = 0.3, top = 3.0;
+    ArticulationDesc d;
+    const Quat down = rotation_of(V3{kPi, 0, 0});
+    for (i32 i = 0; i < 4; ++i) d.links.push_back(rod(V3{0, 0, top - len * (i + 0.5)}, len, 0.04, i < 3 ? 1.0 : 30.0));
+    for (i32 i = 1; i < 4; ++i) {
+      ArticulationJointDesc J;
+      J.parent = static_cast<u16>(i - 1);
+      J.child = static_cast<u16>(i);
+      J.anchor_parent = V3{0, 0, -0.5 * len};
+      J.anchor_child = V3{0, 0, 0.5 * len};
+      J.frame_parent = J.frame_child = down;
+      d.joints.push_back(J);
+    }
+    Chain c;
+    c.id = w.add_articulation(d);
+    c.len = len;
+    c.n = 4;
+    REQUIRE(c.id != 0);
+    JointDesc hd;
+    hd.a.kind = JointAnchor::Kind::World;
+    hd.a.point = V3{0, 0, top};
+    hd.b.kind = JointAnchor::Kind::Link;
+    hd.b.id = static_cast<u64>(w.link_body(c.id, 0));
+    hd.b.point = V3{0, 0, top};
+    REQUIRE(w.add_joint(hd) != 0);
+    for (int t = 0; t < 120; ++t) w.tick();
+    f64 gap = 0.0;
+    for (int t = 0; t < 60; ++t) {
+      w.tick();
+      gap = std::max(gap, chain_gap(w, c));
+    }
+    // knocked: the weight thrown sideways at 4 m/s
+    REQUIRE(w.add_link_velocity(c.id, 3, V3{4.0, 0, 0}, V3{}));
+    f64 swing = 0.0;
+    for (int t = 0; t < 120; ++t) {
+      w.tick();
+      swing = std::max(swing, chain_gap(w, c));
+    }
+    return std::pair<f64, f64>{gap, swing};
+  };
+  const auto [gap1, swing1] = hang(1.0);
+  const auto [gap09, swing09] = hang(0.9);
+  MESSAGE("30 kg on four 1 kg rods: joints open " << gap1 << " m at rest, " << swing1 << " m swinging (link_warm 1); " << gap09 << " / " << swing09
+                                                  << " m at 0.9");
+  CHECK(gap1 < 0.003);
+  CHECK(swing1 < 0.02);
+  CHECK(gap09 > 0.05);
+}
+
 TEST_CASE("articulations: its own joints are in its state, not the host's joints; a host's joint to a link is the host's") {
   World w;
   w.load(ground());

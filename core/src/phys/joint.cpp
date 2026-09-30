@@ -3,9 +3,10 @@
 // Rows act between the ends' anchors (linear) and their frames (angular). Blocks are solved
 // whole (a point: 3 rows; a hinge's two square turns; a slider's two square moves; a lock of
 // rotation: 3 rows), a motor and a limit as single rows, clamped. The impulses accumulate over a
-// substep and warm-start the next; position error is removed on the pseudo velocities afterwards
-// (split impulse: the correction adds no energy). Joints are solved one after another in id order
-// after each sweep of the contacts: the same on every thread count.
+// substep and warm-start the next (a link's joint: its point rows all of them -
+// RigidParams::link_warm - and scaled to the step's length); position error is removed on the
+// pseudo velocities afterwards (split impulse: the correction adds no energy). Joints are solved
+// one after another in id order after each sweep of the contacts: the same on every thread count.
 #include <algorithm>
 #include <array>
 #include <cmath>
@@ -133,7 +134,7 @@ void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw, const std::ve
 
 void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, const std::vector<u8>* only) {
 
-  const f64 beta = par.joint_baumgarte, slop = par.joint_slop, cap = par.max_correction, warm = par.joint_warm;
+  const f64 beta = par.joint_baumgarte, slop = par.joint_slop, cap = par.max_correction;
   auto index_of = [&](i64 id) -> i32 {
     const auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
     return (it != bodies.end() && (*it)->id == id) ? static_cast<i32>(it - bodies.begin()) : -1;
@@ -195,6 +196,17 @@ void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, cons
   // (of the bodies asked for: the fine ones, or the rest)
   if (only && !((P.ia >= 0 && (*only)[size_t(P.ia)]) || (P.ib >= 0 && (*only)[size_t(P.ib)]))) return;
   P.on = true;
+  // (a link's joint: its point rows - what carries a chain's weight - from link_warm of their
+  // last step's impulses, the rest - its lock rows, limits, drives, muscle - from joint_warm's
+  // share, all scaled to this step: they are of a fine step, or of a substep, when its
+  // articulation went from one to the other)
+  f64 warm = par.joint_warm, warm_point = par.joint_warm;
+  if ((ia >= 0 && bodies[size_t(ia)]->link) || (ib >= 0 && bodies[size_t(ib)]->link)) {
+    const f64 scale = j.step > 0.0 ? dt / j.step : 1.0;
+    warm = par.joint_warm * scale;
+    warm_point = par.link_warm * scale;
+    j.step = dt;
+  }
   P.ra = P.ia >= 0 ? P.pa - xa : V3{};
   P.rb = P.ib >= 0 ? P.pb - xb : V3{};
   P.ax = normalized(rotate(Qa, j.a.axis));
@@ -369,7 +381,7 @@ void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, cons
   // warm start (the rows that do not act now start from nothing)
   if (!driven) j.motor = 0.0;
   if (P.lim == 0 && t != JointType::Distance) j.limit = 0.0;
-  j.lin *= warm;
+  j.lin *= warm_point;
   j.ang *= warm;
   j.axial *= warm;
   j.limit *= warm;

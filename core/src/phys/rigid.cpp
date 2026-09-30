@@ -1258,7 +1258,17 @@ void RigidWorld::sleep_update(f64 dt) {
   };
   const f64 rest = powk(1.0 - par.rest_damping);
   const f64 keep = powk(0.8);
-  const i32 steps = std::max<i32>(1, static_cast<i32>(std::lround(k)));
+  // (the 1/120 s the counts below advance by: k of them for whole k (the usual substeps); a
+  // shorter or uneven substep advances them by those it completes on the tick's clock - one of
+  // 1/480 s in four - so a body sleeps, and a hold lasts, as long at any substep length)
+  i32 steps;
+  if (const f64 kr = std::round(k); std::abs(k - kr) <= 1e-9 && kr >= 1.0) {
+    steps = static_cast<i32>(kr);
+  } else {
+    const f64 before = sleep_clock_;
+    sleep_clock_ += k;
+    steps = static_cast<i32>(std::floor(sleep_clock_ + 1e-9) - std::floor(before + 1e-9));
+  }
   const f64 sleep_speed = sleep_speed_;
   // Settling (rest damping) and sleep are for bodies held up (support) only: debris falling
   // together touches, but nothing holds it - it falls at g.

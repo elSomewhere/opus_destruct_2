@@ -81,6 +81,7 @@ TEST_CASE("drive city: its lanes run on asphalt, marked, between kerbs, and lead
     }
     ++checked;
   }
+  CHECK(checked == static_cast<i32>(lanes.size()));
   CHECK(turns > 0);
   // the markings: white and yellow lines on the roads near the origin
   std::map<int, i32> paints;

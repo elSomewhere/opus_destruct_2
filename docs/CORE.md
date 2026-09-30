@@ -478,3 +478,26 @@ Things a harness should not do:
   by bytes: which ones go, and when, follows from how much each weighs - which changes with the
   engine's own data (a piece's crumpling areas, a record's new fields: [`BASELINE.md`](BASELINE.md)).
   They are the lossy knobs of a long session; raise them where the memory is there.
+
+## 9. Cost and quality: the knobs
+
+Where the engine trades quality for time or memory, the trade is a knob (a world tunable:
+`set_tunable`, `--tune NAME=VALUE`, the web worker's settings), and the other side of it is
+there for stronger hardware. The defaults are the engine's; the structural reference's own
+choices, where they differ, are in [`BASELINE.md`](BASELINE.md) §2.
+
+| What is traded | Default | Back towards quality |
+| --- | --- | --- |
+| A collapse's violent part: more than `rigid.busy_bodies` (150) pieces faster than `rigid.busy_speed` (2 m/s), or more than `rigid.busy_contacts` (6000) contacts, is stepped once a tick with `rigid.busy_iterations` (6) velocity and 2 position iterations | busy | raise `rigid.busy_bodies` / `rigid.busy_contacts` (never busy), or `rigid.busy_iterations` |
+| The pieces' step: `rigid.substeps` (2 a tick: 1/120 s), `rigid.iterations` (10), `rigid.position_iterations` (4) | 2, 10, 4 | raise them |
+| An articulation solved with the pieces (it touches an awake one): their substep, not its fine steps - its muscles damped more than they were tuned for ([`MOTION.md`](MOTION.md) §5) | `rigid.mixed_substeps` 0 | 8: such a tick at the fine steps' rate, everything in it |
+| An articulation on its own: `rigid.link_substeps` fine steps a substep (4: 1/480 s) of `rigid.link_iterations` (2) and `rigid.link_position_iterations` (1) passes | 4, 2, 1 | raise them |
+| A creeping load on a large structure (more than `load_trigger_gap_nodes`, 400) is solved again at most every `load_trigger_gap` ticks | 6 | 0: at once, always |
+| A piece crumpling in place is re-checked by collisions every `crumple_check_gap` substeps; a steady contact every `body_check_ticks` | 8, 12 | 2, lower |
+| Structure solves: to `stress_rtol` (3e-3), at most `stress_work` block operations a tick; a structure beyond `structure_max_nodes` (60,000) or `structure_max_radius` (60 m) is solved in part; clustered beyond `cluster_nodes` (2500; pieces `body_cluster_nodes`, 400) | as listed | tighter, more, larger |
+| Pieces' stress checks: `body_stress_maxit` (60) iterations to `body_stress_rtol` (1e-2) | 60, 1e-2 | more, tighter |
+| Streaming's eviction scan runs every `evict_scan_ticks` (and at once when a focus moved 8 m) | 10 | 1 |
+| Memory: `memory.*_mb` (§4), `max_bodies` (3000 pieces), `StreamConfig::archive_mb` (64) and `forget_after_s` - what goes beyond them is rebuilt or forgotten | as listed | raise them (§8) |
+| The smallest rubble: pieces under `min_body_voxels` (16) turn to dust; pieces of fewer than `min_fracture_frags` (8) fragments never break further | 16, 8 | lower |
+| Cosmetic events: `crack_events_per_tick` (24), `impact_events_per_tick` (6) | 24, 6 | raise them |
+| The characters (svx_anim, [`ANIM.md`](ANIM.md) §6): deep (articulations of the world) within `deep_radius` (14 m) of a focus or `piece_radius` (3.5 m) of an awake piece, at most `max_deep` (24); shallow further; the plan alone beyond `physics_radius` (45 m) | `BodyPolicy::Hybrid` | `BodyPolicy::Deep`, or larger radii |

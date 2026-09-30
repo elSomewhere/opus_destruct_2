@@ -5,6 +5,7 @@
 //
 // usage: svx_env_bench [--scenario fire|flood|city|all] [--threads T] [--repeat N] [--slow MS] [--tune NAME=VALUE ...]
 //          [--archive-mb MB]  (the streamed city's change archive; 0: keep every change)
+//          [--budget-ms MS]   (a gate: exit status 1 if a scenario's mean tick is slower)
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -23,8 +24,9 @@ using namespace svx;
 
 namespace {
 
-f64 g_slow = 0.0;
-f64 g_archive_mb = -1.0;  // (--archive-mb: the streamed city's change archive; < 0: its default)  // --slow MS: the breakdown of ticks slower than this
+f64 g_slow = 0.0;         // (--slow MS: the breakdown of ticks slower than this)
+f64 g_archive_mb = -1.0;  // (--archive-mb: the streamed city's change archive; < 0: its default)
+f64 g_budget_ms = 0.0;    // (--budget-ms: a scenario's mean tick slower than this fails the run; 0: none)
 
 struct Result {
   std::vector<f64> tick_ms;
@@ -160,7 +162,8 @@ Result city() {
   return r;
 }
 
-void report(const char* name, Result r) {
+// (true: within the budget)
+bool report(const char* name, Result r) {
   std::vector<f64> v = r.tick_ms;
   std::sort(v.begin(), v.end());
   f64 sum = 0.0;
@@ -171,6 +174,11 @@ void report(const char* name, Result r) {
               p99, v.empty() ? 0.0 : v.back(), r.env_ms / std::max<size_t>(1, v.size()), static_cast<unsigned long long>(r.hash),
               static_cast<unsigned long long>(r.world_hash),
               r.note.c_str());
+  if (g_budget_ms > 0.0 && mean > g_budget_ms) {
+    std::printf("%-6s OVER BUDGET: mean tick %.3f ms > %.3f ms\n", name, mean, g_budget_ms);
+    return false;
+  }
+  return true;
 }
 
 }  // namespace
@@ -186,6 +194,7 @@ int main(int argc, char** argv) {
     else if (arg("--repeat")) repeat = std::atoi(argv[++i]);
     else if (arg("--slow")) g_slow = std::atof(argv[++i]);
     else if (arg("--archive-mb")) g_archive_mb = std::atof(argv[++i]);
+    else if (arg("--budget-ms")) g_budget_ms = std::atof(argv[++i]);
     else if (arg("--tune")) {
       const std::string kv = argv[++i];
       const size_t eq = kv.find('=');
@@ -193,10 +202,11 @@ int main(int argc, char** argv) {
     }
   }
   if (threads > 0) set_num_threads(threads);
+  bool ok = true;
   for (int k = 0; k < std::max(1, repeat); ++k) {
-    if (which == "all" || which == "fire") report("fire", fire());
-    if (which == "all" || which == "flood") report("flood", flood());
-    if (which == "all" || which == "city") report("city", city());
+    if (which == "all" || which == "fire") ok = report("fire", fire()) && ok;
+    if (which == "all" || which == "flood") ok = report("flood", flood()) && ok;
+    if (which == "all" || which == "city") ok = report("city", city()) && ok;
   }
-  return 0;
+  return ok ? 0 : 1;
 }

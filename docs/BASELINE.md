@@ -152,6 +152,13 @@ fragmenter's seed table, in-place design: the tower's core 10.3 to 5.9 s, the ma
   build (the same hashes: the engine is bit-identical on every platform).
 - `tools/baseline/compare.sh REF NEW [--parity] [--quick] [--no-env] [--new-tune NAME=VALUE]`
   compares two builds scenario by scenario: hashes, outcome counts, timings.
+- `svx_env_bench --budget-ms MS` fails a run whose mean tick is slower: CI holds the fire and
+  the flood to 60 ms (they run in some 5 ms on a quiet 4-core machine, up to 16 with other work
+  on it; the reference's environment took 95 - 120 ms) - a gate for a regression, not for a
+  noisy runner. The soak
+  (`svx_soak --check`: the drive city for minutes, its memory must level off) and the
+  sanitizers (ASan with UBSan and LeakSanitizer on every suite, TSan on the thread pool's) run
+  in CI too.
 - `SVX_TRACE_HASH=1` makes both tools print every tick's world hash, and `SVX_TRACE_EVENTS=T`
   the demo's cracks and pieces from tick T: two builds' traces show the tick where they part
   and what happened there (a structure's solve, a piece's id, a contact).

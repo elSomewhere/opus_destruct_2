@@ -132,6 +132,8 @@ const Field kFields[] = {
     SVX_T_INT("rigid.link_position_iterations", rigid.link_position_iterations),
     SVX_T_F64("rigid.link_margin", rigid.link_margin),
     SVX_T_F64("rigid.link_max_speed", rigid.link_max_speed),
+    SVX_T_INT("rigid.mixed_substeps", rigid.mixed_substeps),
+    SVX_T_F64("rigid.link_warm", rigid.link_warm),
 };
 #undef SVX_T_F64
 #undef SVX_T_I32

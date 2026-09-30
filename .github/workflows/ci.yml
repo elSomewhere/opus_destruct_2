@@ -24,10 +24,13 @@ jobs:
       # memory it holds must level off.
       - name: Soak (memory levels off)
         run: build/native-release/tools/svx_soak --world drive --minutes 4 --threads 4 --check
-      - name: Environment bench (timings, for the log)
+      # A performance gate: the fire and the flood run some 5 ms a tick on a quiet 4-core machine
+      # (up to 16 with other work on it); a mean over 60 ms is a regression (the structural
+      # reference's environment ran them at 95 - 120 ms), not a noisy runner.
+      - name: Environment bench (perf gate)
         run: |
-          build/native-release/tools/svx_env_bench --scenario fire --threads 4
-          build/native-release/tools/svx_env_bench --scenario flood --threads 4
+          build/native-release/tools/svx_env_bench --scenario fire --threads 4 --budget-ms 60
+          build/native-release/tools/svx_env_bench --scenario flood --threads 4 --budget-ms 60
 
   sanitize:
     runs-on: ubuntu-24.04

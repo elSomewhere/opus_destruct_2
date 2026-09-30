@@ -352,6 +352,7 @@ struct WorldStats {
   i32 grids = 0;                          // oriented grids
   // pieces
   i32 bodies = 0, awake = 0, contacts = 0;
+  i32 substeps = 0;                          // the last tick's (1 busy; RigidParams::mixed_substeps)
   i64 body_checks = 0, body_splits = 0, impacts = 0;
   i64 impact_breaks = 0, steady_breaks = 0;  // bonds broken in pieces by collisions / by resting loads
   i64 pulverized_voxels = 0;                 // crushed to dust

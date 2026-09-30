@@ -11,7 +11,10 @@
 // RigidParams::link_substeps steps of each substep, its contacts found once (with a margin the
 // substep's motion needs) and followed as planes (a surface) or spheres (another link) through the
 // steps. Many short steps keep a chain of light and heavy links stiff (a hand on a forearm on a
-// chest); the pieces keep their substep. One that touches an awake piece is solved with it.
+// chest); the pieces keep their substep. One that touches an awake piece is solved with it, in
+// their substep - a tick in which one is can be stepped finer, everything in it
+// (RigidParams::mixed_substeps: the World's choice, links_mixed), the fine links then in as many
+// fewer steps (link_steps).
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -29,6 +32,12 @@ namespace svx {
 using namespace phys_detail;
 
 namespace {
+
+// (an articulation's index in the rules, ascending id; -1: none)
+i32 art_index(const std::vector<ArticulationRules>& arts, u32 id) {
+  const auto it = std::lower_bound(arts.begin(), arts.end(), id, [](const ArticulationRules& r, u32 v) { return r.id < v; });
+  return it != arts.end() && it->id == id ? static_cast<i32>(it - arts.begin()) : -1;
+}
 
 // A sphere's touch of a voxel: the normal out of the voxel towards the sphere's centre, the depth
 // (radius - distance; < 0: a gap within the margin), the voxel's surface point nearest the centre.
@@ -337,6 +346,7 @@ size_t RigidWorld::piece_contacts() const {
 // Senses
 
 void RigidWorld::begin_tick() {
+  sleep_clock_ = 0.0;
   for (auto& bp : bodies) {
     if (!bp->link) continue;
     LinkData& L = *bp->link;
@@ -379,27 +389,17 @@ void RigidWorld::sense_links() {
 // ---------------------------------------------------------------------------------------------
 // Fine stepping
 
-void RigidWorld::mark_fine(f64 dt) {
-  any_fine_ = false;
-  if (par.link_substeps <= 1 || articulations.empty()) {
-    fine_.clear();
-    return;
-  }
+std::vector<u8> RigidWorld::articulation_steps(f64 dt) const {
   const size_t nb = bodies.size(), na = articulations.size();
-  fine_.assign(nb, 0);
   struct Box {
     V3 lo{1e300, 1e300, 1e300}, hi{-1e300, -1e300, -1e300};
     bool any = false, fine = true;
   };
   std::vector<Box> box(na);
-  auto art = [&](u32 id) -> i32 {
-    const auto it = std::lower_bound(articulations.begin(), articulations.end(), id, [](const ArticulationRules& r, u32 v) { return r.id < v; });
-    return it != articulations.end() && it->id == id ? static_cast<i32>(it - articulations.begin()) : -1;
-  };
   for (size_t i = 0; i < nb; ++i) {
     const Body& b = *bodies[i];
     if (!b.link || b.asleep || b.link->articulation == 0) continue;
-    const i32 a = art(b.link->articulation);
+    const i32 a = art_index(articulations, b.link->articulation);
     if (a < 0) continue;
     const f64 m = (norm(b.v) + b.radius * norm(b.w)) * dt + par.link_margin;
     Box& B = box[size_t(a)];
@@ -416,7 +416,7 @@ void RigidWorld::mark_fine(f64 dt) {
     const Body* B = find(j.b.body);
     if (!A || !B || (A->link != nullptr) == (B->link != nullptr)) continue;
     const Body* L = A->link ? A : B;
-    const i32 a = art(L->link->articulation);
+    const i32 a = art_index(articulations, L->link->articulation);
     if (a >= 0) box[size_t(a)].fine = false;
   }
   // (near an awake piece - its box grown by its motion this substep: solved with it)
@@ -441,14 +441,34 @@ void RigidWorld::mark_fine(f64 dt) {
       }
     }
   }
+  std::vector<u8> out(na, 0);
+  for (size_t a = 0; a < na; ++a) out[a] = !box[a].any ? 0 : box[a].fine ? 1 : 2;
+  return out;
+}
+
+void RigidWorld::mark_fine(f64 dt) {
+  any_fine_ = false;
+  if (par.link_substeps <= 1 || articulations.empty()) {
+    fine_.clear();
+    return;
+  }
+  const std::vector<u8> steps = articulation_steps(dt);
+  const size_t nb = bodies.size();
+  fine_.assign(nb, 0);
   for (size_t i = 0; i < nb; ++i) {
     const Body& b = *bodies[i];
     if (!b.link || b.asleep || b.link->articulation == 0) continue;
-    const i32 a = art(b.link->articulation);
-    if (a < 0 || !box[size_t(a)].fine) continue;
+    const i32 a = art_index(articulations, b.link->articulation);
+    if (a < 0 || steps[size_t(a)] != 1) continue;
     fine_[i] = 1;
     any_fine_ = true;
   }
+}
+
+bool RigidWorld::links_mixed(f64 dt) const {
+  if (par.link_substeps <= 1 || articulations.empty()) return false;
+  const std::vector<u8> steps = articulation_steps(dt);
+  return std::find(steps.begin(), steps.end(), u8{2}) != steps.end();
 }
 
 bool RigidWorld::collide_fine(f64 dt, const std::vector<StaticGrid>& statics, bool may_wake) {
@@ -588,7 +608,7 @@ void RigidWorld::fine_islands(const std::vector<i32>& fb) {
 }
 
 void RigidWorld::step_fine(f64 dt, std::vector<Contact>& report) {
-  const int n = std::max(1, par.link_substeps);
+  const int n = std::max(1, link_steps > 0 ? link_steps : par.link_substeps);
   const f64 h = dt / n;
   const size_t nb = bodies.size();
   std::vector<i32> fb;
@@ -657,6 +677,9 @@ void RigidWorld::step_fine(f64 dt, std::vector<Contact>& report) {
   const auto p0 = fprof ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   fine_islands(fb);
   const auto p1 = fprof ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  // (the contacts start each step from link_warm of the last one's impulses, as the joints' point
+  // rows do: the two in step - with the contacts behind, a body at rest creeps along the ground)
+  const f64 cw = par.link_warm;
   auto step_island = [&](const FineIsland& I) {
     for (int s = 0; s < n; ++s) {
       for (i32 i : I.bodies) {
@@ -690,9 +713,9 @@ void RigidWorld::step_fine(f64 dt, std::vector<Contact>& report) {
         // (links do not bounce; a gap may close within this step, no more)
         c.bounce = c.depth < 0.0 ? c.depth / h : 0.0;
         c.bias = std::min(par.max_correction, par.baumgarte * std::max(0.0, c.depth - par.slop) / h);
-        c.ln = c.depth < 0.0 && s == 0 ? 0.0 : 0.85 * lam[k][0];
-        c.l1 = 0.85 * lam[k][1];
-        c.l2 = 0.85 * lam[k][2];
+        c.ln = c.depth < 0.0 && s == 0 ? 0.0 : cw * lam[k][0];
+        c.l1 = cw * lam[k][1];
+        c.l2 = cw * lam[k][2];
         c.lp = 0.0;
         apply(c, c.n * c.ln + c.t1 * c.l1 + c.t2 * c.l2);
       }

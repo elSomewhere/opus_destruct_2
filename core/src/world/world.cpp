@@ -38,6 +38,7 @@ void World::Impl::configure(const WorldConfig& c) {
   // (guards: a zero or negative knob would stall or divide by zero)
   if (!(cfg_.dt > 0.0)) cfg_.dt = 1.0 / 60.0;
   cfg_.rigid.substeps = std::max(1, cfg_.rigid.substeps);
+  cfg_.rigid.mixed_substeps = std::clamp(cfg_.rigid.mixed_substeps, 0, 64);
   cfg_.max_bodies = std::max(0, cfg_.max_bodies);
   cfg_.cluster_nodes = std::max(64, cfg_.cluster_nodes);
   cfg_.body_cluster_nodes = std::max(16, cfg_.body_cluster_nodes);
@@ -2410,10 +2411,21 @@ void World::Impl::tick() {
     }
     systems_phase_ = false;
   }
+  rigid_.begin_tick();
   if (!arts_.empty()) apply_articulation_controls();
   // (the violent part of a collapse, or a large pile settling: one substep a tick)
   const bool busy = rigid_.busy() || static_cast<i64>(rigid_.piece_contacts()) > cfg_.rigid.busy_contacts;
-  const int ns = busy ? 1 : std::max(1, cfg_.rigid.substeps);
+  int ns = busy ? 1 : std::max(1, cfg_.rigid.substeps);
+  // (an articulation solved with the pieces - it touches an awake one: the tick in finer substeps
+  // where quality asks for it, RigidParams::mixed_substeps - and the articulations on their own in
+  // as many fewer fine steps, at their rate)
+  rigid_.link_steps = 0;
+  if (cfg_.rigid.mixed_substeps > ns && !arts_.empty() && rigid_.links_mixed(cfg_.dt / ns)) {
+    const int m = cfg_.rigid.mixed_substeps;
+    rigid_.link_steps = std::max(1, (std::max(1, cfg_.rigid.link_substeps) * ns + m - 1) / m);
+    ns = m;
+  }
+  st_.substeps = ns;
   const f64 dts = cfg_.dt / ns;
   statics_ = static_grids();
   for (int k = 0; k < ns; ++k) {

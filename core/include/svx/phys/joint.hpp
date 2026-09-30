@@ -114,6 +114,7 @@ struct Joint {
   f64 motor = 0.0;              // ... the drive's
   f64 swing_imp = 0.0, twist_imp = 0.0;  // ... the cone's and the twist limit's
   V3 muscle_imp;                // ... the muscle's (world)
+  f64 step = 0.0;               // (a link's joint) the step (s) they are of: a fine step's or a substep's
   // the last substep: the force and torque b received through it (a: the opposite; N, N m), its
   // hinge angle / slider offset / distance, and whether it gave way
   V3 force, torque;

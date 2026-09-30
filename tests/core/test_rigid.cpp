@@ -75,6 +75,26 @@ TEST_CASE("rigid: a dropped block comes to rest on the ground and sleeps") {
   CHECK(lowest_point(b) > -0.5 * g.h - 0.05);
 }
 
+TEST_CASE("rigid: a block comes to rest and sleeps as soon at any substep length (its rates and counts are per 1/120 s)") {
+  const VoxelGrid g = ground();
+  f64 base = 0.0;
+  for (int per_tick : {2, 4, 8, 6, 1}) {
+    RigidWorld w;
+    w.add(box(1, {10, 10, 16}, {4, 4, 4}, g.h));  // bottom face 2 m up
+    const f64 dt = 1.0 / (60.0 * per_tick);
+    int s = 0;
+    for (; s < per_tick * 60 * 6 && !w.bodies[0]->asleep; ++s) {
+      if (s % per_tick == 0) w.begin_tick();
+      w.substep(dt, g, nullptr);
+    }
+    const f64 t = s * dt;
+    MESSAGE(per_tick << " substeps a tick: asleep after " << t << " s");
+    REQUIRE(w.bodies[0]->asleep);
+    if (per_tick == 2) base = t;
+    else CHECK(std::abs(t - base) < 0.06);
+  }
+}
+
 TEST_CASE("rigid: a stack of two blocks settles and both sleep") {
   const VoxelGrid g = ground();
   RigidWorld w;

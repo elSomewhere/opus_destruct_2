@@ -32,7 +32,6 @@ void RigidWorld::prepare_targets(f64 dt, const std::vector<M3>& Iw, const std::v
 }
 
 void RigidWorld::prepare_target(size_t k, f64 dt, const std::vector<M3>& Iw, const std::vector<u8>* only) {
-  const f64 warm = par.joint_warm;
   Target& t = targets[k];
   TargetPrep& P = tprep_[k];
   const TargetDrive& D = t.drive;
@@ -98,7 +97,13 @@ void RigidWorld::prepare_target(size_t k, f64 dt, const std::vector<M3>& Iw, con
     }
   }
   P.on = P.rows > 0;
-  // warm start: last substep's impulses along the rows it has now
+  // warm start: last substep's impulses along the rows it has now (a link's: scaled to this step
+  // - a fine step's, or a substep's)
+  f64 warm = par.joint_warm;
+  if (B.link) {
+    warm *= t.step > 0.0 ? dt / t.step : 1.0;
+    t.step = dt;
+  }
   V3 imp, imp_d;
   for (i32 r = 0; r < P.rows; ++r) {
     if (P.spring) imp += P.axis[r] * (dot(t.imp, P.axis[r]) * warm);

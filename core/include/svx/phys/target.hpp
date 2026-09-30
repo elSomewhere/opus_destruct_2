@@ -40,6 +40,7 @@ struct Target {
   // the solver's state: the accumulated impulses of its spring and its damper (world: N s, N m s;
   // warm start), and what its spring gave the body in the last substep (N, N m)
   V3 imp, imp_d;
+  f64 step = 0.0;     // (a link's) the step (s) they are of: a fine step's or a substep's
   V3 applied;
 };
 

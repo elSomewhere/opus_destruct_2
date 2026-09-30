@@ -587,7 +587,11 @@ TEST_CASE("behaviour: a runner catches a foot on a body lying across the way") {
       Character& dead = s.civilian(9.0, 0.0, V3{0.55, 2.5, 0});
       dead.die(nullptr, nullptr, 0.05);
       for (i32 i = 0; i < 180; ++i) s.frame({&dead});
-      Character& c = s.civilian(seed);
+      // (the runners run at where the body came to lie - how a body falls is chaotic - one at its
+      // middle, one a little to either side)
+      f64 mid = 0.0;
+      for (const RigidBody* b : dead.body.parts) mid += b->x.x / static_cast<f64>(kBodyCount);
+      Character& c = s.civilian(seed, 1.5707963267948966, V3{mid + 0.2 * (seed - 2.0), 0, 0});
       c.motion.input.mood = Mood::Panic;
       Host h = host_of(c);
       f64 v = 0.0;
@@ -609,6 +613,7 @@ TEST_CASE("behaviour: a runner catches a foot on a body lying across the way") {
         if (c.behaviours.mode == BodyMode::Reacting || c.down()) ++tripped;
       }
     }
+    MESSAGE(pn << ": three runners at a body lying across the way, caught or down " << tripped << " frames of 360");
     CHECK(tripped > 0);
   }
 }

@@ -292,6 +292,22 @@ struct RigidParams {
   int link_position_iterations = 1;
   f64 link_margin = 0.02;            // m: a link's contacts are found this far out (and a substep's motion)
   f64 link_max_speed = 60.0;         // m/s
+  // A joint with a link at an end starts each step from link_warm x its point rows' last
+  // impulses (what carries a chain's weight; its other rows, and the pieces' joints, from
+  // joint_warm's share), and so do the contacts of the fine steps (the two in step: with the
+  // contacts behind, a body at rest creeps along the ground); a link's joint or target from
+  // impulses scaled to this step's length when that changed (its articulation went from its fine
+  // steps to the pieces' substep, or back). All of them: steps this short change them little, and
+  // a share lost every step is a chain of light and heavy links losing its hold (at 0.9 a 30 kg
+  // weight on four 1 kg rods hangs with its joints 0.3 m open; at 1, half a millimetre).
+  f64 link_warm = 1.0;
+  // An articulation solved with the pieces (it touches an awake one, or hangs on a joint from one)
+  // has their substep, not its fine steps: its muscles and limits act at that substep, damped more
+  // than in the steps they were tuned in (the lossy default). A tick in which one is steps in at
+  // least mixed_substeps substeps - everything, the pieces too; the articulations on their own keep
+  // their rate, in fewer fine steps each (8: 1/480 s, the fine steps' rate at the default
+  // substeps). 0: the pieces' substeps.
+  int mixed_substeps = 0;
 };
 
 struct Contact {
@@ -342,8 +358,15 @@ class RigidWorld {
   std::vector<ArticulationRules> articulations;
   // The materials of the voxels (surfaces' tyre grip); nullptr: the process's.
   const MaterialTable* mats = nullptr;
+  // The fine steps of each substep this tick (0: par.link_substeps) - fewer in a tick of more
+  // substeps (RigidParams::mixed_substeps), so the articulations on their own keep their rate.
+  int link_steps = 0;
 
-  // A tick begins: the links' senses (LinkData::contact, impact, bumped) start afresh.
+  // Would an articulation be solved with the pieces in a substep of dt now - does one touch an
+  // awake piece, or hang on a joint from one? (never while link_substeps is 1: all of them are)
+  bool links_mixed(f64 dt) const;
+  // A tick begins: the links' senses (LinkData::contact, impact, bumped) start afresh, and the
+  // count of 1/120 s that sleep keeps (substeps shorter than that count one where they complete one).
   void begin_tick();
   // The contacts of the last substep between pieces and the grids (not links'): how busy it is.
   size_t piece_contacts() const;
@@ -517,6 +540,10 @@ void joint_stillness();  // joined bodies count towards sleep together (sleep_up
   std::vector<u8> fine_;
   bool any_fine_ = false;
   void mark_fine(f64 dt);
+  // (per articulation, in `articulations`' order: 0 none of its links awake, 1 stepped on its own,
+  // 2 solved with the pieces)
+  std::vector<u8> articulation_steps(f64 dt) const;
+  f64 sleep_clock_ = 0.0;  // (1/120 s of the tick's substeps so far, when they are shorter)
   // (the fine links' contacts, found before anything is solved; sleepers struck hard woken: true)
   bool collide_fine(f64 dt, const std::vector<StaticGrid>& statics, bool may_wake);
   // (their steps; their contacts, their impulses summed over the steps, into report)

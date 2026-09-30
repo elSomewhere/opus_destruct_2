@@ -404,7 +404,6 @@ i64 World::Impl::link_body(ArticulationId id, u16 link) const {
 // Each tick
 
 void World::Impl::apply_articulation_controls() {
-  rigid_.begin_tick();
   for (auto& ap : arts_) {
     ArticulationRec& a = *ap;
     ArticulationControl& C = *a.control;

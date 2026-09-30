@@ -39,7 +39,8 @@ and when that is shot away it comes down; a wrecking ball swings on a crane's ro
   (`svx_core`: `svx::World`, and a C API in `svx/svx_core.h`) knows nothing of the game: no
   rendering, players or levels. It is reusable on its own, from C++, C (or any language with a C
   FFI) and JavaScript (a core-only WASM module). The game harness (`svx_game`) is one host of it,
-  and the two iterate separately.
+  and the two iterate separately. Where it trades quality for time or memory, the trade is a
+  tunable ([`docs/CORE.md`](docs/CORE.md) §9).
 - **Method:** [`docs/V2_DESIGN.md`](docs/V2_DESIGN.md). In short:
   - Voxels form pre-scored rubble **fragments**, joined by **bonds**.
   - Every standing structure and every falling piece gets its stress from the same elastic
@@ -135,7 +136,7 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
 | `svx_replay record\|play --world W --seconds S [--out F \| --log F] [--threads T]` | Records and replays sessions from command logs; checkpoint hashes are the determinism check. |
 | `svx_map_check [--threads T] [--movers] WAD...` | Imports, bakes and design-checks every map, then runs it idle. |
 | `svx_soak [--world city\|drive\|tower\|rooms\|yard] [--wad F --map M] [--minutes M] [--archive-mb MB] [--forget-s S] [--no-shoot] [--no-env] [--people N] [--check]` | Long sessions and their memory: a streamed city crossed for minutes with continuous destruction, fires and water, the drive city with its traffic and people shot at (or a bounded level shot at), printing the world's memory by kind (the environment systems and characters included), the change archive, forgotten regions and the process's physical footprint. `--check`: exit status 1 if the second half of the session held more than the first half's peak allows. |
-| `svx_env_bench [--scenario fire\|flood\|city\|all] [--threads T] [--repeat N] [--slow MS] [--tune NAME=VALUE ...]` | Deterministic environment scenarios, timed: the yard's timber house burning, the reservoir breached, the streamed city crossed with fires and water. Prints the tick cost (mean, 99th percentile, max), the environment's share and the session and world hashes (an optimization that changes no result keeps every hash); `--slow` breaks down the slow ticks by phase. |
+| `svx_env_bench [--scenario fire\|flood\|city\|all] [--threads T] [--repeat N] [--slow MS] [--tune NAME=VALUE ...] [--archive-mb MB] [--budget-ms MS]` | Deterministic environment scenarios, timed: the yard's timber house burning, the reservoir breached, the streamed city crossed with fires and water. Prints the tick cost (mean, 99th percentile, max), the environment's share and the session and world hashes (an optimization that changes no result keeps every hash); `--slow` breaks down the slow ticks by phase; `--budget-ms`: exit status 1 if a scenario's mean tick is slower (CI's performance gate). |
 | `tools/baseline/golden.sh DIR`, `tools/baseline/compare.sh REF NEW [--parity]` | The behavioural baseline ([`docs/BASELINE.md`](docs/BASELINE.md)): pinned world hashes (the engine's, and the structural reference's reproduced with its switches); two builds compared scenario by scenario. |
 | `svx_people_bench [--seconds S] [--speed M/S] [--counts 24,48,96] [--policies deep,shallow,hybrid] [--threads T]` | The drive city's people: the viewer drives through the city with its traffic; per way of simulating the bodies and crowd size, the tick and the characters' part (mean, 95th percentile, worst), the bodies' split, the people made and gone, the memory. |
 | `svx_stream_bench`, `svx_wad_textures` | Streaming cost of the city; WAD graphics. |

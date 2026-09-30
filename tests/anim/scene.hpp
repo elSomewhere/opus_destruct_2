@@ -47,6 +47,7 @@ class Scene {
       if (const char* v = std::getenv("SVX_LINK_IT")) cfg.rigid.link_iterations = std::atoi(v);
       if (const char* v = std::getenv("SVX_LINK_PIT")) cfg.rigid.link_position_iterations = std::atoi(v);
       if (const char* v = std::getenv("SVX_LINK_SUB")) cfg.rigid.link_substeps = std::atoi(v);
+      if (const char* v = std::getenv("SVX_LINK_WARM")) cfg.rigid.link_warm = std::atof(v);
       world->configure(cfg);
     }
     VoxelGrid g;
