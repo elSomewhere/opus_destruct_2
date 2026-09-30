@@ -18,11 +18,28 @@ const check = (cond, what) => {
   if (!cond) failures.push(what);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+/**
+ * In a container (root, no GPU): Chrome runs only without its sandbox, and WebGPU on SwiftShader
+ * over Vulkan (as people-wasm.mjs and drive-wasm.mjs). SMOKE_SWIFTSHADER=0 turns it off.
+ */
+function containerArgs() {
+  if (process.platform !== 'linux' || process.env.SMOKE_SWIFTSHADER === '0') return [];
+  const root = process.getuid?.() === 0;
+  if (!root && process.env.SMOKE_SWIFTSHADER !== '1') return [];
+  return [
+    ...(root ? ['--no-sandbox'] : []),
+    '--use-angle=swiftshader',
+    '--enable-features=Vulkan,UseSkiaRenderer',
+    '--use-vulkan=swiftshader',
+    '--disable-vulkan-fallback-to-gl-for-testing',
+  ];
+}
 const browser = await puppeteer.launch({
   executablePath: chrome,
   headless: process.env.SMOKE_HEADFUL ? false : true,
-  args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--no-first-run', '--window-size=1280,760'],
+  args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--no-first-run', '--window-size=1280,760', ...containerArgs()],
   defaultViewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
+  protocolTimeout: 240000,
 });
 const errors = [];
 const logs = [];
@@ -57,7 +74,19 @@ try {
     if (m.type() === 'error' || /\[webgpu\]|\[wgsl/.test(t)) errors.push(t);
   });
   page.on('pageerror', (e) => errors.push(`pageerror ${e.message}`));
+  // (software WebGPU takes most of a small machine's cores: the engine gets two threads, the
+  // renderer fewer pixels and a frame in six - or the page falls minutes behind, as in
+  // people-wasm.mjs)
+  const slow = containerArgs().length > 0;
+  if (slow) await page.evaluateOnNewDocument(() => Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 2 }));
   await page.goto(`${base}?engine=wasm&world=rooms&seed=1`, { waitUntil: 'load' });
+  if (slow) {
+    while (!(await page.evaluate(() => !!window.__structvox))) await sleep(200);
+    await page.evaluate(() => {
+      window.__structvox.renderer.renderScale = 0.35;
+      window.__structvox.renderer.drawEvery = 6;
+    });
+  }
   await waitFor(page, settled, null, 60000, 'wasm rooms world ready and drawn');
   let s = await state(page);
   check(s.engine.voxels > 100000, `rooms: ${s.engine.voxels} voxels, ${s.render.chunksTotal} chunks drawn ${s.render.chunksDrawn}`);
@@ -98,8 +127,10 @@ try {
   check(s.engine.voxels < v0, `pistol carved ${v0 - s.engine.voxels} voxels (${s.engine.structures} structures, ${s.engine.bondsBroken} bonds broken)`);
   await page.screenshot({ path: `${outDir}/02-pistol.png` });
   // The ceiling slab is reinforced: a 1.5 m square cut out of it by gunfire hangs from its bars
-  // (bullets do not cut steel).
+  // (rounds - `shoot`, as the pistol fires them - hole concrete but not steel; a `carve` is a cut,
+  // and takes the bars too: docs/DAMAGE.md §2).
   const p0 = s.engine.pieces;
+  const vr = s.engine.voxels;
   await page.evaluate(() => {
     const sv = window.__structvox;
     const h = 0.125, cx = 27, cy = 23, z = 25.5, half = 6;
@@ -107,11 +138,12 @@ try {
     sv.look(0, 25);
     for (let k = -half; k <= half; k += 2)
       for (const [x, y] of [[cx + k, cy - half], [cx + k, cy + half], [cx - half, cy + k], [cx + half, cy + k]])
-        sv.engine.carve([x * h, y * h, z * h], 0.25);
+        sv.engine.shoot([x * h, y * h, z * h], 0.25, 500);
   });
   await sleep(2500);
   await page.screenshot({ path: `${outDir}/03a-ceiling-hangs.png` });
   s = await state(page);
+  check(vr - s.engine.voxels > 100, `rounds holed the ceiling all round the square (${vr - s.engine.voxels} voxels)`);
   check(s.engine.pieces === p0, `the cut ceiling square hangs from its bars (${s.engine.pieces - p0} new pieces)`);
   // Rigid piece: the lintel of the middle room's masonry partition (unreinforced), cut free,
   // falls 2 m through the doorway as a rigid body, lands and stays there as rubble.

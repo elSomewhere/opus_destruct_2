@@ -30,9 +30,17 @@ npm-debug.log*
 .env.*
 !.env.example
 
-# Generated smoke-test screenshots
+# Generated smoke-test screenshots (web/scripts/*.mjs: their default output folders)
 /web/smoke-out/
 /web/smoke-wasm-out/
+/web/angles-wasm-out/
+/web/city-env-out/
+/web/drive-out/
+/web/fire-wasm-out/
+/web/machines-wasm-out/
+/web/people-out/
+/web/tower-wasm-out/
+/web/water-wasm-out/
 
 # Logs
 *.log
