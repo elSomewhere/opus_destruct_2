@@ -3,6 +3,7 @@
 #include <cmath>
 #include <map>
 #include <set>
+#include <string>
 
 #include "doctest.h"
 #include "svx/anim/system.hpp"
@@ -154,4 +155,68 @@ TEST_CASE("pedestrians: people come and go with the viewer; the characters' memo
   CHECK(near == static_cast<i32>(now.size()));
   CHECK(near >= 12);
   CHECK(mem1 < mem0 * 3 + 256 * 1024);
+}
+
+TEST_CASE("pedestrians: the dead stay where they fell - the world keeps a body with its region and gives it back") {
+  Game game;
+  city(game, 7, 80.0, 8, false);
+  const V3 spawn = make_drive_city(7)->spawn_pos();
+  const V3 eye{spawn.x, spawn.y, spawn.z + 1.6};
+  // the nearest person, shot (a round no one survives)
+  u32 victim = 0;
+  for (int t = 0; t < 60 * 30 && !victim; ++t) {
+    game.tick();
+    if (t % 30 != 29) continue;
+    f64 best = 60.0;
+    for (const CharacterView& v : game.character_views()) {
+      const f64 d = std::hypot(v.centre.x - eye.x, v.centre.y - eye.y);
+      if (!(v.flags & CharacterView::kAlive) || d > best) continue;
+      const V3 dir{v.centre.x - eye.x, v.centre.y - eye.y, v.centre.z + 0.2 - eye.z};
+      const f64 l = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
+      const Game::ShotHit h = game.raycast_shot(eye, V3{dir.x / l, dir.y / l, dir.z / l}, 80.0);
+      if (h.character != v.id) continue;
+      if (game.wound_character(v.id, h.pos, 0.05, 1.0e5)) {
+        victim = v.id;
+        best = d;
+      }
+    }
+  }
+  REQUIRE(victim != 0);
+  // it falls and comes to rest
+  V3 at;
+  bool rests = false;
+  for (int t = 0; t < 60 * 10 && !rests; ++t) {
+    game.tick();
+    for (const CharacterView& v : game.character_views())
+      if (v.id == victim) {
+        CHECK(!(v.flags & CharacterView::kAlive));
+        rests = (v.flags & CharacterView::kAsleep) && (v.flags & CharacterView::kDeep);
+        at = v.centre;
+      }
+  }
+  REQUIRE(rests);
+  // the viewer goes far away: the body goes with its region
+  game.set_viewer(V3{spawn.x + 600.0, spawn.y, spawn.z});
+  for (int t = 0; t < 60 * 10; ++t) game.tick();
+  i32 near_body = 0;
+  for (const CharacterView& v : game.character_views())
+    if (std::hypot(v.centre.x - at.x, v.centre.y - at.y) < 1.0) ++near_body;
+  CHECK(near_body == 0);
+  CHECK(game.world().stats().archived_articulations > 0);
+  // and back: the body is there, dead, where it lay
+  game.set_viewer(spawn);
+  f64 off = 1e9;
+  bool dead = false;
+  for (int t = 0; t < 60 * 10; ++t) game.tick();
+  for (const CharacterView& v : game.character_views()) {
+    const f64 d = std::hypot(v.centre.x - at.x, v.centre.y - at.y);
+    if (d < off) {
+      off = d;
+      dead = !(v.flags & CharacterView::kAlive);
+    }
+  }
+  const std::string state = dead ? "dead" : "alive";
+  MESSAGE("the body lay at " << at.x << ", " << at.y << "; back, the nearest character is " << off << " m from there, " << state);
+  CHECK(off < 0.3);
+  CHECK(dead);
 }

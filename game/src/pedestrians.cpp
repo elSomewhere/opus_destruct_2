@@ -669,34 +669,44 @@ void Pedestrians::populate() {
   const f64 radius = std::max(10.0, std::min(cfg.radius, load - 15.0));
   const f64 near = std::min(cfg.near_radius, radius - 10.0);
   const f64 far = std::min(radius + 15.0, load - 5.0);
-  // out of range: gone (the living come and go; the dead are not kept out of range yet); the
-  // longest dead beyond the few kept
-  std::vector<u32> gone;
-  std::vector<std::pair<f64, u32>> dead;
+  // out of range: the living go (people come and go); the dead are the world's - a body at rest
+  // goes with its region and comes back with it (CharacterSystem) - only the longest dead beyond
+  // the few kept in range go for good
+  std::vector<u32> gone, forget;
   i32 living = 0;
   for (const auto& [id, w] : walkers_) {
     const anim::Character* c = g_->chars_ ? chars().get(id) : nullptr;
     if (!c) {
-      gone.push_back(id);
+      forget.push_back(id);
       continue;
     }
-    if (flat_dist(w.pos, at) > far && !(w.alive && w.touched && flat_dist(w.pos, at) < far + 20.0)) {
-      gone.push_back(id);
+    const f64 d = flat_dist(w.pos, at);
+    if (!w.alive) {
+      if (d > far) forget.push_back(id);
       continue;
     }
-    if (!w.alive) dead.push_back({-w.dead_for, id});
+    if (d > far && !(w.touched && d < far + 20.0)) gone.push_back(id);
     else ++living;
   }
-  if (static_cast<i32>(dead.size()) > kMaxCorpses) {
-    std::sort(dead.begin(), dead.end());
-    for (size_t k = size_t(kMaxCorpses); k < dead.size(); ++k) gone.push_back(dead[k].second);
+  if (g_->chars_) {
+    std::vector<std::pair<f64, u32>> dead;
+    for (anim::CharacterId id : chars().ids()) {
+      const anim::Character* c = chars().get(id);
+      if (c && !c->alive() && chars().kind_of(id) == kPedestrian && flat_dist(c->bounds_center(), at) < far) dead.push_back({-c->dead_time, id});
+    }
+    if (static_cast<i32>(dead.size()) > kMaxCorpses) {
+      std::sort(dead.begin(), dead.end());
+      for (size_t k = size_t(kMaxCorpses); k < dead.size(); ++k) gone.push_back(dead[k].second);
+    }
   }
+  for (u32 id : forget) walkers_.erase(id);
   for (u32 id : gone) {
     walkers_.erase(id);
     if (g_->chars_) chars().despawn(id);
   }
   if (!cfg.enabled || !r || cfg.count <= living) return;
   // (people come: the characters' system, the looks)
+  make_looks();
   if (!g_->chars_) {
     g_->chars_ = std::make_shared<anim::CharacterSystem>();
     g_->world_.add_system(g_->chars_);
@@ -704,8 +714,17 @@ void Pedestrians::populate() {
   anim::CharacterSystem& cs = chars();
   cs.config.policy = cfg.bodies == 0 ? anim::BodyPolicy::Deep : cfg.bodies == 1 ? anim::BodyPolicy::Shallow : anim::BodyPolicy::Hybrid;
   cs.config.max_deep = cfg.max_deep;
-  if (looks_.empty())
-    for (i32 k = 0; k < kLooks; ++k) looks_.push_back(anim::make_civilian(k + 1));
+  // (the dead the world gives back: their looks by what they recorded)
+  if (!cs.restore)
+    cs.restore = [this](u32 kind, const std::vector<u8>& data, anim::CharacterDesc* out) {
+      if (kind != kPedestrian || data.empty()) return false;
+      make_looks();
+      const anim::HumanVariant& look = looks_[size_t(data[0]) % looks_.size()];
+      out->model = look.model;
+      out->palette = look.palette;
+      out->health = 0.0;
+      return true;
+    };
   // on a sidewalk out of sight, its ground resident, room about it
   std::vector<Walk> walks;
   r->walks_in(at - V3{radius, radius, 0.0}, at + V3{radius, radius, 0.0}, walks);
@@ -737,7 +756,8 @@ void Pedestrians::populate() {
     for (const auto& [id, o] : walkers_)
       if (flat_dist(o.pos, s.p) < 4.0) free = false;
     if (!free || !resident(s.p)) continue;
-    const anim::HumanVariant& look = looks_[size_t(mix(h ^ 0x100C) % looks_.size())];
+    const size_t li = size_t(mix(h ^ 0x100C) % looks_.size());
+    const anim::HumanVariant& look = looks_[li];
     const int toward = (h >> 20) & 1;
     const V3 dir = flat(toward == 1 ? s.w->b - s.w->a : s.w->a - s.w->b);
     anim::CharacterDesc d;
@@ -748,6 +768,7 @@ void Pedestrians::populate() {
     d.pos = s.p;
     d.yaw = dm::atan2(dir.y, dir.x);
     d.kind = kPedestrian;
+    d.data = {static_cast<u8>(li)};
     const u32 id = cs.spawn(d);
     if (!id) continue;
     Walker w;
@@ -766,6 +787,11 @@ void Pedestrians::populate() {
     ++living;
     ++made;
   }
+}
+
+void Pedestrians::make_looks() {
+  if (looks_.empty())
+    for (i32 k = 0; k < kLooks; ++k) looks_.push_back(anim::make_civilian(k + 1));
 }
 
 // ---- the front end's meshes and palettes ---------------------------------------------------------

@@ -18,9 +18,13 @@
 // always get it.
 //
 // Streaming: a character whose ground goes out of range goes with it (the host's population makes
-// the living again as the player comes back).
+// the living again as the player comes back). The dead are kept by the world: a dead body is one
+// of its articulations (asleep once at rest, it costs nothing), archived with its region and given
+// back with it - the system then makes the character again (the host's `restore`: who it was, from
+// what it recorded in the articulation) and adopts the body where it lies.
 #pragma once
 
+#include <functional>
 #include <map>
 #include <memory>
 #include <vector>
@@ -60,6 +64,7 @@ struct CharacterDesc {
   V3 pos;
   f64 yaw = 0.0;
   u32 kind = 0;  // (the host's: a pedestrian, a soldier)
+  std::vector<u8> data;  // (the host's: who the character is, for `restore` - its look)
 };
 
 struct CharacterStats {
@@ -84,6 +89,10 @@ class CharacterSystem final : public WorldSystem {
   CharacterSystemConfig config;
   // The focus points of the level of detail (the player, the camera), set by the host each frame.
   std::vector<V3> focus;
+  // A body of one of the system's characters the world gave back (its region came back into
+  // range, a session loaded): the character it was - the host fills in its model, palette, weapon
+  // from its kind and data (false: none; the body stays in the world, no one's).
+  std::function<bool(u32 kind, const std::vector<u8>& data, CharacterDesc* out)> restore;
 
   // The world it is in moved (its host's): the characters follow it. (Its hooks do this
   // themselves; a host spawning between a move and the next tick calls it.)
@@ -108,8 +117,13 @@ class CharacterSystem final : public WorldSystem {
   struct Entry {
     CharacterId id = 0;
     u32 kind = 0;
+    std::vector<u8> data;
     std::unique_ptr<Character> c;
+    ArticulationId recorded = 0;  // (the articulation its record was written to, and ...)
+    bool recorded_alive = true;   // (... whether it was alive then)
   };
+  std::vector<ArticulationId> strangers_;  // (the world's articulations that are not the system's: ascending)
+  i64 scan_tick_ = -1;
   World* world_ = nullptr;
   std::unique_ptr<WorldCollision> collision_;
   std::vector<Entry> chars_;  // ascending ids
@@ -118,6 +132,8 @@ class CharacterSystem final : public WorldSystem {
   Entry* entry(CharacterId id);
   const Entry* entry(CharacterId id) const;
   void level_of_detail(World& w);
+  void record(World& w);      // (what each bound body is, in its articulation's host data)
+  void take_back(World& w);   // (bodies the world gave back: characters again)
 };
 
 }  // namespace svx::anim

@@ -114,6 +114,7 @@ class Pedestrians {
   // the body
   void move(Walker& w, anim::Character& c, f64 dt);
   // the population
+  void make_looks();
   void populate();
   void blows(Walker& w, anim::Character& c);
   void output();

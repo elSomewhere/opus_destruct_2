@@ -98,10 +98,120 @@ CharacterId CharacterSystem::spawn(const CharacterDesc& d) {
   Entry e;
   e.id = id;
   e.kind = d.kind;
+  e.data = d.data;
   e.c = std::make_unique<Character>(o);
   e.c->place(d.pos, d.yaw);
   chars_.push_back(std::move(e));
   return id;
+}
+
+// ---- the dead the world keeps ---------------------------------------------------------------------
+
+namespace {
+
+// An articulation's host data, the system's record: "SVXC", version, kind, alive, health, then
+// the host's data.
+constexpr u32 kRecordMagic = 0x43585653u;  // "SVXC"
+
+std::vector<u8> encode_record(u32 kind, bool alive, f64 health, const std::vector<u8>& data) {
+  std::vector<u8> out(4 + 1 + 4 + 1 + 8);
+  std::memcpy(out.data(), &kRecordMagic, 4);
+  out[4] = 1;
+  std::memcpy(out.data() + 5, &kind, 4);
+  out[9] = alive ? 1 : 0;
+  std::memcpy(out.data() + 10, &health, 8);
+  out.insert(out.end(), data.begin(), data.end());
+  return out;
+}
+
+bool decode_record(const std::vector<u8>* in, u32* kind, bool* alive, f64* health, std::vector<u8>* data) {
+  if (!in || in->size() < 18) return false;
+  u32 magic;
+  std::memcpy(&magic, in->data(), 4);
+  if (magic != kRecordMagic || (*in)[4] != 1) return false;
+  std::memcpy(kind, in->data() + 5, 4);
+  *alive = (*in)[9] != 0;
+  std::memcpy(health, in->data() + 10, 8);
+  data->assign(in->begin() + 18, in->end());
+  return true;
+}
+
+}  // namespace
+
+void CharacterSystem::record(World& w) {
+  for (Entry& e : chars_) {
+    const Character& c = *e.c;
+    if (!c.bound()) continue;
+    const ArticulationId id = c.articulation();
+    if (id == e.recorded && c.alive() == e.recorded_alive) continue;
+    w.set_articulation_data(id, encode_record(e.kind, c.alive(), c.health, e.data));
+    e.recorded = id;
+    e.recorded_alive = c.alive();
+  }
+}
+
+// The world's articulations not bound to a character: a dead one of the system's (its record says)
+// is a character again (the host's restore), its body adopted where it lies; a living one's body
+// goes (the host's population makes the living); the rest are strangers.
+void CharacterSystem::take_back(World& w) {
+  std::vector<ArticulationId> ours;
+  for (const Entry& e : chars_)
+    if (e.c->bound()) ours.push_back(e.c->articulation());
+  std::sort(ours.begin(), ours.end());
+  std::vector<ArticulationId> strangers;
+  for (ArticulationId id : w.articulations()) {
+    if (std::binary_search(ours.begin(), ours.end(), id)) continue;
+    if (std::binary_search(strangers_.begin(), strangers_.end(), id)) {
+      strangers.push_back(id);
+      continue;
+    }
+    u32 kind = 0;
+    bool alive = false;
+    f64 health = 0.0;
+    std::vector<u8> data;
+    if (!decode_record(w.articulation_data(id), &kind, &alive, &health, &data)) {
+      strangers.push_back(id);
+      continue;
+    }
+    if (alive) {
+      w.remove_articulation(id);
+      continue;
+    }
+    CharacterDesc d;
+    d.kind = kind;
+    d.data = data;
+    if (!restore || !restore(kind, data, &d) || !d.model) {
+      strangers.push_back(id);
+      continue;
+    }
+    CharacterOptions o;
+    o.model = d.model;
+    o.palette = d.palette;
+    o.collision = collision_.get();
+    o.weapon = d.weapon;
+    o.health = d.health;
+    o.seed = d.seed;
+    o.mass = d.mass;
+    o.world = &w;
+    o.backend = BodyBackend::Deep;
+    o.group = kCharacterGroup;
+    Entry e;
+    e.id = next_++;
+    o.tag = e.id;
+    e.kind = kind;
+    e.data = data;
+    e.c = std::make_unique<Character>(o);
+    if (!e.c->adopt(id)) {
+      strangers.push_back(id);
+      continue;
+    }
+    e.c->die(nullptr, nullptr, 0.0);
+    e.c->health = 0.0;
+    e.recorded = id;
+    e.recorded_alive = false;
+    chars_.push_back(std::move(e));
+  }
+  strangers_ = std::move(strangers);
 }
 
 bool CharacterSystem::despawn(CharacterId id) {
@@ -136,6 +246,10 @@ void CharacterSystem::on_evicted(World& w, const std::vector<u64>& chunks) {
 void CharacterSystem::pre_step(World& w, f64 dt) {
   const auto t0 = std::chrono::steady_clock::now();
   rebind(w);
+  if (w.ticks() - scan_tick_ >= 30) {
+    scan_tick_ = w.ticks();
+    take_back(w);
+  }
   if (chars_.empty()) {
     stats_.pre_ms = 0.0;
     return;
@@ -186,6 +300,11 @@ void CharacterSystem::level_of_detail(World& w) {
       c.set_backend(BodyBackend::Shallow, &w);
       continue;
     }
+    // (the dead: bodies of the world - asleep at rest they cost nothing, and the world keeps them)
+    if (!c.alive()) {
+      c.set_backend(BodyBackend::Deep, &w);
+      continue;
+    }
     // hybrid: near a focus point, or near an awake piece: deep
     bool near_piece = false;
     const f64 r = config.piece_radius + (deep_now ? hy : 0.0);
@@ -215,8 +334,19 @@ void CharacterSystem::step(World& w, f64 /*dt*/) {
     stats_ = CharacterStats{};
     return;
   }
-  // the second half: what the tick made of the deep bodies
-  for (Entry& e : chars_) e.c->end();
+  // the second half: what the tick made of the deep bodies (a dead one whose body the world took
+  // - archived with its region - goes: the world keeps it, and gives it back)
+  std::vector<CharacterId> taken;
+  for (Entry& e : chars_) {
+    const bool was = e.c->bound();
+    e.c->end();
+    if (was && !e.c->bound() && !e.c->alive()) taken.push_back(e.id);
+  }
+  for (CharacterId id : taken) {
+    const auto it = std::lower_bound(chars_.begin(), chars_.end(), id, [](const Entry& e, CharacterId v) { return e.id < v; });
+    if (it != chars_.end() && it->id == id) chars_.erase(it);
+  }
+  record(w);
   // stats
   CharacterStats s;
   s.pre_ms = stats_.pre_ms;
