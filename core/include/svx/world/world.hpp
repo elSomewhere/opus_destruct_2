@@ -431,6 +431,7 @@ class World {
  public:
   World();
   ~World();
+  // (a moved-from World may only be destroyed or assigned to; its systems go with the world)
   World(World&&) noexcept;
   World& operator=(World&&) noexcept;
   World(const World&) = delete;

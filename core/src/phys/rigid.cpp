@@ -1025,7 +1025,7 @@ void RigidWorld::solve(f64 dt) {
   // alone so every thread count and platform does the same)
   // (a collapse's peak, or a large pile settling: fewer iterations; a function of the state and
   // the contact count alone, the same on every thread count and platform)
-  const bool reduced = busy_ || piece_contacts() > par.busy_contacts;
+  const bool reduced = busy_ || static_cast<i64>(piece_contacts()) > par.busy_contacts;
   const int vel_iters = reduced ? par.busy_iterations : par.iterations;
   const int pos_iters = reduced ? std::min(2, par.position_iterations) : par.position_iterations;
   for (int it = 0; it < vel_iters; ++it) {

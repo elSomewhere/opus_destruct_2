@@ -1,7 +1,8 @@
 # structvox game ↔ front-end contract (v2)
 
 This is the protocol of the prototype game: the game harness (`svx_game`, around the physics
-core `svx_core`, see [`CORE.md`](CORE.md)) runs in a **Web Worker**, compiled to WASM (SIMD128).
+core `svx_core`, see [`CORE.md`](CORE.md); its levels from `svx_procgen`; its flat C ABI
+`svx_api`) runs in a **Web Worker**, compiled to WASM (SIMD128).
 Hosts that want the physics alone use the core's own C API (`svx/svx_core.h`) instead. The main thread owns
 input, UI and WebGPU rendering. The two sides talk through `postMessage` with transferable
 `ArrayBuffer`s. SAB rings are a later optimization behind the same message shapes.

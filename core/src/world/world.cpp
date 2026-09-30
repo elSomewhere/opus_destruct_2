@@ -2412,7 +2412,7 @@ void World::Impl::tick() {
   }
   if (!arts_.empty()) apply_articulation_controls();
   // (the violent part of a collapse, or a large pile settling: one substep a tick)
-  const bool busy = rigid_.busy() || rigid_.piece_contacts() > cfg_.rigid.busy_contacts;
+  const bool busy = rigid_.busy() || static_cast<i64>(rigid_.piece_contacts()) > cfg_.rigid.busy_contacts;
   const int ns = busy ? 1 : std::max(1, cfg_.rigid.substeps);
   const f64 dts = cfg_.dt / ns;
   statics_ = static_grids();

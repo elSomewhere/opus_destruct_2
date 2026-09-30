@@ -35,7 +35,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        preset: [native-asan, native-tsan]
+        include:
+          - preset: native-asan
+            exclude: "^$"
+          # (ThreadSanitizer on the suites that drive the core's thread pool; the game suite takes
+          # hours under it)
+          - preset: native-tsan
+            exclude: svx_game_tests
     steps:
       - uses: actions/checkout@v4
       - name: Fetch Freedoom
@@ -48,7 +54,7 @@ jobs:
           UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
           TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
         # (the game suite takes most of an hour under a sanitizer)
-        run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure --timeout 7200
+        run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure --timeout 7200 -E "${{ matrix.exclude }}"
 
   wasm:
     runs-on: ubuntu-24.04

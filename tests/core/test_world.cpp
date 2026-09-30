@@ -1060,3 +1060,29 @@ TEST_CASE("world: every tunable has an id of its own, from its name (command log
   CHECK(tunable_by_id(0x12345678u) == -1);
   CHECK(tunable_id(-1) == 0);
 }
+
+TEST_CASE("world: a moved world goes on as it was, its systems handed the world it is now") {
+  struct Seen : WorldSystem {
+    std::vector<const World*> worlds;
+    const char* name() const override { return "seen"; }
+    void step(World& w, f64) override { worlds.push_back(&w); }
+  };
+  auto run = [](bool move) {
+    auto seen = std::make_shared<Seen>();
+    World a;
+    a.add_system(seen);
+    a.load(table_world());
+    a.bake();
+    for (int t = 0; t < 5; ++t) a.tick();
+    a.carve(leg_centre(0, 0, 1.0), 0.4);
+    World b = move ? std::move(a) : World();
+    World& w = move ? b : a;
+    for (int t = 0; t < 60; ++t) w.tick();
+    const bool handed = !seen->worlds.empty() && seen->worlds.back() == &w;
+    CHECK(handed);
+    CHECK(w.grid().h == kH);            // (the inline reads, through the moved implementation)
+    CHECK_FALSE(w.has_oriented_grids());
+    return w.session_hash();
+  };
+  CHECK(run(true) == run(false));  // (the same world, bit for bit)
+}

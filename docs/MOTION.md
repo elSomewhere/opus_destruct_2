@@ -187,9 +187,9 @@ the ends' distance, a rope, its drive off), `svxc_joint_drive`, `svxc_add_joint`
 - **An articulation near an awake piece is solved at the world's substep** (1/120 s), with the
   world's iterations: its muscles and limits are stiffer there than in its own fine steps. The
   knobs that scale it on stronger hardware are the world's: `rigid.substeps` (every piece's
-  substep, 2 a tick), `rigid.iterations` and `rigid.position_iterations`; `link_substeps` (4)
-  sets the fine steps of the articulations on their own (1: every articulation with the
-  pieces). A mixed island is not fine-stepped: its pieces' contacts, crumpling and fracture
+  substep, 2 a tick), `rigid.iterations` and `rigid.position_iterations`; `rigid.link_substeps`
+  (4) sets the fine steps of the articulations on their own (1: every articulation with the
+  pieces), `rigid.link_iterations` and `rigid.link_position_iterations` their passes. A mixed island is not fine-stepped: its pieces' contacts, crumpling and fracture
   checks are the substep's.
 
 ## 6. Articulations

@@ -245,7 +245,7 @@ struct RigidParams {
   int busy_bodies = 150;
   f64 busy_speed = 2.0;              // m/s
   int busy_iterations = 6;
-  size_t busy_contacts = 6000;       // also beyond this many contacts (a large pile settling): busy
+  i64 busy_contacts = 6000;          // also beyond this many contacts (a large pile settling): busy
   f64 restitution = 0.1;             // for impacts faster than bounce_speed
   f64 bounce_speed = 2.0;
   f64 friction = 0.65;

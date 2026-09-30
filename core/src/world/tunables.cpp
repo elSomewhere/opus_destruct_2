@@ -125,6 +125,13 @@ const Field kFields[] = {
     SVX_T_F64("memory.piece_mb", memory.piece_mb),
     SVX_T_F64("memory.cache_mb", memory.cache_mb),
     SVX_T_I32("memory.max_events", memory.max_events),
+    // (later additions: at the end - a tunable's index is its place; logs name it by id)
+    SVX_T_I64("rigid.busy_contacts", rigid.busy_contacts),
+    SVX_T_INT("rigid.link_substeps", rigid.link_substeps),
+    SVX_T_INT("rigid.link_iterations", rigid.link_iterations),
+    SVX_T_INT("rigid.link_position_iterations", rigid.link_position_iterations),
+    SVX_T_F64("rigid.link_margin", rigid.link_margin),
+    SVX_T_F64("rigid.link_max_speed", rigid.link_max_speed),
 };
 #undef SVX_T_F64
 #undef SVX_T_I32
