@@ -705,6 +705,24 @@ void Pedestrians::populate() {
     if (g_->chars_) chars().despawn(id);
   }
   if (!cfg.enabled || !r || cfg.count <= living) return;
+  // on a sidewalk out of sight, its ground resident, room about it
+  std::vector<Walk> walks;
+  r->walks_in(at - V3{radius, radius, 0.0}, at + V3{radius, radius, 0.0}, walks);
+  struct Spot {
+    V3 p;
+    const Walk* w;
+  };
+  std::vector<Spot> spots;
+  for (const Walk& wk : walks) {
+    if (wk.crossing) continue;
+    for (f64 u : {0.2, 0.5, 0.8}) {
+      const V3 p = wk.a + (wk.b - wk.a) * u + wk.inset;
+      const f64 d = flat_dist(p, at);
+      if (d < near || d > radius) continue;
+      spots.push_back(Spot{p, &wk});
+    }
+  }
+  if (spots.empty()) return;
   // (people come: the characters' system, the looks)
   make_looks();
   if (!g_->chars_) {
@@ -725,24 +743,6 @@ void Pedestrians::populate() {
       out->health = 0.0;
       return true;
     };
-  // on a sidewalk out of sight, its ground resident, room about it
-  std::vector<Walk> walks;
-  r->walks_in(at - V3{radius, radius, 0.0}, at + V3{radius, radius, 0.0}, walks);
-  struct Spot {
-    V3 p;
-    const Walk* w;
-  };
-  std::vector<Spot> spots;
-  for (const Walk& wk : walks) {
-    if (wk.crossing) continue;
-    for (f64 u : {0.2, 0.5, 0.8}) {
-      const V3 p = wk.a + (wk.b - wk.a) * u + wk.inset;
-      const f64 d = flat_dist(p, at);
-      if (d < near || d > radius) continue;
-      spots.push_back(Spot{p, &wk});
-    }
-  }
-  if (spots.empty()) return;
   auto resident = [&](const V3& p) {
     const f64 h = g_->world_.voxel_size();
     const IVec3 c = chunk_of(IVec3{static_cast<i32>(std::floor(p.x / h + 0.5)), static_cast<i32>(std::floor(p.y / h + 0.5)), static_cast<i32>(std::floor(p.z / h + 0.5)) - 1});
