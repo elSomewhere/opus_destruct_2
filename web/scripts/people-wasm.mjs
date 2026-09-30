@@ -16,12 +16,12 @@
  */
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { beforeLoad, launch, softwareWebGPU } from './browser.mjs';
 
 const puppeteer = (await import('puppeteer-core')).default;
 const base = process.argv[2] ?? 'http://localhost:5190/';
 const outDir = resolve(process.argv[3] ?? 'people-out');
 mkdirSync(outDir, { recursive: true });
-const chrome = process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const failures = [];
 const started = Date.now();
 const since = () => `${((Date.now() - started) / 1000).toFixed(0)} s`;
@@ -36,29 +36,7 @@ const ASLEEP = 8;
 const DOWN = 16;
 const GIB = 32;
 const flagNames = (f) => ['alive', 'deep', 'physical', 'asleep', 'down', 'gib'].filter((_, i) => f & (1 << i)).join('+') || 'none';
-/**
- * In a container (root, no GPU): Chrome runs only without its sandbox, and WebGPU on SwiftShader
- * over Vulkan (Dawn's default there loses its device at once). SMOKE_SWIFTSHADER=0 turns it off.
- */
-function containerArgs() {
-  if (process.platform !== 'linux' || process.env.SMOKE_SWIFTSHADER === '0') return [];
-  const root = process.getuid?.() === 0;
-  if (!root && process.env.SMOKE_SWIFTSHADER !== '1') return [];
-  return [
-    ...(root ? ['--no-sandbox'] : []),
-    '--use-angle=swiftshader',
-    '--enable-features=Vulkan,UseSkiaRenderer',
-    '--use-vulkan=swiftshader',
-    '--disable-vulkan-fallback-to-gl-for-testing',
-  ];
-}
-const browser = await puppeteer.launch({
-  executablePath: chrome,
-  headless: process.env.SMOKE_HEADFUL ? false : true,
-  args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--no-first-run', '--window-size=960,580', ...containerArgs()],
-  defaultViewport: { width: 960, height: 540, deviceScaleFactor: 1 },
-  protocolTimeout: 240000,
-});
+const browser = await launch(puppeteer, { width: 960, height: 540 });
 const errors = [];
 try {
   const page = await browser.newPage();
@@ -68,13 +46,12 @@ try {
     if (process.env.SMOKE_VERBOSE) console.log(`  [page] ${t}`);
   });
   page.on('pageerror', (e) => errors.push(`pageerror ${e.message}`));
-  // (software WebGPU takes most of a small machine's cores: the engine gets two threads)
-  if (containerArgs().length > 0) await page.evaluateOnNewDocument(() => Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 2 }));
+  await beforeLoad(page);  // (in software WebGPU: the engine on two threads)
   const bodies = process.env.PEOPLE_BODIES ? `&bodies=${process.env.PEOPLE_BODIES}` : '';
   await page.goto(`${base}?engine=wasm&world=drive&seed=1${bodies}`, { waitUntil: 'load' });
   // (software WebGPU: fewer pixels, and a frame drawn in six but for the screenshots - or the GPU
   // process takes the cores the page and the engine need, and the page falls minutes behind)
-  const slow = containerArgs().length > 0;
+  const slow = softwareWebGPU();
   while (!(await page.evaluate(() => !!window.__structvox))) await sleep(200);
   if (slow) {
     await page.evaluate(() => {

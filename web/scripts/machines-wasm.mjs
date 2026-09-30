@@ -10,19 +10,14 @@
  */
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { launch, beforeLoad, afterLoad } from './browser.mjs';
 
 const puppeteer = (await import('puppeteer-core')).default;
 const base = process.argv[2] ?? 'http://localhost:5190/';
 const outDir = resolve(process.argv[3] ?? 'machines-wasm-out');
 mkdirSync(outDir, { recursive: true });
-const chrome = process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const browser = await puppeteer.launch({
-  executablePath: chrome,
-  headless: process.env.SMOKE_HEADFUL ? false : true,
-  args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--no-first-run', '--window-size=1280,760'],
-  defaultViewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
-});
+const browser = await launch(puppeteer);
 const errors = [];
 let failed = false;
 const check = (name, ok, detail) => {
@@ -36,7 +31,9 @@ try {
     if (m.type() === 'error' || /\[webgpu\]|\[wgsl|Aborted/.test(t)) errors.push(t);
   });
   page.on('pageerror', (e) => errors.push(`pageerror ${e.message}`));
+  await beforeLoad(page);
   await page.goto(`${base}?engine=wasm&world=machines&seed=1`, { waitUntil: 'load' });
+  await afterLoad(page);
   const t0 = Date.now();
   for (;;) {
     let ok = false;

@@ -6,41 +6,19 @@
  */
 import { existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { afterLoad, beforeLoad, launch } from './browser.mjs';
 
 const puppeteer = (await import('puppeteer-core')).default;
 const base = process.argv[2] ?? 'http://localhost:5190/';
 const outDir = resolve(process.argv[3] ?? 'smoke-wasm-out');
 mkdirSync(outDir, { recursive: true });
-const chrome = process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const failures = [];
 const check = (cond, what) => {
   console.log(cond ? `ok   ${what}` : `FAIL ${what}`);
   if (!cond) failures.push(what);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-/**
- * In a container (root, no GPU): Chrome runs only without its sandbox, and WebGPU on SwiftShader
- * over Vulkan (as people-wasm.mjs and drive-wasm.mjs). SMOKE_SWIFTSHADER=0 turns it off.
- */
-function containerArgs() {
-  if (process.platform !== 'linux' || process.env.SMOKE_SWIFTSHADER === '0') return [];
-  const root = process.getuid?.() === 0;
-  if (!root && process.env.SMOKE_SWIFTSHADER !== '1') return [];
-  return [
-    ...(root ? ['--no-sandbox'] : []),
-    '--use-angle=swiftshader',
-    '--enable-features=Vulkan,UseSkiaRenderer',
-    '--use-vulkan=swiftshader',
-    '--disable-vulkan-fallback-to-gl-for-testing',
-  ];
-}
-const browser = await puppeteer.launch({
-  executablePath: chrome,
-  headless: process.env.SMOKE_HEADFUL ? false : true,
-  args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--no-first-run', '--window-size=1280,760', ...containerArgs()],
-  defaultViewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
-  protocolTimeout: 240000,
-});
+const browser = await launch(puppeteer);
 const errors = [];
 const logs = [];
 async function waitFor(page, fn, arg, ms, what) {
@@ -74,19 +52,9 @@ try {
     if (m.type() === 'error' || /\[webgpu\]|\[wgsl/.test(t)) errors.push(t);
   });
   page.on('pageerror', (e) => errors.push(`pageerror ${e.message}`));
-  // (software WebGPU takes most of a small machine's cores: the engine gets two threads, the
-  // renderer fewer pixels and a frame in six - or the page falls minutes behind, as in
-  // people-wasm.mjs)
-  const slow = containerArgs().length > 0;
-  if (slow) await page.evaluateOnNewDocument(() => Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 2 }));
+  await beforeLoad(page);
   await page.goto(`${base}?engine=wasm&world=rooms&seed=1`, { waitUntil: 'load' });
-  if (slow) {
-    while (!(await page.evaluate(() => !!window.__structvox))) await sleep(200);
-    await page.evaluate(() => {
-      window.__structvox.renderer.renderScale = 0.35;
-      window.__structvox.renderer.drawEvery = 6;
-    });
-  }
+  await afterLoad(page);
   await waitFor(page, settled, null, 60000, 'wasm rooms world ready and drawn');
   let s = await state(page);
   check(s.engine.voxels > 100000, `rooms: ${s.engine.voxels} voxels, ${s.render.chunksTotal} chunks drawn ${s.render.chunksDrawn}`);

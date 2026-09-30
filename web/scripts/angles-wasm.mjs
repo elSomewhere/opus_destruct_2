@@ -9,13 +9,13 @@
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
+import { launch, beforeLoad, afterLoad } from './browser.mjs';
 
 const puppeteer = (await import('puppeteer-core')).default;
 const base = process.argv[2] ?? 'http://localhost:5190/';
 const outDir = resolve(process.argv[3] ?? 'angles-wasm-out');
 const seconds = Number(process.argv[4] ?? 12);
 mkdirSync(outDir, { recursive: true });
-const chrome = process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const h = 0.125;
 const deg = Math.PI / 180;
@@ -24,12 +24,7 @@ const turnedZ = (origin, yawDeg, p) => {
   const c = Math.cos(yawDeg * deg), s = Math.sin(yawDeg * deg);
   return [h * (origin[0] + c * p[0] - s * p[1]), h * (origin[1] + s * p[0] + c * p[1]), h * (origin[2] + p[2])];
 };
-const browser = await puppeteer.launch({
-  executablePath: chrome,
-  headless: process.env.SMOKE_HEADFUL ? false : true,
-  args: ['--enable-unsafe-webgpu', '--ignore-gpu-blocklist', '--no-first-run', '--window-size=1280,760'],
-  defaultViewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
-});
+const browser = await launch(puppeteer);
 const errors = [];
 const checks = [];
 let failed = false;
@@ -45,7 +40,9 @@ try {
     if (m.type() === 'error' || /\[webgpu\]|\[wgsl|Aborted/.test(t)) errors.push(t);
   });
   page.on('pageerror', (e) => errors.push(`pageerror ${e.message}`));
+  await beforeLoad(page);
   await page.goto(`${base}?engine=wasm&world=angles&seed=1`, { waitUntil: 'load' });
+  await afterLoad(page);
   const t0 = Date.now();
   for (;;) {
     let ok = false;
