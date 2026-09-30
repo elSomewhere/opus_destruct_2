@@ -181,6 +181,8 @@ class MotionPlan {
   bool busy() const { return act_ && !act_->done(); }
   // The running one-shot action (empty: none).
   std::string_view action_name() const { return act_ && !act_->done() ? std::string_view(act_->def->name) : std::string_view(); }
+  // The held posture (guard, idle pose, talk; empty: none).
+  std::string_view pose_action_name() const { return pose_act_ && !pose_act_->done() ? std::string_view(pose_act_->def->name) : std::string_view(); }
   // Mid stance transition (or lying): the host should not move the root.
   bool transitioning() const { return stance_p_ < 1.0 || !stance_queue_.empty() || stance == Stance::Down; }
   // Lying down, or getting up from it.

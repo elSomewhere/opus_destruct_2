@@ -1,7 +1,7 @@
 // svx_anim motion (the port of the original's test/motion.test.ts): keyframe tracks, actions and
 // their players, stances, lying and getting up, weapon holds, strikes, idles and conversation, the
 // gait's feet, turning, personal styles. (The original's tests of whole characters - dropped
-// weapons, brawls, melee - belong with Character.)
+// weapons, brawls, melee - belong with Character: the brawls and the melee are in test_melee.cpp.)
 #include <algorithm>
 #include <cmath>
 #include <memory>
