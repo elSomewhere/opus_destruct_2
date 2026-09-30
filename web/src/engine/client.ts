@@ -38,6 +38,9 @@ interface Pending<T> {
   reject: (reason: Error) => void;
 }
 
+/** Answers to the client's own requests, and its failures: these belong to no world. */
+const CROSSES_LOADS: ReadonlySet<WorkerMessageType> = new Set<WorkerMessageType>(['loading', 'error', 'raycastResult', 'collideResult']);
+
 type AnyHandler = (msg: WorkerMessage) => void;
 
 export class EngineClient {
@@ -48,6 +51,9 @@ export class EngineClient {
   private readonly collides = new Map<number, Pending<CollideResult>>();
   private nextId = 1;
   private dead: Error | null = null;
+  /** Loads asked for, and the last the engine reported starting (`loading`). */
+  private loadsSent = 0;
+  private loadsBegun = 0;
 
   constructor(worker: Worker, kind: EngineKind) {
     this.worker = worker;
@@ -96,11 +102,13 @@ export class EngineClient {
   }
 
   loadProcedural(kind: ProceduralKind, seed: number): void {
+    this.loadsSent++;
     this.send({ type: 'loadProcedural', kind, seed });
   }
 
   /** Transfers `buffer`: it is detached (unusable) afterwards. */
   loadWad(buffer: ArrayBuffer, map: string, options: WadOptions): void {
+    this.loadsSent++;
     this.send({ type: 'loadWad', buffer, map, options });
   }
 
@@ -246,7 +254,12 @@ export class EngineClient {
     } else if (data.type === 'error' && data.fatal) {
       this.fail(new Error(data.message), data);
       return;
+    } else if (data.type === 'loading') {
+      this.loadsBegun = data.generation;
     }
+    // Between asking for a world and the engine starting it, what arrives describes the world
+    // being replaced: a piece detached then would outlive it (its poses never come).
+    if (this.loadsBegun !== this.loadsSent && !CROSSES_LOADS.has(data.type)) return;
     this.emit(data);
   }
 

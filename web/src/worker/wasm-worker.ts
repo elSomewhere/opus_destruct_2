@@ -213,6 +213,7 @@ function beginPoses(): void {
 let config: InitConfig = { voxelSize: 0.125, threads: 1, memoryMB: 1024, params: { ...DEFAULT_PARAMS } };
 let params: EngineParams = { ...DEFAULT_PARAMS };
 let loaded = false;
+let loads = 0;
 let lastStats = 0;
 let eventsSinceStats = 0;
 const knownChunks = new Set<string>();
@@ -924,6 +925,26 @@ async function loadWad(buffer: ArrayBuffer, map: string, options: WadOptions): P
   await finishLoad(tex, map);
 }
 
+/**
+ * Draws the line under the outgoing world: what was sent before this is the old one's.
+ *
+ * The pose window starts over with it. A load sends no poses while it bakes, so leaving the
+ * window open would let poseSeq run away from the page's last ack, and poses past POSE_LAG are
+ * held - with nothing left to ack, they would be held for good and the new world would never
+ * move (its pieces stranded at the pose they detached at).
+ */
+function beginLoad(): void {
+  poseSeq = 0;
+  poseAcked = -1;
+  posesHeldNow = false;
+  debrisLive = 0;
+  debrisSent = new Float64Array(0);
+  vehiclesLive = false;
+  charactersLive = false;
+  bloodLive = false;
+  postToMain({ type: 'loading', generation: ++loads });
+}
+
 async function handle(cmd: EngineCommand): Promise<void> {
   switch (cmd.type) {
     case 'init':
@@ -932,9 +953,11 @@ async function handle(cmd: EngineCommand): Promise<void> {
       await ensureModule();
       break;
     case 'loadProcedural':
+      beginLoad();
       await loadProcedural(cmd.kind, cmd.seed);
       break;
     case 'loadWad':
+      beginLoad();
       await loadWad(cmd.buffer, cmd.map, cmd.options);
       break;
     case 'viewer':
@@ -1031,7 +1054,8 @@ async function handle(cmd: EngineCommand): Promise<void> {
       if (mod && loaded) mod._svx_drive(eng, cmd.throttle, cmd.brake, cmd.steer, cmd.handbrake ? 1 : 0);
       break;
     case 'frameAck':
-      poseAcked = cmd.seq;
+      // (an ack for the world before this one: its sequence is ahead of the one now running)
+      if (cmd.seq <= poseSeq) poseAcked = cmd.seq;
       break;
     case 'setTraffic': {
       // (kept for the next load too: the engine keeps its traffic settings across levels)

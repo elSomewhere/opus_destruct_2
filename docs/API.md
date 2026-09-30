@@ -55,6 +55,7 @@ Conventions:
 
 | `type` | fields | notes |
 |---|---|---|
+| `loading` | `generation: number` | A load has begun: the engine counts them, and everything it sent before this belongs to the world being replaced. The host counts the loads it asked for and drops the old world's messages until the two agree, so a pose or a detached piece in flight when the world changed cannot enter the new one. The pose window ([Rigid debris](#rigid-debris)) starts over here on both sides. |
 | `ready` | `info: {bounds:{min,max}, voxelCount, spawn:{pos,dir}, textures:boolean}` | After a load. `spawn.pos` is the player's **feet** position, standing on the floor. |
 | `textures` | `list: [{id, name, width, height, rgba: ArrayBuffer}]` | Doom textures and flats (transfer). Sent before `ready` when `info.textures`. RGBA8, row 0 = top. |
 | `chunkMeshes` | `meshes: [{key, origin:[3], vertices: ArrayBuffer, vertexCount, indices: ArrayBuffer, indexCount, grid?}], fields?` | New or changed chunk meshes (transfer). A mesh replaces the previous mesh with the same key. `fields` (**ext**): see [Displacement fields](#displacement-fields). An oriented grid's chunk (**ext**) has the key `g<grid>:<x>,<y>,<z>` and `grid` set; its vertices and origin are in the grid's lattice (metres), drawn with the grid's frame (`grids`). |
@@ -180,6 +181,14 @@ come to rest as rubble (docs/V2_DESIGN.md §4–5).
   at the event's pose and a bit per cell of its box), for the client's collision.
 - A rigid piece missing from a `debris` list has been removed. A piece that breaks is removed,
   and its parts arrive as new `detached` events (meshes in world coordinates at that moment).
+  A piece whose first pose has not come yet is the exception, and only for a few lists: every
+  list holds every piece the engine has, so one absent from that many is gone (without that, a
+  piece the engine never poses is drawn where it detached and stays there for good).
+- Each list carries `seq`, and the host acknowledges the last it handled with `frameAck`. A host
+  more than a few sequence numbers behind has its poses held back until it catches up - every
+  list brings it fully up to date, so it never works through a backlog. The window starts over
+  at `loading`: a load sends no poses while it bakes, and a window carried across it would leave
+  the acknowledgement behind for good, holding the new world's poses with nothing left to ack.
 - The web front end interpolates between the last two poses, one tick behind, so motion is
   smooth at any display rate.
 

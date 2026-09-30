@@ -539,6 +539,17 @@ export interface WorldInfo {
   textures: boolean;
 }
 
+/**
+ * The engine has begun a load and everything it sent before belongs to the world being
+ * replaced. `generation` counts the loads the engine has started; the client counts the ones
+ * it has asked for and discards the old world's messages until the two agree, so a pose or a
+ * detached piece still in flight when the world changed cannot enter the new one.
+ */
+export interface LoadingMessage {
+  type: 'loading';
+  generation: number;
+}
+
 export interface ReadyMessage {
   type: 'ready';
   info: WorldInfo;
@@ -1156,6 +1167,7 @@ export interface ProgressMessage {
 }
 
 export type WorkerMessage =
+  | LoadingMessage
   | ReadyMessage
   | TexturesMessage
   | ChunkMeshesMessage
@@ -1186,6 +1198,7 @@ export type EngineCommandOf<T extends EngineCommandType> = Extract<EngineCommand
 // ---------------------------------------------------------------------------------------
 
 const WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set<WorkerMessageType>([
+  'loading',
   'ready',
   'textures',
   'chunkMeshes',

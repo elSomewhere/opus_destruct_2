@@ -175,6 +175,9 @@ export class Game {
     this.vehicleFx.clear();
     this.people.clear();
     this.meshesSinceReady = 0;
+    // the pose window starts over with the world (the engine's does too, in its beginLoad)
+    this.poseSeq = 0;
+    this.ackedSeq = 0;
     // Engines remove the old world's chunks with chunkRemoved; clearing here as well
     // keeps the view clean if one does not.
     this.renderer.clearWorld();

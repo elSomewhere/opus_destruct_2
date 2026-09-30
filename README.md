@@ -116,9 +116,9 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
 - **Checks** (dev server running):
   - `npm run typecheck && npm test` for the front end.
   - `node scripts/smoke-wasm.mjs http://localhost:5190/`: the browser smoke test (with
-    `people-wasm.mjs` and `drive-wasm.mjs`, CI's browser job: nightly, and for a push whose
-    message says `[browser]`; `SMOKE_SWIFTSHADER=1` runs WebGPU in software without a GPU, as
-    root in a container it does by itself).
+    `people-wasm.mjs`, `drive-wasm.mjs` and `reload-wasm.mjs`, CI's browser job: nightly, and for
+    a push whose message says `[browser]`; `SMOKE_SWIFTSHADER=1` runs WebGPU in software without a
+    GPU, as root in a container it does by itself).
   - `node scripts/tower-wasm.mjs http://localhost:5190/ OUT 25`: blasts the tower's ground
     columns in the browser and records screenshots and engine stats.
   - `node scripts/fire-wasm.mjs http://localhost:5190/ OUT 60`: sets the yard's timber house
@@ -130,6 +130,9 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
   - `node scripts/machines-wasm.mjs http://localhost:5190/ OUT`: the `machines` world. It checks
     that the pieces and the ropes draw and reach the client's collision, and that the player
     rides the lift and the turntable.
+  - `node scripts/reload-wasm.mjs http://localhost:5190/ OUT 3`: loads the tower world afresh and
+    blasts it again, for three rounds. It checks that every round comes down like the first - the
+    engine's pieces and the front end's agree, and the engine poses every one of them.
 
 ## Tools (`build/native-release/tools/`)
 

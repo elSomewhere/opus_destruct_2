@@ -127,6 +127,7 @@ export class MockEngine {
   private readonly post: PostFn;
   private config: InitConfig = { voxelSize: 0.125, threads: 1, memoryMB: 512, params: { ...DEFAULT_PARAMS } };
   private params: EngineParams = { ...DEFAULT_PARAMS };
+  private loads = 0;
   private gen: GeneratedWorld | null = null;
   private faceTextures: Uint16Array = new Uint16Array(0);
   private rand: () => number = mulberry32(1);
@@ -185,9 +186,11 @@ export class MockEngine {
         this.params = this.config.params;
         break;
       case 'loadProcedural':
+        this.beginLoad();
         this.loadProcedural(cmd.kind, cmd.seed, now);
         break;
       case 'loadWad':
+        this.beginLoad();
         this.loadWad(cmd.buffer, cmd.map, cmd.options, now);
         break;
       case 'viewer':
@@ -243,6 +246,11 @@ export class MockEngine {
     this.piecesChanged = false;
     this.lastPieceStep = -1;
     this.damage.clear();
+  }
+
+  /** Draws the line under the outgoing world: what was sent before this is the old one's. */
+  private beginLoad(): void {
+    this.post({ type: 'loading', generation: ++this.loads });
   }
 
   private loadProcedural(kind: ProceduralKind, seed: number, now: number): void {

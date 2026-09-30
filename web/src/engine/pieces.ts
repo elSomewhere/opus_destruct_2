@@ -14,6 +14,9 @@ type Quat = [number, number, number, number];
 /** Engine tick (s): pieces are placed this far in the past. */
 const TICK_S = 1 / 60;
 
+/** Pose batches a piece may go without its first pose before it is taken for gone. */
+const POSE_GRACE = 3;
+
 /** A shape of a piece: its lattice at the pose it was sent at, its voxel box and a bit per cell. */
 export interface PieceShape {
   origin: Vec3;
@@ -47,6 +50,8 @@ export interface PieceBody {
   prev: Sample | null;
   cur: Sample | null;
   seen: number;
+  /** The pose batch it was added at, until its first pose arrives. */
+  born: number;
 }
 
 /** The shapes of a piece's occupancy (the layout of svx::piece_occupancy), or null if malformed. */
@@ -144,12 +149,15 @@ export class PieceBodies {
       prev: null,
       cur: null,
       seen: old ? old.seen : 0,
+      born: this.stamp,
     });
   }
 
   /**
    * The engine's poses (DEBRIS_STRIDE doubles each). Pieces that had a pose before and are
-   * missing now were removed by the engine; a piece whose first pose is on the way is kept.
+   * missing now were removed by the engine; a piece whose first pose is on the way is kept,
+   * but only for POSE_GRACE batches - every batch holds every piece the engine has, so one
+   * absent from that many is not the engine's and would otherwise sit at its centroid forever.
    */
   applyDebris(poses: Float64Array, nowS: number): void {
     const stamp = ++this.stamp;
@@ -174,7 +182,7 @@ export class PieceBodies {
       b.cur = s;
       b.seen = stamp;
     }
-    for (const [id, b] of this.bodies) if (b.cur !== null && b.seen !== stamp) this.bodies.delete(id);
+    for (const [id, b] of this.bodies) if (b.cur !== null ? b.seen !== stamp : stamp - b.born >= POSE_GRACE) this.bodies.delete(id);
   }
 
   /** Places the pieces where they were one tick before nowS (as drawn). */

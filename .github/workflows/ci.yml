@@ -133,6 +133,7 @@ jobs:
           node scripts/smoke-wasm.mjs http://localhost:5190/
           node scripts/people-wasm.mjs http://localhost:5190/
           node scripts/drive-wasm.mjs http://localhost:5190/
+          node scripts/reload-wasm.mjs http://localhost:5190/
       - name: Screenshots
         if: always()
         uses: actions/upload-artifact@v4
@@ -142,4 +143,5 @@ jobs:
             web/smoke-wasm-out/
             web/people-out/
             web/drive-out/
+            web/reload-wasm-out/
           if-no-files-found: ignore

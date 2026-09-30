@@ -39,6 +39,7 @@ npm-debug.log*
 /web/fire-wasm-out/
 /web/machines-wasm-out/
 /web/people-out/
+/web/reload-wasm-out/
 /web/tower-wasm-out/
 /web/water-wasm-out/
 
