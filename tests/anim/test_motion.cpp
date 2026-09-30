@@ -1,13 +1,15 @@
 // svx_anim motion (the port of the original's test/motion.test.ts): keyframe tracks, actions and
-// their players, stances, lying and getting up, weapon holds, strikes, idles and conversation, the
-// gait's feet, turning, personal styles. (The original's tests of whole characters - dropped
-// weapons, brawls, melee - belong with Character: the brawls and the melee are in test_melee.cpp.)
+// their players, stances, lying and getting up, weapon holds and the props dropped as gibs,
+// strikes, idles and conversation, the gait's feet, turning, personal styles. (The original's tests
+// of whole characters - brawls, melee - belong with Character: they are in test_melee.cpp.)
 #include <algorithm>
 #include <cmath>
 #include <memory>
 #include <set>
 
 #include "doctest.h"
+#include "svx/anim/character.hpp"
+#include "svx/anim/characters/humans.hpp"
 #include "svx/anim/motion/plan.hpp"
 #include "svx/anim/rig.hpp"
 
@@ -331,6 +333,28 @@ std::unique_ptr<MotionPlan> armed(PropKind kind, Carry carry) {
 }
 
 }  // namespace
+
+TEST_CASE("anim motion: every prop has voxels (small ones on a finer lattice) and drops as a gib") {
+  const HumanVariant civilian = make_civilian(1);
+  for (const PropPtr& prop : {make_rifle(), make_smg(), make_lmg(), make_pistol(), make_knife()}) {
+    CAPTURE(int(prop->kind));
+    const VoxelPart* part = prop->model->parts.empty() ? nullptr : &prop->model->parts[0];
+    CHECK_MESSAGE((part && part->count >= 40), (part ? part->count : 0) << " voxels");
+    CharacterOptions o;
+    o.model = civilian.model;
+    o.palette = civilian.palette;
+    o.collision = &flat_ground();
+    o.weapon = prop;
+    Character c(o);
+    c.place(V3{0, 0, 0}, 0.0);
+    c.update(DT);
+    const std::optional<GibSpec> g = c.drop_weapon();
+    REQUIRE(g);
+    // (the spec carries the prop's part as a copy: the same voxels)
+    CHECK((part && g->part.cells == part->cells && g->part.dims == part->dims && g->part.origin == part->origin));
+    CHECK(g->voxel_size == prop->model->voxel_size);
+  }
+}
 
 TEST_CASE("anim motion: an aimed pistol points at the target with both hands on the grip") {
   auto a = armed(PropKind::Pistol, Carry::Aim);
