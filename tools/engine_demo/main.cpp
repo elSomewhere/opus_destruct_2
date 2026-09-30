@@ -31,6 +31,8 @@
 #include "svx/game/game.hpp"
 #include "svx/game/procgen.hpp"
 #include "svx/game/city.hpp"
+#include "svx/game/drive_city.hpp"
+#include "svx/anim/system.hpp"
 
 using namespace svx;
 
@@ -69,7 +71,7 @@ void render(const Game& e, const V3& cam, const V3& look, int W, int H, const st
       for (int x = 0; x < W; ++x) {
         const f64 u = (x + 0.5) / W - 0.5, v = 0.5 - (y + 0.5) / H;
         const V3 d = normalized(fwd + right * (u * fov * W / H) + up * (v * fov));
-        const RayHit hit = e.world().raycast(cam, d, 400.0);
+        const Game::ShotHit hit = e.raycast_shot(cam, d, 400.0);
         f64 c[3];
         if (!hit.hit) {
           const f64 s = 0.5 + 0.5 * std::max(0.0, d.z);
@@ -80,13 +82,12 @@ void render(const Game& e, const V3& cam, const V3& look, int W, int H, const st
           const V3 n = hit.normal;
           const int m = std::clamp(hit.material, 0, 10);
           f64 base[3] = {mat_col[m][0], mat_col[m][1], mat_col[m][2]};
-          if (hit.piece) {
-            const u64 hsh = static_cast<u64>(hit.piece) * 0x9E3779B97F4A7C15ull;
-            const f64 t = 0.8 + 0.35 * static_cast<f64>((hsh >> 40) & 0xFF) / 255.0;
-            for (f64& q : base) q *= t;
-          }
+          // (a character: its voxel's colour, from its palette)
+          const anim::Character* ch = hit.character && e.characters() ? e.characters()->get(hit.character) : nullptr;
+          if (ch && hit.slot < ch->palette.size())
+            for (int q = 0; q < 3; ++q) base[q] = std::pow(std::clamp(static_cast<f64>(ch->palette[hit.slot][size_t(q)]), 0.0, 1.0), 1.0 / 1.6);
           const V3 p = hit.pos + n * 0.02;
-          const RayHit sh = e.world().raycast(p, sun, 120.0);
+          const Game::ShotHit sh = e.raycast_shot(p, sun, 120.0);
           const f64 lam = std::max(0.0, dot(n, sun)) * (sh.hit ? 0.0 : 1.0);
           const f64 sky = 0.35 + 0.15 * n.z;
           const f64 fog = std::exp(-hit.distance / 260.0);
@@ -212,6 +213,14 @@ int main(int argc, char** argv) {
     VoxelGrid g = std::move(dw->grid);
     eng.load(std::move(g), dw->spawn_pos, dw->spawn_dir);
     world = map_name;
+  } else if (world == "drive") {
+    // (the endless city to drive through: its traffic and its people)
+    auto src = make_drive_city(seed, h);
+    VoxelGrid g;
+    g.h = h;
+    const auto sp = src->spawn_pos(), sd = src->spawn_dir();
+    eng.load(std::move(g), sp, sd);
+    eng.load_streaming(std::move(src), eng.grid().h);
   } else if (world == "city") {
     auto src = make_city_source(seed, 1000.0, h, turned_city);
     VoxelGrid g;

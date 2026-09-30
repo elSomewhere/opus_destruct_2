@@ -1143,6 +1143,7 @@ Game::ShotHit Game::raycast_shot(const V3& origin, const V3& dir, f64 max_dist) 
       out.material = -1;
       out.character = c->id;
       out.bone = c->hit.bone;
+      out.slot = c->hit.slot;
     }
   }
   return out;

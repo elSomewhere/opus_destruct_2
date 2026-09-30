@@ -311,6 +311,7 @@ class Game {
     i32 material = -1;
     u32 character = 0;
     i32 bone = -1;
+    u8 slot = 0;  // (a character) the palette slot of the voxel hit
   };
   ShotHit raycast_shot(const V3& origin, const V3& dir, f64 max_dist) const;
   // A round into a character (logged): where raycast_shot found its body, fired from the viewer;
