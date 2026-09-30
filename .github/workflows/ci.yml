@@ -99,11 +99,14 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
-  # The front end in a browser: the rooms, the streamed city, the people, the drive. Nightly and
-  # on demand - a GPU-less runner's timings vary too much to hold every push to them. WebGPU is
-  # software there (SwiftShader: SMOKE_SWIFTSHADER), the engine the pthreads module the page runs.
+  # The front end in a browser: the rooms, the streamed city, the people, the drive. Nightly, on
+  # demand, and for a push whose message says [browser] - a GPU-less runner's timings vary too
+  # much to hold every push to them. WebGPU is software there (SwiftShader: SMOKE_SWIFTSHADER), the
+  # engine the pthreads module the page runs.
   browser:
-    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    if: >-
+      github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'push' && contains(github.event.head_commit.message, '[browser]'))
     runs-on: ubuntu-24.04
     timeout-minutes: 120
     steps:

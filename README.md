@@ -115,7 +115,10 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
   (`setEnv` / `setTunable`, recorded in replays).
 - **Checks** (dev server running):
   - `npm run typecheck && npm test` for the front end.
-  - `node scripts/smoke-wasm.mjs http://localhost:5190/`: the browser smoke test.
+  - `node scripts/smoke-wasm.mjs http://localhost:5190/`: the browser smoke test (with
+    `people-wasm.mjs` and `drive-wasm.mjs`, CI's browser job: nightly, and for a push whose
+    message says `[browser]`; `SMOKE_SWIFTSHADER=1` runs WebGPU in software without a GPU, as
+    root in a container it does by itself).
   - `node scripts/tower-wasm.mjs http://localhost:5190/ OUT 25`: blasts the tower's ground
     columns in the browser and records screenshots and engine stats.
   - `node scripts/fire-wasm.mjs http://localhost:5190/ OUT 60`: sets the yard's timber house
