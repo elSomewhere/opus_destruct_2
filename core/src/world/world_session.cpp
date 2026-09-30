@@ -94,7 +94,7 @@ bool finite_m3(const M3& m) {
 
 }  // namespace
 
-std::vector<u8> World::piece_record(const Body& b) const {
+std::vector<u8> World::Impl::piece_record(const Body& b) const {
   std::vector<u8> out;
   out.push_back(kPieceVersion);
   put64(out, static_cast<u64>(b.id));
@@ -129,9 +129,9 @@ std::vector<u8> World::piece_record(const Body& b) const {
     u8 nl = 0;
     const size_t nl_at = out.size();
     out.push_back(0);
-    for (size_t L = 0; L < S.layer.size() && L < layer_specs_.size(); ++L) {
-      if (S.layer[L].empty() || !layer_specs_[L].persistent) continue;
-      const std::string& name = layer_specs_[L].name;
+    for (size_t L = 0; L < S.layer.size() && L < ext_.layers.size(); ++L) {
+      if (S.layer[L].empty() || !ext_.layers[L].persistent) continue;
+      const std::string& name = ext_.layers[L].name;
       out.push_back(static_cast<u8>(std::min<size_t>(name.size(), 255)));
       out.insert(out.end(), name.begin(), name.begin() + static_cast<long>(std::min<size_t>(name.size(), 255)));
       put_runs(out, S.layer[L]);
@@ -154,7 +154,7 @@ std::vector<u8> World::piece_record(const Body& b) const {
   return out;
 }
 
-std::unique_ptr<Body> World::read_piece_record(const std::vector<u8>& rec) const {
+std::unique_ptr<Body> World::Impl::read_piece_record(const std::vector<u8>& rec) const {
   Rd in{rec};
   const u8 version = in.u8_();
   if (version < 1 || version > kPieceVersion) return nullptr;
@@ -268,9 +268,9 @@ std::unique_ptr<Body> World::read_piece_record(const std::vector<u8>& rec) const
   return b;
 }
 
-std::vector<u8> World::joint_record(size_t k) const {
+std::vector<u8> World::Impl::joint_record(size_t k) const {
   const Joint& j = rigid_.joints[k];
-  const JointRec& r = jrecs_[k];
+  const JointRec& r = att_.joints[k];
   std::vector<u8> out;
   put32(out, j.id);
   out.push_back(static_cast<u8>(j.type));
@@ -302,7 +302,7 @@ std::vector<u8> World::joint_record(size_t k) const {
   return out;
 }
 
-bool World::read_joint_record(Rd& in, JointRec* r, Joint* j, u8 version) const {
+bool World::Impl::read_joint_record(Rd& in, JointRec* r, Joint* j, u8 version) const {
   j->id = in.u32_();
   const u8 type = in.u8_(), lim = in.u8_();
   f64* fs[] = {&j->min_length, &j->max_length, &j->stiffness, &j->damping, &j->lower, &j->upper, &j->break_force, &j->break_torque};
@@ -358,9 +358,9 @@ bool World::read_joint_record(Rd& in, JointRec* r, Joint* j, u8 version) const {
   return true;
 }
 
-std::vector<u8> World::wheel_record(size_t k) const {
+std::vector<u8> World::Impl::wheel_record(size_t k) const {
   const Wheel& w = rigid_.wheels[k];
-  const WheelRec& r = wrecs_[k];
+  const WheelRec& r = att_.wheels[k];
   std::vector<u8> out;
   put32(out, w.id);
   put32(out, r.group);
@@ -381,7 +381,7 @@ std::vector<u8> World::wheel_record(size_t k) const {
   return out;
 }
 
-bool World::read_wheel_record(Rd& in, WheelRec* r, Wheel* w, u8 version) const {
+bool World::Impl::read_wheel_record(Rd& in, WheelRec* r, Wheel* w, u8 version) const {
   w->id = in.u32_();
   r->id = w->id;
   r->group = in.u32_();
@@ -410,7 +410,7 @@ bool World::read_wheel_record(Rd& in, WheelRec* r, Wheel* w, u8 version) const {
   return true;
 }
 
-void World::write_group(std::vector<u8>& out, const std::vector<const Body*>& bodies, const std::vector<size_t>& joints,
+void World::Impl::write_group(std::vector<u8>& out, const std::vector<const Body*>& bodies, const std::vector<size_t>& joints,
                         const std::vector<size_t>& wheels) const {
   put32(out, static_cast<u32>(bodies.size()));
   for (const Body* b : bodies) {
@@ -454,7 +454,7 @@ void World::write_group(std::vector<u8>& out, const std::vector<const Body*>& bo
   }
 }
 
-bool World::read_group(Rd& in, SessionDelta* s, u8 version) const {
+bool World::Impl::read_group(Rd& in, SessionDelta* s, u8 version) const {
   const u32 np = in.u32_();
   if (!in.ok || u64(np) * 8 > in.b.size()) return false;
   for (u32 k = 0; k < np; ++k) {
@@ -514,7 +514,7 @@ bool World::read_group(Rd& in, SessionDelta* s, u8 version) const {
   return in.ok;
 }
 
-void World::add_group(SessionDelta& s) {
+void World::Impl::add_group(SessionDelta& s) {
   for (std::unique_ptr<Body>& b : s.pieces) {
     if (rigid_.find(b->id)) continue;  // (never expected: ids are the world's)
     next_id_ = std::max(next_id_, b->id + 1);
@@ -530,35 +530,35 @@ void World::add_group(SessionDelta& s) {
   }
   for (auto& [r, j] : s.joints) {
     // (an end on a grid that is not there, or on a piece that is not: the joint is gone)
-    bool ok = std::none_of(jrecs_.begin(), jrecs_.end(), [&](const JointRec& x) { return x.id == r.id; });
+    bool ok = std::none_of(att_.joints.begin(), att_.joints.end(), [&](const JointRec& x) { return x.id == r.id; });
     for (const JointRec::End* E : {&r.a, &r.b})
       if (E->kind != JointAnchor::Kind::World)
         ok = ok && (E->piece > 0 ? rigid_.find(E->piece) != nullptr : E->piece == 0 && slot_of(E->grid) >= 0);
     if (!ok) continue;
     insert_joint(r, j);
-    next_joint_ = std::max<JointId>(next_joint_, (j.id & 0x80000000u) ? next_joint_ : j.id + 1);
+    att_.next_joint = std::max<JointId>(att_.next_joint, (j.id & 0x80000000u) ? att_.next_joint : j.id + 1);
   }
-  if (!jrecs_.empty()) update_joint_ends();
+  if (!att_.joints.empty()) update_joint_ends();
   for (auto& [r, w] : s.wheels) {
     // (on a piece that is not there, or a grid that is not: it is gone)
     const JointRec::End& E = r.mount;
-    const bool ok = std::none_of(wrecs_.begin(), wrecs_.end(), [&](const WheelRec& x) { return x.id == r.id; }) &&
+    const bool ok = std::none_of(att_.wheels.begin(), att_.wheels.end(), [&](const WheelRec& x) { return x.id == r.id; }) &&
                     (E.piece > 0 ? rigid_.find(E.piece) != nullptr : E.piece == 0 && slot_of(E.grid) >= 0);
     if (!ok) continue;
     insert_wheel(r, w);
-    next_wheel_ = std::max<WheelId>(next_wheel_, w.id + 1);
+    att_.next_wheel = std::max<WheelId>(att_.next_wheel, w.id + 1);
   }
-  if (!wrecs_.empty()) update_wheel_mounts();
+  if (!att_.wheels.empty()) update_wheel_mounts();
   announce_bodies();
 }
 
-std::vector<u8> World::session_entries() const {
+std::vector<u8> World::Impl::session_entries() const {
   std::vector<u8> out;
   put32(out, kSessionMagic);
   put64(out, static_cast<u64>(steps_));
   put64(out, static_cast<u64>(next_id_));
-  put32(out, next_joint_);
-  put32(out, next_wheel_);
+  put32(out, att_.next_joint);
+  put32(out, att_.next_wheel);
   // the pieces (announced: the ones the host knows), their joints (those of pieces not announced
   // yet are left out) and dead loads
   std::vector<const Body*> bodies;
@@ -568,7 +568,7 @@ std::vector<u8> World::session_entries() const {
   for (size_t k = 0; k < rigid_.joints.size(); ++k) {
     if (rigid_.joints[k].broken) continue;
     bool fresh = false;
-    for (const JointRec::End* E : {&jrecs_[k].a, &jrecs_[k].b})
+    for (const JointRec::End* E : {&att_.joints[k].a, &att_.joints[k].b})
       if (E->piece > 0)
         if (const Body* b = rigid_.find(E->piece)) fresh = fresh || !b->announced;
     if (!fresh) js.push_back(k);
@@ -577,7 +577,7 @@ std::vector<u8> World::session_entries() const {
   std::vector<size_t> ws;
   for (size_t k = 0; k < rigid_.wheels.size(); ++k) {
     if (rigid_.wheels[k].broken) continue;
-    const i64 on = wrecs_[k].mount.piece;
+    const i64 on = att_.wheels[k].mount.piece;
     if (on > 0) {
       const Body* b = rigid_.find(on);
       if (!b || !b->announced) continue;
@@ -586,14 +586,14 @@ std::vector<u8> World::session_entries() const {
   }
   write_group(out, bodies, js, ws);
   // the groups archived out of range (a streamed world's): as archived
-  put32(out, static_cast<u32>(archived_groups_.size()));
-  for (const auto& [key, g] : archived_groups_) {
+  put32(out, static_cast<u32>(strm_.archived_groups.size()));
+  for (const auto& [key, g] : strm_.archived_groups) {
     put64(out, key);
     put32(out, static_cast<u32>(g.chunks.size()));
     for (u64 c : g.chunks) put64(out, c);
     put32(out, static_cast<u32>(g.joints.size()));
     for (JointId j : g.joints) put32(out, j);
-    const std::vector<u8> rec = archive_->get(key);
+    const std::vector<u8> rec = strm_.archive->get(key);
     put32(out, static_cast<u32>(rec.size()));
     out.insert(out.end(), rec.begin(), rec.end());
   }
@@ -604,19 +604,19 @@ std::vector<u8> World::session_entries() const {
     put32(out, static_cast<u32>(rec.size()));
     out.insert(out.end(), rec.begin(), rec.end());
   }
-  put32(out, static_cast<u32>(archived_arts_.size()));
-  for (const auto& [key, chunks] : archived_arts_) {
+  put32(out, static_cast<u32>(strm_.archived_arts.size()));
+  for (const auto& [key, chunks] : strm_.archived_arts) {
     put64(out, key);
     put32(out, static_cast<u32>(chunks.size()));
     for (u64 c : chunks) put64(out, c);
-    const std::vector<u8> rec = archive_->get(key);
+    const std::vector<u8> rec = strm_.archive->get(key);
     put32(out, static_cast<u32>(rec.size()));
     out.insert(out.end(), rec.begin(), rec.end());
   }
   return out;
 }
 
-bool World::read_session(Rd& in, SessionDelta* s, u32 version) const {
+bool World::Impl::read_session(Rd& in, SessionDelta* s, u32 version) const {
   if (in.u32_() != kSessionMagic) return false;
   s->steps = in.i64_();
   s->next_id = in.i64_();
@@ -680,50 +680,50 @@ bool World::read_session(Rd& in, SessionDelta* s, u32 version) const {
   return in.ok;
 }
 
-void World::apply_session(SessionDelta&& s) {
+void World::Impl::apply_session(SessionDelta&& s) {
   // (the saved session's pieces and joints take the place of the ones there are: the level's
   // joints, made again by the host, are the saved ones now)
   clear_articulations();
   std::vector<i64> ids;
   for (const auto& bp : rigid_.bodies) ids.push_back(bp->id);
   remove_bodies(ids, PieceEnd::Removed);
-  pending_add_.clear();
-  pending_retire_.clear();
+  pw_.pending_add.clear();
+  pw_.pending_retire.clear();
   dead_loads_.clear();
-  jrecs_.clear();
+  att_.joints.clear();
   rigid_.joints.clear();
-  wrecs_.clear();
+  att_.wheels.clear();
   rigid_.wheels.clear();
   next_id_ = std::max(next_id_, s.next_id);
-  next_joint_ = std::max<JointId>(next_joint_, s.next_joint);
-  next_wheel_ = std::max<WheelId>(next_wheel_, s.next_wheel);
+  att_.next_joint = std::max<JointId>(att_.next_joint, s.next_joint);
+  att_.next_wheel = std::max<WheelId>(att_.next_wheel, s.next_wheel);
   steps_ = s.steps;
   add_group(s);
   // (a streamed world's groups out of range: archived again, as they were)
-  for (const auto& [key, g] : archived_groups_) archive_->erase(key);
-  archived_groups_.clear();
-  archived_joints_.clear();
+  for (const auto& [key, g] : strm_.archived_groups) strm_.archive->erase(key);
+  strm_.archived_groups.clear();
+  strm_.archived_joints.clear();
   st_.archived_pieces = 0;
-  if (source_)
+  if (strm_.source)
     for (SessionDelta::Archived& a : s.archived) {
       if (a.chunks.empty()) continue;
       archive_record(a.key, a.record, region_of(a.chunks.front()));
-      if (!archive_->has(a.key)) continue;
+      if (!strm_.archive->has(a.key)) continue;
       Rd rin{a.record};
       rin.u8_();
       const u32 pieces = rin.u32_();
-      for (JointId j : a.joints) archived_joints_.insert(j);
-      archived_groups_[a.key] = ArchivedGroup{std::move(a.chunks), std::move(a.joints), pieces};
+      for (JointId j : a.joints) strm_.archived_joints.insert(j);
+      strm_.archived_groups[a.key] = ArchivedGroup{std::move(a.chunks), std::move(a.joints), pieces};
       st_.archived_pieces += pieces;
     }
   // the articulations (their ids as they were), and those archived out of range
   for (ArticulationSaved& a : s.articulations) restore_articulation(std::move(a));
-  if (source_)
+  if (strm_.source)
     for (SessionDelta::ArchivedArticulation& a : s.archived_articulations) {
       if (a.chunks.empty()) continue;
       archive_record(a.key, a.record, region_of(a.chunks.front()));
-      if (!archive_->has(a.key)) continue;
-      archived_arts_[a.key] = std::move(a.chunks);
+      if (!strm_.archive->has(a.key)) continue;
+      strm_.archived_arts[a.key] = std::move(a.chunks);
       ++st_.archived_articulations;
     }
 }
@@ -731,7 +731,7 @@ void World::apply_session(SessionDelta&& s) {
 // ---------------------------------------------------------------------------------------------
 // Pieces out of range (a streamed world)
 
-void World::archive_group(const std::vector<i64>& ids, const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of) {
+void World::Impl::archive_group(const std::vector<i64>& ids, const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of) {
   std::vector<const Body*> bodies;
   for (i64 id : ids)
     if (const Body* b = rigid_.find(id); b && b->announced) bodies.push_back(b);
@@ -742,7 +742,7 @@ void World::archive_group(const std::vector<i64>& ids, const std::function<void(
   for (size_t k = 0; k < rigid_.joints.size(); ++k) {
     if (rigid_.joints[k].broken) continue;
     bool in = false;
-    for (const JointRec::End* E : {&jrecs_[k].a, &jrecs_[k].b})
+    for (const JointRec::End* E : {&att_.joints[k].a, &att_.joints[k].b})
       in = in || (E->piece > 0 && std::binary_search(ids.begin(), ids.end(), E->piece));
     if (!in) continue;
     js.push_back(k);
@@ -751,13 +751,13 @@ void World::archive_group(const std::vector<i64>& ids, const std::function<void(
   // (and the wheels on its pieces: an assembly goes whole)
   std::vector<size_t> ws;
   for (size_t k = 0; k < rigid_.wheels.size(); ++k)
-    if (!rigid_.wheels[k].broken && wrecs_[k].mount.piece > 0 && std::binary_search(ids.begin(), ids.end(), wrecs_[k].mount.piece)) ws.push_back(k);
+    if (!rigid_.wheels[k].broken && att_.wheels[k].mount.piece > 0 && std::binary_search(ids.begin(), ids.end(), att_.wheels[k].mount.piece)) ws.push_back(k);
   std::vector<u8> rec;
   rec.push_back(kGroupVersion);
   write_group(rec, bodies, js, ws);
   // (the chunks that must be resident for it to come back: its pieces' and its joints' anchors')
   std::vector<u64> chunks;
-  const IVec3 lo = source_->chunk_lo(), hi = source_->chunk_hi();
+  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
   auto add = [&](u64 k) {
     const IVec3 c = unkey3(k);
     for (int a = 0; a < 3; ++a)
@@ -766,7 +766,7 @@ void World::archive_group(const std::vector<i64>& ids, const std::function<void(
   };
   for (const Body* b : bodies) chunks_of(*b, add);
   for (size_t k : js)
-    for (const JointRec::End* E : {&jrecs_[k].a, &jrecs_[k].b})
+    for (const JointRec::End* E : {&att_.joints[k].a, &att_.joints[k].b})
       if (E->kind == JointAnchor::Kind::Grid && E->piece == 0 && E->grid == kWorldGrid) {
         const IVec3 c = chunk_of(E->voxel);
         add(key3(c[0], c[1], c[2]));
@@ -777,19 +777,19 @@ void World::archive_group(const std::vector<i64>& ids, const std::function<void(
   const IVec3 home = chunk_of(world_detail::voxel_of(at, grid_.h));
   const u64 key = (3ull << 62) | static_cast<u64>(bodies.front()->id);
   archive_record(key, rec, region_of(key3(home[0], home[1], home[2])));
-  if (!archive_->has(key)) ++st_.forgotten_pieces;  // (no room at all: it is gone)
+  if (!strm_.archive->has(key)) ++st_.forgotten_pieces;  // (no room at all: it is gone)
   else {
-    for (JointId j : jids) archived_joints_.insert(j);
-    archived_groups_[key] = ArchivedGroup{std::move(chunks), jids, static_cast<u32>(bodies.size())};
+    for (JointId j : jids) strm_.archived_joints.insert(j);
+    strm_.archived_groups[key] = ArchivedGroup{std::move(chunks), jids, static_cast<u32>(bodies.size())};
     st_.archived_pieces += static_cast<i64>(bodies.size());
   }
   // (out of the simulation: its joints and wheels quietly, its pieces as unloaded)
   for (size_t q = ws.size(); q-- > 0;) {
-    wrecs_.erase(wrecs_.begin() + static_cast<std::ptrdiff_t>(ws[q]));
+    att_.wheels.erase(att_.wheels.begin() + static_cast<std::ptrdiff_t>(ws[q]));
     rigid_.wheels.erase(rigid_.wheels.begin() + static_cast<std::ptrdiff_t>(ws[q]));
   }
   for (size_t q = js.size(); q-- > 0;) {
-    jrecs_.erase(jrecs_.begin() + static_cast<std::ptrdiff_t>(js[q]));
+    att_.joints.erase(att_.joints.begin() + static_cast<std::ptrdiff_t>(js[q]));
     rigid_.joints.erase(rigid_.joints.begin() + static_cast<std::ptrdiff_t>(js[q]));
   }
   std::vector<i64> gone;
@@ -797,18 +797,18 @@ void World::archive_group(const std::vector<i64>& ids, const std::function<void(
   remove_bodies(gone, PieceEnd::Unloaded);
 }
 
-void World::restore_groups() {
-  if (archived_groups_.empty()) return;
+void World::Impl::restore_groups() {
+  if (strm_.archived_groups.empty()) return;
   std::vector<u64> ready;
-  for (const auto& [key, g] : archived_groups_)
-    if (std::all_of(g.chunks.begin(), g.chunks.end(), [&](u64 c) { return generated_.count(c) > 0; })) ready.push_back(key);
+  for (const auto& [key, g] : strm_.archived_groups)
+    if (std::all_of(g.chunks.begin(), g.chunks.end(), [&](u64 c) { return strm_.generated.count(c) > 0; })) ready.push_back(key);
   for (u64 key : ready) {
-    const auto it = archived_groups_.find(key);
-    for (JointId j : it->second.joints) archived_joints_.erase(j);
+    const auto it = strm_.archived_groups.find(key);
+    for (JointId j : it->second.joints) strm_.archived_joints.erase(j);
     st_.archived_pieces -= it->second.pieces;
-    archived_groups_.erase(it);
-    const std::vector<u8> rec = archive_->get(key);
-    archive_->erase(key);
+    strm_.archived_groups.erase(it);
+    const std::vector<u8> rec = strm_.archive->get(key);
+    strm_.archive->erase(key);
     Rd in{rec};
     SessionDelta s;
     const u8 gv = in.u8_();
@@ -817,18 +817,18 @@ void World::restore_groups() {
   }
 }
 
-void World::forget_group(u64 key) {
+void World::Impl::forget_group(u64 key) {
   if (key & (1ull << 61)) {
     forget_articulation(key);  // (an articulation's record, not a group's)
     return;
   }
-  const auto it = archived_groups_.find(key);
-  if (it == archived_groups_.end()) return;
+  const auto it = strm_.archived_groups.find(key);
+  if (it == strm_.archived_groups.end()) return;
   // (its pieces are gone for good; its source's joints are made again with its grids)
-  for (JointId j : it->second.joints) archived_joints_.erase(j);
+  for (JointId j : it->second.joints) strm_.archived_joints.erase(j);
   st_.archived_pieces -= it->second.pieces;
   st_.forgotten_pieces += it->second.pieces;
-  archived_groups_.erase(it);
+  strm_.archived_groups.erase(it);
 }
 
 }  // namespace svx

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "svx/world/world.hpp"
+#include "world_impl.hpp"
 
 namespace svx {
 
@@ -627,7 +628,7 @@ struct BodyGraph {
   std::vector<f64> u;
 };
 
-struct World::Structure {
+struct World::Impl::Structure {
   i64 id = 0;
   StressProblem P;
   // Nodes are clusters of fragments (single fragments for small structures): node i holds
@@ -687,9 +688,9 @@ struct World::Structure {
 
 // A joint's anchors (docs/MOTION.md §2): what each end holds on to. (Its solver state is
 // rigid_.joints, in the same order.)
-struct World::JointRec {
+struct World::Impl::JointRec {
   JointId id = 0;
-  ArticulationId articulation = 0;  // (an articulation's own joint: its, not the host's - World::joints leaves it out)
+  ArticulationId articulation = 0;  // (an articulation's own joint: its, not the host's - World::Impl::joints leaves it out)
   struct End {
     JointAnchor::Kind kind = JointAnchor::Kind::World;  // (a Piece anchor is held as a Grid one: its voxel)
     GridId grid = 0;                   // (Grid) the grid of its voxel
@@ -705,7 +706,7 @@ struct World::JointRec {
 // A wheel's mount (docs/MOTION.md §7): the voxel it hangs from (a JointRec::End held as a Grid
 // anchor: axis = its suspension's axis down, ref = its axle, in that lattice), and the host's data.
 // (Its solver state is rigid_.wheels, in the same order.)
-struct World::WheelRec {
+struct World::Impl::WheelRec {
   WheelId id = 0;
   JointRec::End mount;
   u32 group = 0, tag = 0;
@@ -719,7 +720,7 @@ struct World::WheelRec {
 // An articulation (world_articulations.cpp): its links (bodies of rigid_.bodies), its joints
 // (rigid_.joints, ends of kind Link) and targets (rigid_.targets), as made; its host's drive and
 // data. (Its collision rules are rigid_.articulations', by id.)
-struct World::ArticulationRec {
+struct World::Impl::ArticulationRec {
   ArticulationId id = 0;
   std::vector<i64> links;      // body ids, by link index
   std::vector<JointId> joints;  // by joint index of its desc
@@ -733,7 +734,7 @@ struct World::ArticulationRec {
 };
 
 // An articulation read from a record (world_articulations.cpp).
-struct World::ArticulationSaved {
+struct World::Impl::ArticulationSaved {
   ArticulationId id = 0;
   ArticulationDesc desc;
   ArticulationControl control;
@@ -742,7 +743,7 @@ struct World::ArticulationSaved {
 
 // A saved session's pieces and joints, read and checked before they are applied
 // (world_session.cpp).
-struct World::SessionDelta {
+struct World::Impl::SessionDelta {
   i64 steps = 0, next_id = 1;
   JointId next_joint = 1;
   std::vector<std::unique_ptr<Body>> pieces;
@@ -778,8 +779,8 @@ struct World::SessionDelta {
 };
 
 // A grid of the world (docs/GRIDS.md): its frame, voxels (oriented grids; the world grid's are
-// World::grid_) and what the world derives from them.
-struct World::GridState {
+// World::Impl::grid_) and what the world derives from them.
+struct World::Impl::GridState {
   GridId id = 0;
   bool base = true;                  // (oriented grids) part of the level: only its changes are saved
   i32 priority = 0;                  // overlaps: the higher keeps its voxels (then the higher id)
@@ -798,19 +799,19 @@ struct World::GridState {
   u32 placement = 0;                 // times placed anew (its fragments' identities: warm starts, reference loads)
 };
 
-inline VoxelGrid& World::vg(u16 g) { return g == 0 ? grid_ : grids_[g]->g; }
-inline const VoxelGrid& World::vg(u16 g) const { return g == 0 ? grid_ : grids_[g]->g; }
-inline World::GridState& World::gs(u16 g) { return *grids_[g]; }
-inline const World::GridState& World::gs(u16 g) const { return *grids_[g]; }
+inline VoxelGrid& World::Impl::vg(u16 g) { return g == 0 ? grid_ : grids_[g]->g; }
+inline const VoxelGrid& World::Impl::vg(u16 g) const { return g == 0 ? grid_ : grids_[g]->g; }
+inline World::Impl::GridState& World::Impl::gs(u16 g) { return *grids_[g]; }
+inline const World::Impl::GridState& World::Impl::gs(u16 g) const { return *grids_[g]; }
 
 // Junction samples found during one extraction (world_grids.cpp).
-struct World::JunctionScratch {
+struct World::Impl::JunctionScratch {
   std::unordered_map<GKey, std::vector<world_detail::JSample>, GKeyHash> fwd;           // a chunk's faces' samples
   std::unordered_map<GKey, std::vector<std::vector<world_detail::JSample>>, GKeyHash> rev;  // samples landing in a chunk, by fragment
 };
 
 template <class Fn>
-void World::each_junction(JunctionScratch& js, const FragKey& f, Fn&& fn) {
+void World::Impl::each_junction(JunctionScratch& js, const FragKey& f, Fn&& fn) {
   if (oriented_ == 0) return;
   FragChunk* fc = frag_chunk_if(f);
   if (!fc || f.idx < 0) return;

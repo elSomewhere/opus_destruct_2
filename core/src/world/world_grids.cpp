@@ -49,38 +49,38 @@ inline bool inside(const V3& p, const V3& lo, const V3& hi) {
 // ---------------------------------------------------------------------------------------------
 // Grids: identities and frames
 
-i32 World::slot_of(GridId id) const {
+i32 World::Impl::slot_of(GridId id) const {
   if (id == kWorldGrid) return 0;
   const auto it = slots_.find(id);
   return it == slots_.end() ? -1 : static_cast<i32>(it->second);
 }
 
-GridId World::id_of(u16 g) const { return grids_[g]->id; }
+GridId World::Impl::id_of(u16 g) const { return grids_[g]->id; }
 
-const LatticeXf& World::xf_of(u16 g) const { return grids_[g]->xf; }
+const LatticeXf& World::Impl::xf_of(u16 g) const { return grids_[g]->xf; }
 
-f64 World::h_of(u16 g) const { return vg(g).h; }
+f64 World::Impl::h_of(u16 g) const { return vg(g).h; }
 
 
 
-bool World::owns(u16 a, u16 b) const {
+bool World::Impl::owns(u16 a, u16 b) const {
   const GridState& A = *grids_[a];
   const GridState& B = *grids_[b];
   return A.priority != B.priority ? A.priority > B.priority : A.id > B.id;
 }
 
-i32 World::grid_priority(GridId id) const {
+i32 World::Impl::grid_priority(GridId id) const {
   const i32 s = slot_of(id);
   return s < 0 ? 0 : grids_[size_t(s)]->priority;
 }
 
-V3 World::voxel_centre(const GVox& v) const {
+V3 World::Impl::voxel_centre(const GVox& v) const {
   const f64 h = h_of(v.grid);
   const V3 s{h * v.p[0], h * v.p[1], h * v.p[2]};
   return v.grid == 0 ? s : grids_[v.grid]->xf.to(s);
 }
 
-u64 World::frag_ident_of(const FragKey& f, i32 first) const {
+u64 World::Impl::frag_ident_of(const FragKey& f, i32 first) const {
   const u64 id = frag_ident(f.chunk, first);
   if (f.grid == 0) return id;
   const GridState& st = *grids_[f.grid];
@@ -88,14 +88,14 @@ u64 World::frag_ident_of(const FragKey& f, i32 first) const {
   return st.placement == 0 ? x : mix64(x ^ (static_cast<u64>(st.placement) * 0x9FB21C651E98DF25ull));
 }
 
-u64 World::residency_key(u16 g, u64 chunk) const { return g == 0 ? chunk : ((1ull << 63) | grids_[g]->id); }
+u64 World::Impl::residency_key(u16 g, u64 chunk) const { return g == 0 ? chunk : ((1ull << 63) | grids_[g]->id); }
 
-bool World::resident_key(u64 k) const {
+bool World::Impl::resident_key(u64 k) const {
   if (k >> 63) return slots_.count(static_cast<GridId>(k & 0xFFFFFFFFull)) > 0;
-  return generated_.count(k) > 0;
+  return strm_.generated.count(k) > 0;
 }
 
-std::vector<GridId> World::grids() const {
+std::vector<GridId> World::Impl::grids() const {
   std::vector<GridId> out;
   out.reserve(slots_.size());
   for (const auto& [id, s] : slots_) out.push_back(id);
@@ -103,12 +103,12 @@ std::vector<GridId> World::grids() const {
   return out;
 }
 
-const VoxelGrid* World::grid(GridId id) const {
+const VoxelGrid* World::Impl::grid(GridId id) const {
   const i32 s = slot_of(id);
   return s < 0 ? nullptr : &vg(static_cast<u16>(s));
 }
 
-bool World::grid_frame(GridId id, GridFrame* out) const {
+bool World::Impl::grid_frame(GridId id, GridFrame* out) const {
   const i32 s = slot_of(id);
   if (s < 0) return false;
   const LatticeXf& x = grids_[size_t(s)]->xf;
@@ -117,7 +117,7 @@ bool World::grid_frame(GridId id, GridFrame* out) const {
   return true;
 }
 
-void World::world_chunks_of(const LatticeXf& xf, const V3& lo, const V3& hi, std::vector<u64>& out) const {
+void World::Impl::world_chunks_of(const LatticeXf& xf, const V3& lo, const V3& hi, std::vector<u64>& out) const {
   // (the world chunks a lattice box's world box meets)
   V3 wlo, whi;
   world_box(xf, lo, hi, &wlo, &whi);
@@ -130,17 +130,17 @@ void World::world_chunks_of(const LatticeXf& xf, const V3& lo, const V3& hi, std
       for (i32 z = z0; z <= z1; ++z) out.push_back(key3(x, y, z));
 }
 
-const u8* World::grid_solids(const IVec3& cc) const {
+const u8* World::Impl::grid_solids(const IVec3& cc) const {
   const SolidsCache* e = solids_entry(cc);
   return e && !e->bits.empty() ? e->bits.data() : nullptr;
 }
 
-u64 World::grid_solids_stamp(const IVec3& cc) const {
+u64 World::Impl::grid_solids_stamp(const IVec3& cc) const {
   const SolidsCache* e = solids_entry(cc);
   return e && !e->bits.empty() ? e->stamp : 0;
 }
 
-bool World::grid_voxel_at(const V3& X, GridId* grid, IVec3* voxel) const {
+bool World::Impl::grid_voxel_at(const V3& X, GridId* grid, IVec3* voxel) const {
   if (oriented_ == 0) return false;
   for (size_t s = 1; s < grids_.size(); ++s) {
     if (!grids_[s] || !grids_[s]->any) continue;
@@ -155,7 +155,7 @@ bool World::grid_voxel_at(const V3& X, GridId* grid, IVec3* voxel) const {
   return false;
 }
 
-const World::SolidsCache* World::solids_entry(const IVec3& cc) const {
+const World::Impl::SolidsCache* World::Impl::solids_entry(const IVec3& cc) const {
   if (oriented_ == 0) return nullptr;
   const u64 key = key3(cc[0], cc[1], cc[2]);
   auto it = solids_.find(key);
@@ -204,17 +204,17 @@ const World::SolidsCache* World::solids_entry(const IVec3& cc) const {
   return &(solids_[key] = std::move(c));
 }
 
-V3 World::grid_to_world(GridId id, const V3& lattice) const {
+V3 World::Impl::grid_to_world(GridId id, const V3& lattice) const {
   const i32 s = slot_of(id);
   return s <= 0 ? lattice : grids_[size_t(s)]->xf.to(lattice);
 }
 
-V3 World::world_to_grid(GridId id, const V3& world) const {
+V3 World::Impl::world_to_grid(GridId id, const V3& world) const {
   const i32 s = slot_of(id);
   return s <= 0 ? world : grids_[size_t(s)]->xf.from(world);
 }
 
-void World::refresh_grid_box(u16 g) {
+void World::Impl::refresh_grid_box(u16 g) {
   if (g == 0) return;
   GridState& st = gs(g);
   const VoxelGrid& G = st.g;
@@ -244,9 +244,9 @@ void World::refresh_grid_box(u16 g) {
   if (any != was || !inside(st.lo, olo, ohi) || !inside(st.hi, olo, ohi)) grids_changed();
 }
 
-void World::grids_changed() { ++grid_epoch_; }
+void World::Impl::grids_changed() { ++grid_epoch_; }
 
-const std::vector<u16>& World::near_grids(u16 g, u64 chunk) {
+const std::vector<u16>& World::Impl::near_grids(u16 g, u64 chunk) {
   static const std::vector<u16> none;
   if (oriented_ == 0) return none;
   GridState& st = gs(g);
@@ -278,7 +278,7 @@ const std::vector<u16>& World::near_grids(u16 g, u64 chunk) {
   return st.near.emplace(chunk, std::move(out)).first->second;
 }
 
-std::vector<StaticGrid> World::static_grids() const {
+std::vector<StaticGrid> World::Impl::static_grids() const {
   std::vector<StaticGrid> out;
   StaticGrid w;
   w.g = &grid_;
@@ -300,7 +300,7 @@ std::vector<StaticGrid> World::static_grids() const {
   return out;
 }
 
-void World::tear_voxel(const GVox& v) {
+void World::Impl::tear_voxel(const GVox& v) {
   VoxelGrid& G = vg(v.grid);
   for (int a = 0; a < 3; ++a) {
     G.break_bond(v.p, a);
@@ -317,15 +317,15 @@ void World::tear_voxel(const GVox& v) {
 // ---------------------------------------------------------------------------------------------
 // Adding and removing grids
 
-GridId World::add_grid(const GridDesc& d, VoxelGrid&& voxels) {
+GridId World::Impl::add_grid(const GridDesc& d, VoxelGrid&& voxels) {
   if (in_tick_) return 0;
   // (a level's grid added after the design pass, and any grid of the session - an object dropped
   // into a streamed world, which has no design pass: its structures are extracted at the next
   // tick, and what touches nothing falls)
-  return add_grid_impl(d, std::move(voxels), 0, ~0ull, designed_all_ || (!d.base && source_ != nullptr));
+  return add_grid_impl(d, std::move(voxels), 0, ~0ull, designed_all_ || (!d.base && strm_.source != nullptr));
 }
 
-GridId World::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId want, u64 home, bool seed) {
+GridId World::Impl::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId want, u64 home, bool seed) {
   const GridFrame& frame = d.frame;
   if (!in_range(frame.origin) || !finite_quat(frame.rot)) return 0;
   if (want != 0 && slot_of(want) >= 0) return 0;
@@ -366,7 +366,7 @@ GridId World::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId want, 
   }
   voxels.h = h;
   // the world's layers, by name (a grid made with layers of its own keeps those the world has)
-  voxels.adopt_layers(layer_specs_);
+  voxels.adopt_layers(ext_.layers);
   voxels.sanitize();
   voxels.compact();
   st->g = std::move(voxels);
@@ -377,7 +377,7 @@ GridId World::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId want, 
   const GridId id = st->id;
   grids_[slot] = std::move(st);
   slots_[id] = slot;
-  if (home != ~0ull) home_grids_[home].push_back(slot);
+  if (home != ~0ull) strm_.home_grids[home].push_back(slot);
   ++oriented_;
   refresh_grid_box(slot);
   grids_changed();
@@ -416,7 +416,7 @@ GridId World::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId want, 
   return id;
 }
 
-i64 World::loosen_grid(GridId id) {
+i64 World::Impl::loosen_grid(GridId id) {
   if (in_tick_) return 0;
   const i32 s = slot_of(id);
   if (s <= 0) return 0;
@@ -438,7 +438,7 @@ i64 World::loosen_grid(GridId id) {
   return b ? b->id : 0;
 }
 
-bool World::remove_grid(GridId id) {
+bool World::Impl::remove_grid(GridId id) {
   if (in_tick_ || id == kWorldGrid) return false;
   const i32 s = slot_of(id);
   if (s <= 0) return false;
@@ -451,7 +451,7 @@ bool World::remove_grid(GridId id) {
   return true;
 }
 
-void World::release_junctions(u16 g) {
+void World::Impl::release_junctions(u16 g) {
   JunctionScratch js;
   std::vector<u64> keys;
   for (const auto& [k, c] : vg(g).chunks())
@@ -478,7 +478,7 @@ void World::release_junctions(u16 g) {
   for (const GKey& k : stale) mark_owners_stale(k.grid, k.chunk);
 }
 
-bool World::set_grid_frame(GridId id, const GridFrame& frame) {
+bool World::Impl::set_grid_frame(GridId id, const GridFrame& frame) {
   if (in_tick_ || id == kWorldGrid) return false;
   const i32 s = slot_of(id);
   if (s <= 0) return false;
@@ -509,7 +509,7 @@ bool World::set_grid_frame(GridId id, const GridFrame& frame) {
   // (its broken junction samples were those of its old place: it bonds afresh)
   st.g.clear_junction_breaks();
   // (the systems of the world's lattice hear of the place it leaves)
-  if (st.any && !systems_.empty()) world_chunks_of(LatticeXf{}, st.lo, st.hi, sys_changed_);
+  if (st.any && !ext_.systems.empty()) world_chunks_of(LatticeXf{}, st.lo, st.hi, ext_.sys_changed);
   st.xf = LatticeXf::make(frame.origin, frame.rot);
   if (st.xf.identity) {
     st.xf.identity = false;
@@ -548,7 +548,7 @@ bool World::set_grid_frame(GridId id, const GridFrame& frame) {
   return true;
 }
 
-void World::displace_overlaps(u16 g, bool tracked) {
+void World::Impl::displace_overlaps(u16 g, bool tracked) {
   if (!live(g)) return;
   const GridState& st = gs(g);
   if (g != 0 && !st.any) return;
@@ -566,7 +566,7 @@ void World::displace_overlaps(u16 g, bool tracked) {
   }
 }
 
-void World::displace_edits(u16 g, const IVec3& lo, const IVec3& hi, bool tracked) {
+void World::Impl::displace_edits(u16 g, const IVec3& lo, const IVec3& hi, bool tracked) {
   const f64 h = h_of(g);
   // the edits' box in the world
   V3 blo, bhi;
@@ -596,7 +596,7 @@ void World::displace_edits(u16 g, const IVec3& lo, const IVec3& hi, bool tracked
   }
 }
 
-i32 World::displace(u16 keep, u16 lose, const IVec3* lo, const IVec3* hi, bool tracked) {
+i32 World::Impl::displace(u16 keep, u16 lose, const IVec3* lo, const IVec3* hi, bool tracked) {
   if (!live(keep) || !live(lose) || keep == lose) return 0;
   const GridState& K = gs(keep);
   if (keep != 0 && !K.any) return 0;
@@ -626,7 +626,7 @@ i32 World::displace(u16 keep, u16 lose, const IVec3* lo, const IVec3* hi, bool t
     bool meets = true;
     for (int a = 0; a < 3; ++a) meets = meets && cc[a] * kChunk <= vhi[a] && cc[a] * kChunk + kChunk - 1 >= vlo[a];
     if (!meets) continue;
-    if (lose == 0 && source_ && !chunk_resident(cc)) continue;  // (a chunk generated later is displaced then)
+    if (lose == 0 && strm_.source && !chunk_resident(cc)) continue;  // (a chunk generated later is displaced then)
     keys.push_back(k);
   }
   std::sort(keys.begin(), keys.end());
@@ -665,7 +665,7 @@ i32 World::displace(u16 keep, u16 lose, const IVec3* lo, const IVec3* hi, bool t
   return static_cast<i32>(removed.size());
 }
 
-void World::remove_grid_slot(u16 g, bool event) {
+void World::Impl::remove_grid_slot(u16 g, bool event) {
   GridState& st = gs(g);
   // its structures go (what they held of other grids is extracted again: it lost those bonds)
   std::vector<i64> ids;
@@ -683,7 +683,7 @@ void World::remove_grid_slot(u16 g, bool event) {
   // of the place it leaves)
   const V3 m{2 * st.g.h, 2 * st.g.h, 2 * st.g.h};
   if (st.any) rigid_.wake_box(st.lo - m, st.hi + m);
-  if (st.any && !systems_.empty()) world_chunks_of(LatticeXf{}, st.lo, st.hi, sys_changed_);
+  if (st.any && !ext_.systems.empty()) world_chunks_of(LatticeXf{}, st.lo, st.hi, ext_.sys_changed);
   for (auto it = dead_loads_.begin(); it != dead_loads_.end(); ++it)
     it->second.erase(std::remove_if(it->second.begin(), it->second.end(), [&](const DeadLoad& d) { return d.vox.grid == g; }),
                      it->second.end());
@@ -693,10 +693,10 @@ void World::remove_grid_slot(u16 g, bool event) {
   grid_dirty_.erase(std::remove_if(grid_dirty_.begin(), grid_dirty_.end(), [&](const GridChunk& c) { return c.grid == st.id; }),
                     grid_dirty_.end());
   if (st.home != ~0ull) {
-    auto ht = home_grids_.find(st.home);
-    if (ht != home_grids_.end()) {
+    auto ht = strm_.home_grids.find(st.home);
+    if (ht != strm_.home_grids.end()) {
       ht->second.erase(std::remove(ht->second.begin(), ht->second.end(), g), ht->second.end());
-      if (ht->second.empty()) home_grids_.erase(ht);
+      if (ht->second.empty()) strm_.home_grids.erase(ht);
     }
   }
   const GridId id = st.id;
@@ -718,7 +718,7 @@ void World::remove_grid_slot(u16 g, bool event) {
 // ---------------------------------------------------------------------------------------------
 // Junction samples
 
-int World::junction_side(u16 g, const JSample& j, bool fwd) const {
+int World::Impl::junction_side(u16 g, const JSample& j, bool fwd) const {
   if (fwd) return j.face;  // (its own face)
   // (the other grid's face, whose normal points at the node: out of the node is its opposite)
   const V3 n = xf_of(g).dir_from(xf_of(j.vg).dir_to(face_normal(j.face)) * -1.0);
@@ -728,7 +728,7 @@ int World::junction_side(u16 g, const JSample& j, bool fwd) const {
   return a * 2 + (n[a] > 0.0 ? 1 : 0);
 }
 
-const std::vector<JSample>& World::junction_fwd(JunctionScratch& js, u16 g, u64 chunk) {
+const std::vector<JSample>& World::Impl::junction_fwd(JunctionScratch& js, u16 g, u64 chunk) {
   const GKey key{g, chunk};
   const auto it = js.fwd.find(key);
   if (it != js.fwd.end()) return it->second;
@@ -788,7 +788,7 @@ const std::vector<JSample>& World::junction_fwd(JunctionScratch& js, u16 g, u64 
           }
           if (s != 0 && !inside(Xw, gs(s).lo, gs(s).hi)) continue;
           const IVec3 o = voxel_of(s == 0 ? Xw : xf_of(s).from(Xw), h_of(s));
-          if (s == 0 && source_ && !chunk_resident(chunk_of(o))) {
+          if (s == 0 && strm_.source && !chunk_resident(chunk_of(o))) {
             out.push_back({p, o, g, 0, static_cast<u8>(face), static_cast<u8>(sub), kJunctionUnknown});
             break;
           }
@@ -804,7 +804,7 @@ const std::vector<JSample>& World::junction_fwd(JunctionScratch& js, u16 g, u64 
   return js.fwd.emplace(key, std::move(out)).first->second;
 }
 
-const std::vector<JSample>* World::junction_rev(JunctionScratch& js, const FragKey& f) {
+const std::vector<JSample>* World::Impl::junction_rev(JunctionScratch& js, const FragKey& f) {
   const GKey key{f.grid, f.chunk};
   auto it = js.rev.find(key);
   if (it == js.rev.end()) {

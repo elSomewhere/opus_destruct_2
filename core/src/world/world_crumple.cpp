@@ -79,7 +79,7 @@ void grow_shape(BodyShape& S, const IVec3& q) {
 
 }  // namespace
 
-void World::crumple(f64 dt) {
+void World::Impl::crumple(f64 dt) {
   const std::vector<Contact>& cs = rigid_.contacts();
   bool any = false;
   for (const Contact& c : cs) any = any || c.crushing;
@@ -212,10 +212,10 @@ void World::crumple(f64 dt) {
       auto air = [&](const IVec3& q) { return !vox_solid(S.get(q)); };
       // the anchors on its voxels follow them (a joint's end, a wheel's mount); a voxel gone lets go
       auto follow = [&](const IVec3& from, const IVec3& to) {
-        for (JointRec& r : jrecs_)
+        for (JointRec& r : att_.joints)
           for (JointRec::End* E : {&r.a, &r.b})
             if (E->piece == b.id && E->shape == static_cast<i32>(k) && E->voxel == from) E->voxel = to;
-        for (WheelRec& r : wrecs_)
+        for (WheelRec& r : att_.wheels)
           if (r.mount.piece == b.id && r.mount.shape == static_cast<i32>(k) && r.mount.voxel == from) r.mount.voxel = to;
       };
       auto clear = [&](i32 i) {
@@ -466,7 +466,7 @@ void World::crumple(f64 dt) {
 // presses at a few hundred kN: glass gives way to it, a brick wall to its stiffest part (an
 // engine block) once the front has folded back to it, concrete to neither. (Slower failure - a wall bending over, its
 // bonds overloaded - is the structure's own solve.)
-bool World::punch(Body& b, u16 g, const V3& n, const V3& plo, const V3& phi, f64 force, f64 dt) {
+bool World::Impl::punch(Body& b, u16 g, const V3& n, const V3& plo, const V3& phi, f64 force, f64 dt) {
   if (!(force > 0.0) || !live(g)) return false;
   const V3 u = n * -1.0;  // (into the wall)
   const f64 vn = dot(b.v, u);
@@ -658,14 +658,14 @@ bool World::punch(Body& b, u16 g, const V3& n, const V3& plo, const V3& phi, f64
   return true;
 }
 
-void World::reshape_in_place(Body& b) {
+void World::Impl::reshape_in_place(Body& b) {
   const V3 com0 = b.com, x0 = b.x;
   const i32 cooldown = b.stress_cooldown;
   b.crumpling = cfg_.body_check_ticks;
   refragment_body(b);
   if (b.count == 0) {
     wake_around(b);
-    pending_retire_.push_back(b.id);
+    pw_.pending_retire.push_back(b.id);
     return;
   }
   // (bits that no longer hold on to the rest come off - dust, or pieces of their own - and its

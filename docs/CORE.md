@@ -50,6 +50,19 @@ be rewritten without touching the core. Each layer has its own tests:
   structural reference's, reproduced bit for bit with its switches ([`BASELINE.md`](BASELINE.md)).
 - `examples/core_minimal` (C++) and `examples/c_api` (C) are complete hosts in ~80 lines.
 
+**Inside the core.** `World` is its public API and nothing else: `svx/world/world.hpp` declares
+what hosts call and holds its implementation, `World::Impl` (`core/src/world/world_impl.hpp`,
+private to the core's sources), which every call forwards to - a change behind the API
+recompiles no host. The implementation is organised by subsystem, a source file each: the tick,
+structures and loads (`world.cpp`); grids and their junctions (`world_grids.cpp`); pieces and
+their fracture (`world_pieces.cpp`); crumpling (`world_crumple.cpp`); joints
+(`world_joints.cpp`); wheels (`world_wheels.cpp`); articulations (`world_articulations.cpp`);
+the design pass, persistence, streaming and queries (`world_io.cpp`); sessions and the change
+archive's records (`world_session.cpp`); the extension points (`world_ext.cpp`). The state a
+subsystem owns is grouped with it (`Impl::att_`: the joints' and wheels' anchors; `strm_`:
+streaming and the archive; `ext_`: layers, systems, host loads and change tracking; `pw_`: a
+tick's piece work).
+
 ## 2. Concepts
 
 **Voxels.** A world is a grid of voxels of size `h` (0.125 m is what the defaults are tuned

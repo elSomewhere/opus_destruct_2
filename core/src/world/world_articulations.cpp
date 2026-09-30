@@ -32,30 +32,30 @@ M3 diag3(const V3& d) {
 // ---------------------------------------------------------------------------------------------
 // Records
 
-World::ArticulationRec* World::art(ArticulationId id) {
+World::Impl::ArticulationRec* World::Impl::art(ArticulationId id) {
   const auto it = std::lower_bound(arts_.begin(), arts_.end(), id, [](const std::unique_ptr<ArticulationRec>& a, ArticulationId v) { return a->id < v; });
   return it != arts_.end() && (*it)->id == id ? it->get() : nullptr;
 }
 
-const World::ArticulationRec* World::art(ArticulationId id) const { return const_cast<World*>(this)->art(id); }
+const World::Impl::ArticulationRec* World::Impl::art(ArticulationId id) const { return const_cast<Impl*>(this)->art(id); }
 
-Body* World::art_link(const ArticulationRec& a, u16 link) {
+Body* World::Impl::art_link(const ArticulationRec& a, u16 link) {
   if (link >= a.links.size()) return nullptr;
   Body* b = rigid_.find(a.links[link]);
   return b && b->link ? b : nullptr;
 }
 
-const Body* World::art_link(const ArticulationRec& a, u16 link) const { return const_cast<World*>(this)->art_link(a, link); }
+const Body* World::Impl::art_link(const ArticulationRec& a, u16 link) const { return const_cast<Impl*>(this)->art_link(a, link); }
 
 // ---------------------------------------------------------------------------------------------
 // The API
 
-ArticulationId World::add_articulation(const ArticulationDesc& d) {
+ArticulationId World::Impl::add_articulation(const ArticulationDesc& d) {
   if (in_tick_ && !systems_phase_) return 0;
   return add_articulation_now(d);
 }
 
-ArticulationId World::add_articulation_now(const ArticulationDesc& d, ArticulationId want) {
+ArticulationId World::Impl::add_articulation_now(const ArticulationDesc& d, ArticulationId want) {
   const size_t nl = d.links.size();
   if (nl == 0 || nl > 256 || d.joints.size() > 1024 || d.targets.size() > 1024) return 0;
   for (const LinkDesc& L : d.links) {
@@ -125,7 +125,7 @@ ArticulationId World::add_articulation_now(const ArticulationDesc& d, Articulati
   for (const ArticulationJointDesc& J : d.joints) {
     JointRec r;
     Joint j;
-    j.id = next_joint_++;
+    j.id = att_.next_joint++;
     j.type = J.type;
     const bool hinge = J.type == JointType::Hinge;
     const V3 ax = hinge ? V3{1, 0, 0} : V3{0, 0, 1}, rf = hinge ? V3{0, 0, 1} : V3{1, 0, 0};
@@ -158,8 +158,8 @@ ArticulationId World::add_articulation_now(const ArticulationDesc& d, Articulati
     r.id = j.id;
     r.articulation = rec->id;
     const size_t k = insert_joint(r, j);
-    fill_joint_end(jrecs_[k], false);
-    fill_joint_end(jrecs_[k], true);
+    fill_joint_end(att_.joints[k], false);
+    fill_joint_end(att_.joints[k], true);
     rec->joints.push_back(j.id);
   }
   // the targets (ids ascending: after every one there is)
@@ -192,13 +192,13 @@ ArticulationId World::add_articulation_now(const ArticulationDesc& d, Articulati
   return id;
 }
 
-bool World::remove_articulation(ArticulationId id) {
+bool World::Impl::remove_articulation(ArticulationId id) {
   if ((in_tick_ && !systems_phase_) || !art(id)) return false;
   drop_articulation(id, PieceEnd::Removed);
   return true;
 }
 
-void World::drop_articulation(ArticulationId id, PieceEnd end) {
+void World::Impl::drop_articulation(ArticulationId id, PieceEnd end) {
   const auto it = std::lower_bound(arts_.begin(), arts_.end(), id, [](const std::unique_ptr<ArticulationRec>& a, ArticulationId v) { return a->id < v; });
   if (it == arts_.end() || (*it)->id != id) return;
   ArticulationRec& a = **it;
@@ -215,9 +215,9 @@ void World::drop_articulation(ArticulationId id, PieceEnd end) {
   events_.push_back(std::move(ev));
   // its joints (what the host joined to its links gives way: its end is gone), its targets, its rules
   for (JointId jid : a.joints)
-    for (size_t k = 0; k < jrecs_.size(); ++k)
-      if (jrecs_[k].id == jid) {
-        jrecs_.erase(jrecs_.begin() + static_cast<std::ptrdiff_t>(k));
+    for (size_t k = 0; k < att_.joints.size(); ++k)
+      if (att_.joints[k].id == jid) {
+        att_.joints.erase(att_.joints.begin() + static_cast<std::ptrdiff_t>(k));
         rigid_.joints.erase(rigid_.joints.begin() + static_cast<std::ptrdiff_t>(k));
         break;
       }
@@ -238,10 +238,10 @@ void World::drop_articulation(ArticulationId id, PieceEnd end) {
   arts_.erase(it);
 }
 
-void World::clear_articulations() {
+void World::Impl::clear_articulations() {
   // (the archived ones too: their records with them)
-  for (const auto& [key, chunks] : archived_arts_) archive_->erase(key);
-  archived_arts_.clear();
+  for (const auto& [key, chunks] : strm_.archived_arts) strm_.archive->erase(key);
+  strm_.archived_arts.clear();
   st_.archived_articulations = 0;
   std::vector<ArticulationId> ids;
   for (const auto& a : arts_) ids.push_back(a->id);
@@ -250,7 +250,7 @@ void World::clear_articulations() {
   rigid_.articulations.clear();
 }
 
-void World::articulations_out_of_world(f64 floor_z) {
+void World::Impl::articulations_out_of_world(f64 floor_z) {
   std::vector<ArticulationId> out;
   for (const auto& a : arts_)
     for (i64 bid : a->links) {
@@ -265,19 +265,19 @@ void World::articulations_out_of_world(f64 floor_z) {
   for (ArticulationId id : out) drop_articulation(id, PieceEnd::OutOfWorld);
 }
 
-std::vector<ArticulationId> World::articulations() const {
+std::vector<ArticulationId> World::Impl::articulations() const {
   std::vector<ArticulationId> out;
   out.reserve(arts_.size());
   for (const auto& a : arts_) out.push_back(a->id);
   return out;
 }
 
-ArticulationControl* World::articulation_control(ArticulationId id) {
+ArticulationControl* World::Impl::articulation_control(ArticulationId id) {
   ArticulationRec* a = art(id);
   return a ? a->control.get() : nullptr;
 }
 
-bool World::articulation_state(ArticulationId id, ArticulationState* out) const {
+bool World::Impl::articulation_state(ArticulationId id, ArticulationState* out) const {
   const ArticulationRec* a = art(id);
   if (!a || !out) return false;
   out->links.resize(a->links.size());
@@ -315,19 +315,19 @@ bool World::articulation_state(ArticulationId id, ArticulationState* out) const 
   return true;
 }
 
-const std::vector<u8>* World::articulation_data(ArticulationId id) const {
+const std::vector<u8>* World::Impl::articulation_data(ArticulationId id) const {
   const ArticulationRec* a = art(id);
   return a ? &a->data : nullptr;
 }
 
-bool World::set_articulation_data(ArticulationId id, std::vector<u8> data) {
+bool World::Impl::set_articulation_data(ArticulationId id, std::vector<u8> data) {
   ArticulationRec* a = art(id);
   if (!a) return false;
   a->data = std::move(data);
   return true;
 }
 
-bool World::set_link(ArticulationId id, u16 link, const V3& pos, const Quat& rot, const V3& vel, const V3& ang) {
+bool World::Impl::set_link(ArticulationId id, u16 link, const V3& pos, const Quat& rot, const V3& vel, const V3& ang) {
   ArticulationRec* a = art(id);
   Body* b = a ? art_link(*a, link) : nullptr;
   if (!b || (in_tick_ && !systems_phase_) || !in_range(pos) || !finite_q(rot) || !finite3(vel) || !finite3(ang)) return false;
@@ -342,7 +342,7 @@ bool World::set_link(ArticulationId id, u16 link, const V3& pos, const Quat& rot
   return true;
 }
 
-bool World::add_link_velocity(ArticulationId id, u16 link, const V3& dv, const V3& dw) {
+bool World::Impl::add_link_velocity(ArticulationId id, u16 link, const V3& dv, const V3& dw) {
   ArticulationRec* a = art(id);
   Body* b = a ? art_link(*a, link) : nullptr;
   if (!b || !finite3(dv) || !finite3(dw) || b->link->kinematic) return false;
@@ -352,7 +352,7 @@ bool World::add_link_velocity(ArticulationId id, u16 link, const V3& dv, const V
   return true;
 }
 
-bool World::apply_link_impulse(ArticulationId id, u16 link, const V3& point, const V3& impulse) {
+bool World::Impl::apply_link_impulse(ArticulationId id, u16 link, const V3& point, const V3& impulse) {
   ArticulationRec* a = art(id);
   Body* b = a ? art_link(*a, link) : nullptr;
   if (!b || !finite3(point) || !finite3(impulse) || b->link->kinematic) return false;
@@ -362,7 +362,7 @@ bool World::apply_link_impulse(ArticulationId id, u16 link, const V3& point, con
   return true;
 }
 
-bool World::lose_link(ArticulationId id, u16 link, f64 mass_scale) {
+bool World::Impl::lose_link(ArticulationId id, u16 link, f64 mass_scale) {
   ArticulationRec* a = art(id);
   Body* b = a ? art_link(*a, link) : nullptr;
   if (!b || !(mass_scale > 0.0) || !(mass_scale <= 1.0)) return false;
@@ -378,7 +378,7 @@ bool World::lose_link(ArticulationId id, u16 link, f64 mass_scale) {
   return true;
 }
 
-bool World::wake_articulation(ArticulationId id) {
+bool World::Impl::wake_articulation(ArticulationId id) {
   ArticulationRec* a = art(id);
   if (!a) return false;
   for (u16 i = 0; i < a->links.size(); ++i)
@@ -386,7 +386,7 @@ bool World::wake_articulation(ArticulationId id) {
   return true;
 }
 
-bool World::articulation_asleep(ArticulationId id) const {
+bool World::Impl::articulation_asleep(ArticulationId id) const {
   const ArticulationRec* a = art(id);
   if (!a) return false;
   for (u16 i = 0; i < a->links.size(); ++i)
@@ -394,7 +394,7 @@ bool World::articulation_asleep(ArticulationId id) const {
   return true;
 }
 
-i64 World::link_body(ArticulationId id, u16 link) const {
+i64 World::Impl::link_body(ArticulationId id, u16 link) const {
   const ArticulationRec* a = art(id);
   const Body* b = a ? art_link(*a, link) : nullptr;
   return b ? b->id : 0;
@@ -403,7 +403,7 @@ i64 World::link_body(ArticulationId id, u16 link) const {
 // ---------------------------------------------------------------------------------------------
 // Each tick
 
-void World::apply_articulation_controls() {
+void World::Impl::apply_articulation_controls() {
   rigid_.begin_tick();
   for (auto& ap : arts_) {
     ArticulationRec& a = *ap;
@@ -435,20 +435,20 @@ void World::apply_articulation_controls() {
     for (V3& t : C.torque) t = V3{};
     for (size_t k = 0; k < a.joints.size() && k < C.muscles.size(); ++k) {
       const JointId jid = a.joints[k];
-      const auto it = std::lower_bound(jrecs_.begin(), jrecs_.end(), jid, [](const JointRec& r, JointId v) { return r.id < v; });
-      if (it == jrecs_.end() || it->id != jid) continue;
+      const auto it = std::lower_bound(att_.joints.begin(), att_.joints.end(), jid, [](const JointRec& r, JointId v) { return r.id < v; });
+      if (it == att_.joints.end() || it->id != jid) continue;
       // (its anchors, as its host moves them)
       {
-        const size_t q = size_t(it - jrecs_.begin());
-        if (k < C.anchor_parent.size() && finite3(C.anchor_parent[k]) && norm(C.anchor_parent[k]) < 8.0) jrecs_[q].a.point = rigid_.joints[q].a.p = C.anchor_parent[k];
-        if (k < C.anchor_child.size() && finite3(C.anchor_child[k]) && norm(C.anchor_child[k]) < 8.0) jrecs_[q].b.point = rigid_.joints[q].b.p = C.anchor_child[k];
+        const size_t q = size_t(it - att_.joints.begin());
+        if (k < C.anchor_parent.size() && finite3(C.anchor_parent[k]) && norm(C.anchor_parent[k]) < 8.0) att_.joints[q].a.point = rigid_.joints[q].a.p = C.anchor_parent[k];
+        if (k < C.anchor_child.size() && finite3(C.anchor_child[k]) && norm(C.anchor_child[k]) < 8.0) att_.joints[q].b.point = rigid_.joints[q].b.p = C.anchor_child[k];
       }
       JointMuscle m = C.muscles[k];
       if (!finite_q(m.target) || !finite3(m.target_rate) || !finite3(m.feed) || !std::isfinite(m.stiffness) || !std::isfinite(m.damping) ||
           !std::isfinite(m.max_torque) || !std::isfinite(m.inertia))
         m = JointMuscle{};
       m.target = qnormalized(m.target);
-      rigid_.joints[size_t(it - jrecs_.begin())].muscle = m;
+      rigid_.joints[size_t(it - att_.joints.begin())].muscle = m;
     }
     for (size_t k = 0; k < a.targets.size() && k < C.targets.size(); ++k) {
       const u32 tid = a.targets[k];
@@ -532,7 +532,7 @@ bool read_muscle(Rd& in, JointMuscle* m) {
 
 }  // namespace
 
-std::vector<u8> World::articulation_record(const ArticulationRec& a) const {
+std::vector<u8> World::Impl::articulation_record(const ArticulationRec& a) const {
   std::vector<u8> out;
   out.push_back(kArticulationVersion);
   put32(out, a.id);
@@ -572,8 +572,8 @@ std::vector<u8> World::articulation_record(const ArticulationRec& a) const {
     ArticulationJointDesc J = a.joint_desc[k];
     if (k < a.joints.size()) {
       const JointId jid = a.joints[k];
-      const auto it = std::lower_bound(jrecs_.begin(), jrecs_.end(), jid, [](const JointRec& r, JointId v) { return r.id < v; });
-      if (it != jrecs_.end() && it->id == jid) {
+      const auto it = std::lower_bound(att_.joints.begin(), att_.joints.end(), jid, [](const JointRec& r, JointId v) { return r.id < v; });
+      if (it != att_.joints.end() && it->id == jid) {
         J.anchor_parent = it->a.point;
         J.anchor_child = it->b.point;
       }
@@ -614,7 +614,7 @@ std::vector<u8> World::articulation_record(const ArticulationRec& a) const {
   return out;
 }
 
-bool World::read_articulation_record(Rd& in, ArticulationSaved* out) const {
+bool World::Impl::read_articulation_record(Rd& in, ArticulationSaved* out) const {
   if (in.u8_() != kArticulationVersion) return false;
   ArticulationSaved& s = *out;
   s.id = in.u32_();
@@ -714,7 +714,7 @@ bool World::read_articulation_record(Rd& in, ArticulationSaved* out) const {
   return in.ok && (cf & ~3u) == 0 && std::isfinite(s.control.max_spin) && std::isfinite(s.control.keep_linear) && std::isfinite(s.control.keep_angular);
 }
 
-ArticulationId World::restore_articulation(ArticulationSaved&& s) {
+ArticulationId World::Impl::restore_articulation(ArticulationSaved&& s) {
   const ArticulationId id = add_articulation_now(s.desc, s.id);
   if (id == 0) return 0;
   ArticulationRec* a = art(id);
@@ -744,13 +744,13 @@ ArticulationId World::restore_articulation(ArticulationSaved&& s) {
   return id;
 }
 
-void World::archive_articulation(ArticulationId id, const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of) {
+void World::Impl::archive_articulation(ArticulationId id, const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of) {
   ArticulationRec* a = art(id);
-  if (!a || !source_) return;
+  if (!a || !strm_.source) return;
   const std::vector<u8> rec = articulation_record(*a);
   // (the chunks that must be resident for it to come back: its links')
   std::vector<u64> chunks;
-  const IVec3 lo = source_->chunk_lo(), hi = source_->chunk_hi();
+  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
   auto add = [&](u64 k) {
     const IVec3 c = unkey3(k);
     for (int q = 0; q < 3; ++q)
@@ -766,25 +766,25 @@ void World::archive_articulation(ArticulationId id, const std::function<void(con
   const IVec3 home = chunk_of(world_detail::voxel_of(at, grid_.h));
   const u64 key = (3ull << 62) | (1ull << 61) | static_cast<u64>(id);
   archive_record(key, rec, region_of(key3(home[0], home[1], home[2])));
-  if (!archive_->has(key)) {
+  if (!strm_.archive->has(key)) {
     ++st_.forgotten_articulations;  // (no room at all: it is gone)
   } else {
-    archived_arts_[key] = std::move(chunks);
+    strm_.archived_arts[key] = std::move(chunks);
     ++st_.archived_articulations;
   }
   drop_articulation(id, PieceEnd::Unloaded);
 }
 
-void World::restore_articulations() {
-  if (archived_arts_.empty()) return;
+void World::Impl::restore_articulations() {
+  if (strm_.archived_arts.empty()) return;
   std::vector<u64> ready;
-  for (const auto& [key, chunks] : archived_arts_)
-    if (std::all_of(chunks.begin(), chunks.end(), [&](u64 c) { return generated_.count(c) > 0; })) ready.push_back(key);
+  for (const auto& [key, chunks] : strm_.archived_arts)
+    if (std::all_of(chunks.begin(), chunks.end(), [&](u64 c) { return strm_.generated.count(c) > 0; })) ready.push_back(key);
   for (u64 key : ready) {
-    archived_arts_.erase(key);
+    strm_.archived_arts.erase(key);
     --st_.archived_articulations;
-    const std::vector<u8> rec = archive_->get(key);
-    archive_->erase(key);
+    const std::vector<u8> rec = strm_.archive->get(key);
+    strm_.archive->erase(key);
     Rd in{rec};
     ArticulationSaved s;
     if (!read_articulation_record(in, &s) || in.p != rec.size()) continue;  // (checked when made: never)
@@ -792,10 +792,10 @@ void World::restore_articulations() {
   }
 }
 
-void World::forget_articulation(u64 key) {
-  const auto it = archived_arts_.find(key);
-  if (it == archived_arts_.end()) return;
-  archived_arts_.erase(it);
+void World::Impl::forget_articulation(u64 key) {
+  const auto it = strm_.archived_arts.find(key);
+  if (it == strm_.archived_arts.end()) return;
+  strm_.archived_arts.erase(it);
   --st_.archived_articulations;
   ++st_.forgotten_articulations;
 }

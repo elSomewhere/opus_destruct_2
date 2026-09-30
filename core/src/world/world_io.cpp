@@ -30,9 +30,9 @@ inline f64 ms_since(Clock::time_point t0) { return std::chrono::duration<f64, st
 // ---------------------------------------------------------------------------------------------
 // Design pass
 
-bool World::bake(f64* ms) {
+bool World::Impl::bake(f64* ms) {
   const auto t0 = Clock::now();
-  if (source_) {
+  if (strm_.source) {
     // streamed worlds: their generators build designed structures; chunks stream in lazily
     designed_all_ = true;
     if (ms) *ms = 0.0;
@@ -167,7 +167,7 @@ bool World::bake(f64* ms) {
   return true;
 }
 
-void World::design_node(const Structure& s, i32 nd, u8 cls, i64* strengthened) {
+void World::Impl::design_node(const Structure& s, i32 nd, u8 cls, i64* strengthened) {
   for (i32 k = s.fstart[size_t(nd)]; k < s.fstart[size_t(nd) + 1]; ++k) {
     const FragKey& f = s.frags[size_t(k)];
     if (f.idx < 0) continue;
@@ -282,18 +282,18 @@ std::vector<u8> write_grid_entry(const GridDelta& d) {
 
 }  // namespace
 
-std::vector<u8> World::save_delta() const {
+std::vector<u8> World::Impl::save_delta() const {
   std::vector<u8> out;
-  if (!source_) {
+  if (!strm_.source) {
     out = grid_.save_delta();
   } else {
     std::vector<u64> keys = grid_.modified_chunks();
-    for (u64 k : archive_->keys())
+    for (u64 k : strm_.archive->keys())
       if (!(k >> 63)) keys.push_back(k);  // (the archive's grid records are the grids' part)
     std::sort(keys.begin(), keys.end());
     keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
     std::vector<std::vector<u8>> recs;
-    for (u64 k : keys) recs.push_back(!grid_.is_modified(k) && archive_->has(k) ? archive_->get(k) : grid_.chunk_record(k));
+    for (u64 k : keys) recs.push_back(!grid_.is_modified(k) && strm_.archive->has(k) ? strm_.archive->get(k) : grid_.chunk_record(k));
     out = VoxelGrid::pack_delta(recs);
   }
   // the grids' part (only if there is anything: a world of the world grid alone saves as always)
@@ -308,13 +308,13 @@ std::vector<u8> World::save_delta() const {
   removed.erase(std::unique(removed.begin(), removed.end()), removed.end());
   // (streamed grids archived out of range: their records as they were archived)
   std::vector<std::pair<u64, std::vector<u8>>> archived;
-  if (source_)
-    for (u64 k : archive_->keys())
-      if ((k >> 62) == 2) archived.push_back({k, archive_->get(k)});  // (pieces' records: the session part)
+  if (strm_.source)
+    for (u64 k : strm_.archive->keys())
+      if ((k >> 62) == 2) archived.push_back({k, strm_.archive->get(k)});  // (pieces' records: the session part)
   std::sort(archived.begin(), archived.end(), [](const auto& a, const auto& b) { return a.first < b.first; });  // (keys are unique)
   // (a world of the world grid alone, with no pieces or joints, saves as it always did)
-  if (gds.empty() && removed.empty() && archived.empty() && rigid_.bodies.empty() && jrecs_.empty() && wrecs_.empty() && archived_groups_.empty() &&
-      arts_.empty() && archived_arts_.empty())
+  if (gds.empty() && removed.empty() && archived.empty() && rigid_.bodies.empty() && att_.joints.empty() && att_.wheels.empty() && strm_.archived_groups.empty() &&
+      arts_.empty() && strm_.archived_arts.empty())
     return out;
   put32(out, kGridsMagic);
   put32(out, kGridsVersion);
@@ -328,7 +328,7 @@ std::vector<u8> World::save_delta() const {
   return out;
 }
 
-bool World::load_delta(const std::vector<u8>& bytes) {
+bool World::Impl::load_delta(const std::vector<u8>& bytes) {
   if (in_tick_) return false;  // (from inside a tick: refused)
   std::vector<std::pair<u64, std::vector<u8>>> recs;
   if (!VoxelGrid::unpack_delta(bytes, &recs)) return false;
@@ -370,7 +370,7 @@ bool World::load_delta(const std::vector<u8>& bytes) {
       // (a level's grid must be there - the host added the level's grids - unless streamed and
       // not resident: its changes are archived until it comes)
       for (const GridDelta& d : gds)
-        if (d.base && slot_of(d.id) < 0 && !source_) return false;
+        if (d.base && slot_of(d.id) < 0 && !strm_.source) return false;
       for (size_t a = 0; a < gds.size(); ++a)
         for (size_t b2 = a + 1; b2 < gds.size(); ++b2)
           if (gds[a].id == gds[b2].id) return false;
@@ -433,9 +433,9 @@ bool World::load_delta(const std::vector<u8>& bytes) {
     refresh_grid_box(static_cast<u16>(sl));
     grids_changed();
   }
-  if (source_) {
+  if (strm_.source) {
     for (auto& [k, r] : recs) {
-      if (generated_.count(k)) {
+      if (strm_.generated.count(k)) {
         u64 key = 0;
         const Chunk* c0 = grid_.chunk(unkey3(k));
         const std::vector<Vox> before = c0 && !c0->uniform ? c0->v : std::vector<Vox>{};
@@ -480,44 +480,44 @@ bool World::load_delta(const std::vector<u8>& bytes) {
   return true;
 }
 
-void World::enable_streaming(std::shared_ptr<const ChunkSource> src, const StreamConfig& sc) {
-  source_ = std::move(src);
-  stream_ = sc;
-  stream_.load_radius = std::isfinite(stream_.load_radius) ? std::clamp(stream_.load_radius, 0.0, 1e5) : 96.0;
-  stream_.evict_radius = std::isfinite(stream_.evict_radius) ? std::clamp(stream_.evict_radius, stream_.load_radius, 1e5)
-                                                             : stream_.load_radius + 32.0;
-  stream_.chunks_per_tick = std::max(1, stream_.chunks_per_tick);
-  stream_.archive_mb = std::isfinite(stream_.archive_mb) ? std::clamp(stream_.archive_mb, 0.0, 1e6) : 64.0;
-  stream_.forget_after_s = std::isfinite(stream_.forget_after_s) ? std::max(0.0, stream_.forget_after_s) : 0.0;
-  generated_.clear();
-  column_count_.clear();
-  region_resident_.clear();
-  evict_scan_tick_ = -1000000;
-  evict_scan_focus_.clear();
+void World::Impl::enable_streaming(std::shared_ptr<const ChunkSource> src, const StreamConfig& sc) {
+  strm_.source = std::move(src);
+  strm_.config = sc;
+  strm_.config.load_radius = std::isfinite(strm_.config.load_radius) ? std::clamp(strm_.config.load_radius, 0.0, 1e5) : 96.0;
+  strm_.config.evict_radius = std::isfinite(strm_.config.evict_radius) ? std::clamp(strm_.config.evict_radius, strm_.config.load_radius, 1e5)
+                                                             : strm_.config.load_radius + 32.0;
+  strm_.config.chunks_per_tick = std::max(1, strm_.config.chunks_per_tick);
+  strm_.config.archive_mb = std::isfinite(strm_.config.archive_mb) ? std::clamp(strm_.config.archive_mb, 0.0, 1e6) : 64.0;
+  strm_.config.forget_after_s = std::isfinite(strm_.config.forget_after_s) ? std::max(0.0, strm_.config.forget_after_s) : 0.0;
+  strm_.generated.clear();
+  strm_.column_count.clear();
+  strm_.region_resident.clear();
+  strm_.evict_scan_tick = -1000000;
+  strm_.evict_scan_focus.clear();
   // (a bounded archive: its arena, once; an unbounded one grows)
-  archive_->reset(source_ ? static_cast<size_t>(stream_.archive_mb * 1048576.0) : 0);
-  if (!source_) return;
-  const IVec3 lo = source_->chunk_lo(), hi = source_->chunk_hi();
+  strm_.archive->reset(strm_.source ? static_cast<size_t>(strm_.config.archive_mb * 1048576.0) : 0);
+  if (!strm_.source) return;
+  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
   grid_.lo = {lo[0] * kChunk, lo[1] * kChunk, lo[2] * kChunk};
   grid_.hi = {hi[0] * kChunk, hi[1] * kChunk, hi[2] * kChunk};
 }
 
-void World::set_focus(const std::vector<V3>& points) {
-  focus_.clear();
+void World::Impl::set_focus(const std::vector<V3>& points) {
+  strm_.focus.clear();
   for (const V3& p : points)
-    if (in_range(p)) focus_.push_back(p);
-  if (!source_ || focus_.empty() || focus_set_) return;
+    if (in_range(p)) strm_.focus.push_back(p);
+  if (!strm_.source || strm_.focus.empty() || strm_.focus_set) return;
   // the first focus: the world around it at once (a player must not fall through)
-  focus_set_ = true;
+  strm_.focus_set = true;
   const i32 r = static_cast<i32>(std::ceil(24.0 / grid_.h));
-  for (const V3& p : focus_) {
+  for (const V3& p : strm_.focus) {
     const IVec3 c = voxel_of(p, grid_.h);
     ensure_chunks({c[0] - r, c[1] - r, grid_.lo[2]}, {c[0] + r, c[1] + r, grid_.hi[2]});
   }
 }
 
-void World::ensure_resident(const IVec3& lo, const IVec3& hi) {
-  if (!source_) return;
+void World::Impl::ensure_resident(const IVec3& lo, const IVec3& hi) {
+  if (!strm_.source) return;
   // (bounded: at most the world's extent)
   IVec3 a = lo, b = hi;
   for (int q = 0; q < 3; ++q) {
@@ -528,13 +528,13 @@ void World::ensure_resident(const IVec3& lo, const IVec3& hi) {
   ensure_chunks(a, b);
 }
 
-bool World::generate_chunk(u64 key) {
-  if (!source_ || generated_.count(key)) return false;
+bool World::Impl::generate_chunk(u64 key) {
+  if (!strm_.source || strm_.generated.count(key)) return false;
   const IVec3 cc = unkey3(key);
-  const IVec3 lo = source_->chunk_lo(), hi = source_->chunk_hi();
+  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
   if (cc[0] < lo[0] || cc[1] < lo[1] || cc[2] < lo[2] || cc[0] >= hi[0] || cc[1] >= hi[1] || cc[2] >= hi[2]) return false;
   std::vector<Vox> v;
-  bool any = source_->generate(cc, v);
+  bool any = strm_.source->generate(cc, v);
   if (any && v.size() != size_t(kChunkVox)) any = false;  // (a source that did not fill it: air)
   if (any)
     for (Vox& x : v)
@@ -543,17 +543,17 @@ bool World::generate_chunk(u64 key) {
   return true;
 }
 
-void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
+void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
   struct GridsAfter {  // (the source's grids at home here come once the chunk is in)
-    World& w;
+    Impl& w;
     u64 k;
     ~GridsAfter() { w.generate_grids(k); }
   } grids_after{*this, key};
   const IVec3 cc = unkey3(key);
-  generated_.insert(key);
-  sys_generated_.push_back(key);
-  ++column_count_[key3(cc[0], cc[1], 0)];
-  ++region_resident_[region_of(key)];
+  strm_.generated.insert(key);
+  ext_.sys_generated.push_back(key);
+  ++strm_.column_count[key3(cc[0], cc[1], 0)];
+  ++strm_.region_resident[region_of(key)];
   ++st_.generated_total;
   bool changed = false;
   if (any) {
@@ -563,9 +563,9 @@ void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
     grid_.release_buffer(std::move(v));
   }
   // (the source's layers: water of a lake, ...)
-  for (int L = 0; L < static_cast<int>(layer_specs_.size()); ++L) {
+  for (int L = 0; L < static_cast<int>(ext_.layers.size()); ++L) {
     std::vector<u8> lv;
-    if (!source_->generate_layer(cc, layer_specs_[size_t(L)].name, lv) || lv.size() != size_t(kChunkVox)) continue;
+    if (!strm_.source->generate_layer(cc, ext_.layers[size_t(L)].name, lv) || lv.size() != size_t(kChunkVox)) continue;
     const IVec3 b{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
     const bool tracked = grid_.tracking();
     grid_.track_changes(false);  // (generated: not a change)
@@ -577,7 +577,7 @@ void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
     grid_.track_changes(tracked);
     changed = true;
   }
-  if (archive_->has(key)) {
+  if (strm_.archive->has(key)) {
     // its changes back. Whether they touched its voxels or bonds - or only persistent layers
     // (water, burn marks): then it is the generator's chunk still, to be designed when first
     // touched (a chunk changed by play was designed before it was changed)
@@ -585,8 +585,8 @@ void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
     if (const Chunk* g0 = grid_.chunk(cc); any && g0 && !g0->uniform) generated = g0->v;
     const Vox generated_value = grid_.chunk(cc) && grid_.chunk(cc)->uniform ? grid_.chunk(cc)->value : kAir;
     grid_.track_changes(true);
-    changed = grid_.apply_record(archive_->get(key)) || changed;  // (records were checked when archived or loaded)
-    archive_->erase(key);
+    changed = grid_.apply_record(strm_.archive->get(key)) || changed;  // (records were checked when archived or loaded)
+    strm_.archive->erase(key);
     const Chunk* ch = grid_.chunk(cc);
     bool same = ch && ch->broken.empty() && ch->jbroken.empty();
     if (same && !generated.empty()) same = !ch->uniform && ch->v == generated;
@@ -655,13 +655,13 @@ void World::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
     }
 }
 
-void World::generate_grids(u64 key) {
-  if (!source_) return;
-  for (const SourceGrid& sg : source_->grids(unkey3(key))) {
+void World::Impl::generate_grids(u64 key) {
+  if (!strm_.source) return;
+  for (const SourceGrid& sg : strm_.source->grids(unkey3(key))) {
     if (sg.id == 0 || slot_of(sg.id) >= 0) continue;  // (here already)
     VoxelGrid g;
     g.h = sg.voxel_size > 0.0 ? sg.voxel_size : grid_.h;
-    if (!source_->generate_grid(sg.id, g)) continue;
+    if (!strm_.source->generate_grid(sg.id, g)) continue;
     // (generated: not a change)
     GridDesc d;
     d.frame = GridFrame{sg.origin, sg.rot};
@@ -673,11 +673,11 @@ void World::generate_grids(u64 key) {
     const u16 sl = static_cast<u16>(slot_of(id));
     GridState& st = gs(sl);
     const u64 ak = (1ull << 63) | id;
-    if (archive_->has(ak)) {
+    if (strm_.archive->has(ak)) {
       // its changes back (a grid changed by play was designed before it was changed)
       std::vector<u64> touched;
-      apply_grid_entry(sl, archive_->get(ak), &touched);
-      archive_->erase(ak);
+      apply_grid_entry(sl, strm_.archive->get(ak), &touched);
+      strm_.archive->erase(ak);
     } else {
       // fresh from the source: designed when first touched
       for (const auto& [k, c] : st.g.chunks())
@@ -685,26 +685,26 @@ void World::generate_grids(u64 key) {
     }
   }
   // the source's joints here (not those archived with their machine: it comes back as it was)
-  for (const SourceJoint& sj : source_->joints(unkey3(key))) {
+  for (const SourceJoint& sj : strm_.source->joints(unkey3(key))) {
     if (sj.id == 0 || sj.id >= 0x80000000u) continue;
     const JointId id = 0x80000000u | sj.id;
-    if (archived_joints_.count(id) || std::any_of(jrecs_.begin(), jrecs_.end(), [&](const JointRec& r) { return r.id == id; })) continue;
+    if (strm_.archived_joints.count(id) || std::any_of(att_.joints.begin(), att_.joints.end(), [&](const JointRec& r) { return r.id == id; })) continue;
     if (add_joint_impl(sj.desc, id) == 0) continue;
     // (what it holds comes loose onto it at the next tick: a machine's parts are pieces)
-    const auto it = std::lower_bound(jrecs_.begin(), jrecs_.end(), id, [](const JointRec& r, JointId v) { return r.id < v; });
+    const auto it = std::lower_bound(att_.joints.begin(), att_.joints.end(), id, [](const JointRec& r, JointId v) { return r.id < v; });
     for (const JointRec::End* E : {&it->a, &it->b})
       if (E->kind == JointAnchor::Kind::Grid && E->piece == 0)
         if (const i32 sl = slot_of(E->grid); sl >= 0) seeds_.push_back(GVox{E->voxel, static_cast<u16>(sl)});
   }
 }
 
-void World::evict_grid(u16 g, u64 home_region) {
+void World::Impl::evict_grid(u16 g, u64 home_region) {
   GridState& st = gs(g);
   if (!st.g.modified_chunks().empty()) archive_record((1ull << 63) | st.id, grid_entry(g), home_region);
   remove_grid_slot(g, true);
 }
 
-std::vector<u8> World::grid_entry(u16 g) const {
+std::vector<u8> World::Impl::grid_entry(u16 g) const {
   const GridState& st = gs(g);
   GridDelta d;
   d.id = st.id;
@@ -724,7 +724,7 @@ std::vector<u8> World::grid_entry(u16 g) const {
   return write_grid_entry(d);
 }
 
-bool World::apply_grid_entry(u16 g, const std::vector<u8>& e, std::vector<u64>* touched) {
+bool World::Impl::apply_grid_entry(u16 g, const std::vector<u8>& e, std::vector<u64>* touched) {
   Rd in{e};
   GridDelta d;
   if (!read_grid_entry(in, kGridsVersion, grid_.h, &d)) return false;
@@ -745,10 +745,10 @@ bool World::apply_grid_entry(u16 g, const std::vector<u8>& e, std::vector<u64>* 
   return true;
 }
 
-void World::evict_chunk(u64 k) {
+void World::Impl::evict_chunk(u64 k) {
   const IVec3 cc = unkey3(k);
   // the grids at home in it go with it
-  if (const auto ht = home_grids_.find(k); ht != home_grids_.end()) {
+  if (const auto ht = strm_.home_grids.find(k); ht != strm_.home_grids.end()) {
     const std::vector<u16> home = ht->second;
     for (u16 g : home)
       if (live(g)) evict_grid(g, region_of(k));
@@ -766,21 +766,21 @@ void World::evict_chunk(u64 k) {
   gs(0).undesigned.erase(k);
   const u64 region = region_of(k);
   if (grid_.is_modified(k)) archive_record(k, grid_.chunk_record(k), region);
-  sys_evicted_.push_back(k);
-  archive_->seen(region, st_.ticks);
-  if (const auto rt = region_resident_.find(region); rt != region_resident_.end() && --rt->second <= 0) region_resident_.erase(rt);
+  ext_.sys_evicted.push_back(k);
+  strm_.archive->seen(region, st_.ticks);
+  if (const auto rt = strm_.region_resident.find(region); rt != strm_.region_resident.end() && --rt->second <= 0) strm_.region_resident.erase(rt);
   const bool resident = grid_.chunk(cc) != nullptr;
   mark_owners_stale(0, k);
   gs(0).owner.erase(k);
   gs(0).frags.erase(k);
   grid_.remove_chunk(cc);
-  generated_.erase(k);
-  if (--column_count_[key3(cc[0], cc[1], 0)] <= 0) column_count_.erase(key3(cc[0], cc[1], 0));
+  strm_.generated.erase(k);
+  if (--strm_.column_count[key3(cc[0], cc[1], 0)] <= 0) strm_.column_count.erase(key3(cc[0], cc[1], 0));
   ++st_.evicted_total;
-  if (resident) evicted_chunks_.push_back(k);
+  if (resident) strm_.evicted_chunks.push_back(k);
 }
 
-void World::unload_sleepers(const std::vector<u64>& chunks, const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of) {
+void World::Impl::unload_sleepers(const std::vector<u64>& chunks, const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of) {
   if (chunks.empty()) return;
   // (the sleeping pieces in the chunks that go, archived with them: a joint's pieces together,
   // when all of them sleep)
@@ -808,7 +808,7 @@ void World::unload_sleepers(const std::vector<u64>& chunks, const std::function<
   }
 }
 
-std::vector<std::vector<i64>> World::piece_groups(bool touching) const {
+std::vector<std::vector<i64>> World::Impl::piece_groups(bool touching) const {
   // pieces joined by joints (and, if asked, touching: what rests on a machine goes with it), each
   // group's ids ascending, the groups in the order of their first ids
   const size_t n = rigid_.bodies.size();
@@ -842,51 +842,51 @@ std::vector<std::vector<i64>> World::piece_groups(bool touching) const {
   return out;
 }
 
-void World::unload_joints() {
+void World::Impl::unload_joints() {
   // (a joint held by a voxel that went out of range with its chunk or grid: gone quietly - a
   // source's is made again with its grids)
-  for (size_t k = jrecs_.size(); k-- > 0;) {
+  for (size_t k = att_.joints.size(); k-- > 0;) {
     bool gone = false;
-    for (const JointRec::End* E : {&jrecs_[k].a, &jrecs_[k].b}) {
+    for (const JointRec::End* E : {&att_.joints[k].a, &att_.joints[k].b}) {
       if (E->kind != JointAnchor::Kind::Grid || E->piece != 0) continue;
       const i32 s = slot_of(E->grid);
       if (s < 0) gone = true;
       else if (s == 0) {
         const IVec3 c = chunk_of(E->voxel);
-        gone = gone || !generated_.count(key3(c[0], c[1], c[2]));
+        gone = gone || !strm_.generated.count(key3(c[0], c[1], c[2]));
       }
     }
     if (!gone) continue;
-    jrecs_.erase(jrecs_.begin() + static_cast<std::ptrdiff_t>(k));
+    att_.joints.erase(att_.joints.begin() + static_cast<std::ptrdiff_t>(k));
     rigid_.joints.erase(rigid_.joints.begin() + static_cast<std::ptrdiff_t>(k));
   }
 }
 
-u64 World::region_of(u64 chunk_key) const { return source_ ? source_->region(unkey3(chunk_key)) : 0; }
+u64 World::Impl::region_of(u64 chunk_key) const { return strm_.source ? strm_.source->region(unkey3(chunk_key)) : 0; }
 
-void World::archive_record(u64 key, const std::vector<u8>& rec, u64 region) {
-  if (!archive_->fits(rec.size())) forget_regions(rec.size(), region);
-  if (!archive_->put(key, region, rec, st_.ticks)) {
+void World::Impl::archive_record(u64 key, const std::vector<u8>& rec, u64 region) {
+  if (!strm_.archive->fits(rec.size())) forget_regions(rec.size(), region);
+  if (!strm_.archive->put(key, region, rec, st_.ticks)) {
     // (no region to forget but this chunk's own, which is partly resident: its changes go)
     ++st_.forgotten_chunks;
   }
 }
 
-bool World::forget_regions(size_t need, u64 keep) {
+bool World::Impl::forget_regions(size_t need, u64 keep) {
   // the regions out of range, least recently seen first (ties: by key)
   std::vector<std::pair<i64, u64>> cand;
-  for (const auto& [r, info] : archive_->regions())
-    if (r != keep && !region_resident_.count(r)) cand.push_back({info.seen, r});
+  for (const auto& [r, info] : strm_.archive->regions())
+    if (r != keep && !strm_.region_resident.count(r)) cand.push_back({info.seen, r});
   std::sort(cand.begin(), cand.end());
   for (const auto& [seen, r] : cand) {
-    if (archive_->fits(need)) break;
+    if (strm_.archive->fits(need)) break;
     forget_region(r);
   }
-  return archive_->fits(need);
+  return strm_.archive->fits(need);
 }
 
-void World::forget_region(u64 region) {
-  const std::vector<u64> keys = archive_->forget(region);
+void World::Impl::forget_region(u64 region) {
+  const std::vector<u64> keys = strm_.archive->forget(region);
   if (keys.empty()) return;
   ++st_.forgotten_regions;
   for (u64 k : keys) {
@@ -910,71 +910,71 @@ void World::forget_region(u64 region) {
   events_.push_back(ev);
 }
 
-void World::forget_stale_regions() {
-  if (stream_.forget_after_s <= 0.0) return;
-  const i64 ttl = static_cast<i64>(std::ceil(stream_.forget_after_s / cfg_.dt));
+void World::Impl::forget_stale_regions() {
+  if (strm_.config.forget_after_s <= 0.0) return;
+  const i64 ttl = static_cast<i64>(std::ceil(strm_.config.forget_after_s / cfg_.dt));
   std::vector<u64> stale;
-  for (const auto& [r, info] : archive_->regions())
-    if (!region_resident_.count(r) && st_.ticks - info.seen > ttl) stale.push_back(r);
+  for (const auto& [r, info] : strm_.archive->regions())
+    if (!strm_.region_resident.count(r) && st_.ticks - info.seen > ttl) stale.push_back(r);
   std::sort(stale.begin(), stale.end());
   for (u64 r : stale) forget_region(r);
 }
 
-void World::ensure_chunks(const IVec3& vlo, const IVec3& vhi) {
-  if (!source_) return;
+void World::Impl::ensure_chunks(const IVec3& vlo, const IVec3& vhi) {
+  if (!strm_.source) return;
   for (i32 x = vlo[0] >> kChunkBits; x <= (vhi[0] - 1) >> kChunkBits; ++x)
     for (i32 y = vlo[1] >> kChunkBits; y <= (vhi[1] - 1) >> kChunkBits; ++y)
       for (i32 z = vlo[2] >> kChunkBits; z <= (vhi[2] - 1) >> kChunkBits; ++z) generate_chunk(key3(x, y, z));
 }
 
-f64 World::focus_distance(const IVec3& cc) const {
+f64 World::Impl::focus_distance(const IVec3& cc) const {
   f64 best = INFINITY;
   const f64 cx = (cc[0] + 0.5) * kChunk * grid_.h - 0.5 * grid_.h, cy = (cc[1] + 0.5) * kChunk * grid_.h - 0.5 * grid_.h;
-  for (const V3& f : focus_) {
+  for (const V3& f : strm_.focus) {
     const f64 dx = cx - f.x, dy = cy - f.y;
     best = std::min(best, std::sqrt(dx * dx + dy * dy));
   }
   return best;
 }
 
-bool World::chunk_resident(const IVec3& cc) const {
-  if (!source_) return true;
-  const IVec3 lo = source_->chunk_lo(), hi = source_->chunk_hi();
+bool World::Impl::chunk_resident(const IVec3& cc) const {
+  if (!strm_.source) return true;
+  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
   for (int q = 0; q < 3; ++q)
     if (cc[q] < lo[q] || cc[q] >= hi[q]) return true;  // outside the world: air
-  return generated_.count(key3(cc[0], cc[1], cc[2])) > 0;
+  return strm_.generated.count(key3(cc[0], cc[1], cc[2])) > 0;
 }
 
 // Ticks between the scans of the resident chunks for eviction (while the focus stays near).
 
-int World::stream_update() {
-  if (!source_ || focus_.empty()) return 0;  // (no focus yet: nothing is loaded or evicted)
+int World::Impl::stream_update() {
+  if (!strm_.source || strm_.focus.empty()) return 0;  // (no focus yet: nothing is loaded or evicted)
   int generated = 0;
   const auto t0 = Clock::now();
   const f64 cs = grid_.h * kChunk;
-  const IVec3 lo = source_->chunk_lo(), hi = source_->chunk_hi();
+  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
   auto hdist = [&](const IVec3& cc) { return focus_distance(cc); };
-  const i32 rl = static_cast<i32>(std::ceil(stream_.load_radius / cs)) + 1;
+  const i32 rl = static_cast<i32>(std::ceil(strm_.config.load_radius / cs)) + 1;
   std::vector<std::pair<f64, u64>> want;
   std::unordered_set<u64> columns;
-  for (const V3& f : focus_) {
+  for (const V3& f : strm_.focus) {
     const i32 cx = static_cast<i32>(std::floor((f.x / grid_.h + 0.5) / kChunk));
     const i32 cy = static_cast<i32>(std::floor((f.y / grid_.h + 0.5) / kChunk));
     for (i32 x = std::max(lo[0], cx - rl); x <= std::min(hi[0] - 1, cx + rl); ++x)
       for (i32 y = std::max(lo[1], cy - rl); y <= std::min(hi[1] - 1, cy + rl); ++y) {
         if (!columns.insert(key3(x, y, 0)).second) continue;
         const f64 d = hdist({x, y, 0});
-        if (d > stream_.load_radius) continue;
-        const auto cit = column_count_.find(key3(x, y, 0));
-        if (cit != column_count_.end() && cit->second >= hi[2] - lo[2]) continue;
+        if (d > strm_.config.load_radius) continue;
+        const auto cit = strm_.column_count.find(key3(x, y, 0));
+        if (cit != strm_.column_count.end() && cit->second >= hi[2] - lo[2]) continue;
         for (i32 z = lo[2]; z < hi[2]; ++z) {
           const u64 k = key3(x, y, z);
-          if (!generated_.count(k)) want.push_back({d, k});
+          if (!strm_.generated.count(k)) want.push_back({d, k});
         }
       }
   }
   std::sort(want.begin(), want.end());
-  int budget = stream_.chunks_per_tick, empty_budget = 16 * stream_.chunks_per_tick;
+  int budget = strm_.config.chunks_per_tick, empty_budget = 16 * strm_.config.chunks_per_tick;
   std::vector<std::vector<Vox>> vox;
   std::vector<u8> any;
   for (size_t i = 0; i < want.size() && budget > 0 && empty_budget > 0;) {
@@ -983,7 +983,7 @@ int World::stream_update() {
     for (auto& v : vox)
       if (v.capacity() < size_t(kChunkVox)) v = grid_.acquire_buffer(kAir);  // (recycled arrays)
     any.assign(n, 0);
-    const ChunkSource* src = source_.get();
+    const ChunkSource* src = strm_.source.get();
     parallel_for(static_cast<i64>(n), 1, [&](i64 b0, i64 e0) {
       for (i64 j = b0; j < e0; ++j) any[size_t(j)] = src->generate(unkey3(want[i + size_t(j)].second), vox[size_t(j)]) ? 1 : 0;
     });
@@ -1008,17 +1008,17 @@ int World::stream_update() {
   // at once when a focus point moved far since - eviction has the hysteresis of its radius over
   // the load radius to spare)
   {
-    bool moved = evict_scan_focus_.size() != focus_.size();
-    for (size_t i = 0; i < focus_.size() && !moved; ++i) {
-      const V3 d = focus_[i] - evict_scan_focus_[i];
+    bool moved = strm_.evict_scan_focus.size() != strm_.focus.size();
+    for (size_t i = 0; i < strm_.focus.size() && !moved; ++i) {
+      const V3 d = strm_.focus[i] - strm_.evict_scan_focus[i];
       moved = d.x * d.x + d.y * d.y > 64.0;
     }
-    if (!moved && st_.ticks - evict_scan_tick_ < cfg_.evict_scan_ticks && st_.ticks % 30 != 0) {
+    if (!moved && st_.ticks - strm_.evict_scan_tick < cfg_.evict_scan_ticks && st_.ticks % 30 != 0) {
       st_.stream_ms = ms_since(t0);
       return generated;
     }
-    evict_scan_tick_ = st_.ticks;
-    evict_scan_focus_ = focus_;
+    strm_.evict_scan_tick = st_.ticks;
+    strm_.evict_scan_focus = strm_.focus;
   }
   // evict far from the focus points (never under a piece, which would fall through, or a
   // structure being solved)
@@ -1037,7 +1037,7 @@ int World::stream_update() {
     bool far = true;
     for (i64 id : g) {
       const Body* b = rigid_.find(id);
-      chunks_of_body(*b, [&](u64 k) { far = far && hdist(unkey3(k)) > stream_.evict_radius; });
+      chunks_of_body(*b, [&](u64 k) { far = far && hdist(unkey3(k)) > strm_.config.evict_radius; });
       if (!far) break;
     }
     if (far) archive_group(g, chunks_of_body);
@@ -1047,7 +1047,7 @@ int World::stream_update() {
     const ArticulationRec* a = art(id);
     bool far = true;
     for (u16 i = 0; i < a->links.size() && far; ++i)
-      if (const Body* b = art_link(*a, i)) chunks_of_body(*b, [&](u64 k) { far = far && hdist(unkey3(k)) > stream_.evict_radius; });
+      if (const Body* b = art_link(*a, i)) chunks_of_body(*b, [&](u64 k) { far = far && hdist(unkey3(k)) > strm_.config.evict_radius; });
     if (far) archive_articulation(id, chunks_of_body);
   }
   std::unordered_set<u64> busy;
@@ -1072,25 +1072,25 @@ int World::stream_update() {
       }
   }
   std::vector<u64> out;
-  for (u64 k : generated_) {
+  for (u64 k : strm_.generated) {
     const IVec3 cc = unkey3(k);
-    if (hdist(cc) <= stream_.evict_radius || busy.count(k)) continue;
+    if (hdist(cc) <= strm_.config.evict_radius || busy.count(k)) continue;
     out.push_back(k);
   }
   std::sort(out.begin(), out.end());  // (in key order, whatever the set's)
   unload_sleepers(out, chunks_of_body);
   for (u64 k : out) evict_chunk(k);
   if (!out.empty()) unload_joints();
-  if (stream_.max_resident_mb > 0.0 && st_.ticks % 30 == 0) {
-    const i64 budget_b = static_cast<i64>(stream_.max_resident_mb * 1048576.0);
+  if (strm_.config.max_resident_mb > 0.0 && st_.ticks % 30 == 0) {
+    const i64 budget_b = static_cast<i64>(strm_.config.max_resident_mb * 1048576.0);
     i64 bytes = grid_.memory_bytes();
     if (bytes > budget_b) {
       std::vector<std::pair<f64, u64>> far;
-      for (u64 k : generated_) {
+      for (u64 k : strm_.generated) {
         const IVec3 cc = unkey3(k);
         if (!grid_.chunk(cc)) continue;
         const f64 d = hdist(cc);
-        if (d > stream_.load_radius && !busy.count(k)) far.push_back({-d, k});
+        if (d > strm_.config.load_radius && !busy.count(k)) far.push_back({-d, k});
       }
       std::sort(far.begin(), far.end());
       std::vector<u64> go;
@@ -1113,8 +1113,8 @@ int World::stream_update() {
   return generated;
 }
 
-void World::add_loads_to(const Structure& s, std::vector<f64>& F) const {
-  for (const auto& [group, list] : loads_)
+void World::Impl::add_loads_to(const Structure& s, std::vector<f64>& F) const {
+  for (const auto& [group, list] : ext_.loads)
     for (const VoxelLoad& l : list) {
       const i32 g = slot_of(l.grid);
       if (g < 0) continue;
@@ -1139,10 +1139,10 @@ void World::add_loads_to(const Structure& s, std::vector<f64>& F) const {
     }
 }
 
-bool World::modified() const {
-  if (!grid_.modified_chunks().empty() || archive_->size() > 0 || !removed_base_.empty()) return true;
+bool World::Impl::modified() const {
+  if (!grid_.modified_chunks().empty() || strm_.archive->size() > 0 || !removed_base_.empty()) return true;
   // (the session's pieces, and joints that have run)
-  if (!rigid_.bodies.empty() || (!jrecs_.empty() && steps_ > 0)) return true;
+  if (!rigid_.bodies.empty() || (!att_.joints.empty() && steps_ > 0)) return true;
   for (size_t g = 1; g < grids_.size(); ++g)
     if (grids_[g] && (!grids_[g]->base || !grids_[g]->g.modified_chunks().empty())) return true;
   return false;
@@ -1151,21 +1151,21 @@ bool World::modified() const {
 // ---------------------------------------------------------------------------------------------
 // Output
 
-std::vector<u64> World::take_changed_chunks() {
+std::vector<u64> World::Impl::take_changed_chunks() {
   finish_tick_changes();  // (changes since the last tick: the systems hear of them at the next)
   std::vector<u64> keys;
-  if (host_dirty_all_) {
+  if (ext_.host_dirty_all) {
     for (const auto& [k, c] : grid_.chunks()) keys.push_back(k);
-    host_dirty_all_ = false;
+    ext_.host_dirty_all = false;
   } else {
-    keys.assign(host_dirty_.begin(), host_dirty_.end());
+    keys.assign(ext_.host_dirty.begin(), ext_.host_dirty.end());
   }
-  std::unordered_set<u64>().swap(host_dirty_);
+  std::unordered_set<u64>().swap(ext_.host_dirty);
   std::sort(keys.begin(), keys.end());
   return keys;
 }
 
-std::vector<GridChunk> World::take_changed_grid_chunks() {
+std::vector<GridChunk> World::Impl::take_changed_grid_chunks() {
   finish_tick_changes();
   std::vector<GridChunk> out;
   out.swap(grid_dirty_);
@@ -1177,15 +1177,15 @@ std::vector<GridChunk> World::take_changed_grid_chunks() {
   return out;
 }
 
-std::vector<u64> World::take_evicted_chunks() {
+std::vector<u64> World::Impl::take_evicted_chunks() {
   std::vector<u64> out;
-  out.swap(evicted_chunks_);
+  out.swap(strm_.evicted_chunks);
   std::sort(out.begin(), out.end());
   out.erase(std::unique(out.begin(), out.end()), out.end());
   return out;
 }
 
-bool World::debug_field(GridId grid, const IVec3& cc, DebugField field, std::vector<u8>* out) {
+bool World::Impl::debug_field(GridId grid, const IVec3& cc, DebugField field, std::vector<u8>* out) {
   const i32 gi = slot_of(grid);
   if (gi < 0) {
     out->assign(kChunkVox, 0);
@@ -1233,13 +1233,13 @@ bool World::debug_field(GridId grid, const IVec3& cc, DebugField field, std::vec
   return true;
 }
 
-std::vector<WorldEvent> World::take_events() {
+std::vector<WorldEvent> World::Impl::take_events() {
   std::vector<WorldEvent> out;
   out.swap(events_);
   return out;
 }
 
-WorldStats World::stats() const {
+WorldStats World::Impl::stats() const {
   WorldStats s = st_;
   s.voxels = grid_.solid_count();
   s.chunks = static_cast<i64>(grid_.chunks().size());
@@ -1253,17 +1253,17 @@ WorldStats World::stats() const {
   s.grids = oriented_;
   s.memory_mb = f64(mem) / (1024.0 * 1024.0);
   s.structures = static_cast<i32>(structures_.size());
-  s.resident_chunks = static_cast<i64>(generated_.size());
-  s.archived_chunks = static_cast<i64>(archive_->size());
-  s.archive_used_mb = static_cast<f64>(archive_->used_bytes()) / 1048576.0;
-  s.archive_capacity_mb = static_cast<f64>(archive_->capacity()) / 1048576.0;
+  s.resident_chunks = static_cast<i64>(strm_.generated.size());
+  s.archived_chunks = static_cast<i64>(strm_.archive->size());
+  s.archive_used_mb = static_cast<f64>(strm_.archive->used_bytes()) / 1048576.0;
+  s.archive_capacity_mb = static_cast<f64>(strm_.archive->capacity()) / 1048576.0;
   s.bodies = static_cast<i32>(rigid_.bodies.size());
   s.awake = rigid_.awake_count();
   s.contacts = static_cast<i32>(rigid_.contacts().size());
   return s;
 }
 
-MemoryReport World::memory() const {
+MemoryReport World::Impl::memory() const {
   MemoryReport m;
   m.grid = grid_.memory_bytes() + hash_bytes(grid_.chunks()) + grid_.bookkeeping_bytes();
   m.chunks = static_cast<i32>(grid_.chunks().size());
@@ -1287,19 +1287,19 @@ MemoryReport World::memory() const {
   for (const auto& bp : rigid_.bodies) m.pieces += body_bytes(*bp);
   m.pieces += vec_bytes(rigid_.contacts()) + static_cast<i64>(rigid_.bodies.capacity() * sizeof(void*));
   m.piece_count = static_cast<i32>(rigid_.bodies.size());
-  m.archive = archive_->memory_bytes() + hash_bytes(region_resident_);
-  m.archived_chunks = static_cast<i32>(archive_->size());
+  m.archive = strm_.archive->memory_bytes() + hash_bytes(strm_.region_resident);
+  m.archived_chunks = static_cast<i32>(strm_.archive->size());
   m.caches = hash_bytes(warm_u_) + hash_bytes(judged_) + hash_bytes(dead_loads_);
   for (const auto& [id, l] : dead_loads_) m.caches += vec_bytes(l);
-  m.caches += hash_bytes(generated_) + hash_bytes(column_count_) + hash_bytes(home_grids_);
-  m.queues = vec_bytes(events_) + vec_bytes(evicted_chunks_) + vec_bytes(queue_) + vec_bytes(seeds_) + grid_.dirty_bytes() + vec_bytes(grid_dirty_) +
-             hash_bytes(host_dirty_) + vec_bytes(sys_changed_) + vec_bytes(sys_generated_) + vec_bytes(sys_evicted_);
-  for (const auto& [g, l] : loads_) m.caches += vec_bytes(l) + 48;
-  for (const auto& sys : systems_) m.systems += sys->memory_bytes();
+  m.caches += hash_bytes(strm_.generated) + hash_bytes(strm_.column_count) + hash_bytes(strm_.home_grids);
+  m.queues = vec_bytes(events_) + vec_bytes(strm_.evicted_chunks) + vec_bytes(queue_) + vec_bytes(seeds_) + grid_.dirty_bytes() + vec_bytes(grid_dirty_) +
+             hash_bytes(ext_.host_dirty) + vec_bytes(ext_.sys_changed) + vec_bytes(ext_.sys_generated) + vec_bytes(ext_.sys_evicted);
+  for (const auto& [g, l] : ext_.loads) m.caches += vec_bytes(l) + 48;
+  for (const auto& sys : ext_.systems) m.systems += sys->memory_bytes();
   return m;
 }
 
-u64 World::state_hash() const {
+u64 World::Impl::state_hash() const {
   // (the content, whatever its representation: a uniform chunk and a mixed one of equal voxels
   // hash alike, an all-air chunk like no chunk at all)
   u64 hsh = 1469598103934665603ull;
@@ -1355,7 +1355,7 @@ u64 World::state_hash() const {
   return hsh;
 }
 
-u64 World::session_hash() const {
+u64 World::Impl::session_hash() const {
   u64 hsh = state_hash();
   auto mix = [&](u64 v) { hsh = (hsh ^ v) * 1099511628211ull; };
   auto bits = [](f64 x) {
@@ -1378,8 +1378,8 @@ u64 World::session_hash() const {
   for (size_t k = 0; k < rigid_.joints.size(); ++k) {
     const Joint& j = rigid_.joints[k];
     mix(0x4A4F494Eull ^ j.id);
-    mix(static_cast<u64>(jrecs_[k].a.piece));
-    mix(static_cast<u64>(jrecs_[k].b.piece));
+    mix(static_cast<u64>(att_.joints[k].a.piece));
+    mix(static_cast<u64>(att_.joints[k].b.piece));
     mix(bits(j.force.x));
     mix(bits(j.force.y));
     mix(bits(j.force.z));
@@ -1389,12 +1389,12 @@ u64 World::session_hash() const {
   for (size_t k = 0; k < rigid_.wheels.size(); ++k) {
     const Wheel& w = rigid_.wheels[k];
     mix(0x5748454Cull ^ w.id);
-    mix(static_cast<u64>(wrecs_[k].mount.piece));
+    mix(static_cast<u64>(att_.wheels[k].mount.piece));
     mix(bits(w.spin));
     mix(bits(w.length));
     mix(bits(w.load));
   }
-  for (const auto& sys : systems_) mix(sys->state_hash());
+  for (const auto& sys : ext_.systems) mix(sys->state_hash());
   return hsh;
 }
 
@@ -1532,7 +1532,7 @@ bool overlap_box_cube(const V3& ca, const V3& ea, const V3& cb, const V3 u[3], f
 
 }  // namespace
 
-RayHit World::raycast(const V3& o, const V3& dir, f64 max_dist) const {
+RayHit World::Impl::raycast(const V3& o, const V3& dir, f64 max_dist) const {
   RayHit hit;
   const f64 h = grid_.h;
   V3 d = dir;
@@ -1620,7 +1620,7 @@ RayHit World::raycast(const V3& o, const V3& dir, f64 max_dist) const {
   return hit;
 }
 
-CollideResult World::collide(const V3& mn, const V3& mx, const V3& mv) const {
+CollideResult World::Impl::collide(const V3& mn, const V3& mx, const V3& mv) const {
   CollideResult res;
   const f64 h = grid_.h;
   const f64 eps = 1e-4;
@@ -1684,10 +1684,10 @@ CollideResult World::collide(const V3& mn, const V3& mx, const V3& mv) const {
   return res;
 }
 
-SweepHit World::sweep(const V3& mn, const V3& mx, const V3& mv) const { return sweep_solids(mn, mx, mv, true); }
+SweepHit World::Impl::sweep(const V3& mn, const V3& mx, const V3& mv) const { return sweep_solids(mn, mx, mv, true); }
 
 template <class F>
-void World::for_voxel_cubes(const V3& lo, const V3& hi, bool world_grid, F&& f) const {
+void World::Impl::for_voxel_cubes(const V3& lo, const V3& hi, bool world_grid, F&& f) const {
   for (size_t gi = world_grid ? 0 : 1; gi < grids_.size(); ++gi) {
     if (!grids_[gi]) continue;
     const GridState& st = *grids_[gi];
@@ -1749,7 +1749,7 @@ void World::for_voxel_cubes(const V3& lo, const V3& hi, bool world_grid, F&& f) 
   }
 }
 
-SweepHit World::sweep_solids(const V3& mn, const V3& mx, const V3& mv, bool world_grid) const {
+SweepHit World::Impl::sweep_solids(const V3& mn, const V3& mx, const V3& mv, bool world_grid) const {
   SweepHit res;
   if (!in_range(mn) || !in_range(mx) || !finite3(mv)) return res;
   for (int a = 0; a < 3; ++a)
@@ -1797,7 +1797,7 @@ SweepHit World::sweep_solids(const V3& mn, const V3& mx, const V3& mv, bool worl
   return res;
 }
 
-bool World::overlaps(const V3& mn, const V3& mx) const {
+bool World::Impl::overlaps(const V3& mn, const V3& mx) const {
   if (!in_range(mn) || !in_range(mx)) return false;
   for (int a = 0; a < 3; ++a)
     if (!(mx[a] >= mn[a]) || mx[a] - mn[a] > 16.0) return false;
@@ -1810,7 +1810,7 @@ bool World::overlaps(const V3& mn, const V3& mx) const {
   return hit;
 }
 
-f64 World::depenetrate(const V3& mn, const V3& mx, f64 max_rise) const {
+f64 World::Impl::depenetrate(const V3& mn, const V3& mx, f64 max_rise) const {
   if (!overlaps(mn, mx)) return 0.0;
   const f64 step = 0.5 * grid_.h;
   max_rise = std::min(std::max(0.0, max_rise), 16.0);
@@ -1819,7 +1819,7 @@ f64 World::depenetrate(const V3& mn, const V3& mx, f64 max_rise) const {
   return -1.0;
 }
 
-void World::debug_voxel(const IVec3& p) {
+void World::Impl::debug_voxel(const IVec3& p) {
   const IVec3 cc = chunk_of(p);
   FragChunk& fc = frag_chunk(0, cc);
   const i32 g = fc.at(chunk_index(p));
@@ -1841,7 +1841,7 @@ void World::debug_voxel(const IVec3& p) {
   std::printf("\n");
 }
 
-bool World::touches_undesigned(const Structure& s) const {
+bool World::Impl::touches_undesigned(const Structure& s) const {
   bool any = false;
   for (const auto& gp : grids_) any = any || (gp && !gp->undesigned.empty());
   if (!any) return false;
@@ -1850,7 +1850,7 @@ bool World::touches_undesigned(const Structure& s) const {
   return false;
 }
 
-void World::design_structure(Structure& s, bool dry) {
+void World::Impl::design_structure(Structure& s, bool dry) {
   // self-weight only (the design state), to a tight tolerance
   auto designed = [&] {
     if (dry) return;
@@ -1936,7 +1936,7 @@ void World::design_structure(Structure& s, bool dry) {
   designed();
 }
 
-void World::design_near(const V3& c, f64 r) {
+void World::Impl::design_near(const V3& c, f64 r) {
   // structures around an event, designed before it happens (streamed worlds, grids added later)
   for (size_t gi = 0; gi < grids_.size(); ++gi) {
     if (!grids_[gi] || grids_[gi]->undesigned.empty()) continue;

@@ -16,35 +16,35 @@ using namespace world_detail;
 // ---------------------------------------------------------------------------------------------
 // Layers
 
-int World::add_layer(const LayerSpec& spec) {
+int World::Impl::add_layer(const LayerSpec& spec) {
   const int i = grid_.add_layer(spec);
   if (i >= 0) {
-    layer_specs_ = grid_.layers();
+    ext_.layers = grid_.layers();
     for (size_t g = 1; g < grids_.size(); ++g)
-      if (grids_[g]) grids_[g]->g.adopt_layers(layer_specs_);
+      if (grids_[g]) grids_[g]->g.adopt_layers(ext_.layers);
   }
   return i;
 }
 
-std::vector<u64> World::take_layer_changes(GridId grid, int L) {
+std::vector<u64> World::Impl::take_layer_changes(GridId grid, int L) {
   const i32 g = slot_of(grid);
   return g < 0 ? std::vector<u64>{} : vg(static_cast<u16>(g)).take_layer_dirty(L);
 }
 
-u8 World::layer(GridId grid, int L, const IVec3& p) const {
+u8 World::Impl::layer(GridId grid, int L, const IVec3& p) const {
   const i32 g = slot_of(grid);
   return g < 0 ? 0 : vg(static_cast<u16>(g)).layer(L, p);
 }
 
-i32 World::set_layer(int L, const std::vector<LayerEdit>& edits) { return world_set_layer(0, L, edits); }
+i32 World::Impl::set_layer(int L, const std::vector<LayerEdit>& edits) { return world_set_layer(0, L, edits); }
 
-i32 World::set_layer(GridId grid, int L, const std::vector<LayerEdit>& edits) {
+i32 World::Impl::set_layer(GridId grid, int L, const std::vector<LayerEdit>& edits) {
   const i32 g = slot_of(grid);
   return g < 0 ? 0 : world_set_layer(static_cast<u16>(g), L, edits);
 }
 
-i32 World::world_set_layer(u16 g, int L, const std::vector<LayerEdit>& edits) {
-  if (L < 0 || L >= static_cast<int>(layer_specs_.size())) return 0;
+i32 World::Impl::world_set_layer(u16 g, int L, const std::vector<LayerEdit>& edits) {
+  if (L < 0 || L >= static_cast<int>(ext_.layers.size())) return 0;
   VoxelGrid& G = vg(g);
   i32 changed = 0;
   std::vector<GVox> damaged;
@@ -52,7 +52,7 @@ i32 World::world_set_layer(u16 g, int L, const std::vector<LayerEdit>& edits) {
     if (!in_voxel_range(e.p)) continue;
     // (a chunk of a streamed world not generated yet has no voxels to hold values: a chunk
     // made for them would stand in for the generated one)
-    if (g == 0 && source_ && !chunk_resident(chunk_of(e.p))) continue;
+    if (g == 0 && strm_.source && !chunk_resident(chunk_of(e.p))) continue;
     if (!G.set_layer(L, e.p, e.v)) continue;
     ++changed;
     if (L == kDamageLayer) damaged.push_back(GVox{e.p, g});
@@ -72,16 +72,16 @@ i32 World::world_set_layer(u16 g, int L, const std::vector<LayerEdit>& edits) {
   return changed;
 }
 
-u8 World::piece_layer(i64 id, i32 shape, int L, const IVec3& p) const {
+u8 World::Impl::piece_layer(i64 id, i32 shape, int L, const IVec3& p) const {
   const Body* b = piece(id);
   if (!b || L < 0 || L >= kMaxLayers || shape < 0 || shape >= static_cast<i32>(b->shapes.size())) return 0;
   const BodyShape& S = b->shapes[size_t(shape)];
   return S.layer_at(L, S.index(p));
 }
 
-i32 World::set_piece_layer(i64 id, i32 shape, int L, const std::vector<LayerEdit>& edits) {
+i32 World::Impl::set_piece_layer(i64 id, i32 shape, int L, const std::vector<LayerEdit>& edits) {
   Body* b = rigid_.find(id);
-  if (!b || L < 0 || L >= static_cast<int>(layer_specs_.size()) || shape < 0 || shape >= static_cast<i32>(b->shapes.size())) return 0;
+  if (!b || L < 0 || L >= static_cast<int>(ext_.layers.size()) || shape < 0 || shape >= static_cast<i32>(b->shapes.size())) return 0;
   BodyShape& S = b->shapes[size_t(shape)];
   std::vector<u8>& a = S.layer[size_t(L)];
   i32 changed = 0;
@@ -109,7 +109,7 @@ i32 World::set_piece_layer(i64 id, i32 shape, int L, const std::vector<LayerEdit
   return changed;
 }
 
-bool World::remove_piece_voxels(i64 id, i32 shape, const std::vector<IVec3>& voxels, bool dust) {
+bool World::Impl::remove_piece_voxels(i64 id, i32 shape, const std::vector<IVec3>& voxels, bool dust) {
   Body* bp = rigid_.find(id);
   if (!bp || shape < 0 || shape >= static_cast<i32>(bp->shapes.size())) return false;
   Body& b = *bp;
@@ -145,7 +145,7 @@ bool World::remove_piece_voxels(i64 id, i32 shape, const std::vector<IVec3>& vox
   return true;
 }
 
-void World::refresh_strengths(const std::vector<GVox>& voxels) {
+void World::Impl::refresh_strengths(const std::vector<GVox>& voxels) {
   // The bonds with a face at a voxel whose damage changed are measured again: every face of a
   // free voxel is in a bond of its node, and those of an anchored one in bonds of its free
   // neighbours' nodes (the other bonds' sections did not change); junction samples likewise
@@ -211,9 +211,9 @@ void World::refresh_strengths(const std::vector<GVox>& voxels) {
   }
 }
 
-VoxelAt World::voxel_at(const GVox& v) const { return {vg(v.grid).get(v.p), vg(v.grid).layer(kDamageLayer, v.p)}; }
+VoxelAt World::Impl::voxel_at(const GVox& v) const { return {vg(v.grid).get(v.p), vg(v.grid).layer(kDamageLayer, v.p)}; }
 
-VoxelAt World::piece_voxel_at(const Body& b, i32 shape, const IVec3& p) const {
+VoxelAt World::Impl::piece_voxel_at(const Body& b, i32 shape, const IVec3& p) const {
   const BodyShape& S = b.shapes[size_t(shape)];
   const i32 i = S.index(p);
   return {i < 0 ? kAir : S.vox[size_t(i)], S.layer_at(kDamageLayer, i)};
@@ -237,7 +237,7 @@ u64 load_hash(const VoxelLoad& l) {
 
 }  // namespace
 
-void World::set_loads(u64 group, std::vector<VoxelLoad> loads) {
+void World::Impl::set_loads(u64 group, std::vector<VoxelLoad> loads) {
   std::vector<VoxelLoad> ok;
   ok.reserve(loads.size());
   for (const VoxelLoad& l : loads)
@@ -246,7 +246,7 @@ void World::set_loads(u64 group, std::vector<VoxelLoad> loads) {
   // registered: loads on a structure nobody touched would go unnoticed; registered structures
   // see the current loads every tick)
   std::unordered_set<u64> before;
-  if (const auto it = loads_.find(group); it != loads_.end())
+  if (const auto it = ext_.loads.find(group); it != ext_.loads.end())
     for (const VoxelLoad& l : it->second) before.insert(load_hash(l));
   u64 last = ~0ull;
   for (const VoxelLoad& l : ok) {
@@ -259,11 +259,11 @@ void World::set_loads(u64 group, std::vector<VoxelLoad> loads) {
     last = k;
     seeds_.push_back(GVox{l.voxel, static_cast<u16>(g)});
   }
-  if (ok.empty()) loads_.erase(group);
-  else loads_[group] = std::move(ok);
+  if (ok.empty()) ext_.loads.erase(group);
+  else ext_.loads[group] = std::move(ok);
 }
 
-void World::add_external_loads() {
+void World::Impl::add_external_loads() {
   // (in the loads' own order - the same sums on every platform - with what a load's chunk
   // resolves to kept for the next load: producers write their loads chunk by chunk)
   u64 ck = ~0ull;
@@ -275,7 +275,7 @@ void World::add_external_loads() {
   i64 sid = -1;
   Structure* s = nullptr;
   const std::vector<i32>* nodes = nullptr;
-  for (const auto& [group, list] : loads_)
+  for (const auto& [group, list] : ext_.loads)
     for (const VoxelLoad& l : list) {
       const IVec3 cc = chunk_of(l.voxel);
       const u64 k = key3(cc[0], cc[1], cc[2]);
@@ -324,27 +324,27 @@ void World::add_external_loads() {
     }
 }
 
-void World::apply_force(i64 id, const V3& point, const V3& force) {
+void World::Impl::apply_force(i64 id, const V3& point, const V3& force) {
   Body* b = rigid_.find(id);
   if (!b || !in_range(point) || !finite3(force)) return;
   b->force += force;
   b->torque += cross(point - b->x, force);
 }
 
-void World::wake_piece(i64 id) {
+void World::Impl::wake_piece(i64 id) {
   if (Body* b = rigid_.find(id)) rigid_.wake(*b);
 }
 
 // ---------------------------------------------------------------------------------------------
 // Systems
 
-void World::add_system(std::shared_ptr<WorldSystem> s) {
+void World::Impl::add_system(std::shared_ptr<WorldSystem> s) {
   if (!s) return;
-  systems_.push_back(s);
-  s->attach(*this);
+  ext_.systems.push_back(s);
+  s->attach(*self_);
 }
 
-void World::finish_tick_changes() {
+void World::Impl::finish_tick_changes() {
   // voxel changes of this tick: to the systems now, to the host when it takes them (the
   // oriented grids' to the host only)
   for (size_t g = 1; g < grids_.size(); ++g) {
@@ -352,13 +352,13 @@ void World::finish_tick_changes() {
     for (u64 k : grids_[g]->g.take_dirty()) {
       grid_dirty_.push_back(GridChunk{grids_[g]->id, unkey3(k)});
       // (the world's lattice sees a grid's voxels too: the systems of it hear of them)
-      if (!systems_.empty()) {
+      if (!ext_.systems.empty()) {
         const GridState& st = *grids_[g];
         const f64 h = st.g.h;
         const IVec3 c = unkey3(k);
         const V3 lo{h * (c[0] * kChunk - 0.5), h * (c[1] * kChunk - 0.5), h * (c[2] * kChunk - 0.5)};
         const V3 hi{lo.x + h * kChunk, lo.y + h * kChunk, lo.z + h * kChunk};
-        world_chunks_of(st.xf, lo, hi, sys_changed_);
+        world_chunks_of(st.xf, lo, hi, ext_.sys_changed);
       }
     }
   }
@@ -369,24 +369,24 @@ void World::finish_tick_changes() {
       if (grids_[g]) grids_[g]->g.mark_all_dirty();
   }
   std::vector<u64> keys = grid_.take_dirty();
-  if (!host_dirty_all_) {
-    host_dirty_.insert(keys.begin(), keys.end());
-    if (host_dirty_.size() > std::max<size_t>(65536, 4 * grid_.chunks().size())) {
-      host_dirty_all_ = true;
-      std::unordered_set<u64>().swap(host_dirty_);
+  if (!ext_.host_dirty_all) {
+    ext_.host_dirty.insert(keys.begin(), keys.end());
+    if (ext_.host_dirty.size() > std::max<size_t>(65536, 4 * grid_.chunks().size())) {
+      ext_.host_dirty_all = true;
+      std::unordered_set<u64>().swap(ext_.host_dirty);
     }
   }
-  sys_changed_.insert(sys_changed_.end(), keys.begin(), keys.end());
-  std::sort(sys_changed_.begin(), sys_changed_.end());
-  sys_changed_.erase(std::unique(sys_changed_.begin(), sys_changed_.end()), sys_changed_.end());
+  ext_.sys_changed.insert(ext_.sys_changed.end(), keys.begin(), keys.end());
+  std::sort(ext_.sys_changed.begin(), ext_.sys_changed.end());
+  ext_.sys_changed.erase(std::unique(ext_.sys_changed.begin(), ext_.sys_changed.end()), ext_.sys_changed.end());
 }
 
-void World::step_systems(bool step) {
+void World::Impl::step_systems(bool step) {
   finish_tick_changes();
   std::vector<u64> evicted, generated, changed;
-  evicted.swap(sys_evicted_);
-  generated.swap(sys_generated_);
-  changed.swap(sys_changed_);
+  evicted.swap(ext_.sys_evicted);
+  generated.swap(ext_.sys_generated);
+  changed.swap(ext_.sys_changed);
   // (what is resident now: a chunk generated and evicted again since is gone)
   auto sorted_unique = [](std::vector<u64>& v) {
     std::sort(v.begin(), v.end());
@@ -398,14 +398,14 @@ void World::step_systems(bool step) {
   generated.erase(std::remove_if(generated.begin(), generated.end(), gone), generated.end());
   changed.erase(std::remove_if(changed.begin(), changed.end(), gone), changed.end());
   // (by index over the systems there are now: one added by a system starts next tick)
-  const size_t n = systems_.size();
+  const size_t n = ext_.systems.size();
   systems_phase_ = true;
   for (size_t i = 0; i < n; ++i) {
-    const std::shared_ptr<WorldSystem> s = systems_[i];
-    if (!evicted.empty()) s->on_evicted(*this, evicted);
-    if (!generated.empty()) s->on_generated(*this, generated);
-    if (!changed.empty()) s->on_voxels_changed(*this, changed);
-    if (step) s->step(*this, cfg_.dt);
+    const std::shared_ptr<WorldSystem> s = ext_.systems[i];
+    if (!evicted.empty()) s->on_evicted(*self_, evicted);
+    if (!generated.empty()) s->on_generated(*self_, generated);
+    if (!changed.empty()) s->on_voxels_changed(*self_, changed);
+    if (step) s->step(*self_, cfg_.dt);
   }
   systems_phase_ = false;
 }

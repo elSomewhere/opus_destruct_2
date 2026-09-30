@@ -35,13 +35,13 @@ void squares(const V3& n, V3* t1, V3* t2) {
 // ---------------------------------------------------------------------------------------------
 // The API
 
-JointId World::add_joint(const JointDesc& d) {
+JointId World::Impl::add_joint(const JointDesc& d) {
   if (in_tick_) return 0;
   return add_joint_impl(d, 0);
 }
 
-JointId World::add_joint_impl(const JointDesc& d, JointId want) {
-  if (want != 0 && std::any_of(jrecs_.begin(), jrecs_.end(), [&](const JointRec& r) { return r.id == want; })) return 0;
+JointId World::Impl::add_joint_impl(const JointDesc& d, JointId want) {
+  if (want != 0 && std::any_of(att_.joints.begin(), att_.joints.end(), [&](const JointRec& r) { return r.id == want; })) return 0;
   if (!in_range(d.a.point) || !in_range(d.b.point) || !finite3(d.axis) || !(norm2(d.axis) > 1e-12)) return 0;
   for (f64 x : {d.length, d.lower, d.upper, d.break_force, d.break_torque, d.stiffness, d.damping, d.drive.speed, d.drive.max, d.drive.target,
                 d.drive.target2, d.drive.period, d.drive.phase, d.drive.stiffness})
@@ -126,7 +126,7 @@ JointId World::add_joint_impl(const JointDesc& d, JointId want) {
     }
   }
   Joint j;
-  j.id = want != 0 ? want : next_joint_;
+  j.id = want != 0 ? want : att_.next_joint;
   j.type = d.type;
   if (d.type == JointType::Distance) {
     const f64 L = d.length >= 0.0 ? d.length : norm(d.b.point - d.a.point);
@@ -149,37 +149,37 @@ JointId World::add_joint_impl(const JointDesc& d, JointId want) {
   r.id = j.id;
   // (in id order: the solver's order, the same on every run)
   const size_t k = insert_joint(r, j);
-  if (!fill_joint_end(jrecs_[k], false) || !fill_joint_end(jrecs_[k], true)) {
-    jrecs_.erase(jrecs_.begin() + static_cast<std::ptrdiff_t>(k));
+  if (!fill_joint_end(att_.joints[k], false) || !fill_joint_end(att_.joints[k], true)) {
+    att_.joints.erase(att_.joints.begin() + static_cast<std::ptrdiff_t>(k));
     rigid_.joints.erase(rigid_.joints.begin() + static_cast<std::ptrdiff_t>(k));
     return 0;
   }
-  if (want == 0) ++next_joint_;
+  if (want == 0) ++att_.next_joint;
   wake_joint(k);  // (what hangs on it moves now)
   return j.id;
 }
 
-size_t World::insert_joint(const JointRec& r, const Joint& j) {
-  const auto it = std::lower_bound(jrecs_.begin(), jrecs_.end(), r.id, [](const JointRec& x, JointId v) { return x.id < v; });
-  const size_t k = static_cast<size_t>(it - jrecs_.begin());
-  jrecs_.insert(it, r);
+size_t World::Impl::insert_joint(const JointRec& r, const Joint& j) {
+  const auto it = std::lower_bound(att_.joints.begin(), att_.joints.end(), r.id, [](const JointRec& x, JointId v) { return x.id < v; });
+  const size_t k = static_cast<size_t>(it - att_.joints.begin());
+  att_.joints.insert(it, r);
   rigid_.joints.insert(rigid_.joints.begin() + static_cast<std::ptrdiff_t>(k), j);
   return k;
 }
 
-bool World::remove_joint(JointId id) {
+bool World::Impl::remove_joint(JointId id) {
   if (in_tick_) return false;
-  for (size_t k = 0; k < jrecs_.size(); ++k)
-    if (jrecs_[k].id == id) {
+  for (size_t k = 0; k < att_.joints.size(); ++k)
+    if (att_.joints[k].id == id) {
       wake_joint(k);
-      jrecs_.erase(jrecs_.begin() + static_cast<std::ptrdiff_t>(k));
+      att_.joints.erase(att_.joints.begin() + static_cast<std::ptrdiff_t>(k));
       rigid_.joints.erase(rigid_.joints.begin() + static_cast<std::ptrdiff_t>(k));
       return true;
     }
   return false;
 }
 
-bool World::set_joint_drive(JointId id, const JointDrive& d) {
+bool World::Impl::set_joint_drive(JointId id, const JointDrive& d) {
   for (f64 x : {d.speed, d.max, d.target, d.target2, d.period, d.phase, d.stiffness})
     if (!std::isfinite(x)) return false;
   for (size_t k = 0; k < rigid_.joints.size(); ++k) {
@@ -192,7 +192,7 @@ bool World::set_joint_drive(JointId id, const JointDrive& d) {
   return false;
 }
 
-bool World::set_joint_limits(JointId id, bool on, f64 lower, f64 upper) {
+bool World::Impl::set_joint_limits(JointId id, bool on, f64 lower, f64 upper) {
   if (!std::isfinite(lower) || !std::isfinite(upper)) return false;
   for (size_t k = 0; k < rigid_.joints.size(); ++k) {
     Joint& j = rigid_.joints[k];
@@ -206,14 +206,14 @@ bool World::set_joint_limits(JointId id, bool on, f64 lower, f64 upper) {
   return false;
 }
 
-void World::wake_joint(size_t k) {
-  for (const JointRec::End* E : {&jrecs_[k].a, &jrecs_[k].b})
+void World::Impl::wake_joint(size_t k) {
+  for (const JointRec::End* E : {&att_.joints[k].a, &att_.joints[k].b})
     if (E->piece > 0)
       if (Body* b = rigid_.find(E->piece)) rigid_.wake(*b);
 }
 
-bool World::joint(JointId id, JointState* out) const {
-  for (size_t k = 0; k < jrecs_.size(); ++k) {
+bool World::Impl::joint(JointId id, JointState* out) const {
+  for (size_t k = 0; k < att_.joints.size(); ++k) {
     const Joint& j = rigid_.joints[k];
     if (j.id != id || j.broken) continue;
     auto world_of = [&](const JointEnd& e) {
@@ -228,20 +228,20 @@ bool World::joint(JointId id, JointState* out) const {
     out->force = j.force;
     out->torque = j.torque;
     out->value = j.value;
-    out->piece_a = jrecs_[k].a.piece > 0 ? jrecs_[k].a.piece : 0;
-    out->piece_b = jrecs_[k].b.piece > 0 ? jrecs_[k].b.piece : 0;
+    out->piece_a = att_.joints[k].a.piece > 0 ? att_.joints[k].a.piece : 0;
+    out->piece_b = att_.joints[k].b.piece > 0 ? att_.joints[k].b.piece : 0;
     out->latched = j.latched;
     return true;
   }
   return false;
 }
 
-std::vector<i64> World::joined_pieces(i64 piece) const {
+std::vector<i64> World::Impl::joined_pieces(i64 piece) const {
   std::vector<i64> out;
   if (piece <= 0) return out;
-  for (size_t k = 0; k < jrecs_.size(); ++k) {
+  for (size_t k = 0; k < att_.joints.size(); ++k) {
     if (rigid_.joints[k].broken) continue;
-    const i64 a = jrecs_[k].a.piece, b = jrecs_[k].b.piece;
+    const i64 a = att_.joints[k].a.piece, b = att_.joints[k].b.piece;
     if (a == piece && b > 0 && b != piece) out.push_back(b);
     else if (b == piece && a > 0 && a != piece) out.push_back(a);
   }
@@ -250,18 +250,18 @@ std::vector<i64> World::joined_pieces(i64 piece) const {
   return out;
 }
 
-std::vector<JointId> World::joints() const {
+std::vector<JointId> World::Impl::joints() const {
   std::vector<JointId> out;
   for (size_t k = 0; k < rigid_.joints.size(); ++k)
-    if (!rigid_.joints[k].broken && jrecs_[k].articulation == 0) out.push_back(rigid_.joints[k].id);
+    if (!rigid_.joints[k].broken && att_.joints[k].articulation == 0) out.push_back(rigid_.joints[k].id);
   return out;
 }
 
 // ---------------------------------------------------------------------------------------------
 // The solver's ends
 
-bool World::fill_joint_end(JointRec& r, bool b_end) {
-  const size_t k = static_cast<size_t>(&r - jrecs_.data());
+bool World::Impl::fill_joint_end(JointRec& r, bool b_end) {
+  const size_t k = static_cast<size_t>(&r - att_.joints.data());
   JointRec::End& E = b_end ? r.b : r.a;
   JointEnd& e = b_end ? rigid_.joints[k].b : rigid_.joints[k].a;
   e = JointEnd{};
@@ -312,11 +312,11 @@ bool World::fill_joint_end(JointRec& r, bool b_end) {
   return true;
 }
 
-void World::update_joint_ends() {
-  for (size_t k = 0; k < jrecs_.size(); ++k) {
+void World::Impl::update_joint_ends() {
+  for (size_t k = 0; k < att_.joints.size(); ++k) {
     Joint& j = rigid_.joints[k];
     if (j.broken) continue;
-    if (!fill_joint_end(jrecs_[k], false) || !fill_joint_end(jrecs_[k], true)) {
+    if (!fill_joint_end(att_.joints[k], false) || !fill_joint_end(att_.joints[k], true)) {
       // (an end lost its hold: the voxel, the grid, the piece or the body is gone)
       j.broken = true;
       j.force = V3{};
@@ -324,8 +324,8 @@ void World::update_joint_ends() {
   }
 }
 
-void World::reap_joints() {
-  for (size_t k = jrecs_.size(); k-- > 0;) {
+void World::Impl::reap_joints() {
+  for (size_t k = att_.joints.size(); k-- > 0;) {
     const Joint& j = rigid_.joints[k];
     if (!j.broken) continue;
     // where: between its ends
@@ -344,53 +344,53 @@ void World::reap_joints() {
   }
 }
 
-void World::drop_joint(size_t k, f64 force, const V3& at) {
+void World::Impl::drop_joint(size_t k, f64 force, const V3& at) {
   WorldEvent ev;
   ev.kind = WorldEvent::Kind::JointBroken;
-  ev.id = jrecs_[k].id;
+  ev.id = att_.joints[k].id;
   ev.pos = at;
   ev.strength = force;
   events_.push_back(ev);
   wake_joint(k);
-  jrecs_.erase(jrecs_.begin() + static_cast<std::ptrdiff_t>(k));
+  att_.joints.erase(att_.joints.begin() + static_cast<std::ptrdiff_t>(k));
   rigid_.joints.erase(rigid_.joints.begin() + static_cast<std::ptrdiff_t>(k));
 }
 
 // ---------------------------------------------------------------------------------------------
 // Following the voxels
 
-void World::joints_to_piece(const Body& b) {
-  for (size_t k = 0; k < jrecs_.size(); ++k) {
+void World::Impl::joints_to_piece(const Body& b) {
+  for (size_t k = 0; k < att_.joints.size(); ++k) {
     for (int e = 0; e < 2; ++e) {
-      JointRec::End& E = e ? jrecs_[k].b : jrecs_[k].a;
+      JointRec::End& E = e ? att_.joints[k].b : att_.joints[k].a;
       if (E.kind != JointAnchor::Kind::Grid || E.piece != 0) continue;
       for (size_t q = 0; q < b.shapes.size(); ++q)
         if (b.shapes[q].grid == E.grid && shape_solid(b.shapes[q], E.voxel)) {
           E.piece = b.id;
           E.shape = static_cast<i32>(q);
-          if (!rigid_.joints[k].broken && !fill_joint_end(jrecs_[k], e != 0)) rigid_.joints[k].broken = true;
+          if (!rigid_.joints[k].broken && !fill_joint_end(att_.joints[k], e != 0)) rigid_.joints[k].broken = true;
           break;
         }
     }
   }
 }
 
-void World::joints_follow_splits() {
-  if (jrecs_.empty() || (pending_retire_.empty() && split_kept_.empty())) return;
-  for (size_t k = 0; k < jrecs_.size(); ++k)
+void World::Impl::joints_follow_splits() {
+  if (att_.joints.empty() || (pw_.pending_retire.empty() && pw_.split_kept.empty())) return;
+  for (size_t k = 0; k < att_.joints.size(); ++k)
     for (int e = 0; e < 2; ++e) {
-      JointRec::End& E = e ? jrecs_[k].b : jrecs_[k].a;
+      JointRec::End& E = e ? att_.joints[k].b : att_.joints[k].a;
       if (E.piece <= 0 || E.kind == JointAnchor::Kind::Link) continue;  // (a link never splits)
-      if (!std::binary_search(pending_retire_.begin(), pending_retire_.end(), E.piece)) {
+      if (!std::binary_search(pw_.pending_retire.begin(), pw_.pending_retire.end(), E.piece)) {
         // (a piece split in place: an end on a part that came off follows it)
-        if (!std::binary_search(split_kept_.begin(), split_kept_.end(), E.piece)) continue;
+        if (!std::binary_search(pw_.split_kept.begin(), pw_.split_kept.end(), E.piece)) continue;
         const Body* b = rigid_.find(E.piece);
         if (b && E.shape >= 0 && size_t(E.shape) < b->shapes.size() && shape_solid(b->shapes[size_t(E.shape)], E.voxel)) continue;
       }
       // (the part its voxel is in; none: it went to dust, it was carved)
       i64 to = -1;
       i32 shape = -1;
-      for (const auto& c : pending_add_) {
+      for (const auto& c : pw_.pending_add) {
         if (c->origin != E.piece) continue;
         for (size_t q = 0; q < c->shapes.size() && to < 0; ++q)
           if (c->shapes[q].grid == E.grid && shape_solid(c->shapes[q], E.voxel)) {
@@ -405,8 +405,8 @@ void World::joints_follow_splits() {
     }
 }
 
-bool World::jointed(const std::vector<FragKey>& members) {
-  for (const JointRec& r : jrecs_)
+bool World::Impl::jointed(const std::vector<FragKey>& members) {
+  for (const JointRec& r : att_.joints)
     for (const JointRec::End* E : {&r.a, &r.b}) {
       if (E->kind != JointAnchor::Kind::Grid || E->piece != 0) continue;
       const i32 s = slot_of(E->grid);
@@ -421,13 +421,13 @@ bool World::jointed(const std::vector<FragKey>& members) {
 // ---------------------------------------------------------------------------------------------
 // Loads
 
-void World::joint_structure_loads(f64 dt_sub) {
+void World::Impl::joint_structure_loads(f64 dt_sub) {
   (void)dt_sub;
-  for (size_t k = 0; k < jrecs_.size(); ++k) {
+  for (size_t k = 0; k < att_.joints.size(); ++k) {
     const Joint& j = rigid_.joints[k];
     if (j.broken || (norm2(j.force) == 0.0 && norm2(j.torque) == 0.0)) continue;
     for (int e = 0; e < 2; ++e) {
-      const JointRec::End& E = e ? jrecs_[k].b : jrecs_[k].a;
+      const JointRec::End& E = e ? att_.joints[k].b : att_.joints[k].a;
       if (E.kind != JointAnchor::Kind::Grid || E.piece != 0) continue;
       const i32 s = slot_of(E.grid);
       if (s < 0) continue;
@@ -469,12 +469,12 @@ void World::joint_structure_loads(f64 dt_sub) {
   }
 }
 
-void World::joint_piece_forces(std::vector<std::vector<PointForce>>& per, std::vector<f64>& fsum) const {
-  for (size_t k = 0; k < jrecs_.size(); ++k) {
+void World::Impl::joint_piece_forces(std::vector<std::vector<PointForce>>& per, std::vector<f64>& fsum) const {
+  for (size_t k = 0; k < att_.joints.size(); ++k) {
     const Joint& j = rigid_.joints[k];
     if (j.broken || norm2(j.force) == 0.0) continue;
     for (int e = 0; e < 2; ++e) {
-      const JointRec::End& E = e ? jrecs_[k].b : jrecs_[k].a;
+      const JointRec::End& E = e ? att_.joints[k].b : att_.joints[k].a;
       if (E.piece <= 0 || E.shape < 0) continue;
       const auto it = std::lower_bound(rigid_.bodies.begin(), rigid_.bodies.end(), E.piece,
                                        [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });

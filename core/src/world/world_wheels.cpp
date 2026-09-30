@@ -85,13 +85,13 @@ constexpr u32 kNoGrid = 0xFFFFFFFFu;  // (a wheel piece's shape came from no gri
 // ---------------------------------------------------------------------------------------------
 // The API
 
-WheelId World::add_wheel(const WheelDesc& d) {
+WheelId World::Impl::add_wheel(const WheelDesc& d) {
   if (in_tick_) return 0;
   return add_wheel_impl(d, 0);
 }
 
-WheelId World::add_wheel_impl(const WheelDesc& d, WheelId want) {
-  if (want != 0 && std::any_of(wrecs_.begin(), wrecs_.end(), [&](const WheelRec& r) { return r.id == want; })) return 0;
+WheelId World::Impl::add_wheel_impl(const WheelDesc& d, WheelId want) {
+  if (want != 0 && std::any_of(att_.wheels.begin(), att_.wheels.end(), [&](const WheelRec& r) { return r.id == want; })) return 0;
   if (!in_range(d.mount.point) || !finite3(d.down) || !finite3(d.axle) || !(norm2(d.down) > 1e-12) || !(norm2(d.axle) > 1e-12)) return 0;
   for (f64 x : {d.radius, d.width, d.rest, d.travel, d.stiffness, d.damping, d.inertia, d.grip, d.break_force})
     if (!std::isfinite(x) || x < 0.0) return 0;
@@ -154,7 +154,7 @@ WheelId World::add_wheel_impl(const WheelDesc& d, WheelId want) {
     }
   }
   Wheel w;
-  w.id = want != 0 ? want : next_wheel_;
+  w.id = want != 0 ? want : att_.next_wheel;
   w.radius = d.radius;
   w.width = d.width;
   w.rest = d.rest;
@@ -171,36 +171,36 @@ WheelId World::add_wheel_impl(const WheelDesc& d, WheelId want) {
   r.material = static_cast<int>(d.material) < kMaxMaterials ? d.material : MaterialId::Steel;
   const size_t k = insert_wheel(r, w);
   if (!fill_wheel_mount(k)) {
-    wrecs_.erase(wrecs_.begin() + static_cast<std::ptrdiff_t>(k));
+    att_.wheels.erase(att_.wheels.begin() + static_cast<std::ptrdiff_t>(k));
     rigid_.wheels.erase(rigid_.wheels.begin() + static_cast<std::ptrdiff_t>(k));
     return 0;
   }
-  if (want == 0) ++next_wheel_;
+  if (want == 0) ++att_.next_wheel;
   if (Body* b = rigid_.find(rigid_.wheels[k].body)) rigid_.wake(*b);
   return w.id;
 }
 
-size_t World::insert_wheel(const WheelRec& r, const Wheel& w) {
-  const auto it = std::lower_bound(wrecs_.begin(), wrecs_.end(), r.id, [](const WheelRec& x, WheelId v) { return x.id < v; });
-  const size_t k = static_cast<size_t>(it - wrecs_.begin());
-  wrecs_.insert(it, r);
+size_t World::Impl::insert_wheel(const WheelRec& r, const Wheel& w) {
+  const auto it = std::lower_bound(att_.wheels.begin(), att_.wheels.end(), r.id, [](const WheelRec& x, WheelId v) { return x.id < v; });
+  const size_t k = static_cast<size_t>(it - att_.wheels.begin());
+  att_.wheels.insert(it, r);
   rigid_.wheels.insert(rigid_.wheels.begin() + static_cast<std::ptrdiff_t>(k), w);
   return k;
 }
 
-bool World::remove_wheel(WheelId id) {
+bool World::Impl::remove_wheel(WheelId id) {
   if (in_tick_) return false;
-  for (size_t k = 0; k < wrecs_.size(); ++k)
-    if (wrecs_[k].id == id) {
+  for (size_t k = 0; k < att_.wheels.size(); ++k)
+    if (att_.wheels[k].id == id) {
       if (Body* b = rigid_.find(rigid_.wheels[k].body)) rigid_.wake(*b);
-      wrecs_.erase(wrecs_.begin() + static_cast<std::ptrdiff_t>(k));
+      att_.wheels.erase(att_.wheels.begin() + static_cast<std::ptrdiff_t>(k));
       rigid_.wheels.erase(rigid_.wheels.begin() + static_cast<std::ptrdiff_t>(k));
       return true;
     }
   return false;
 }
 
-bool World::set_wheel_input(WheelId id, f64 drive, f64 brake, f64 steer) {
+bool World::Impl::set_wheel_input(WheelId id, f64 drive, f64 brake, f64 steer) {
   if (!std::isfinite(drive) || !std::isfinite(brake) || !std::isfinite(steer)) return false;
   for (Wheel& w : rigid_.wheels) {
     if (w.id != id || w.broken) continue;
@@ -219,11 +219,11 @@ bool World::set_wheel_input(WheelId id, f64 drive, f64 brake, f64 steer) {
   return false;
 }
 
-bool World::wheel(WheelId id, WheelState* out) const {
-  for (size_t k = 0; k < wrecs_.size(); ++k) {
+bool World::Impl::wheel(WheelId id, WheelState* out) const {
+  for (size_t k = 0; k < att_.wheels.size(); ++k) {
     const Wheel& w = rigid_.wheels[k];
     if (w.id != id || w.broken) continue;
-    const WheelRec& r = wrecs_[k];
+    const WheelRec& r = att_.wheels[k];
     WheelState s;
     s.radius = w.radius;
     s.width = w.width;
@@ -268,14 +268,14 @@ bool World::wheel(WheelId id, WheelState* out) const {
   return false;
 }
 
-std::vector<WheelId> World::wheels() const {
+std::vector<WheelId> World::Impl::wheels() const {
   std::vector<WheelId> out;
   for (const Wheel& w : rigid_.wheels)
     if (!w.broken) out.push_back(w.id);
   return out;
 }
 
-bool World::set_piece_max_speed(i64 piece, f64 max_speed) {
+bool World::Impl::set_piece_max_speed(i64 piece, f64 max_speed) {
   Body* b = rigid_.find(piece);
   if (!b || !std::isfinite(max_speed) || max_speed < 0.0) return false;
   b->max_speed = std::min(max_speed, 1000.0);
@@ -285,8 +285,8 @@ bool World::set_piece_max_speed(i64 piece, f64 max_speed) {
 // ---------------------------------------------------------------------------------------------
 // The solver's mounts
 
-bool World::fill_wheel_mount(size_t k) {
-  JointRec::End& E = wrecs_[k].mount;
+bool World::Impl::fill_wheel_mount(size_t k) {
+  JointRec::End& E = att_.wheels[k].mount;
   Wheel& w = rigid_.wheels[k];
   w.body = 0;
   if (E.piece < 0) return false;  // (lost with the part of a piece it was in)
@@ -313,8 +313,8 @@ bool World::fill_wheel_mount(size_t k) {
   return true;
 }
 
-void World::update_wheel_mounts() {
-  for (size_t k = 0; k < wrecs_.size(); ++k) {
+void World::Impl::update_wheel_mounts() {
+  for (size_t k = 0; k < att_.wheels.size(); ++k) {
     Wheel& w = rigid_.wheels[k];
     if (w.broken) continue;
     if (!fill_wheel_mount(k)) {
@@ -325,7 +325,7 @@ void World::update_wheel_mounts() {
     // (where it is: what comes off becomes a piece there)
     if (const Body* b = w.body != 0 ? rigid_.find(w.body) : nullptr) {
       const WheelFrame F = wheel_frame(w, *b);
-      WheelRec& r = wrecs_[k];
+      WheelRec& r = att_.wheels[k];
       r.placed = true;
       r.centre = F.C;
       r.rot = wheel_rot(F, w.angle);
@@ -335,11 +335,11 @@ void World::update_wheel_mounts() {
   }
 }
 
-void World::reap_wheels() {
-  for (size_t k = wrecs_.size(); k-- > 0;) {
+void World::Impl::reap_wheels() {
+  for (size_t k = att_.wheels.size(); k-- > 0;) {
     const Wheel& w = rigid_.wheels[k];
     if (!w.broken) continue;
-    const WheelRec& r = wrecs_[k];
+    const WheelRec& r = att_.wheels[k];
     WorldEvent ev;
     ev.kind = WorldEvent::Kind::WheelDetached;
     ev.id = r.id;
@@ -351,16 +351,16 @@ void World::reap_wheels() {
     ev.strength = norm(w.force);
     if (r.placed) ev.voxels = static_cast<i32>(make_wheel_body(w));
     events_.push_back(ev);
-    wrecs_.erase(wrecs_.begin() + static_cast<std::ptrdiff_t>(k));
+    att_.wheels.erase(att_.wheels.begin() + static_cast<std::ptrdiff_t>(k));
     rigid_.wheels.erase(rigid_.wheels.begin() + static_cast<std::ptrdiff_t>(k));
   }
 }
 
-i64 World::make_wheel_body(const Wheel& w) {
+i64 World::Impl::make_wheel_body(const Wheel& w) {
   size_t k = 0;
   while (k < rigid_.wheels.size() && rigid_.wheels[k].id != w.id) ++k;
-  if (k == wrecs_.size()) return 0;
-  const WheelRec& r = wrecs_[k];
+  if (k == att_.wheels.size()) return 0;
+  const WheelRec& r = att_.wheels[k];
   // a disc of rubber on its rim: its axle along its lattice's y, a few voxels across
   const f64 hw = std::clamp(w.radius / 3.5, 0.25 * grid_.h, grid_.h);
   const i32 n = std::max(1, static_cast<i32>(std::floor(w.radius / hw + 0.5)));
@@ -410,9 +410,9 @@ i64 World::make_wheel_body(const Wheel& w) {
 // ---------------------------------------------------------------------------------------------
 // Following the voxels
 
-void World::wheels_to_piece(const Body& b) {
-  for (size_t k = 0; k < wrecs_.size(); ++k) {
-    JointRec::End& E = wrecs_[k].mount;
+void World::Impl::wheels_to_piece(const Body& b) {
+  for (size_t k = 0; k < att_.wheels.size(); ++k) {
+    JointRec::End& E = att_.wheels[k].mount;
     if (E.piece != 0) continue;
     for (size_t q = 0; q < b.shapes.size(); ++q)
       if (b.shapes[q].grid == E.grid && shape_solid(b.shapes[q], E.voxel)) {
@@ -424,20 +424,20 @@ void World::wheels_to_piece(const Body& b) {
   }
 }
 
-void World::wheels_follow_splits() {
-  if (wrecs_.empty() || (pending_retire_.empty() && split_kept_.empty())) return;
-  for (size_t k = 0; k < wrecs_.size(); ++k) {
-    JointRec::End& E = wrecs_[k].mount;
+void World::Impl::wheels_follow_splits() {
+  if (att_.wheels.empty() || (pw_.pending_retire.empty() && pw_.split_kept.empty())) return;
+  for (size_t k = 0; k < att_.wheels.size(); ++k) {
+    JointRec::End& E = att_.wheels[k].mount;
     if (E.piece <= 0) continue;
-    if (!std::binary_search(pending_retire_.begin(), pending_retire_.end(), E.piece)) {
+    if (!std::binary_search(pw_.pending_retire.begin(), pw_.pending_retire.end(), E.piece)) {
       // (a piece split in place: a mount on a part that came off follows it)
-      if (!std::binary_search(split_kept_.begin(), split_kept_.end(), E.piece)) continue;
+      if (!std::binary_search(pw_.split_kept.begin(), pw_.split_kept.end(), E.piece)) continue;
       const Body* b = rigid_.find(E.piece);
       if (b && E.shape >= 0 && size_t(E.shape) < b->shapes.size() && shape_solid(b->shapes[size_t(E.shape)], E.voxel)) continue;
     }
     i64 to = -1;
     i32 shape = -1;
-    for (const auto& c : pending_add_) {
+    for (const auto& c : pw_.pending_add) {
       if (c->origin != E.piece) continue;
       for (size_t q = 0; q < c->shapes.size() && to < 0; ++q)
         if (c->shapes[q].grid == E.grid && shape_solid(c->shapes[q], E.voxel)) {
@@ -455,7 +455,7 @@ void World::wheels_follow_splits() {
 // ---------------------------------------------------------------------------------------------
 // Loads
 
-void World::wheel_structure_loads(f64 dt_sub) {
+void World::Impl::wheel_structure_loads(f64 dt_sub) {
   (void)dt_sub;
   const f64 imp = par_.impact;
   // (a wheel rolling onto a fragment is a load that moves, not a blow: it counts as an impact
@@ -510,16 +510,16 @@ void World::wheel_structure_loads(f64 dt_sub) {
   }
 }
 
-void World::wheel_piece_forces(std::vector<std::vector<PointForce>>& per, std::vector<f64>& fsum) const {
+void World::Impl::wheel_piece_forces(std::vector<std::vector<PointForce>>& per, std::vector<f64>& fsum) const {
   auto index_of = [&](i64 id) -> i64 {
     const auto it = std::lower_bound(rigid_.bodies.begin(), rigid_.bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
     return (it != rigid_.bodies.end() && (*it)->id == id) ? static_cast<i64>(it - rigid_.bodies.begin()) : -1;
   };
-  for (size_t k = 0; k < wrecs_.size(); ++k) {
+  for (size_t k = 0; k < att_.wheels.size(); ++k) {
     const Wheel& w = rigid_.wheels[k];
     if (w.broken || !w.contact || w.body == 0 || norm2(w.force) == 0.0) continue;
     // the carrier: through its mount's voxel
-    const JointRec::End& E = wrecs_[k].mount;
+    const JointRec::End& E = att_.wheels[k].mount;
     const i64 ia = index_of(w.body);
     if (ia >= 0 && size_t(ia) < per.size() && E.shape >= 0) {
       const Body& A = *rigid_.bodies[size_t(ia)];
