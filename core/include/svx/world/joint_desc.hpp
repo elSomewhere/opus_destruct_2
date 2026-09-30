@@ -21,6 +21,7 @@ struct JointAnchor {
     Grid,   // a voxel of a grid (kWorldGrid too): its structure holds it, and it goes with the piece
             // it breaks off in
     Piece,  // a voxel of a piece: it goes with the part it is in when the piece breaks
+    Link,   // a link of an articulation (id: World::link_body): a point that moves with it
   };
   Kind kind = Kind::World;
   u64 id = 0;  // the grid or piece

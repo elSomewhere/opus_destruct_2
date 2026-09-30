@@ -628,6 +628,7 @@ bool World::read_session(Rd& in, SessionDelta* s, u32 version) const {
 void World::apply_session(SessionDelta&& s) {
   // (the saved session's pieces and joints take the place of the ones there are: the level's
   // joints, made again by the host, are the saved ones now)
+  clear_articulations();
   std::vector<i64> ids;
   for (const auto& bp : rigid_.bodies) ids.push_back(bp->id);
   remove_bodies(ids, PieceEnd::Removed);

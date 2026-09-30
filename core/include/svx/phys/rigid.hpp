@@ -27,10 +27,57 @@
 
 #include "svx/base/vec.hpp"
 #include "svx/phys/joint.hpp"
+#include "svx/phys/target.hpp"
 #include "svx/phys/wheel.hpp"
 #include "svx/world/grid.hpp"
 
 namespace svx {
+
+// A collision sphere of a link: its centre in the body frame (relative to the centre of mass) and
+// its radius.
+struct BodySphere {
+  V3 c;
+  f64 r = 0.0;
+};
+
+// What makes a body a link (docs/MOTION.md §6): a rigid body of no voxels - a limb of a
+// character, a player's body - that collides as spheres. Links are the parts of articulations
+// (their joints, muscles and targets). They collide with the grids, the pieces and each other,
+// load the structures they stand on, and are knocked by what hits them; they never break.
+struct LinkData {
+  u32 articulation = 0;             // the articulation it is part of (0: none)
+  u16 index = 0;                    // its link index there
+  std::vector<BodySphere> spheres;  // (body frame, relative to the centre of mass)
+  f64 friction = 0.75;              // against what it touches
+  // Tissue: a spin about this axis (body frame) dies away at twist_damping (1/s) - a light limb
+  // does not spin freely about its length.
+  V3 long_axis{0, 0, 1};
+  f64 twist_damping = 0.0;
+  // (from its articulation's control, each tick) the fastest it spins (rad/s), the velocity it
+  // keeps per second (air drag), and whether it passes through other bodies (a limb that
+  // strikes: its host deals the blow; the grids still stop it)
+  f64 max_spin = 80.0;
+  f64 keep_linear = 0.98, keep_angular = 0.9;
+  bool ghost = false;
+  bool gone = false;       // touches nothing (a limb lost; it weighs next to nothing)
+  bool kinematic = false;  // moved by its host at its velocity: pushes what it meets, never pushed
+  // What it felt over the last tick (from its contacts; reset when a tick begins):
+  bool contact = false;         // it touched something (a grid, a piece, a link)
+  V3 contact_normal{0, 0, 1};   // (its hardest touch) the normal, towards the link
+  V3 contact_point;             // ... and where
+  f64 impact = 0.0;             // N s: its largest contact impulse in a substep (how hard it hit)
+  f64 bumped = 0.0;             // N s: how hard other bodies pushed it sideways (resting on them is not)
+  f64 load = 0.0;               // (internal: the hardest touch's impulse this tick)
+};
+
+// What the solver knows of an articulation (World::add_articulation): which of its links collide
+// with each other, and whether it may sleep.
+struct ArticulationRules {
+  u32 id = 0;
+  bool self_collide = true;
+  std::vector<u32> pairs;   // (a << 16) | b with a < b: the link pairs that collide (sorted)
+  bool can_sleep = false;
+};
 
 // A voxel lattice placed in a frame: lattice point s (metres: voxel p's centre is h p) is at
 // off + R s. The identity keeps the arithmetic of an unplaced lattice (the world grid's, a body's
@@ -151,7 +198,10 @@ struct Body {
   std::vector<V3> wpts;
   V3 wpts_x;
   Quat wpts_q{0, 0, 0, 0};
+  // A link (no voxels: it collides as spheres; docs/MOTION.md §6), or nullptr: a piece.
+  std::unique_ptr<LinkData> link;
 
+  bool is_link() const { return link != nullptr; }
   V3 to_world(const V3& s) const { return x + rotate(q, s - com); }
   V3 to_shape(const V3& X) const { return com + rotate_inv(q, X - x); }
   // shape k's lattice point (metres) in the world, and back
@@ -225,6 +275,17 @@ struct RigidParams {
   int manifold = 12;                 // contacts kept per body pair ...
   f64 manifold_per_m = 8.0;          // ... plus this per m of the body's radius (a bearing surface)
   f64 kill_depth = 30.0;             // m below the world: removed
+  // Links (articulations: docs/MOTION.md §6). An articulation that touches no awake piece is
+  // stepped on its own, in link_substeps steps of each substep (4: 1/480 s at the default
+  // substeps), with link_iterations velocity and link_position_iterations position iterations
+  // each: many short steps keep a chain of light and heavy links (a hand on an arm on a chest)
+  // stiff. One that touches an awake piece is solved with the pieces, in their substep. 1: every
+  // articulation is solved with the pieces.
+  int link_substeps = 4;
+  int link_iterations = 4;
+  int link_position_iterations = 2;
+  f64 link_margin = 0.02;            // m: a link's contacts are found this far out (and a substep's motion)
+  f64 link_max_speed = 60.0;         // m/s
 };
 
 struct Contact {
@@ -268,8 +329,18 @@ class RigidWorld {
   // solved with the contacts and joints. Their mounts are set before each substep by the owner (a
   // body not in `bodies`: the wheel is skipped).
   std::vector<Wheel> wheels;
+  // Targets (phys/target.hpp), ascending id: solved with the joints (a body not in `bodies`: the
+  // target is skipped).
+  std::vector<Target> targets;
+  // The articulations' rules (ascending id): which of their links collide, whether they sleep.
+  std::vector<ArticulationRules> articulations;
   // The materials of the voxels (surfaces' tyre grip); nullptr: the process's.
   const MaterialTable* mats = nullptr;
+
+  // A tick begins: the links' senses (LinkData::contact, impact, bumped) start afresh.
+  void begin_tick();
+  // The contacts of the last substep between pieces and the grids (not links'): how busy it is.
+  size_t piece_contacts() const;
 
   // Contacts of the last substep's final solve (read by the fracture layer / structure loads).
   // Their body indices refer to the body list of that substep: valid until bodies are added or
@@ -353,12 +424,28 @@ class RigidWorld {
     V3 ep, ea;                         // point, angular
     f64 e2[2] = {0, 0};                // hinge angular / slider linear
     f64 eax = 0.0;                     // axial (distance beyond its range, a limit passed)
+    // (ball) the cone and the twist limit near their bounds: each a row about an axis (world),
+    // its inverted mass, the turn left to the bound (rad; < 0: past it) and the position error
+    // to take out
+    bool swing_on = false, twist_on = false;
+    V3 swing_ax, twist_ax;
+    f64 swing_k = 0.0, twist_k = 0.0, swing_room = 0.0, twist_room = 0.0, swing_e = 0.0, twist_e = 0.0;
+    i8 twist_side = 0;                 // (+1: the upper bound bears, -1: the lower)
+    // the muscle: soft rows (a ball's three, a hinge's one about its axis)
+    bool mus_on = false;
+    M3 mus_K;                          // (ball) inverted softened block
+    f64 mus_k1 = 0.0;                  // (hinge) inverted softened row
+    f64 mus_gamma = 0.0;               // softness
+    V3 mus_bias;                       // the spring's pull as a target rate
+    V3 mus_rate;                       // the target's relative angular velocity (world)
+    f64 mus_cap = 0.0;                 // the most impulse in a substep (N m s; 0: none)
     V3 J, L;                           // impulses on b this substep (linear, angular about its anchor)
   };
   std::vector<JointPrep> jprep_;
   f64 joint_dt_ = 1.0 / 120.0;
-  void prepare_joints(f64 dt, const std::vector<M3>& Iw);
-  void solve_joints();
+  // (only: per body, the joints whose movable ends it selects - the fine or the rest; nullptr: all)
+  void prepare_joints(f64 dt, const std::vector<M3>& Iw, const std::vector<u8>* only = nullptr);
+  void solve_joints(bool reverse = false);  // (reverse: last to first - a chain's sweeps alternate)
   void solve_joints_position(std::vector<V3>& pv, std::vector<V3>& pw);
   void finish_joints(f64 dt);
   void joint_partner_speeds(std::vector<f64>& partner) const;  // (the squeeze guard)
@@ -392,6 +479,56 @@ void joint_stillness();  // joined bodies count towards sleep together (sleep_up
   void wheel_stillness();                                                                // (a driven or spinning wheel keeps its chassis awake)
   std::vector<u8> hanging(const std::vector<u8>& held) const;  // bodies a joint holds up (to what is held or immovable)
   std::vector<u8> machine_parts() const;                        // per body: an end of a drive at work
+
+  // ---- links (link.cpp): bodies that collide as spheres, articulations stepped on their own
+  const ArticulationRules* rules_of(u32 id) const;
+  // Whether two bodies (at least one a link) collide at all: not a lost link, not a link that
+  // strikes against a body, links of one articulation only where its rules say.
+  bool may_collide(const Body& A, const Body& B) const;
+  // A link's contacts (the link is a): with the static grids (per sphere, the deepest touch and
+  // those of other normals), with a piece's voxels, with another link's spheres. `margin`: found
+  // this far out (a speculative contact, depth < 0, that acts only if the gap closes).
+  struct GridCache {  // (a static grid's last chunk looked at)
+    IVec3 cc{-2147483647 - 1, 0, 0};
+    const Chunk* ch = nullptr;
+  };
+  void link_grid_contacts(const Body& A, i32 ia, const std::vector<StaticGrid>& statics, f64 margin, std::vector<Contact>& out,
+                          std::vector<GridCache>& caches) const;
+  void link_piece_contacts(const Body& A, i32 ia, const Body& B, i32 ib, f64 margin, std::vector<Contact>& out) const;
+  void link_link_contacts(const Body& A, i32 ia, const Body& B, i32 ib, f64 margin, std::vector<Contact>& out) const;
+  f64 link_margin(const Body& b, f64 dt) const;  // (how far out a link looks for contacts this substep)
+  void sense_links();                            // (the links' senses from contacts_)
+  void integrate_link(Body& b, f64 dt);          // (a link's velocity over a step: gravity, forces, drag, tissue, limits)
+  // Fine stepping: per body, stepped on its own this substep (a link of an articulation that
+  // touches no awake piece); none: every body is solved together.
+  std::vector<u8> fine_;
+  bool any_fine_ = false;
+  void mark_fine(f64 dt);
+  // (the fine links' contacts, found before anything is solved; sleepers struck hard woken: true)
+  bool collide_fine(f64 dt, const std::vector<StaticGrid>& statics, bool may_wake);
+  // (their steps; their contacts, their impulses summed over the steps, into report)
+  void step_fine(f64 dt, std::vector<Contact>& report);
+  std::vector<Contact> fine_cs_;
+  std::unordered_map<u64, std::array<f64, 3>> fine_warm_;  // (warm starts of the fine contacts, across substeps)
+  // ---- targets (target.cpp): per target, its rows this substep
+  struct TargetPrep {
+    bool on = false;
+    i32 ib = -1;          // the body (awake)
+    f64 mb = 0.0;
+    M3 Ib;
+    V3 r;                 // (point) the arm from the centre of mass to the point (world)
+    V3 axis[3];           // the rows' directions (world): the point's axes, or the rotation's
+    i32 rows = 0;
+    f64 k[3] = {0, 0, 0}; // the rows' inverted masses, softened
+    f64 gamma = 0.0;      // softness
+    f64 bias[3] = {0, 0, 0};
+    V3 vel;               // (point) the target's velocity
+    f64 cap = 0.0;        // the most impulse in a substep (N s, N m s; 0: none)
+  };
+  std::vector<TargetPrep> tprep_;
+  void prepare_targets(f64 dt, const std::vector<M3>& Iw, const std::vector<u8>* only);
+  void solve_targets();
+  void finish_targets(f64 dt);
 };
 
 }  // namespace svx

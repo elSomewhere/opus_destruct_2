@@ -1,0 +1,515 @@
+// Articulations (docs/MOTION.md §6): links (bodies of no voxels, colliding as spheres) held by
+// joints with cones, twist and hinge ranges and muscles, pulled by targets; standing on the
+// structures and loading them, knocked by pieces and knocking them, stepped finely on their own.
+#include <algorithm>
+#include <cmath>
+#include <vector>
+
+#include "doctest.h"
+#include "svx/base/parallel.hpp"
+#include "svx/base/rotation.hpp"
+#include "svx/world/world.hpp"
+
+using namespace svx;
+
+namespace {
+
+constexpr f64 h = 0.125;
+constexpr f64 kPi = 3.141592653589793;
+const f64 kTop = -0.5 * h;  // (the ground's surface)
+
+void box(VoxelGrid& g, const IVec3& lo, const IVec3& hi, Vox v) {
+  for (i32 x = lo[0]; x < hi[0]; ++x)
+    for (i32 y = lo[1]; y < hi[1]; ++y) g.fill_column(x, y, lo[2], hi[2], v);
+}
+
+VoxelGrid ground(i32 half = 48) {
+  VoxelGrid g;
+  g.h = h;
+  box(g, {-half, -half, -4}, {half, half, 0}, make_vox(MaterialId::Rock, true));
+  g.compact();
+  g.lo = {-half, -half, -4};
+  g.hi = {half, half, 64};
+  return g;
+}
+
+// A rod along z of length len (m), radius r, mass m: two spheres along it.
+LinkDesc rod(const V3& pos, f64 len, f64 r, f64 m, const Quat& rot = Quat{}) {
+  LinkDesc L;
+  L.mass = m;
+  const f64 perp = m * (3.0 * r * r + len * len) / 12.0, along = 0.5 * m * r * r;
+  L.inertia = V3{perp, perp, along};
+  L.pos = pos;
+  L.rot = rot;
+  L.spheres = {{V3{0, 0, -0.3 * len}, r}, {V3{0, 0, 0.3 * len}, r}};
+  L.long_axis = V3{0, 0, 1};
+  return L;
+}
+
+LinkDesc ball(const V3& pos, f64 r, f64 m) {
+  LinkDesc L;
+  L.mass = m;
+  const f64 I = 0.4 * m * r * r;
+  L.inertia = V3{I, I, I};
+  L.pos = pos;
+  L.spheres = {{V3{}, r}};
+  return L;
+}
+
+// A chain of n rods hanging down from `top`, each len long, joined by balls (their frames' z along
+// the chain, down), the first held to the world at `top` by a ball joint.
+struct Chain {
+  ArticulationId id = 0;
+  JointId hold = 0;
+  f64 len = 0.3;
+  i32 n = 0;
+};
+
+Chain chain(World& w, const V3& top, i32 n, f64 len, f64 m) {
+  ArticulationDesc d;
+  const Quat down = rotation_of(V3{kPi, 0, 0});  // (z down)
+  for (i32 i = 0; i < n; ++i) d.links.push_back(rod(top - V3{0, 0, len * (i + 0.5)}, len, 0.04, m));
+  for (i32 i = 1; i < n; ++i) {
+    ArticulationJointDesc J;
+    J.parent = static_cast<u16>(i - 1);
+    J.child = static_cast<u16>(i);
+    J.type = JointType::Ball;
+    J.anchor_parent = V3{0, 0, -0.5 * len};
+    J.anchor_child = V3{0, 0, 0.5 * len};
+    J.frame_parent = J.frame_child = down;
+    d.joints.push_back(J);
+  }
+  Chain c;
+  c.id = w.add_articulation(d);
+  c.len = len;
+  c.n = n;
+  if (c.id == 0) return c;
+  JointDesc hd;
+  hd.type = JointType::Ball;
+  hd.a.kind = JointAnchor::Kind::World;
+  hd.a.point = top;
+  hd.b.kind = JointAnchor::Kind::Link;
+  hd.b.id = static_cast<u64>(w.link_body(c.id, 0));
+  hd.b.point = top;
+  c.hold = w.add_joint(hd);
+  return c;
+}
+
+// The largest gap between neighbouring rods' joint points (m).
+f64 chain_gap(const World& w, const Chain& c) {
+  ArticulationState s;
+  if (!w.articulation_state(c.id, &s)) return 1e9;
+  f64 gap = 0.0;
+  for (i32 i = 1; i < c.n; ++i) {
+    const LinkState& a = s.links[size_t(i - 1)];
+    const LinkState& b = s.links[size_t(i)];
+    const V3 pa = a.pos + rotate(a.rot, V3{0, 0, -0.5 * c.len});
+    const V3 pb = b.pos + rotate(b.rot, V3{0, 0, 0.5 * c.len});
+    gap = std::max(gap, norm(pa - pb));
+  }
+  return gap;
+}
+
+f64 energy(const World& w, ArticulationId id, const std::vector<LinkDesc>& links) {
+  ArticulationState s;
+  w.articulation_state(id, &s);
+  f64 e = 0.0;
+  for (size_t i = 0; i < s.links.size(); ++i) {
+    const LinkState& L = s.links[i];
+    const V3 I = links[i].inertia;
+    const V3 wl = rotate_inv(L.rot, L.ang);
+    e += 0.5 * L.mass * norm2(L.vel) + 0.5 * (I.x * wl.x * wl.x + I.y * wl.y * wl.y + I.z * wl.z * wl.z) + L.mass * 9.81 * L.pos.z;
+  }
+  return e;
+}
+
+}  // namespace
+
+TEST_CASE("articulations: a chain of links hangs from a point, swings, and holds together") {
+  for (int substeps : {4, 1}) {
+    World w;
+    WorldConfig cfg;
+    cfg.rigid.link_substeps = substeps;
+    w.configure(cfg);
+    w.load(ground());
+    w.bake();
+    const Chain c = chain(w, V3{0, 0, 4.0}, 5, 0.3, 2.0);
+    REQUIRE(c.id != 0);
+    REQUIRE(c.hold != 0);
+    // pushed sideways at its end
+    REQUIRE(w.add_link_velocity(c.id, 4, V3{3.0, 0, 0}, V3{}));
+    f64 gap = 0.0, lowest = 1e9, reach = 0.0;
+    for (int t = 0; t < 240; ++t) {
+      w.tick();
+      gap = std::max(gap, chain_gap(w, c));
+      ArticulationState s;
+      REQUIRE(w.articulation_state(c.id, &s));
+      lowest = std::min(lowest, s.links.back().pos.z);
+      reach = std::max(reach, std::abs(s.links.back().pos.x));
+    }
+    MESSAGE("chain (link substeps " << substeps << "): largest joint gap " << gap << " m, its end swung out " << reach << " m, lowest " << lowest);
+    CHECK(gap < 0.01);
+    CHECK(reach > 0.2);
+    CHECK(lowest > 4.0 - 1.5 - 0.1);  // (it hangs: it does not stretch)
+    // its swing dies away (air, tissue), slowly: a pendulum
+    f64 late = 0.0;
+    for (int t = 0; t < 1200; ++t) {
+      w.tick();
+      ArticulationState s;
+      REQUIRE(w.articulation_state(c.id, &s));
+      if (t >= 1080) late = std::max(late, std::abs(s.links.back().pos.x));
+    }
+    MESSAGE("... 20 s on, it swings out " << late << " m");
+    CHECK(late < 0.8 * reach);
+    ArticulationState s;
+    REQUIRE(w.articulation_state(c.id, &s));
+    CHECK(!s.asleep);  // (its host has not let it sleep)
+  }
+}
+
+TEST_CASE("articulations: a free swinging chain does not gain energy") {
+  World w;
+  w.load(ground());
+  w.bake();
+  // a chain let go level: it swings down; its energy never grows past where it started
+  ArticulationDesc d;
+  const f64 len = 0.3;
+  const Quat side = rotation_of(V3{0, kPi / 2, 0});  // (z along +x)
+  for (i32 i = 0; i < 4; ++i) d.links.push_back(rod(V3{len * (i + 0.5), 0, 3.0}, len, 0.04, 1.5, side));
+  for (i32 i = 1; i < 4; ++i) {
+    ArticulationJointDesc J;
+    J.parent = static_cast<u16>(i - 1);
+    J.child = static_cast<u16>(i);
+    J.anchor_parent = V3{0, 0, 0.5 * len};
+    J.anchor_child = V3{0, 0, -0.5 * len};
+    d.joints.push_back(J);
+  }
+  const ArticulationId id = w.add_articulation(d);
+  REQUIRE(id != 0);
+  JointDesc hd;
+  hd.a.kind = JointAnchor::Kind::World;
+  hd.a.point = V3{0, 0, 3.0};
+  hd.b.kind = JointAnchor::Kind::Link;
+  hd.b.id = static_cast<u64>(w.link_body(id, 0));
+  hd.b.point = V3{0, 0, 3.0};
+  REQUIRE(w.add_joint(hd) != 0);
+  const f64 e0 = energy(w, id, d.links);
+  f64 emax = e0;
+  for (int t = 0; t < 600; ++t) {
+    w.tick();
+    emax = std::max(emax, energy(w, id, d.links));
+  }
+  MESSAGE("swinging chain: energy at the start " << e0 << " J, largest " << emax << " J, after 10 s " << energy(w, id, d.links));
+  CHECK(emax < e0 + 0.02 * std::abs(e0) + 1.0);
+}
+
+TEST_CASE("articulations: a link lands on the ground, rests there, feels it, and sleeps when let") {
+  World w;
+  w.load(ground());
+  w.bake();
+  ArticulationDesc d;
+  d.links.push_back(ball(V3{0, 0, 1.0}, 0.1, 5.0));
+  const ArticulationId id = w.add_articulation(d);
+  REQUIRE(id != 0);
+  for (int t = 0; t < 120; ++t) w.tick();
+  ArticulationState s;
+  REQUIRE(w.articulation_state(id, &s));
+  MESSAGE("resting ball: z " << s.links[0].pos.z << " (surface " << kTop << " + 0.1), contact " << s.links[0].contact << ", normal z "
+                            << s.links[0].contact_normal.z);
+  CHECK(s.links[0].pos.z == doctest::Approx(kTop + 0.1).epsilon(0.02));
+  CHECK(s.links[0].contact);
+  CHECK(s.links[0].contact_normal.z > 0.99);
+  CHECK(!s.asleep);
+  w.articulation_control(id)->can_sleep = true;
+  for (int t = 0; t < 60; ++t) w.tick();
+  REQUIRE(w.articulation_state(id, &s));
+  CHECK(s.asleep);
+  // a push wakes it
+  REQUIRE(w.add_link_velocity(id, 0, V3{1.0, 0, 0}, V3{}));
+  REQUIRE(w.articulation_state(id, &s));
+  CHECK(!s.asleep);
+}
+
+TEST_CASE("articulations: a ball's cone and twist and a hinge's range hold") {
+  World w;
+  w.load(ground());
+  w.bake();
+  // a kinematic block at 3 m (mass 0: it stays), a rod hanging from it on a ball with a 0.5 rad cone
+  // and a +-0.4 rad twist, a second rod below on a hinge that bends one way (0 .. 1.5 rad)
+  ArticulationDesc d;
+  LinkDesc top = ball(V3{0, 0, 3.0}, 0.1, 0.0);
+  d.links.push_back(top);
+  const Quat down = rotation_of(V3{kPi, 0, 0});
+  d.links.push_back(rod(V3{0, 0, 3.0 - 0.3}, 0.4, 0.04, 2.0));
+  d.links.push_back(rod(V3{0, 0, 3.0 - 0.7}, 0.4, 0.04, 1.5));
+  ArticulationJointDesc J;
+  J.parent = 0;
+  J.child = 1;
+  J.type = JointType::Ball;
+  J.anchor_parent = V3{0, 0, -0.1};
+  J.anchor_child = V3{0, 0, 0.2};
+  J.frame_parent = J.frame_child = down;
+  J.swing_limited = true;
+  J.swing[0] = J.swing[1] = J.swing[2] = J.swing[3] = 0.5;
+  J.twist_limited = true;
+  J.twist_lower = -0.4;
+  J.twist_upper = 0.4;
+  d.joints.push_back(J);
+  ArticulationJointDesc K;
+  K.parent = 1;
+  K.child = 2;
+  K.type = JointType::Hinge;
+  K.anchor_parent = V3{0, 0, -0.2};
+  K.anchor_child = V3{0, 0, 0.2};
+  K.frame_parent = K.frame_child = down;  // (it bends about x)
+  K.hinge_limited = true;
+  K.hinge_lower = 0.0;
+  K.hinge_upper = 1.5;
+  d.joints.push_back(K);
+  const ArticulationId id = w.add_articulation(d);
+  REQUIRE(id != 0);
+  f64 swing = 0.0, twist = 0.0, bend_lo = 0.0, bend_hi = 0.0;
+  for (int t = 0; t < 360; ++t) {
+    ArticulationControl* C = w.articulation_control(id);
+    // pushed hard sideways and twisted, then the other way
+    const f64 s = t < 180 ? 1.0 : -1.0;
+    C->force[1] = V3{400.0 * s, 150.0 * s, 0};
+    C->torque[1] = V3{0, 0, 40.0 * s};
+    C->force[2] = V3{0, 120.0 * s, 0};
+    w.tick();
+    ArticulationState st;
+    REQUIRE(w.articulation_state(id, &st));
+    const V3 z0{0, 0, -1};
+    const V3 z1 = rotate(st.links[1].rot, V3{0, 0, -1});
+    swing = std::max(swing, std::acos(std::clamp(dot(z0, z1), -1.0, 1.0)));
+    // twist: the rod's x about its axis, from the swing's carrying of the block's x
+    const Quat rel = conj(down) * st.links[1].rot * down;
+    twist = std::max(twist, std::abs(2.0 * std::atan2(rel.z, rel.w)));
+    // the hinge: the lower rod's axis turned about the upper's x
+    const V3 za = rotate(st.links[1].rot, V3{0, 0, -1}), zb = rotate(st.links[2].rot, V3{0, 0, -1});
+    const V3 xa = rotate(st.links[1].rot, V3{1, 0, 0});
+    const f64 bend = std::atan2(dot(cross(za, zb), xa), dot(za, zb));
+    bend_lo = std::min(bend_lo, bend);
+    bend_hi = std::max(bend_hi, bend);
+  }
+  MESSAGE("cone 0.5 rad: largest swing " << swing << "; twist 0.4: largest " << twist << "; hinge 0..1.5: " << bend_lo << " .. " << bend_hi);
+  CHECK(swing < 0.5 + 0.06);
+  CHECK(swing > 0.4);
+  CHECK(twist < 0.4 + 0.06);
+  CHECK(bend_lo > -0.06);
+  CHECK(bend_hi < 1.5 + 0.06);
+  CHECK(bend_hi > 0.2);
+}
+
+TEST_CASE("articulations: a muscle drives its joint to the target and holds it against gravity; a weak one sags") {
+  for (f64 strength : {1.0, 0.25}) {
+    World w;
+    w.load(ground());
+    w.bake();
+    ArticulationDesc d;
+    d.links.push_back(ball(V3{0, 0, 2.0}, 0.1, 0.0));  // (kinematic: a shoulder held in place)
+    const Quat down = rotation_of(V3{kPi, 0, 0});
+    const f64 len = 0.6, m = 3.0;
+    d.links.push_back(rod(V3{0, 0, 2.0 - 0.1 - 0.5 * len}, len, 0.05, m, Quat{}));
+    ArticulationJointDesc J;
+    J.parent = 0;
+    J.child = 1;
+    J.anchor_parent = V3{0, 0, -0.1};
+    J.anchor_child = V3{0, 0, 0.5 * len};
+    J.frame_parent = J.frame_child = down;
+    d.joints.push_back(J);
+    const ArticulationId id = w.add_articulation(d);
+    REQUIRE(id != 0);
+    // the arm raised forward, level: its target turned 90 degrees about x
+    const Quat target = rotation_of(V3{kPi / 2, 0, 0});
+    const f64 I = m * len * len / 3.0;  // (about the joint)
+    const f64 hold = m * 9.81 * 0.5 * len;  // (the torque to hold it level)
+    ArticulationControl* C = w.articulation_control(id);
+    C->muscles[0].target = target;
+    C->muscles[0].stiffness = I * 15.0 * 15.0 * 4.0;
+    C->muscles[0].damping = 2.0 * I * 15.0;
+    C->muscles[0].inertia = I;
+    C->muscles[0].max_torque = strength * 2.0 * hold;
+    for (int t = 0; t < 180; ++t) w.tick();
+    ArticulationState s;
+    REQUIRE(w.articulation_state(id, &s));
+    const V3 along = rotate(s.links[1].rot, V3{0, 0, -1});  // (from the shoulder towards the hand)
+    const f64 elevation = std::asin(std::clamp(along.z, -1.0, 1.0));
+    const f64 err = std::acos(std::clamp(dot(rotate(s.links[1].rot, V3{0, 0, 1}), rotate(target, V3{0, 0, 1})), -1.0, 1.0));
+    MESSAGE("muscle at " << strength << " x the strength it needs: arm elevation " << elevation << " rad (level: 0), off its target by " << err);
+    if (strength >= 1.0) CHECK(err < 0.06);
+    else CHECK(elevation < -0.3);  // (too weak: it sags)
+  }
+}
+
+TEST_CASE("articulations: a target pulls a link's point to a world point, as strong as it is") {
+  World w;
+  w.load(ground());
+  w.bake();
+  ArticulationDesc d;
+  d.links.push_back(ball(V3{0, 0, 1.0}, 0.1, 10.0));
+  ArticulationTargetDesc T;
+  T.link = 0;
+  T.kind = Target::Kind::Point;
+  d.targets.push_back(T);
+  const ArticulationId id = w.add_articulation(d);
+  REQUIRE(id != 0);
+  ArticulationControl* C = w.articulation_control(id);
+  TargetDrive& D = C->targets[0];
+  D.on = true;
+  D.pos = V3{0.5, 0.2, 1.5};
+  D.stiffness = 10.0 * 900.0;
+  D.damping = 10.0 * 60.0;
+  D.max = 10.0 * 9.81 * 3.0;
+  for (int t = 0; t < 180; ++t) w.tick();
+  ArticulationState s;
+  REQUIRE(w.articulation_state(id, &s));
+  const f64 sag = 10.0 * 9.81 / D.stiffness;  // (a spring holding a weight)
+  MESSAGE("target: link at " << s.links[0].pos.x << ", " << s.links[0].pos.y << ", " << s.links[0].pos.z << "; it pulls " << s.target_applied[0].z
+                             << " N up (its weight " << 10.0 * 9.81 << ")");
+  CHECK(norm(s.links[0].pos - (D.pos - V3{0, 0, sag})) < 0.02);
+  CHECK(s.target_applied[0].z == doctest::Approx(10.0 * 9.81).epsilon(0.05));
+  // too weak to hold the weight: it sinks to the ground
+  w.articulation_control(id)->targets[0].max = 10.0 * 9.81 * 0.5;
+  for (int t = 0; t < 180; ++t) w.tick();
+  REQUIRE(w.articulation_state(id, &s));
+  CHECK(s.links[0].pos.z < kTop + 0.1 + 0.02);
+}
+
+TEST_CASE("articulations: a heavy body standing on a weak beam loads it until it breaks") {
+  for (bool heavy : {false, true}) {
+    World w;
+    VoxelGrid g = ground();
+    // a wall, and a timber beam 3 m out from it, 25 cm square, 2 m above the ground
+    box(g, {-2, -4, 0}, {0, 4, 24}, make_vox(MaterialId::Concrete, true));
+    box(g, {0, -1, 16}, {24, 1, 18}, make_vox(MaterialId::Wood, false));
+    g.compact();
+    w.load(std::move(g));
+    w.bake();
+    for (int t = 0; t < 30; ++t) w.tick();
+    const i32 pieces0 = static_cast<i32>(w.pieces().size());
+    if (heavy) {
+      // four heavy links stacked, dropped onto the beam's end
+      ArticulationDesc d;
+      for (i32 i = 0; i < 4; ++i) d.links.push_back(ball(V3{2.6, 0, 2.6 + 0.3 * i}, 0.14, 150.0));
+      for (i32 i = 1; i < 4; ++i) {
+        ArticulationJointDesc J;
+        J.parent = static_cast<u16>(i - 1);
+        J.child = static_cast<u16>(i);
+        J.anchor_parent = V3{0, 0, 0.15};
+        J.anchor_child = V3{0, 0, -0.15};
+        d.joints.push_back(J);
+      }
+      REQUIRE(w.add_articulation(d) != 0);
+    }
+    for (int t = 0; t < 240; ++t) w.tick();
+    const i32 pieces1 = static_cast<i32>(w.pieces().size());
+    MESSAGE("beam " << (heavy ? "with 600 kg on its end" : "alone") << ": pieces " << pieces0 << " -> " << pieces1 << ", bonds broken " << w.stats().bonds_broken);
+    if (heavy) CHECK(pieces1 > pieces0);
+    else CHECK(pieces1 == pieces0);
+  }
+}
+
+TEST_CASE("articulations: a piece knocks a body, and a body pushes a piece") {
+  World w;
+  w.load(ground());
+  w.bake();
+  // a 150 kg timber block sliding at 6 m/s into a chain hanging at 1 m
+  const Chain c = chain(w, V3{0, 0, 2.0}, 3, 0.3, 5.0);
+  REQUIRE(c.id != 0);
+  VoxelGrid g;
+  g.h = h;
+  box(g, {0, -2, 0}, {4, 2, 4}, make_vox(MaterialId::Wood, false));
+  g.compact();
+  const GridId gid = w.add_grid(GridFrame{V3{-3.0, 0.0, 1.15}, Quat{}}, std::move(g), false);
+  REQUIRE(gid != 0);
+  const i64 block = w.loosen_grid(gid);
+  REQUIRE(block != 0);
+  w.tick();
+  REQUIRE(w.apply_impulse(block, w.piece(block)->x, V3{w.piece(block)->mass * 6.0, 0, w.piece(block)->mass * 2.5}));
+  f64 swing = 0.0;
+  for (int t = 0; t < 90; ++t) {
+    w.tick();
+    ArticulationState s;
+    REQUIRE(w.articulation_state(c.id, &s));
+    swing = std::max(swing, s.links.back().pos.x);
+  }
+  MESSAGE("a block into a hanging chain: its end knocked out to x " << swing);
+  CHECK(swing > 0.3);
+  // a heavy ball rolled into a light crate on the ground pushes it along
+  World v;
+  v.load(ground());
+  v.bake();
+  VoxelGrid cg;
+  cg.h = h;
+  box(cg, {0, -2, 0}, {4, 2, 3}, make_vox(MaterialId::Wood, false));
+  cg.compact();
+  const GridId crate = v.add_grid(GridFrame{V3{1.0, 0.0, 0.1}, Quat{}}, std::move(cg), false);
+  REQUIRE(crate != 0);
+  const i64 cp = v.loosen_grid(crate);
+  REQUIRE(cp != 0);
+  for (int t = 0; t < 30; ++t) v.tick();  // (it settles on the ground)
+  ArticulationDesc d;
+  d.links.push_back(ball(V3{0.0, 0.0, kTop + 0.2}, 0.2, 60.0));
+  d.links[0].vel = V3{4.0, 0, 0};
+  const ArticulationId bid = v.add_articulation(d);
+  REQUIRE(bid != 0);
+  const f64 x0 = v.piece(cp)->x.x;
+  for (int t = 0; t < 60; ++t) v.tick();
+  MESSAGE("a 60 kg ball at 4 m/s into a crate: the crate moved " << v.piece(cp)->x.x - x0 << " m");
+  CHECK(v.piece(cp)->x.x - x0 > 0.05);  // (inelastic, then sliding on the ground: about 0.1 - 0.2 m)
+}
+
+TEST_CASE("articulations: removed, it is gone; a lost link touches nothing; no piece events") {
+  World w;
+  w.load(ground());
+  w.bake();
+  w.take_events();
+  ArticulationDesc d;
+  d.links.push_back(ball(V3{0, 0, 0.5}, 0.1, 5.0));
+  d.links.push_back(ball(V3{1, 0, 0.5}, 0.1, 5.0));
+  const ArticulationId id = w.add_articulation(d);
+  REQUIRE(id != 0);
+  REQUIRE(w.lose_link(id, 1, 0.05));
+  for (int t = 0; t < 60; ++t) w.tick();
+  ArticulationState s;
+  REQUIRE(w.articulation_state(id, &s));
+  CHECK(s.links[0].pos.z > 0.0);   // (on the ground)
+  CHECK(s.links[1].pos.z < -0.5);  // (through it)
+  CHECK(s.links[1].gone);
+  for (const WorldEvent& e : w.take_events()) CHECK(e.kind != WorldEvent::Kind::PieceAdded);
+  CHECK(w.pieces().empty());
+  REQUIRE(w.remove_articulation(id));
+  CHECK(w.articulations().empty());
+  bool removed = false;
+  for (const WorldEvent& e : w.take_events()) removed = removed || (e.kind == WorldEvent::Kind::ArticulationRemoved && e.id == id);
+  CHECK(removed);
+}
+
+TEST_CASE("articulations: a session with articulations and pieces is bit-identical on 1 and 4 threads") {
+  auto run = [](int threads) {
+    set_num_threads(threads);
+    World w;
+    w.load(ground());
+    w.bake();
+    const Chain c = chain(w, V3{0, 0, 2.5}, 4, 0.3, 3.0);
+    REQUIRE(c.id != 0);
+    REQUIRE(w.add_link_velocity(c.id, 3, V3{2.0, 1.0, 0}, V3{}));
+    for (i32 i = 0; i < 3; ++i) {
+      ArticulationDesc d;
+      d.links.push_back(ball(V3{0.3 * i - 0.3, 0.8, 1.0 + 0.4 * i}, 0.12, 8.0));
+      REQUIRE(w.add_articulation(d) != 0);
+    }
+    VoxelGrid g;
+    g.h = h;
+    box(g, {0, 0, 0}, {3, 3, 3}, make_vox(MaterialId::Concrete, false));
+    g.compact();
+    const GridId gid = w.add_grid(GridFrame{V3{0.0, 0.7, 2.5}, Quat{}}, std::move(g), false);
+    REQUIRE(gid != 0);
+    for (int t = 0; t < 180; ++t) w.tick();
+    return w.session_hash();
+  };
+  const u64 a = run(1), b = run(4);
+  set_num_threads(0);
+  CHECK(a == b);
+}

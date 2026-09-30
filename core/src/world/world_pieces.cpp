@@ -1332,12 +1332,15 @@ int World::fracture_hook(f64 dt) {
     }
     if (norm2(J) <= 0.0) continue;
     Body& A = *rigid_.bodies[size_t(c.a)];
-    const V3 Fa = J * (resting ? 1.0 / dt : kf[size_t(c.a)]);
-    const i32 fa = static_cast<i32>(A.shapes[size_t(c.shape_a)].frag[size_t(c.vox_a)]) - 1;
-    per[size_t(c.a)].push_back({fa, Fa, c.p, c.b >= 0 ? rigid_.bodies[size_t(c.b)]->id : -1 - static_cast<i64>(c.grid)});
-    carried[size_t(c.a)].push_back({fa, J, c.p, c.b >= 0 ? 0.5 * e : e});
-    fsum[size_t(c.a)] += norm(Fa);
-    if (c.b >= 0) {
+    // (a link's side has no voxels to load: what it presses on still feels it)
+    if (!A.link) {
+      const V3 Fa = J * (resting ? 1.0 / dt : kf[size_t(c.a)]);
+      const i32 fa = static_cast<i32>(A.shapes[size_t(c.shape_a)].frag[size_t(c.vox_a)]) - 1;
+      per[size_t(c.a)].push_back({fa, Fa, c.p, c.b >= 0 ? rigid_.bodies[size_t(c.b)]->id : -1 - static_cast<i64>(c.grid)});
+      carried[size_t(c.a)].push_back({fa, J, c.p, c.b >= 0 ? 0.5 * e : e});
+      fsum[size_t(c.a)] += norm(Fa);
+    }
+    if (c.b >= 0 && !rigid_.bodies[size_t(c.b)]->link) {
       Body& B = *rigid_.bodies[size_t(c.b)];
       const V3 Fb = J * -(resting ? 1.0 / dt : kf[size_t(c.b)]);
       const i32 fb = static_cast<i32>(B.shapes[size_t(c.shape_b)].frag[size_t(c.vox_b)]) - 1;
@@ -1590,6 +1593,7 @@ void World::blast_bodies(const PendingEvent& e) {
 i64 World::body_bytes(const Body& b) {
   i64 n = sizeof(Body) + vec_bytes(b.frags) + vec_bytes(b.pts) + vec_bytes(b.pt_vox) + vec_bytes(b.pt_shape) + vec_bytes(b.pt_area) + vec_bytes(b.wpts) +
           vec_bytes(b.shapes);
+  if (b.link) n += static_cast<i64>(sizeof(LinkData)) + vec_bytes(b.link->spheres);
   for (const BodyShape& S : b.shapes) {
     n += vec_bytes(S.vox) + vec_bytes(S.frag) + vec_bytes(S.brk) + vec_bytes(S.jbrk);
     for (const auto& l : S.layer) n += vec_bytes(l);
@@ -1606,7 +1610,7 @@ i64 World::body_bytes(const Body& b) {
 void World::announce_bodies() {
   for (auto& bp : rigid_.bodies) {
     Body& b = *bp;
-    if (b.announced) continue;
+    if (b.announced || b.link) continue;  // (a link is its articulation's, not a piece)
     WorldEvent ev;
     ev.kind = WorldEvent::Kind::PieceAdded;
     ev.id = b.id;
@@ -1675,7 +1679,7 @@ void World::limit_bodies() {
   std::sort(jointed.begin(), jointed.end());
   std::vector<std::tuple<int, i32, i64>> cand;  // (awake, voxels, id)
   for (const auto& bp : rigid_.bodies)
-    if (!bp->keep && !std::binary_search(jointed.begin(), jointed.end(), bp->id)) cand.push_back({bp->asleep ? 0 : 1, bp->count, bp->id});
+    if (!bp->keep && !bp->link && !std::binary_search(jointed.begin(), jointed.end(), bp->id)) cand.push_back({bp->asleep ? 0 : 1, bp->count, bp->id});
   std::sort(cand.begin(), cand.end());
   std::vector<i64> ids;
   for (const auto& [awake, voxels, id] : cand) {
@@ -1712,7 +1716,7 @@ std::vector<PieceState> World::pieces() const {
 const Body* World::piece(i64 id) const {
   const auto it = std::lower_bound(rigid_.bodies.begin(), rigid_.bodies.end(), id,
                                    [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
-  return it != rigid_.bodies.end() && (*it)->id == id ? it->get() : nullptr;
+  return it != rigid_.bodies.end() && (*it)->id == id && !(*it)->link ? it->get() : nullptr;
 }
 
 }  // namespace svx

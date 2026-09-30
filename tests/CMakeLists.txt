@@ -12,7 +12,8 @@ add_executable(svx_core_tests
   core/test_joints.cpp
   core/test_wheels.cpp
   core/test_crumple.cpp
-  core/test_dmath.cpp)
+  core/test_dmath.cpp
+  core/test_articulations.cpp)
 target_include_directories(svx_core_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
 target_link_libraries(svx_core_tests PRIVATE svx_core)
 svx_wasm_exe_options(svx_core_tests)
@@ -29,6 +30,17 @@ if(SVX_BUILD_ENV)
   target_link_libraries(svx_env_tests PRIVATE svx_env)
   svx_wasm_exe_options(svx_env_tests)
   add_test(NAME svx_env_tests COMMAND svx_env_tests)
+endif()
+
+# Character tests: motion, bodies (the core's articulations and the body of its own), behaviours,
+# voxel models (no mesh, no game).
+if(SVX_BUILD_ANIM)
+  file(GLOB SVX_ANIM_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/anim/*.cpp)
+  add_executable(svx_anim_tests test_main.cpp ${SVX_ANIM_TEST_SOURCES})
+  target_include_directories(svx_anim_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
+  target_link_libraries(svx_anim_tests PRIVATE svx_anim)
+  svx_wasm_exe_options(svx_anim_tests)
+  add_test(NAME svx_anim_tests COMMAND svx_anim_tests)
 endif()
 
 # Game harness tests: levels (procedural, city, Doom), movers, replays, meshing.

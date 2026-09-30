@@ -105,7 +105,8 @@ WheelId World::add_wheel_impl(const WheelDesc& d, WheelId want) {
   JointRec::End& E = r.mount;
   switch (d.mount.kind) {
     case JointAnchor::Kind::World:
-      return 0;  // (a wheel hangs from something that moves)
+    case JointAnchor::Kind::Link:
+      return 0;  // (a wheel hangs from something that moves, of voxels)
     case JointAnchor::Kind::Grid: {
       const i32 s = d.mount.id <= 0xFFFFFFFFull ? slot_of(static_cast<GridId>(d.mount.id)) : -1;
       if (s < 0) return 0;

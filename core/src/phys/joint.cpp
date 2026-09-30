@@ -77,6 +77,36 @@ V3 capped(const V3& v, f64 cap) {
   return n > cap ? v * (cap / n) : v;
 }
 
+// The rotation whose columns are the right-handed orthonormal basis (x, axis x x, axis): a joint
+// end's frame from its axis and reference direction.
+Quat frame_of(const V3& axis, const V3& ref) {
+  const V3 z = normalized(axis);
+  const V3 x = normalized(ref - z * dot(ref, z));
+  const V3 y = cross(z, x);
+  const f64 m00 = x.x, m10 = x.y, m20 = x.z, m01 = y.x, m11 = y.y, m21 = y.z, m02 = z.x, m12 = z.y, m22 = z.z;
+  const f64 tr = m00 + m11 + m22;
+  Quat q;
+  if (tr > 0.0) {
+    const f64 s = std::sqrt(tr + 1.0) * 2.0;
+    q = Quat{(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s};
+  } else if (m00 > m11 && m00 > m22) {
+    const f64 s = std::sqrt(1.0 + m00 - m11 - m22) * 2.0;
+    q = Quat{0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s};
+  } else if (m11 > m22) {
+    const f64 s = std::sqrt(1.0 + m11 - m00 - m22) * 2.0;
+    q = Quat{(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s};
+  } else {
+    const f64 s = std::sqrt(1.0 + m22 - m00 - m11) * 2.0;
+    q = Quat{(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s};
+  }
+  return qnormalized(q);
+}
+
+// A cone and a twist limit bear (their rows act) within this of their bounds (rad): a joint
+// swinging fast towards its bound is met there, not past it.
+constexpr f64 kLimitNear = 0.25;
+constexpr f64 kPi = 3.141592653589793;
+
 }  // namespace
 
 void JointDrive::goal(f64 t, f64* x, f64* rate) const {
@@ -92,7 +122,7 @@ void JointDrive::goal(f64 t, f64* x, f64* rate) const {
   *rate = (target2 - target) * 0.5 * dm::sin(a) * kTau / period;
 }
 
-void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw) {
+void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw, const std::vector<u8>* only) {
   jprep_.assign(joints.size(), JointPrep{});
   joint_dt_ = dt;
   const f64 beta = par.joint_baumgarte, slop = par.joint_slop, cap = par.max_correction, warm = par.joint_warm;
@@ -141,6 +171,8 @@ void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw) {
       P.pb = j.b.p;
     }
     if (P.ia < 0 && P.ib < 0) continue;  // (both immovable now: nothing to solve)
+    // (of the bodies asked for: the fine ones, or the rest)
+    if (only && !((P.ia >= 0 && (*only)[size_t(P.ia)]) || (P.ib >= 0 && (*only)[size_t(P.ib)]))) continue;
     P.on = true;
     P.ra = P.ia >= 0 ? P.pa - xa : V3{};
     P.rb = P.ib >= 0 ? P.pb - xb : V3{};
@@ -221,6 +253,95 @@ void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw) {
         if (P.value > j.upper) P.eax = pull(P.value - j.upper, t == JointType::Slider ? slop : 0.0);
       }
     }
+    // (ball) the cone and the twist limit, near their bounds
+    if (t == JointType::Ball && (j.swing_limited || j.twist_limited)) {
+      const V3 za = P.ax, xa = normalized(rotate(Qa, j.a.ref)), ya = cross(za, xa);
+      const V3 zb = normalized(rotate(Qb, j.b.axis));
+      if (j.swing_limited) {
+        // b's axis tilted from a's, and the elliptical cone's bound that way (in a's frame)
+        const V3 c = cross(za, zb);
+        const f64 sn = norm(c), angle = dm::atan2(sn, dot(za, zb));
+        const f64 ux0 = dot(zb, xa), uy0 = dot(zb, ya), ul = std::sqrt(ux0 * ux0 + uy0 * uy0);
+        if (sn > 1e-6 && ul > 1e-9) {
+          const f64 ux = ux0 / ul, uy = uy0 / ul;
+          const f64 lx = std::max(1e-3, ux >= 0.0 ? j.swing[0] : j.swing[1]);
+          const f64 ly = std::max(1e-3, uy >= 0.0 ? j.swing[2] : j.swing[3]);
+          const f64 bound = 1.0 / std::sqrt((ux * ux) / (lx * lx) + (uy * uy) / (ly * ly));
+          if (angle > bound - kLimitNear) {
+            P.swing_on = true;
+            P.swing_ax = c * (1.0 / sn);  // (turning b about it swings b further out)
+            const f64 k = dot(P.swing_ax, Isum * P.swing_ax);
+            P.swing_k = k > 0.0 ? 1.0 / k : 0.0;
+            P.swing_room = bound - angle;
+            if (angle > bound) P.swing_e = pull(angle - bound, 0.0);
+          }
+        }
+      }
+      if (j.twist_limited) {
+        // swing-twist: the frames' relative rotation, its turn about the axis (turning b about
+        // its own axis changes the twist alone)
+        const Quat Fa = Qa * frame_of(j.a.axis, j.a.ref), Fb = Qb * frame_of(j.b.axis, j.b.ref);
+        const Quat r = conj(Fa) * Fb;
+        f64 tw = 2.0 * dm::atan2(r.z, r.w);
+        if (tw > kPi) tw -= 2.0 * kPi;
+        else if (tw < -kPi) tw += 2.0 * kPi;
+        const f64 mid = 0.5 * (j.twist_lower + j.twist_upper);
+        if (tw > j.twist_upper - kLimitNear && tw >= mid) {
+          P.twist_side = 1;
+          P.twist_room = j.twist_upper - tw;
+          if (tw > j.twist_upper) P.twist_e = pull(tw - j.twist_upper, 0.0);
+        } else if (tw < j.twist_lower + kLimitNear && tw < mid) {
+          P.twist_side = -1;
+          P.twist_room = j.twist_lower - tw;
+          if (tw < j.twist_lower) P.twist_e = pull(tw - j.twist_lower, 0.0);
+        }
+        if (P.twist_side != 0) {
+          P.twist_on = true;
+          P.twist_ax = zb;
+          const f64 k = dot(zb, Isum * zb);
+          P.twist_k = k > 0.0 ? 1.0 / k : 0.0;
+        }
+      }
+    }
+    // the muscle: a soft drive to the relative rotation it is given (body frames)
+    if ((t == JointType::Ball || t == JointType::Hinge) && j.muscle.on()) {
+      const JointMuscle& M = j.muscle;
+      const Quat qa = ia >= 0 ? bodies[size_t(ia)]->q : j.a.q, qb = ib >= 0 ? bodies[size_t(ib)]->q : j.b.q;
+      const V3 e = rotation_vector(qb * conj(qa * M.target));  // (b turned past its target, world)
+      P.mus_rate = rotate(qa, M.target_rate);
+      f64 c = std::max(0.0, M.damping);
+      const f64 k = std::max(0.0, M.stiffness);
+      if (t == JointType::Hinge) {
+        const f64 kk = dot(P.ax, Isum * P.ax);
+        // (the damper sized for the limb it moves, not for the two bodies alone)
+        if (M.inertia > 0.0 && kk > 0.0) c *= std::min(1.0, (1.0 / kk) / M.inertia);
+        const f64 denom = c + dt * k;
+        if (denom > 0.0 && kk > 0.0) {
+          P.mus_on = true;
+          P.mus_gamma = 1.0 / (dt * denom);
+          P.mus_bias = V3{(k / denom) * dot(e, P.ax), 0.0, 0.0};
+          P.mus_k1 = 1.0 / (kk + P.mus_gamma);
+        }
+      } else {
+        if (M.inertia > 0.0) {
+          // (along the relative spin it damps, else the error)
+          const V3 wa0 = P.ia >= 0 ? bodies[size_t(P.ia)]->w : V3{}, wb0 = P.ib >= 0 ? bodies[size_t(P.ib)]->w : V3{};
+          V3 u = wb0 - wa0 - P.mus_rate;
+          if (!(norm2(u) > 1e-18)) u = e;
+          u = normalized(u);
+          const f64 ku = dot(u, Isum * u);
+          if (ku > 0.0) c *= std::min(1.0, (1.0 / ku) / M.inertia);
+        }
+        const f64 denom = c + dt * k;
+        if (denom > 0.0) {
+          P.mus_on = true;
+          P.mus_gamma = 1.0 / (dt * denom);
+          P.mus_bias = e * (k / denom);
+          P.mus_K = inverted(plus(Isum, diag3(P.mus_gamma)));
+        }
+      }
+      P.mus_cap = M.max_torque > 0.0 ? M.max_torque * dt : 0.0;
+    }
     // the drive's goal now
     const bool driven = (t == JointType::Hinge || t == JointType::Slider) && j.drive.kind != JointDrive::Kind::Off && j.drive.max > 0.0;
     if (driven) j.drive.goal(time, &P.goal, &P.goal_rate);
@@ -232,12 +353,25 @@ void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw) {
     j.axial *= warm;
     j.limit *= warm;
     j.motor *= warm;
+    j.swing_imp = P.swing_on ? j.swing_imp * warm : 0.0;
+    j.twist_imp = P.twist_on ? j.twist_imp * warm : 0.0;
+    if (!P.mus_on) j.muscle_imp = V3{};
+    else if (t == JointType::Hinge) j.muscle_imp = P.ax * (dot(j.muscle_imp, P.ax) * warm);  // (about the axis it has now)
+    else j.muscle_imp *= warm;
+    if (P.mus_cap > 0.0) j.muscle_imp = capped(j.muscle_imp, P.mus_cap);
     // (apply them as the rows do)
     const f64 lim_drive = j.limit + j.motor;
     V3 J = j.lin, L = j.ang;
     if (t == JointType::Hinge) L += P.ax * lim_drive;
     if (t == JointType::Slider) J += P.ax * lim_drive;
     if (t == JointType::Distance) J += P.n * (j.axial + j.limit);
+    L += P.swing_ax * j.swing_imp + P.twist_ax * j.twist_imp + j.muscle_imp;
+    // (a muscle's feed-forward torque: this substep's impulse, not the joint's to carry)
+    if ((t == JointType::Ball || t == JointType::Hinge) && norm2(j.muscle.feed) > 0.0) {
+      const V3 f = j.muscle.feed * dt;
+      if (P.ib >= 0) bodies[size_t(P.ib)]->w += P.Ib * f;
+      if (P.ia >= 0) bodies[size_t(P.ia)]->w -= P.Ia * f;
+    }
     auto apply = [&](const V3& Jl, const V3& Ja) {
       if (P.ib >= 0) {
         Body& B = *bodies[size_t(P.ib)];
@@ -256,8 +390,10 @@ void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw) {
   }
 }
 
-void RigidWorld::solve_joints() {
-  for (size_t k = 0; k < joints.size(); ++k) {
+void RigidWorld::solve_joints(bool reverse) {
+  const size_t nj = joints.size();
+  for (size_t q = 0; q < nj; ++q) {
+    const size_t k = reverse ? nj - 1 - q : q;
     JointPrep& P = jprep_[k];
     if (!P.on) continue;
     Joint& j = joints[k];
@@ -281,6 +417,38 @@ void RigidWorld::solve_joints() {
       P.L += Ja;
     };
     const JointType t = j.type;
+    // the muscle: a spring and a damper towards its target, of limited torque
+    if (P.mus_on) {
+      if (t == JointType::Hinge) {
+        const f64 jv = dot(P.ax, wb() - wa() - P.mus_rate);
+        const f64 lam = dot(j.muscle_imp, P.ax);
+        f64 nl = lam - P.mus_k1 * (jv + P.mus_bias.x + P.mus_gamma * lam);
+        if (P.mus_cap > 0.0) nl = std::clamp(nl, -P.mus_cap, P.mus_cap);
+        apply(V3{}, P.ax * (nl - lam));
+        j.muscle_imp = P.ax * nl;
+      } else {
+        const V3 jv = wb() - wa() - P.mus_rate;
+        V3 nl = j.muscle_imp - P.mus_K * (jv + P.mus_bias + j.muscle_imp * P.mus_gamma);
+        if (P.mus_cap > 0.0) nl = capped(nl, P.mus_cap);
+        apply(V3{}, nl - j.muscle_imp);
+        j.muscle_imp = nl;
+      }
+    }
+    // (ball) the cone and the twist limit: speculative - it may close on its bound within this
+    // substep, not pass it
+    if (P.swing_on) {
+      const f64 rate = dot(P.swing_ax, wb() - wa());
+      const f64 nl = std::min(0.0, j.swing_imp + P.swing_k * (P.swing_room / joint_dt_ - rate));
+      apply(V3{}, P.swing_ax * (nl - j.swing_imp));
+      j.swing_imp = nl;
+    }
+    if (P.twist_on) {
+      const f64 rate = dot(P.twist_ax, wb() - wa());
+      const f64 l = j.twist_imp + P.twist_k * (P.twist_room / joint_dt_ - rate);
+      const f64 nl = P.twist_side > 0 ? std::min(0.0, l) : std::max(0.0, l);
+      apply(V3{}, P.twist_ax * (nl - j.twist_imp));
+      j.twist_imp = nl;
+    }
     // the drive, then the limit: the motion along (hinge: about) the axis
     const bool driven = j.drive.kind != JointDrive::Kind::Off && j.drive.max > 0.0;
     if ((t == JointType::Hinge || t == JointType::Slider) && (driven || P.lim != 0)) {
@@ -408,6 +576,15 @@ void RigidWorld::solve_joints_position(std::vector<V3>& pv, std::vector<V3>& pw)
       }
     };
     const JointType t = j.type;
+    // (ball) past its cone or its twist range: turned back only
+    if (P.swing_e != 0.0) {
+      const f64 l = std::min(0.0, P.swing_k * (P.swing_e - dot(P.swing_ax, wb() - wa())));
+      apply(V3{}, P.swing_ax * l);
+    }
+    if (P.twist_e != 0.0) {
+      const f64 l = P.twist_k * (P.twist_e - dot(P.twist_ax, wb() - wa()));
+      apply(V3{}, P.twist_ax * (P.twist_e < 0.0 ? std::min(0.0, l) : std::max(0.0, l)));
+    }
     if (P.eax != 0.0) {
       // (a limit passed, a rope over its length: pushed back only)
       if (t == JointType::Distance) {

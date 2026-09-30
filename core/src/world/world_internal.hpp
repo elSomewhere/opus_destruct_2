@@ -714,6 +714,22 @@ struct World::WheelRec {
   Quat rot;
 };
 
+// An articulation (world_articulations.cpp): its links (bodies of rigid_.bodies), its joints
+// (rigid_.joints, ends of kind Link) and targets (rigid_.targets), as made; its host's drive and
+// data. (Its collision rules are rigid_.articulations', by id.)
+struct World::ArticulationRec {
+  ArticulationId id = 0;
+  std::vector<i64> links;      // body ids, by link index
+  std::vector<JointId> joints;  // by joint index of its desc
+  std::vector<u32> targets;    // target ids, by target index of its desc
+  std::vector<ArticulationJointDesc> joint_desc;
+  std::vector<ArticulationTargetDesc> target_desc;
+  std::vector<std::pair<u16, u16>> collide;
+  std::unique_ptr<ArticulationControl> control;
+  u32 group = 0, tag = 0;
+  std::vector<u8> data;
+};
+
 // A saved session's pieces and joints, read and checked before they are applied
 // (world_session.cpp).
 struct World::SessionDelta {

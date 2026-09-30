@@ -47,6 +47,7 @@
 #include "svx/frag/fragments.hpp"
 #include "svx/phys/rigid.hpp"
 #include "svx/stress/stress.hpp"
+#include "svx/world/articulation.hpp"
 #include "svx/world/grid.hpp"
 #include "svx/world/joint_desc.hpp"
 #include "svx/world/source.hpp"
@@ -244,6 +245,8 @@ struct WorldEvent {
     JointBroken,   // id: a joint that gave way (it is gone); pos: where; strength: the force it carried (N; 0: an end lost its hold)
     WheelDetached, // id: a wheel that came off (it is gone); parent: its chassis; pos, vel: its centre; normal: its axle; voxels: the wheel piece it became (its id; 0: none); strength: its force (N; 0: its mount was lost)
     PieceReshaped, // id: a piece whose voxels changed in place (crumpled, dented): same id, same pose; mesh it again
+    ArticulationAdded,    // id: an articulation that came (back from the streaming archive, or with a loaded session): pos its first link; voxels its links
+    ArticulationRemoved,  // id: an articulation gone; end: Removed (its host, load), Unloaded (archived out of range), OutOfWorld; pos its first link
   };
   Kind kind = Kind::Crack;
   PieceEnd end = PieceEnd::Split;
@@ -530,6 +533,30 @@ class World {
   // A piece's speed limit (m/s; 0: rigid.max_speed): a car's is higher than the rubble's. Its
   // parts keep it when it breaks.
   bool set_piece_max_speed(i64 piece, f64 max_speed);
+
+  // ---- articulations (svx/world/articulation.hpp, docs/MOTION.md §6)
+  // Bodies of links (rigid bodies of no voxels, colliding as spheres) held by joints with limits
+  // and muscles, pulled by targets: a character's body, a robot, a rag doll. Solved with
+  // everything else (fine-stepped on their own while they touch no awake piece).
+  ArticulationId add_articulation(const ArticulationDesc& d);  // 0: refused (malformed, out of range, from inside a tick)
+  bool remove_articulation(ArticulationId id);                 // (ArticulationRemoved, Removed)
+  std::vector<ArticulationId> articulations() const;           // ascending ids
+  // Its drive (muscles, targets, forces for one tick, flags), changed in place by its host between
+  // ticks; valid until the articulation goes (nullptr: none).
+  ArticulationControl* articulation_control(ArticulationId id);
+  bool articulation_state(ArticulationId id, ArticulationState* out) const;
+  const std::vector<u8>* articulation_data(ArticulationId id) const;  // its host data (nullptr: none)
+  bool set_articulation_data(ArticulationId id, std::vector<u8> data);
+  // Immediate edits (they wake it): a link placed and set moving (a body taking over from an
+  // animation with its momentum); a velocity change of a link (a shove); an impulse at a point.
+  bool set_link(ArticulationId id, u16 link, const V3& pos, const Quat& rot, const V3& vel, const V3& ang);
+  bool add_link_velocity(ArticulationId id, u16 link, const V3& dv, const V3& dw);
+  bool apply_link_impulse(ArticulationId id, u16 link, const V3& point, const V3& impulse);
+  // A link lost (a limb shot off): it touches nothing any more and keeps mass_scale of its mass.
+  bool lose_link(ArticulationId id, u16 link, f64 mass_scale);
+  bool wake_articulation(ArticulationId id);
+  // A link's body id (0: none): its joints to pieces (JointAnchor::Kind::Link), queries.
+  i64 link_body(ArticulationId id, u16 link) const;
   std::vector<GridId> grids() const;                  // the oriented grids, ascending ids
   const VoxelGrid* grid(GridId id) const;             // kWorldGrid: grid(); nullptr: none
   bool grid_frame(GridId id, GridFrame* out) const;   // in the world now (false: none)
@@ -959,6 +986,22 @@ class World {
   void wheel_structure_loads(f64 dt_sub);  // (the wheels' forces on the structures they stand on)
   void wheel_piece_forces(std::vector<std::vector<PointForce>>& per, std::vector<f64>& fsum) const;
   i64 make_wheel_body(const Wheel& w);  // (a wheel that came off, as a piece; its id, 0: none)
+
+  // ---- articulations (world_articulations.cpp)
+  struct ArticulationRec;
+  std::vector<std::unique_ptr<ArticulationRec>> arts_;  // ascending ids
+  ArticulationId next_art_ = 1;
+  u32 next_target_ = 1;
+  ArticulationRec* art(ArticulationId id);
+  const ArticulationRec* art(ArticulationId id) const;
+  Body* art_link(const ArticulationRec& a, u16 link);
+  const Body* art_link(const ArticulationRec& a, u16 link) const;
+  // (a tick begins: the hosts' drives into the solver, the links' senses afresh)
+  void apply_articulation_controls();
+  // (its links, joints and targets go; ArticulationRemoved)
+  void drop_articulation(ArticulationId id, PieceEnd end);
+  void clear_articulations();  // (load: all go, quietly)
+  void articulations_out_of_world(f64 floor_z);  // (a link fallen out, or no longer finite: its articulation goes)
 
   // ---- crumpling (world_crumple.cpp)
   // After a substep: where a crumpling contact carried its cap, its crumpling side folds - its

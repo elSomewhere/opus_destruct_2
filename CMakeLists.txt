@@ -39,6 +39,9 @@ endif()
 #   svx_mesh  voxel meshing (greedy chunk meshes, piece meshes) for renderers. Depends on core.
 #   svx_env   environment systems on the core's extension points: fire, smoke, water
 #             (docs/ENV.md). Depends on the core's public API only.
+#   svx_anim  characters (docs/ANIM.md): voxel people with a motion plan, a physical body of the
+#             core's articulations (or a body of its own), and behaviours between them.
+#             Depends on the core's public API only.
 #   svx_game  the prototype game harness: Game (movers, viewer, far tier, command log, piece
 #             meshes), procedural and city levels, Doom WAD import, the web worker C ABI.
 # No exceptions / RTTI are needed by the libraries.
@@ -57,11 +60,13 @@ endif()
 # asks for more.
 option(SVX_BUILD_MESH "svx_mesh (voxel meshing for renderers)" ON)
 option(SVX_BUILD_ENV "svx_env (fire, smoke, water)" ON)
+option(SVX_BUILD_ANIM "svx_anim (characters: motion, bodies, behaviours)" ON)
 option(SVX_BUILD_GAME "the game harness, its tools and the web module" ${PROJECT_IS_TOP_LEVEL})
 option(SVX_BUILD_EXAMPLES "the core's example hosts" ${PROJECT_IS_TOP_LEVEL})
 if(SVX_BUILD_GAME)
   set(SVX_BUILD_MESH ON)
   set(SVX_BUILD_ENV ON)
+  set(SVX_BUILD_ANIM ON)
 endif()
 
 if(SVX_BUILD_MESH)
@@ -80,11 +85,19 @@ if(SVX_BUILD_ENV)
   target_compile_options(svx_env PRIVATE -fno-exceptions -fno-rtti ${SVX_WARNINGS})
 endif()
 
+if(SVX_BUILD_ANIM)
+  file(GLOB_RECURSE SVX_ANIM_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/anim/src/*.cpp)
+  add_library(svx_anim STATIC ${SVX_ANIM_SOURCES})
+  target_include_directories(svx_anim PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/anim/include> $<INSTALL_INTERFACE:include>)
+  target_link_libraries(svx_anim PUBLIC svx_core)
+  target_compile_options(svx_anim PRIVATE -fno-exceptions -fno-rtti ${SVX_WARNINGS})
+endif()
+
 if(SVX_BUILD_GAME)
   file(GLOB_RECURSE SVX_GAME_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/game/src/*.cpp)
   add_library(svx_game STATIC ${SVX_GAME_SOURCES})
   target_include_directories(svx_game PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/game/include)
-  target_link_libraries(svx_game PUBLIC svx_core svx_mesh svx_env)
+  target_link_libraries(svx_game PUBLIC svx_core svx_mesh svx_env svx_anim)
   target_compile_options(svx_game PRIVATE -fno-exceptions -fno-rtti ${SVX_WARNINGS})
 endif()
 
@@ -121,6 +134,10 @@ endif()
 if(SVX_BUILD_ENV)
   list(APPEND SVX_INSTALL_TARGETS svx_env)
   install(DIRECTORY env/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
+endif()
+if(SVX_BUILD_ANIM)
+  list(APPEND SVX_INSTALL_TARGETS svx_anim)
+  install(DIRECTORY anim/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 endif()
 install(TARGETS ${SVX_INSTALL_TARGETS} EXPORT structvoxTargets ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR})
 install(DIRECTORY core/include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})

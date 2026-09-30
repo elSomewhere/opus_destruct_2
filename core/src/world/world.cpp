@@ -64,6 +64,7 @@ void World::set_params(const WorldParams& p) {
 void World::load(VoxelGrid&& g) {
   if (in_tick_) return;  // (from inside a tick: refused)
   queue_.clear();
+  clear_articulations();
   std::vector<i64> ids;
   for (const auto& b : rigid_.bodies) ids.push_back(b->id);
   remove_bodies(ids, PieceEnd::Removed);
@@ -2389,8 +2390,10 @@ void World::tick() {
   const auto tr = Clock::now();
   rigid_.par = cfg_.rigid;
   rigid_.mats = mats_.get();
+  // (the articulations' drives, as their hosts set them, into the solver)
+  if (!arts_.empty()) apply_articulation_controls();
   // (the violent part of a collapse, or a large pile settling: one substep a tick)
-  const bool busy = rigid_.busy() || rigid_.contacts().size() > cfg_.rigid.busy_contacts;
+  const bool busy = rigid_.busy() || rigid_.piece_contacts() > cfg_.rigid.busy_contacts;
   const int ns = busy ? 1 : std::max(1, cfg_.rigid.substeps);
   const f64 dts = cfg_.dt / ns;
   statics_ = static_grids();
@@ -2428,9 +2431,11 @@ void World::tick() {
   f64 floor_z = grid_.h * grid_.lo[2] - cfg_.rigid.kill_depth;
   for (size_t g = 1; g < grids_.size(); ++g)
     if (grids_[g] && grids_[g]->any) floor_z = std::min(floor_z, grids_[g]->lo.z - cfg_.rigid.kill_depth);
+  if (!arts_.empty()) articulations_out_of_world(floor_z);
   std::vector<i64> out;
   for (const auto& bp : rigid_.bodies) {
     const Body& b = *bp;
+    if (b.link) continue;  // (an articulation's: it goes whole, above)
     const bool finite = finite3(b.x) && finite3(b.v) && finite3(b.w) && std::isfinite(b.q.w);
     if (!finite || b.x.z < floor_z || b.count <= 0) out.push_back(b.id);
   }

@@ -436,9 +436,13 @@ void RigidWorld::refresh_boxes() {
 void RigidWorld::integrate_velocities(f64 dt) {
   const f64 ld = std::max(0.0, 1.0 - par.linear_damping * dt);
   const f64 ad = std::max(0.0, 1.0 - par.angular_damping * dt);
-  for (auto& bp : bodies) {
-    Body& b = *bp;
+  for (size_t i = 0; i < bodies.size(); ++i) {
+    Body& b = *bodies[i];
     if (b.asleep) continue;
+    if (b.link) {
+      if (!any_fine_ || !fine_[i]) integrate_link(b, dt);  // (the fine ones: in their own steps)
+      continue;
+    }
     b.v.z -= par.gravity * dt;
     if (norm2(b.force) > 0.0) b.v += b.force * (b.inv_mass * dt);  // (external: World::apply_force)
     if (norm2(b.torque) > 0.0) b.w += b.inv_inertia_world() * b.torque * dt;
@@ -546,10 +550,16 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
     };
     std::vector<Contact> spec;
     CrushPatches crush;
+    std::vector<GridCache> link_caches;
     for (i64 i = b0; i < b1; ++i) {
       const i32 ia = static_cast<i32>(i);
       Body& A = *bodies[size_t(ia)];
       if (A.asleep || !selected(ia)) continue;
+      if (A.link) {
+        // (a link's spheres; the fine ones collide in their own steps)
+        if (!any_fine_ || !fine_[size_t(ia)]) link_grid_contacts(A, ia, statics, link_margin(A, step_dt_), wc[size_t(ia)], link_caches);
+        continue;
+      }
       // (continuous collision: a body that may move more than half a voxel this substep looks
       // along its motion - its box grown by it)
       const f64 motion = (norm(A.v) + A.radius * norm(A.w)) * step_dt_;
@@ -680,6 +690,8 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
         if (B.box_lo.x > A.box_hi.x) break;
         if (A.asleep && B.asleep) continue;
         if (!selected(order[size_t(i)]) && !selected(order[j])) continue;
+        if (any_fine_ && (fine_[size_t(order[size_t(i)])] || fine_[size_t(order[j])])) continue;  // (in their own steps)
+        if ((A.link || B.link) && (!may_collide(A, B) || (A.link && A.link->kinematic && B.asleep) || (B.link && B.link->kinematic && A.asleep))) continue;
         if (A.family_ticks > 0 && B.family_ticks > 0 && A.family == B.family) continue;
         if (A.box_hi.y < B.box_lo.y || B.box_hi.y < A.box_lo.y || A.box_hi.z < B.box_lo.z || B.box_hi.z < A.box_lo.z) continue;
         if (!apart.empty() && std::binary_search(apart.begin(), apart.end(), std::pair<i64, i64>{std::min(A.id, B.id), std::max(A.id, B.id)})) continue;
@@ -697,6 +709,17 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
     size_t found[2] = {0, 0};
     for (i64 q = q0; q < q1; ++q) {
       const auto& pr = pairs[size_t(q)];
+      if (bodies[size_t(pr.first)]->link || bodies[size_t(pr.second)]->link) {
+        // (a link's spheres against a piece's voxels or another link's spheres: the link is a)
+        const bool l0 = bodies[size_t(pr.first)]->link != nullptr;
+        const i32 ia = l0 ? pr.first : pr.second, ib = l0 ? pr.second : pr.first;
+        const Body& A = *bodies[size_t(ia)];
+        const Body& B = *bodies[size_t(ib)];
+        const f64 m = std::min(0.6, link_margin(A, step_dt_) + (norm(B.v) + B.radius * norm(B.w)) * step_dt_);
+        if (B.link) link_link_contacts(A, ia, B, ib, m, pc[size_t(q)]);
+        else link_piece_contacts(A, ia, B, ib, m, pc[size_t(q)]);
+        continue;
+      }
       for (int dir = 0; dir < 2; ++dir) {
         std::vector<Contact>& one = dirc[dir];
         one.clear();
@@ -908,11 +931,13 @@ void RigidWorld::solve(f64 dt) {
     c.k2 = eff(c, c.t2);
     const f64 vn = dot(vel(c.a, c.ra) - vel(c.b, c.rb), c.n);
     c.approach = std::max(0.0, -vn);
+    // (a link's contact: its friction, set when found; it does not bounce)
+    const bool lk = bodies[size_t(c.a)]->link || (c.b >= 0 && bodies[size_t(c.b)]->link);
     // (a crumpling contact folds: it does not bounce)
-    c.bounce = vn < -par.bounce_speed && c.cap <= 0.0 ? -par.restitution * vn : 0.0;
+    c.bounce = vn < -par.bounce_speed && c.cap <= 0.0 && !lk ? -par.restitution * vn : 0.0;
     if (c.depth < 0.0) c.bounce = c.depth / dt;  // (speculative: it may close the gap this substep, no more)
     c.crushing = false;
-    c.mu = par.friction;
+    if (!lk) c.mu = par.friction;
     c.bias = std::min(par.max_correction, par.baumgarte * std::max(0.0, c.depth - par.slop) / dt);
   }
   // (warm starts after every contact read its approach from the velocities before the solve)
@@ -927,8 +952,15 @@ void RigidWorld::solve(f64 dt) {
       apply(c, c.n * c.ln + c.t1 * c.l1 + c.t2 * c.l2);
     }
   }
-  prepare_joints(dt, Iw);
+  // (the joints and targets of the bodies solved here: all but the fine ones, which have their own steps)
+  std::vector<u8> coarse;
+  if (any_fine_) {
+    coarse.resize(bodies.size());
+    for (size_t i = 0; i < bodies.size(); ++i) coarse[i] = fine_[i] ? 0 : 1;
+  }
+  prepare_joints(dt, Iw, any_fine_ ? &coarse : nullptr);
   prepare_wheels(dt, Iw);
+  if (!targets.empty()) prepare_targets(dt, Iw, any_fine_ ? &coarse : nullptr);
   // Parallel Gauss-Seidel by graph colouring. A pair's manifold (consecutive contacts of the same
   // two bodies, or a body and the world) is solved in order as one group; the groups of one colour
   // share no awake body, so they are solved concurrently (bitwise the same in any order). Groups
@@ -993,7 +1025,7 @@ void RigidWorld::solve(f64 dt) {
   // alone so every thread count and platform does the same)
   // (a collapse's peak, or a large pile settling: fewer iterations; a function of the state and
   // the contact count alone, the same on every thread count and platform)
-  const bool reduced = busy_ || contacts_.size() > par.busy_contacts;
+  const bool reduced = busy_ || piece_contacts() > par.busy_contacts;
   const int vel_iters = reduced ? par.busy_iterations : par.iterations;
   const int pos_iters = reduced ? std::min(2, par.position_iterations) : par.position_iterations;
   for (int it = 0; it < vel_iters; ++it) {
@@ -1013,6 +1045,7 @@ void RigidWorld::solve(f64 dt) {
     });
     solve_joints();
     solve_wheels();
+    if (!targets.empty()) solve_targets();
   }
   // Squeeze guard: a light body pinned between heavy ones can come out of the iteration with a
   // speed no contact partner has (and fly off). Contacts may slow a body down freely but speed it
@@ -1030,6 +1063,13 @@ void RigidWorld::solve(f64 dt) {
     for (size_t i = 0; i < bodies.size(); ++i) {
       Body& b = *bodies[i];
       if (b.asleep) continue;
+      if (b.link) {
+        // (a link is driven by its muscles and targets, not squeezed: only its spin is limited - a
+        // limp link does not whirl on an impact)
+        const f64 cap = b.link->max_spin, ws = norm(b.w);
+        if (cap > 0.0 && ws > cap) b.w *= cap / ws;
+        continue;
+      }
       const f64 before = norm(b.v_pre), after = norm(b.v);
       const f64 allowed = std::max(before, 1.2 * partner[i]) + 1.0;
       if (after > allowed) b.v *= allowed / after;
@@ -1069,6 +1109,7 @@ void RigidWorld::solve(f64 dt) {
   }
   finish_joints(dt);
   finish_wheels(dt);
+  if (!targets.empty()) finish_targets(dt);
   pseudo_v_.swap(pv);
   pseudo_w_.swap(pw);
 }
@@ -1076,7 +1117,7 @@ void RigidWorld::solve(f64 dt) {
 void RigidWorld::integrate_positions(f64 dt) {
   for (size_t i = 0; i < bodies.size(); ++i) {
     Body& b = *bodies[i];
-    if (b.asleep) continue;
+    if (b.asleep || (any_fine_ && fine_[i])) continue;  // (the fine ones moved in their own steps)
     const V3 pv = i < pseudo_v_.size() ? pseudo_v_[i] : V3{};
     const V3 pw = i < pseudo_w_.size() ? pseudo_w_[i] : V3{};
     b.x += (b.v + pv) * dt;
@@ -1236,6 +1277,17 @@ void RigidWorld::sleep_update(f64 dt) {
     Body& b = *bodies[i];
     if (b.asleep) continue;
     b.held = supported[i] ? kHold : std::max(0, b.held - steps);
+    if (b.link) {
+      // (a link: not settled like rubble - its muscles hold it, its host calms it - and asleep
+      // only where its articulation may sleep; a kinematic one never)
+      const f64 sl = norm(b.v) + b.radius * norm(b.w);
+      b.sleep_ema = keep * b.sleep_ema + (1.0 - keep) * sl;
+      const ArticulationRules* r = b.link->articulation ? rules_of(b.link->articulation) : nullptr;
+      if (b.link->kinematic || (r && !r->can_sleep) || sl > 3.0 * sleep_speed) b.still = 0;
+      else if ((b.held > 0 || (!hung.empty() && hung[i])) && b.sleep_ema < sleep_speed) b.still += steps;
+      else b.still = std::max(0, b.still - 2 * steps);
+      continue;
+    }
     f64 sp;
     if (on[i] == kMachine) {
       sp = norm(b.v) + b.radius * norm(b.w);  // (driven: not settled)
@@ -1302,7 +1354,7 @@ bool RigidWorld::busy() const {
   i32 fast = 0;
   const f64 v2 = par.busy_speed * par.busy_speed;
   for (const auto& bp : bodies)
-    if (!bp->asleep && norm2(bp->v) > v2 && ++fast > par.busy_bodies) return true;
+    if (!bp->asleep && !bp->link && norm2(bp->v) > v2 && ++fast > par.busy_bodies) return true;  // (a collapse: pieces, not people)
   return false;
 }
 
@@ -1317,6 +1369,19 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
   busy_ = busy();
   set_step(dt);
   if (!joints.empty()) wake_jointed();  // (woken between steps: the host's, a piece's edit)
+  // The articulations that touch no awake piece are stepped on their own, first: their contacts
+  // found (a sleeper they strike hard wakes, and who steps on their own is decided again), then
+  // their steps. Their contacts join the substep's after the pieces' solve.
+  mark_fine(dt);
+  std::vector<Contact> fine_report;
+  if (any_fine_ && collide_fine(dt, statics, true)) {
+    mark_fine(dt);
+    if (any_fine_) collide_fine(dt, statics, false);
+  }
+  if (any_fine_) step_fine(dt, fine_report);
+  std::vector<std::pair<i64, i64>> fine_ids;  // (by identity: the pieces' fracture may change the body list)
+  fine_ids.reserve(fine_report.size());
+  for (const Contact& c : fine_report) fine_ids.push_back({bodies[size_t(c.a)]->id, c.b >= 0 ? bodies[size_t(c.b)]->id : -1});
   using Clock = std::chrono::steady_clock;
   auto ms = [](Clock::time_point a, Clock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
   const auto t0 = Clock::now();
@@ -1340,7 +1405,19 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
     cid[k] = {bodies[size_t(contacts_[k].a)]->id, contacts_[k].b >= 0 ? bodies[size_t(contacts_[k].b)]->id : -1};
   std::vector<i64> before_ids(bodies.size());
   for (size_t i = 0; i < bodies.size(); ++i) before_ids[i] = bodies[i]->id;
+  std::vector<i64> fine_bodies;
+  if (any_fine_)
+    for (size_t i = 0; i < bodies.size(); ++i)
+      if (fine_[i]) fine_bodies.push_back(bodies[i]->id);
   const int changed = fracture ? fracture(dt) : 0;
+  if (any_fine_ && changed != 0) {
+    // (pieces came and went: the fine links, which never break, by their ids again)
+    fine_.assign(bodies.size(), 0);
+    for (i64 id : fine_bodies) {
+      const auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
+      if (it != bodies.end() && (*it)->id == id) fine_[size_t(it - bodies.begin())] = 1;
+    }
+  }
   const auto t3 = Clock::now();
   if (changed == 1) {
     // (bodies changed without a re-solve: the step's contacts and position corrections carry over
@@ -1376,9 +1453,9 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
     pseudo_w_.swap(pw);
   }
   if (changed == 2) {
-    for (auto& bp : bodies) {
-      Body& b = *bp;
-      if (b.asleep) continue;
+    for (size_t i = 0; i < bodies.size(); ++i) {
+      Body& b = *bodies[i];
+      if (b.asleep || (any_fine_ && fine_[i])) continue;  // (the fine ones are not in this solve)
       b.v = b.v_pre;
       b.w = b.w_pre;
     }
@@ -1411,9 +1488,26 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
     solve(dt);
     par.iterations = iters;
   }
+  // the fine articulations' contacts join the substep's (by identity, if the body list changed)
+  if (!fine_report.empty()) {
+    for (size_t k = 0; k < fine_report.size(); ++k) {
+      Contact c = fine_report[k];
+      if (changed != 0) {
+        auto index_of = [&](i64 id) -> i32 {
+          auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
+          return (it != bodies.end() && (*it)->id == id) ? static_cast<i32>(it - bodies.begin()) : -1;
+        };
+        c.a = index_of(fine_ids[k].first);
+        c.b = fine_ids[k].second >= 0 ? index_of(fine_ids[k].second) : -1;
+        if (c.a < 0 || (fine_ids[k].second >= 0 && c.b < 0)) continue;
+      }
+      contacts_.push_back(c);
+    }
+  }
   const auto t4 = Clock::now();
   integrate_positions(dt);
   refresh_boxes();
+  if (!articulations.empty()) sense_links();
   sleep_update(dt);
   const auto t5 = Clock::now();
   prof_ms[0] += ms(t0, t1);

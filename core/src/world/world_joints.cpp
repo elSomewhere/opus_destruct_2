@@ -80,6 +80,17 @@ JointId World::add_joint_impl(const JointDesc& d, JointId want) {
         Q[e] = X.q;
         break;
       }
+      case JointAnchor::Kind::Link: {
+        // (a point of a link: in its body frame, relative to its centre of mass)
+        const Body* b = rigid_.find(static_cast<i64>(A.id));
+        if (!b || !b->link) return 0;
+        E.piece = b->id;
+        E.point = rotate_inv(b->q, A.point - b->x);
+        E.axis = rotate_inv(b->q, axis);
+        E.ref = rotate_inv(b->q, ref);
+        Q[e] = b->q;
+        break;
+      }
       case JointAnchor::Kind::Piece: {
         const Body* b = rigid_.find(static_cast<i64>(A.id));
         if (!b || !b->announced) return 0;
@@ -260,6 +271,14 @@ bool World::fill_joint_end(JointRec& r, bool b_end) {
     case JointAnchor::Kind::World:
       e.p = E.point;
       return true;
+    case JointAnchor::Kind::Link: {
+      // (a link's point and frame, in its body frame: it moves with the link)
+      const Body* b = rigid_.find(E.piece);
+      if (!b || !b->link) return false;
+      e.body = b->id;
+      e.p = E.point;
+      return true;
+    }
     case JointAnchor::Kind::Grid:
     case JointAnchor::Kind::Piece:
       break;
@@ -361,7 +380,7 @@ void World::joints_follow_splits() {
   for (size_t k = 0; k < jrecs_.size(); ++k)
     for (int e = 0; e < 2; ++e) {
       JointRec::End& E = e ? jrecs_[k].b : jrecs_[k].a;
-      if (E.piece <= 0) continue;
+      if (E.piece <= 0 || E.kind == JointAnchor::Kind::Link) continue;  // (a link never splits)
       if (!std::binary_search(pending_retire_.begin(), pending_retire_.end(), E.piece)) {
         // (a piece split in place: an end on a part that came off follows it)
         if (!std::binary_search(split_kept_.begin(), split_kept_.end(), E.piece)) continue;
