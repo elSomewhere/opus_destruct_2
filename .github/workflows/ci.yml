@@ -99,11 +99,13 @@ jobs:
       - run: npm run typecheck
       - run: npm test
 
-  # The front end in a browser (software WebGPU): the people, the drive, the fire. Nightly and on
-  # demand - a GPU-less runner's timings vary too much to hold every push to them.
+  # The front end in a browser: the rooms, the streamed city, the people, the drive. Nightly and
+  # on demand - a GPU-less runner's timings vary too much to hold every push to them. WebGPU is
+  # software there (SwiftShader: SMOKE_SWIFTSHADER), the engine the pthreads module the page runs.
   browser:
     if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04
+    timeout-minutes: 120
     steps:
       - uses: actions/checkout@v4
       - uses: mymindstorm/setup-emsdk@v14
@@ -113,7 +115,7 @@ jobs:
         with:
           node-version: 24
       - name: Build the engine module
-        run: cmake --preset wasm-release && cmake --build --preset wasm-release -j --target svx_web
+        run: cmake --preset wasm-release-threads && cmake --build --preset wasm-release-threads -j --target svx_web
       - name: Front end
         working-directory: web
         run: npm ci && npm i --no-save puppeteer-core
@@ -121,9 +123,20 @@ jobs:
         working-directory: web
         env:
           CHROME_PATH: /usr/bin/google-chrome
+          SMOKE_SWIFTSHADER: "1"
         run: |
           npx vite --port 5190 --strictPort &
           npx --yes wait-on http://localhost:5190/
           node scripts/smoke-wasm.mjs http://localhost:5190/
           node scripts/people-wasm.mjs http://localhost:5190/
           node scripts/drive-wasm.mjs http://localhost:5190/
+      - name: Screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: browser-screenshots
+          path: |
+            web/smoke-wasm-out/
+            web/people-out/
+            web/drive-out/
+          if-no-files-found: ignore
