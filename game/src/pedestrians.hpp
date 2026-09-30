@@ -86,13 +86,13 @@ class Pedestrians {
     anim::ModelPtr model;  // (kept while its mesh is drawn)
     u32 id = 0;
     f64 unused = 0.0;      // s no character has drawn it
+    bool sent = false;     // (meshed for the front end: made when it asks)
   };
   std::map<std::pair<const anim::VoxelModel*, u32>, MeshEntry> meshes_;
   std::map<u32, u32> mesh_of_;     // character -> its mesh
   std::map<u64, u32> palettes_;    // (palette digest) -> id
   std::map<u32, u32> palette_of_;  // character -> its palette
   u32 next_mesh_ = 1, next_palette_ = 1;
-  std::vector<CharacterMeshData> meshes_out_;
   std::vector<u32> removed_out_;
   std::vector<CharacterPalette> palettes_out_;
   std::unique_ptr<anim::ModelMesher> mesher_;

@@ -82,8 +82,8 @@ int main(int argc, char** argv) {
       game.set_pedestrians(pc);
       V3 eye = src->spawn_pos();
       game.set_viewer(eye);
-      // (the ground about the start, and the first people)
-      for (int t = 0; t < 60 * 8; ++t) game.tick();
+      // (the ground about the start, and the people)
+      for (int t = 0; t < 60 * 15; ++t) game.tick();
       std::vector<f64> tick_ms, char_ms;
       f64 deep = 0.0, shallow = 0.0, plan = 0.0, rest = 0.0;
       std::set<u32> seen, before;

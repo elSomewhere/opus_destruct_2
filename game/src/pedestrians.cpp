@@ -147,7 +147,8 @@ void Pedestrians::clear() {
   heard_.clear();
   mesh_of_.clear();
   palette_of_.clear();
-  for (const auto& [k, e] : meshes_) removed_out_.push_back(e.id);
+  for (const auto& [k, e] : meshes_)
+    if (e.sent) removed_out_.push_back(e.id);
   meshes_.clear();
   mesher_->clear();
   clock_ = 0.0;
@@ -749,7 +750,9 @@ void Pedestrians::populate() {
     return g_->world_.chunk_resident(c) && g_->world_.chunk_resident({c[0], c[1], c[2] + 1});
   };
   const u64 salt = mix(static_cast<u64>(g_->world_.ticks()) * 0xD1B54A32D192ED03ull ^ 0x9ED5);
-  for (i32 tries = 0, made = 0; tries < 4 && made < 2 && living < cfg.count; ++tries) {
+  // (a few at a time; more while far short - a crowd asked for, a fast drive through)
+  const i32 per_round = std::min(8, 2 + (cfg.count - living) / 6);
+  for (i32 tries = 0, made = 0; tries < 2 * per_round && made < per_round && living < cfg.count; ++tries) {
     const u64 h = mix(salt + static_cast<u64>(tries));
     const Spot& s = spots[size_t(h % spots.size())];
     bool free = true;
@@ -812,13 +815,6 @@ void Pedestrians::output() {
         MeshEntry e;
         e.model = c->model;
         e.id = next_mesh_++;
-        anim::CharacterMesh m = mesher_->mesh(*c->model);
-        CharacterMeshData out;
-        out.id = e.id;
-        out.vertex_count = m.vertex_count;
-        out.vertices = std::move(m.vertices);
-        out.indices = std::move(m.indices);
-        meshes_out_.push_back(std::move(out));
         it = meshes_.emplace(key, std::move(e)).first;
       }
       it->second.unused = 0.0;
@@ -843,15 +839,19 @@ void Pedestrians::output() {
       palette_of_[id] = pit->second;
     }
   }
-  // (meshes nothing drew for a while go)
+  // (meshes nothing drew for a while go; the mesher's part cache with them - it knows parts by
+  // their address, and would keep those of models gone)
+  bool dropped = false;
   for (auto it = meshes_.begin(); it != meshes_.end();) {
     if (it->second.unused > 2.0) {
-      removed_out_.push_back(it->second.id);
+      if (it->second.sent) removed_out_.push_back(it->second.id);
       it = meshes_.erase(it);
+      dropped = true;
     } else {
       ++it;
     }
   }
+  if (dropped) mesher_->clear();
 }
 
 std::vector<CharacterView> Pedestrians::views() const {
@@ -879,9 +879,20 @@ std::vector<CharacterView> Pedestrians::views() const {
   return out;
 }
 
+// (meshed when the front end asks: a host that draws nothing pays nothing)
 std::vector<CharacterMeshData> Pedestrians::take_meshes() {
   std::vector<CharacterMeshData> out;
-  out.swap(meshes_out_);
+  for (auto& [key, e] : meshes_) {
+    if (e.sent) continue;
+    e.sent = true;
+    anim::CharacterMesh m = mesher_->mesh(*e.model);
+    CharacterMeshData d;
+    d.id = e.id;
+    d.vertex_count = m.vertex_count;
+    d.vertices = std::move(m.vertices);
+    d.indices = std::move(m.indices);
+    out.push_back(std::move(d));
+  }
   return out;
 }
 
@@ -903,7 +914,6 @@ i64 Pedestrians::memory_bytes() const {
   for (const anim::HumanVariant& l : looks_)
     if (l.model)
       for (const anim::VoxelPart& part : l.model->parts) b += static_cast<i64>(part.cells.capacity() + sizeof(part));
-  for (const CharacterMeshData& m : meshes_out_) b += static_cast<i64>(m.vertices.capacity() + m.indices.capacity() * sizeof(u32));
   b += static_cast<i64>(meshes_.size() * 96 + palettes_.size() * 48 + (mesh_of_.size() + palette_of_.size()) * 48);
   return b;
 }
