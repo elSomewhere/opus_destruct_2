@@ -16,7 +16,9 @@ A character is
   lying, crawling, getting up, dying, knockouts),
 - a `Character` that ties them together with health, hit zones and wounds, and a
   `CharacterSystem` that owns characters in a core `World`. `Brawler` choreographs fist and knife
-  fights between two characters.
+  fights between two characters; `GibSystem` (`physics/debris`) moves what comes off them - limbs
+  shot off, a body a blast tore apart, a dropped weapon - and their blood (drops that stain the
+  surfaces they hit).
 
 The port is faithful: the same constants, algorithms, order of operations and random draws as
 the original; its tests are ported with their thresholds (`tests/anim/`).
@@ -106,7 +108,9 @@ policy and `max_deep`.
 - **Blows**: a deep body knows what hit it (its links' `bumped`): the change of speed it took
   hurts it - a car at 40 km/h kills - and the physics knocks it down. Drivers brake for people in
   their path. A shot's ray sees the characters (`raycast_shot`); a round into one is a logged
-  command (`wound_character`); a blast throws, hurts, kills.
+  command (`wound_character`); a blast throws, hurts, kills, tears apart. What comes off - limbs,
+  pieces, blood - is the game's `GibSystem`'s: gibs are drawn as characters of one matrix, the
+  blood as drops and stains (`Game::blood`).
 - **Population**: every half second, as the traffic: the living out of range go, new people come
   on resident sidewalks out of sight; the dead in range stay (the longest dead beyond ten go),
   and out of range are the world's.
@@ -117,11 +121,23 @@ API (`svx_set_pedestrians`, `svx_poll_character_meshes`, `svx_characters`, `svx_
 
 ## 6. Cost
 
-`svx_people_bench` drives the viewer through the drive city (8 m/s, traffic on) and reports, per
-policy and crowd, the whole tick and the characters' part, the bodies' split and the memory.
-Measured on a 4-core container, other work running (so read the relative numbers):
+A body's step, single-threaded (20 standing, `link_substeps` 4): **deep** 0.22 ms a tick
+(its fine steps 1.3 ms and its fine collision 0.33 ms per 20 bodies a substep), **shallow**
+0.13 ms. The deep bodies' islands and the characters' own updates run in parallel; the plan
+alone (a calm body far away) costs a small fraction of either.
 
-(see the table in the commit that adds the numbers, or run `svx_people_bench`)
+The middle paths:
+- **hybrid** (the default): deep only where it matters - near the player, near moving pieces -
+  shallow in sight, on the plan beyond; the dead deep (asleep: free).
+- **coarser deep bodies**: `RigidParams::link_substeps` 2 (1/240 s) halves the deep bodies'
+  fine steps; the original's behaviour tests still pass on it but one (a corpse that settles
+  and sleeps later than its window).
+- **the plan alone**: `physics = false` (the level of detail) for the calm; anything that needs
+  the body wakes it at once.
+
+`svx_people_bench` drives the viewer through the drive city (8 m/s, traffic on) and reports,
+per policy and crowd, the whole tick and the characters' part, the bodies' split and the memory
+(each character some 45 KB; meshes are shared by look until a wound).
 
 ## 7. Tests
 
@@ -129,7 +145,8 @@ Measured on a 4-core container, other work running (so read the relative numbers
 characters, melee), those with a body on both paths; bodies in a world (a heavy piece knocks a
 body down, and the body feels the blow). `svx_game_tests` (`pedestrians:`): people walk the
 sidewalks, wait and cross; replays the same; they come and go with the viewer in bounded memory;
-the dead stay where they fell across the streaming; a car driven into someone knocks them down.
+the dead stay where they fell across the streaming; a car driven into someone knocks them down; a
+rocket among people tears them apart into gibs and blood.
 
 ## 8. Known limits
 
