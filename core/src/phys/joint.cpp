@@ -125,6 +125,11 @@ void JointDrive::goal(f64 t, f64* x, f64* rate) const {
 void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw, const std::vector<u8>* only) {
   jprep_.assign(joints.size(), JointPrep{});
   joint_dt_ = dt;
+  for (size_t k = 0; k < joints.size(); ++k) prepare_joint(k, dt, Iw, only);
+}
+
+void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, const std::vector<u8>* only) {
+
   const f64 beta = par.joint_baumgarte, slop = par.joint_slop, cap = par.max_correction, warm = par.joint_warm;
   auto index_of = [&](i64 id) -> i32 {
     const auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
@@ -135,510 +140,514 @@ void RigidWorld::prepare_joints(f64 dt, const std::vector<M3>& Iw, const std::ve
     const f64 m = std::max(0.0, std::abs(e) - s);
     return std::clamp(-beta * (e < 0.0 ? -m : m) / dt, -cap, cap);
   };
-  for (size_t k = 0; k < joints.size(); ++k) {
-    Joint& j = joints[k];
-    JointPrep& P = jprep_[k];
-    if (j.broken) continue;
-    const i32 ia = j.a.body != 0 ? index_of(j.a.body) : -1, ib = j.b.body != 0 ? index_of(j.b.body) : -1;
-    if ((j.a.body != 0 && ia < 0) || (j.b.body != 0 && ib < 0)) continue;
-    // the ends: anchors, frames (their lattice's rotation in the world), velocities
-    Quat Qa = j.a.q, Qb = j.b.q;
-    V3 xa, xb;
-    if (ia >= 0) {
-      const Body& A = *bodies[size_t(ia)];
-      P.pa = A.x + rotate(A.q, j.a.p);
-      Qa = A.q * j.a.q;
-      xa = A.x;
-      if (!A.asleep) {
-        P.ia = ia;
-        P.ma = A.inv_mass;
-        P.Ia = Iw[size_t(ia)];
-      }
-    } else {
-      P.pa = j.a.p;
+
+  Joint& j = joints[k];
+  JointPrep& P = jprep_[k];
+  if (j.broken) return;
+  const i32 ia = j.a.body != 0 ? index_of(j.a.body) : -1, ib = j.b.body != 0 ? index_of(j.b.body) : -1;
+  if ((j.a.body != 0 && ia < 0) || (j.b.body != 0 && ib < 0)) return;
+  // the ends: anchors, frames (their lattice's rotation in the world), velocities
+  Quat Qa = j.a.q, Qb = j.b.q;
+  V3 xa, xb;
+  if (ia >= 0) {
+    const Body& A = *bodies[size_t(ia)];
+    P.pa = A.x + rotate(A.q, j.a.p);
+    Qa = A.q * j.a.q;
+    xa = A.x;
+    if (!A.asleep) {
+      P.ia = ia;
+      P.ma = A.inv_mass;
+      P.Ia = Iw[size_t(ia)];
     }
-    if (ib >= 0) {
-      const Body& B = *bodies[size_t(ib)];
-      P.pb = B.x + rotate(B.q, j.b.p);
-      Qb = B.q * j.b.q;
-      xb = B.x;
-      if (!B.asleep) {
-        P.ib = ib;
-        P.mb = B.inv_mass;
-        P.Ib = Iw[size_t(ib)];
-      }
-    } else {
-      P.pb = j.b.p;
-    }
-    if (P.ia < 0 && P.ib < 0) continue;  // (both immovable now: nothing to solve)
-    // (of the bodies asked for: the fine ones, or the rest)
-    if (only && !((P.ia >= 0 && (*only)[size_t(P.ia)]) || (P.ib >= 0 && (*only)[size_t(P.ib)]))) continue;
-    P.on = true;
-    P.ra = P.ia >= 0 ? P.pa - xa : V3{};
-    P.rb = P.ib >= 0 ? P.pb - xb : V3{};
-    P.ax = normalized(rotate(Qa, j.a.axis));
-    squares(P.ax, P.t1, P.t2);
-    const M3 Isum = plus(P.Ia, P.Ib);
-    const V3 d = P.pb - P.pa;
-    const JointType t = j.type;
-    if (t == JointType::Ball || t == JointType::Hinge || t == JointType::Fixed) {
-      P.Kp = inverted(plus(diag3(P.ma + P.mb), plus(arm_block(P.ra, P.Ia), arm_block(P.rb, P.Ib))));
-      const f64 e = norm(d);
-      P.ep = e > 0.0 ? d * (pull(e, slop) / e) : V3{};
-    }
-    if (t == JointType::Hinge) {
-      const f64 a = dot(P.t1, Isum * P.t1), b = dot(P.t1, Isum * P.t2), c = dot(P.t2, Isum * P.t2);
-      inv2(a, b, c, P.K2);
-      // (b's axis tilted from a's: the turn that tilts it back)
-      const V3 tilt = cross(P.ax, normalized(rotate(Qb, j.b.axis)));
-      P.e2[0] = pull(dot(tilt, P.t1), 0.0);
-      P.e2[1] = pull(dot(tilt, P.t2), 0.0);
-      // b's reference turned about the axis from a's
-      const V3 ra_ = rotate(Qa, j.a.ref), rb_ = rotate(Qb, j.b.ref);
-      P.value = angle_about(ra_ - P.ax * dot(ra_, P.ax), rb_ - P.ax * dot(rb_, P.ax), P.ax);
-      const f64 k = dot(P.ax, Isum * P.ax);
-      P.kax = k > 0.0 ? 1.0 / k : 0.0;
-    }
-    if (t == JointType::Slider) {
-      // (the linear rows act at b's anchor: a's arm reaches it)
-      if (P.ia >= 0) P.ra = P.pb - xa;
-      const f64 a = row_mass(P.ma, P.mb, P.Ia, P.Ib, P.ra, P.rb, P.t1, V3{});
-      const f64 c = row_mass(P.ma, P.mb, P.Ia, P.Ib, P.ra, P.rb, P.t2, V3{});
-      const V3 a1 = cross(P.ra, P.t1), a2 = cross(P.ra, P.t2), b1 = cross(P.rb, P.t1), b2 = cross(P.rb, P.t2);
-      const f64 b = dot(P.t1, P.t2) * (P.ma + P.mb) + dot(a1, P.Ia * a2) + dot(b1, P.Ib * b2);
-      inv2(a, b, c, P.K2);
-      P.e2[0] = pull(dot(d, P.t1), slop);
-      P.e2[1] = pull(dot(d, P.t2), slop);
-      P.value = dot(d, P.ax);
-      const f64 k = row_mass(P.ma, P.mb, P.Ia, P.Ib, P.ra, P.rb, P.ax, V3{});
-      P.kax = k > 0.0 ? 1.0 / k : 0.0;
-    }
-    if (t == JointType::Slider || t == JointType::Fixed) {
-      P.Ka = inverted(Isum);
-      // (b turned from where it is held: the turn back)
-      const V3 phi = rotation_vector(Qb * conj(Qa * j.rel));
-      P.ea = capped(phi * (-beta / dt), cap);
-    }
-    if (t == JointType::Distance) {
-      const f64 L = norm(d);
-      P.n = L > 1e-9 ? d * (1.0 / L) : V3{0, 0, 1};
-      P.value = L;
-      const f64 k = row_mass(P.ma, P.mb, P.Ia, P.Ib, P.ra, P.rb, P.n, V3{});
-      P.kax = k > 0.0 ? 1.0 / k : 0.0;
-      if (j.stiffness > 0.0) {
-        // (a spring beyond its range: soft, gamma = 1 / (dt (c + dt k)); the stretch is taken
-        // out at the rate the spring and damper give, not by position correction)
-        const f64 c = std::max(0.0, j.damping), denom = c + dt * j.stiffness;
-        P.gamma = 1.0 / (dt * denom);
-        const f64 over = L > j.max_length ? L - j.max_length : L < j.min_length ? L - j.min_length : 0.0;
-        P.soft = (j.stiffness / denom) * over;
-        P.ksoft = 1.0 / (k + P.gamma);
-      } else {
-        if (L > j.max_length + slop) P.eax = pull(L - j.max_length, slop);
-        else if (L < j.min_length - slop) P.eax = pull(L - j.min_length, slop);
-      }
-    }
-    // the limit that bears (the nearer bound), and how far past it the ends are; latched shut, a
-    // hinge is held where it was made
-    if (t == JointType::Hinge && j.latched) {
-      P.lim = 2;
-      P.eax = pull(P.value, 0.0);
-    } else if (j.limited && (t == JointType::Hinge || t == JointType::Slider)) {
-      if (j.lower >= j.upper) {
-        P.lim = 2;
-        P.eax = pull(P.value - j.lower, t == JointType::Slider ? slop : 0.0);
-      } else {
-        P.lim = P.value - j.lower < j.upper - P.value ? -1 : 1;
-        if (P.value < j.lower) P.eax = pull(P.value - j.lower, t == JointType::Slider ? slop : 0.0);
-        if (P.value > j.upper) P.eax = pull(P.value - j.upper, t == JointType::Slider ? slop : 0.0);
-      }
-    }
-    // (ball) the cone and the twist limit, near their bounds
-    if (t == JointType::Ball && (j.swing_limited || j.twist_limited)) {
-      const V3 za = P.ax, xa = normalized(rotate(Qa, j.a.ref)), ya = cross(za, xa);
-      const V3 zb = normalized(rotate(Qb, j.b.axis));
-      if (j.swing_limited) {
-        // b's axis tilted from a's, and the elliptical cone's bound that way (in a's frame)
-        const V3 c = cross(za, zb);
-        const f64 sn = norm(c), angle = dm::atan2(sn, dot(za, zb));
-        const f64 ux0 = dot(zb, xa), uy0 = dot(zb, ya), ul = std::sqrt(ux0 * ux0 + uy0 * uy0);
-        if (sn > 1e-6 && ul > 1e-9) {
-          const f64 ux = ux0 / ul, uy = uy0 / ul;
-          const f64 lx = std::max(1e-3, ux >= 0.0 ? j.swing[0] : j.swing[1]);
-          const f64 ly = std::max(1e-3, uy >= 0.0 ? j.swing[2] : j.swing[3]);
-          const f64 bound = 1.0 / std::sqrt((ux * ux) / (lx * lx) + (uy * uy) / (ly * ly));
-          if (angle > bound - kLimitNear) {
-            P.swing_on = true;
-            P.swing_ax = c * (1.0 / sn);  // (turning b about it swings b further out)
-            const f64 k = dot(P.swing_ax, Isum * P.swing_ax);
-            P.swing_k = k > 0.0 ? 1.0 / k : 0.0;
-            P.swing_room = bound - angle;
-            if (angle > bound) P.swing_e = pull(angle - bound, 0.0);
-          }
-        }
-      }
-      if (j.twist_limited) {
-        // swing-twist: the frames' relative rotation, its turn about the axis (turning b about
-        // its own axis changes the twist alone)
-        const Quat Fa = Qa * frame_of(j.a.axis, j.a.ref), Fb = Qb * frame_of(j.b.axis, j.b.ref);
-        const Quat r = conj(Fa) * Fb;
-        f64 tw = 2.0 * dm::atan2(r.z, r.w);
-        if (tw > kPi) tw -= 2.0 * kPi;
-        else if (tw < -kPi) tw += 2.0 * kPi;
-        const f64 mid = 0.5 * (j.twist_lower + j.twist_upper);
-        if (tw > j.twist_upper - kLimitNear && tw >= mid) {
-          P.twist_side = 1;
-          P.twist_room = j.twist_upper - tw;
-          if (tw > j.twist_upper) P.twist_e = pull(tw - j.twist_upper, 0.0);
-        } else if (tw < j.twist_lower + kLimitNear && tw < mid) {
-          P.twist_side = -1;
-          P.twist_room = j.twist_lower - tw;
-          if (tw < j.twist_lower) P.twist_e = pull(tw - j.twist_lower, 0.0);
-        }
-        if (P.twist_side != 0) {
-          P.twist_on = true;
-          P.twist_ax = zb;
-          const f64 k = dot(zb, Isum * zb);
-          P.twist_k = k > 0.0 ? 1.0 / k : 0.0;
-        }
-      }
-    }
-    // the muscle: a soft drive to the relative rotation it is given (body frames)
-    if ((t == JointType::Ball || t == JointType::Hinge) && j.muscle.on()) {
-      const JointMuscle& M = j.muscle;
-      const Quat qa = ia >= 0 ? bodies[size_t(ia)]->q : j.a.q, qb = ib >= 0 ? bodies[size_t(ib)]->q : j.b.q;
-      const V3 e = rotation_vector(qb * conj(qa * M.target));  // (b turned past its target, world)
-      P.mus_rate = rotate(qa, M.target_rate);
-      f64 c = std::max(0.0, M.damping);
-      const f64 k = std::max(0.0, M.stiffness);
-      if (t == JointType::Hinge) {
-        const f64 kk = dot(P.ax, Isum * P.ax);
-        // (the damper sized for the limb it moves, not for the two bodies alone)
-        if (M.inertia > 0.0 && kk > 0.0) c *= std::min(1.0, (1.0 / kk) / M.inertia);
-        const f64 denom = c + dt * k;
-        if (denom > 0.0 && kk > 0.0) {
-          P.mus_on = true;
-          P.mus_gamma = 1.0 / (dt * denom);
-          P.mus_bias = V3{(k / denom) * dot(e, P.ax), 0.0, 0.0};
-          P.mus_k1 = 1.0 / (kk + P.mus_gamma);
-        }
-      } else {
-        if (M.inertia > 0.0) {
-          // (along the relative spin it damps, else the error)
-          const V3 wa0 = P.ia >= 0 ? bodies[size_t(P.ia)]->w : V3{}, wb0 = P.ib >= 0 ? bodies[size_t(P.ib)]->w : V3{};
-          V3 u = wb0 - wa0 - P.mus_rate;
-          if (!(norm2(u) > 1e-18)) u = e;
-          u = normalized(u);
-          const f64 ku = dot(u, Isum * u);
-          if (ku > 0.0) c *= std::min(1.0, (1.0 / ku) / M.inertia);
-        }
-        const f64 denom = c + dt * k;
-        if (denom > 0.0) {
-          P.mus_on = true;
-          P.mus_gamma = 1.0 / (dt * denom);
-          P.mus_bias = e * (k / denom);
-          P.mus_K = inverted(plus(Isum, diag3(P.mus_gamma)));
-        }
-      }
-      P.mus_cap = M.max_torque > 0.0 ? M.max_torque * dt : 0.0;
-    }
-    // the drive's goal now
-    const bool driven = (t == JointType::Hinge || t == JointType::Slider) && j.drive.kind != JointDrive::Kind::Off && j.drive.max > 0.0;
-    if (driven) j.drive.goal(time, &P.goal, &P.goal_rate);
-    // warm start (the rows that do not act now start from nothing)
-    if (!driven) j.motor = 0.0;
-    if (P.lim == 0 && t != JointType::Distance) j.limit = 0.0;
-    j.lin *= warm;
-    j.ang *= warm;
-    j.axial *= warm;
-    j.limit *= warm;
-    j.motor *= warm;
-    j.swing_imp = P.swing_on ? j.swing_imp * warm : 0.0;
-    j.twist_imp = P.twist_on ? j.twist_imp * warm : 0.0;
-    if (!P.mus_on) j.muscle_imp = V3{};
-    else if (t == JointType::Hinge) j.muscle_imp = P.ax * (dot(j.muscle_imp, P.ax) * warm);  // (about the axis it has now)
-    else j.muscle_imp *= warm;
-    if (P.mus_cap > 0.0) j.muscle_imp = capped(j.muscle_imp, P.mus_cap);
-    // (apply them as the rows do)
-    const f64 lim_drive = j.limit + j.motor;
-    V3 J = j.lin, L = j.ang;
-    if (t == JointType::Hinge) L += P.ax * lim_drive;
-    if (t == JointType::Slider) J += P.ax * lim_drive;
-    if (t == JointType::Distance) J += P.n * (j.axial + j.limit);
-    L += P.swing_ax * j.swing_imp + P.twist_ax * j.twist_imp + j.muscle_imp;
-    // (a muscle's feed-forward torque: this substep's impulse, not the joint's to carry)
-    if ((t == JointType::Ball || t == JointType::Hinge) && norm2(j.muscle.feed) > 0.0) {
-      const V3 f = j.muscle.feed * dt;
-      if (P.ib >= 0) bodies[size_t(P.ib)]->w += P.Ib * f;
-      if (P.ia >= 0) bodies[size_t(P.ia)]->w -= P.Ia * f;
-    }
-    auto apply = [&](const V3& Jl, const V3& Ja) {
-      if (P.ib >= 0) {
-        Body& B = *bodies[size_t(P.ib)];
-        B.v += Jl * P.mb;
-        B.w += P.Ib * (cross(P.rb, Jl) + Ja);
-      }
-      if (P.ia >= 0) {
-        Body& A = *bodies[size_t(P.ia)];
-        A.v -= Jl * P.ma;
-        A.w -= P.Ia * (cross(P.ra, Jl) + Ja);
-      }
-    };
-    apply(J, L);
-    P.J = J;
-    P.L = L;
+  } else {
+    P.pa = j.a.p;
   }
+  if (ib >= 0) {
+    const Body& B = *bodies[size_t(ib)];
+    P.pb = B.x + rotate(B.q, j.b.p);
+    Qb = B.q * j.b.q;
+    xb = B.x;
+    if (!B.asleep) {
+      P.ib = ib;
+      P.mb = B.inv_mass;
+      P.Ib = Iw[size_t(ib)];
+    }
+  } else {
+    P.pb = j.b.p;
+  }
+  if (P.ia < 0 && P.ib < 0) return;  // (both immovable now: nothing to solve)
+  // (of the bodies asked for: the fine ones, or the rest)
+  if (only && !((P.ia >= 0 && (*only)[size_t(P.ia)]) || (P.ib >= 0 && (*only)[size_t(P.ib)]))) return;
+  P.on = true;
+  P.ra = P.ia >= 0 ? P.pa - xa : V3{};
+  P.rb = P.ib >= 0 ? P.pb - xb : V3{};
+  P.ax = normalized(rotate(Qa, j.a.axis));
+  squares(P.ax, P.t1, P.t2);
+  const M3 Isum = plus(P.Ia, P.Ib);
+  const V3 d = P.pb - P.pa;
+  const JointType t = j.type;
+  if (t == JointType::Ball || t == JointType::Hinge || t == JointType::Fixed) {
+    P.Kp = inverted(plus(diag3(P.ma + P.mb), plus(arm_block(P.ra, P.Ia), arm_block(P.rb, P.Ib))));
+    const f64 e = norm(d);
+    P.ep = e > 0.0 ? d * (pull(e, slop) / e) : V3{};
+  }
+  if (t == JointType::Hinge) {
+    const f64 a = dot(P.t1, Isum * P.t1), b = dot(P.t1, Isum * P.t2), c = dot(P.t2, Isum * P.t2);
+    inv2(a, b, c, P.K2);
+    // (b's axis tilted from a's: the turn that tilts it back)
+    const V3 tilt = cross(P.ax, normalized(rotate(Qb, j.b.axis)));
+    P.e2[0] = pull(dot(tilt, P.t1), 0.0);
+    P.e2[1] = pull(dot(tilt, P.t2), 0.0);
+    // b's reference turned about the axis from a's
+    const V3 ra_ = rotate(Qa, j.a.ref), rb_ = rotate(Qb, j.b.ref);
+    P.value = angle_about(ra_ - P.ax * dot(ra_, P.ax), rb_ - P.ax * dot(rb_, P.ax), P.ax);
+    const f64 k = dot(P.ax, Isum * P.ax);
+    P.kax = k > 0.0 ? 1.0 / k : 0.0;
+  }
+  if (t == JointType::Slider) {
+    // (the linear rows act at b's anchor: a's arm reaches it)
+    if (P.ia >= 0) P.ra = P.pb - xa;
+    const f64 a = row_mass(P.ma, P.mb, P.Ia, P.Ib, P.ra, P.rb, P.t1, V3{});
+    const f64 c = row_mass(P.ma, P.mb, P.Ia, P.Ib, P.ra, P.rb, P.t2, V3{});
+    const V3 a1 = cross(P.ra, P.t1), a2 = cross(P.ra, P.t2), b1 = cross(P.rb, P.t1), b2 = cross(P.rb, P.t2);
+    const f64 b = dot(P.t1, P.t2) * (P.ma + P.mb) + dot(a1, P.Ia * a2) + dot(b1, P.Ib * b2);
+    inv2(a, b, c, P.K2);
+    P.e2[0] = pull(dot(d, P.t1), slop);
+    P.e2[1] = pull(dot(d, P.t2), slop);
+    P.value = dot(d, P.ax);
+    const f64 k = row_mass(P.ma, P.mb, P.Ia, P.Ib, P.ra, P.rb, P.ax, V3{});
+    P.kax = k > 0.0 ? 1.0 / k : 0.0;
+  }
+  if (t == JointType::Slider || t == JointType::Fixed) {
+    P.Ka = inverted(Isum);
+    // (b turned from where it is held: the turn back)
+    const V3 phi = rotation_vector(Qb * conj(Qa * j.rel));
+    P.ea = capped(phi * (-beta / dt), cap);
+  }
+  if (t == JointType::Distance) {
+    const f64 L = norm(d);
+    P.n = L > 1e-9 ? d * (1.0 / L) : V3{0, 0, 1};
+    P.value = L;
+    const f64 k = row_mass(P.ma, P.mb, P.Ia, P.Ib, P.ra, P.rb, P.n, V3{});
+    P.kax = k > 0.0 ? 1.0 / k : 0.0;
+    if (j.stiffness > 0.0) {
+      // (a spring beyond its range: soft, gamma = 1 / (dt (c + dt k)); the stretch is taken
+      // out at the rate the spring and damper give, not by position correction)
+      const f64 c = std::max(0.0, j.damping), denom = c + dt * j.stiffness;
+      P.gamma = 1.0 / (dt * denom);
+      const f64 over = L > j.max_length ? L - j.max_length : L < j.min_length ? L - j.min_length : 0.0;
+      P.soft = (j.stiffness / denom) * over;
+      P.ksoft = 1.0 / (k + P.gamma);
+    } else {
+      if (L > j.max_length + slop) P.eax = pull(L - j.max_length, slop);
+      else if (L < j.min_length - slop) P.eax = pull(L - j.min_length, slop);
+    }
+  }
+  // the limit that bears (the nearer bound), and how far past it the ends are; latched shut, a
+  // hinge is held where it was made
+  if (t == JointType::Hinge && j.latched) {
+    P.lim = 2;
+    P.eax = pull(P.value, 0.0);
+  } else if (j.limited && (t == JointType::Hinge || t == JointType::Slider)) {
+    if (j.lower >= j.upper) {
+      P.lim = 2;
+      P.eax = pull(P.value - j.lower, t == JointType::Slider ? slop : 0.0);
+    } else {
+      P.lim = P.value - j.lower < j.upper - P.value ? -1 : 1;
+      if (P.value < j.lower) P.eax = pull(P.value - j.lower, t == JointType::Slider ? slop : 0.0);
+      if (P.value > j.upper) P.eax = pull(P.value - j.upper, t == JointType::Slider ? slop : 0.0);
+    }
+  }
+  // (ball) the cone and the twist limit, near their bounds
+  if (t == JointType::Ball && (j.swing_limited || j.twist_limited)) {
+    const V3 za = P.ax, xa = normalized(rotate(Qa, j.a.ref)), ya = cross(za, xa);
+    const V3 zb = normalized(rotate(Qb, j.b.axis));
+    if (j.swing_limited) {
+      // b's axis tilted from a's, and the elliptical cone's bound that way (in a's frame)
+      const V3 c = cross(za, zb);
+      const f64 sn = norm(c), angle = dm::atan2(sn, dot(za, zb));
+      const f64 ux0 = dot(zb, xa), uy0 = dot(zb, ya), ul = std::sqrt(ux0 * ux0 + uy0 * uy0);
+      if (sn > 1e-6 && ul > 1e-9) {
+        const f64 ux = ux0 / ul, uy = uy0 / ul;
+        const f64 lx = std::max(1e-3, ux >= 0.0 ? j.swing[0] : j.swing[1]);
+        const f64 ly = std::max(1e-3, uy >= 0.0 ? j.swing[2] : j.swing[3]);
+        const f64 bound = 1.0 / std::sqrt((ux * ux) / (lx * lx) + (uy * uy) / (ly * ly));
+        if (angle > bound - kLimitNear) {
+          P.swing_on = true;
+          P.swing_ax = c * (1.0 / sn);  // (turning b about it swings b further out)
+          const f64 k = dot(P.swing_ax, Isum * P.swing_ax);
+          P.swing_k = k > 0.0 ? 1.0 / k : 0.0;
+          P.swing_room = bound - angle;
+          if (angle > bound) P.swing_e = pull(angle - bound, 0.0);
+        }
+      }
+    }
+    if (j.twist_limited) {
+      // swing-twist: the frames' relative rotation, its turn about the axis (turning b about
+      // its own axis changes the twist alone)
+      const Quat Fa = Qa * frame_of(j.a.axis, j.a.ref), Fb = Qb * frame_of(j.b.axis, j.b.ref);
+      const Quat r = conj(Fa) * Fb;
+      f64 tw = 2.0 * dm::atan2(r.z, r.w);
+      if (tw > kPi) tw -= 2.0 * kPi;
+      else if (tw < -kPi) tw += 2.0 * kPi;
+      const f64 mid = 0.5 * (j.twist_lower + j.twist_upper);
+      if (tw > j.twist_upper - kLimitNear && tw >= mid) {
+        P.twist_side = 1;
+        P.twist_room = j.twist_upper - tw;
+        if (tw > j.twist_upper) P.twist_e = pull(tw - j.twist_upper, 0.0);
+      } else if (tw < j.twist_lower + kLimitNear && tw < mid) {
+        P.twist_side = -1;
+        P.twist_room = j.twist_lower - tw;
+        if (tw < j.twist_lower) P.twist_e = pull(tw - j.twist_lower, 0.0);
+      }
+      if (P.twist_side != 0) {
+        P.twist_on = true;
+        P.twist_ax = zb;
+        const f64 k = dot(zb, Isum * zb);
+        P.twist_k = k > 0.0 ? 1.0 / k : 0.0;
+      }
+    }
+  }
+  // the muscle: a soft drive to the relative rotation it is given (body frames)
+  if ((t == JointType::Ball || t == JointType::Hinge) && j.muscle.on()) {
+    const JointMuscle& M = j.muscle;
+    const Quat qa = ia >= 0 ? bodies[size_t(ia)]->q : j.a.q, qb = ib >= 0 ? bodies[size_t(ib)]->q : j.b.q;
+    const V3 e = rotation_vector(qb * conj(qa * M.target));  // (b turned past its target, world)
+    P.mus_rate = rotate(qa, M.target_rate);
+    f64 c = std::max(0.0, M.damping);
+    const f64 k = std::max(0.0, M.stiffness);
+    if (t == JointType::Hinge) {
+      const f64 kk = dot(P.ax, Isum * P.ax);
+      // (the damper sized for the limb it moves, not for the two bodies alone)
+      if (M.inertia > 0.0 && kk > 0.0) c *= std::min(1.0, (1.0 / kk) / M.inertia);
+      const f64 denom = c + dt * k;
+      if (denom > 0.0 && kk > 0.0) {
+        P.mus_on = true;
+        P.mus_gamma = 1.0 / (dt * denom);
+        P.mus_bias = V3{(k / denom) * dot(e, P.ax), 0.0, 0.0};
+        P.mus_k1 = 1.0 / (kk + P.mus_gamma);
+      }
+    } else {
+      if (M.inertia > 0.0) {
+        // (along the relative spin it damps, else the error)
+        const V3 wa0 = P.ia >= 0 ? bodies[size_t(P.ia)]->w : V3{}, wb0 = P.ib >= 0 ? bodies[size_t(P.ib)]->w : V3{};
+        V3 u = wb0 - wa0 - P.mus_rate;
+        if (!(norm2(u) > 1e-18)) u = e;
+        u = normalized(u);
+        const f64 ku = dot(u, Isum * u);
+        if (ku > 0.0) c *= std::min(1.0, (1.0 / ku) / M.inertia);
+      }
+      const f64 denom = c + dt * k;
+      if (denom > 0.0) {
+        P.mus_on = true;
+        P.mus_gamma = 1.0 / (dt * denom);
+        P.mus_bias = e * (k / denom);
+        P.mus_K = inverted(plus(Isum, diag3(P.mus_gamma)));
+      }
+    }
+    P.mus_cap = M.max_torque > 0.0 ? M.max_torque * dt : 0.0;
+  }
+  // the drive's goal now
+  const bool driven = (t == JointType::Hinge || t == JointType::Slider) && j.drive.kind != JointDrive::Kind::Off && j.drive.max > 0.0;
+  if (driven) j.drive.goal(time, &P.goal, &P.goal_rate);
+  // warm start (the rows that do not act now start from nothing)
+  if (!driven) j.motor = 0.0;
+  if (P.lim == 0 && t != JointType::Distance) j.limit = 0.0;
+  j.lin *= warm;
+  j.ang *= warm;
+  j.axial *= warm;
+  j.limit *= warm;
+  j.motor *= warm;
+  j.swing_imp = P.swing_on ? j.swing_imp * warm : 0.0;
+  j.twist_imp = P.twist_on ? j.twist_imp * warm : 0.0;
+  if (!P.mus_on) j.muscle_imp = V3{};
+  else if (t == JointType::Hinge) j.muscle_imp = P.ax * (dot(j.muscle_imp, P.ax) * warm);  // (about the axis it has now)
+  else j.muscle_imp *= warm;
+  if (P.mus_cap > 0.0) j.muscle_imp = capped(j.muscle_imp, P.mus_cap);
+  // (apply them as the rows do)
+  const f64 lim_drive = j.limit + j.motor;
+  V3 J = j.lin, L = j.ang;
+  if (t == JointType::Hinge) L += P.ax * lim_drive;
+  if (t == JointType::Slider) J += P.ax * lim_drive;
+  if (t == JointType::Distance) J += P.n * (j.axial + j.limit);
+  L += P.swing_ax * j.swing_imp + P.twist_ax * j.twist_imp + j.muscle_imp;
+  // (a muscle's feed-forward torque: this substep's impulse, not the joint's to carry)
+  if ((t == JointType::Ball || t == JointType::Hinge) && norm2(j.muscle.feed) > 0.0) {
+    const V3 f = j.muscle.feed * dt;
+    if (P.ib >= 0) bodies[size_t(P.ib)]->w += P.Ib * f;
+    if (P.ia >= 0) bodies[size_t(P.ia)]->w -= P.Ia * f;
+  }
+  auto apply = [&](const V3& Jl, const V3& Ja) {
+    if (P.ib >= 0) {
+      Body& B = *bodies[size_t(P.ib)];
+      B.v += Jl * P.mb;
+      B.w += P.Ib * (cross(P.rb, Jl) + Ja);
+    }
+    if (P.ia >= 0) {
+      Body& A = *bodies[size_t(P.ia)];
+      A.v -= Jl * P.ma;
+      A.w -= P.Ia * (cross(P.ra, Jl) + Ja);
+    }
+  };
+  apply(J, L);
+  P.J = J;
+  P.L = L;
 }
 
 void RigidWorld::solve_joints(bool reverse) {
   const size_t nj = joints.size();
-  for (size_t q = 0; q < nj; ++q) {
-    const size_t k = reverse ? nj - 1 - q : q;
-    JointPrep& P = jprep_[k];
-    if (!P.on) continue;
-    Joint& j = joints[k];
-    Body* A = P.ia >= 0 ? bodies[size_t(P.ia)].get() : nullptr;
-    Body* B = P.ib >= 0 ? bodies[size_t(P.ib)].get() : nullptr;
-    auto va = [&](const V3& X) { return A ? A->v + cross(A->w, X - A->x) : V3{}; };
-    auto vb = [&](const V3& X) { return B ? B->v + cross(B->w, X - B->x) : V3{}; };
-    auto wa = [&]() { return A ? A->w : V3{}; };
-    auto wb = [&]() { return B ? B->w : V3{}; };
-    // (linear impulse Jl at the arms and angular Ja: on b, the opposite on a)
-    auto apply = [&](const V3& Jl, const V3& Ja) {
-      if (B) {
-        B->v += Jl * P.mb;
-        B->w += P.Ib * (cross(P.rb, Jl) + Ja);
-      }
-      if (A) {
-        A->v -= Jl * P.ma;
-        A->w -= P.Ia * (cross(P.ra, Jl) + Ja);
-      }
-      P.J += Jl;
-      P.L += Ja;
-    };
-    const JointType t = j.type;
-    // the muscle: a spring and a damper towards its target, of limited torque
-    if (P.mus_on) {
-      if (t == JointType::Hinge) {
-        const f64 jv = dot(P.ax, wb() - wa() - P.mus_rate);
-        const f64 lam = dot(j.muscle_imp, P.ax);
-        f64 nl = lam - P.mus_k1 * (jv + P.mus_bias.x + P.mus_gamma * lam);
-        if (P.mus_cap > 0.0) nl = std::clamp(nl, -P.mus_cap, P.mus_cap);
-        apply(V3{}, P.ax * (nl - lam));
-        j.muscle_imp = P.ax * nl;
-      } else {
-        const V3 jv = wb() - wa() - P.mus_rate;
-        V3 nl = j.muscle_imp - P.mus_K * (jv + P.mus_bias + j.muscle_imp * P.mus_gamma);
-        if (P.mus_cap > 0.0) nl = capped(nl, P.mus_cap);
-        apply(V3{}, nl - j.muscle_imp);
-        j.muscle_imp = nl;
-      }
+  for (size_t q = 0; q < nj; ++q) solve_joint(reverse ? nj - 1 - q : q);
+}
+
+void RigidWorld::solve_joint(size_t k) {
+  JointPrep& P = jprep_[k];
+  if (!P.on) return;
+  Joint& j = joints[k];
+  Body* A = P.ia >= 0 ? bodies[size_t(P.ia)].get() : nullptr;
+  Body* B = P.ib >= 0 ? bodies[size_t(P.ib)].get() : nullptr;
+  auto va = [&](const V3& X) { return A ? A->v + cross(A->w, X - A->x) : V3{}; };
+  auto vb = [&](const V3& X) { return B ? B->v + cross(B->w, X - B->x) : V3{}; };
+  auto wa = [&]() { return A ? A->w : V3{}; };
+  auto wb = [&]() { return B ? B->w : V3{}; };
+  // (linear impulse Jl at the arms and angular Ja: on b, the opposite on a)
+  auto apply = [&](const V3& Jl, const V3& Ja) {
+    if (B) {
+      B->v += Jl * P.mb;
+      B->w += P.Ib * (cross(P.rb, Jl) + Ja);
     }
-    // (ball) the cone and the twist limit: speculative - it may close on its bound within this
-    // substep, not pass it
-    if (P.swing_on) {
-      const f64 rate = dot(P.swing_ax, wb() - wa());
-      const f64 nl = std::min(0.0, j.swing_imp + P.swing_k * (P.swing_room / joint_dt_ - rate));
-      apply(V3{}, P.swing_ax * (nl - j.swing_imp));
-      j.swing_imp = nl;
+    if (A) {
+      A->v -= Jl * P.ma;
+      A->w -= P.Ia * (cross(P.ra, Jl) + Ja);
     }
-    if (P.twist_on) {
-      const f64 rate = dot(P.twist_ax, wb() - wa());
-      const f64 l = j.twist_imp + P.twist_k * (P.twist_room / joint_dt_ - rate);
-      const f64 nl = P.twist_side > 0 ? std::min(0.0, l) : std::max(0.0, l);
-      apply(V3{}, P.twist_ax * (nl - j.twist_imp));
-      j.twist_imp = nl;
-    }
-    // the drive, then the limit: the motion along (hinge: about) the axis
-    const bool driven = j.drive.kind != JointDrive::Kind::Off && j.drive.max > 0.0;
-    if ((t == JointType::Hinge || t == JointType::Slider) && (driven || P.lim != 0)) {
-      const bool turn = t == JointType::Hinge;
-      auto rate = [&]() { return turn ? dot(P.ax, wb() - wa()) : dot(P.ax, vb(P.pb) - va(P.pb)); };
-      auto push = [&](f64 l) {
-        if (turn) apply(V3{}, P.ax * l);
-        else apply(P.ax * l, V3{});
-      };
-      if (driven) {
-        // the rate it asks for: its speed, or towards its goal (a hinge the short way round)
-        const f64 top = std::abs(j.drive.speed);
-        f64 want = j.drive.speed;
-        if (j.drive.kind != JointDrive::Kind::Speed) {
-          f64 e = P.goal - P.value;
-          if (turn) e = std::remainder(e, 6.283185307179586);
-          want = std::clamp(P.goal_rate + j.drive.stiffness * e, -top, top);
-        }
-        const f64 lim = j.drive.max * joint_dt_;
-        const f64 nd = std::clamp(j.motor + P.kax * (want - rate()), -lim, lim);
-        push(nd - j.motor);
-        j.motor = nd;
-      }
-      if (P.lim == 2) {
-        f64 l = -P.kax * rate();
-        if (t == JointType::Hinge && j.latched) {
-          // (a latch holds up to its strength; beyond, it gives way - finish_joints - and what it
-          // could not hold passes on: a door knocked open swings)
-          const f64 cap = j.latch * joint_dt_;
-          l = std::clamp(j.limit + l, -cap, cap) - j.limit;
-        }
-        j.limit += l;
-        push(l);
-      } else if (P.lim != 0) {
-        // (speculative: it may close on the bound within this substep, not pass it)
-        const f64 bound = P.lim < 0 ? j.lower : j.upper;
-        const f64 target = (bound - P.value) / joint_dt_;
-        const f64 l = P.kax * (target - rate());
-        const f64 nl = P.lim < 0 ? std::max(0.0, j.limit + l) : std::min(0.0, j.limit + l);
-        push(nl - j.limit);
-        j.limit = nl;
-      }
-    }
-    switch (t) {
-      case JointType::Ball:
-      case JointType::Hinge:
-      case JointType::Fixed: {
-        const V3 l = P.Kp * (va(P.pa) - vb(P.pb));
-        j.lin += l;
-        apply(l, V3{});
-        break;
-      }
-      case JointType::Slider: {
-        const V3 dv = vb(P.pb) - va(P.pb);
-        const f64 r1 = -dot(P.t1, dv), r2 = -dot(P.t2, dv);
-        const V3 l = P.t1 * (P.K2[0] * r1 + P.K2[1] * r2) + P.t2 * (P.K2[2] * r1 + P.K2[3] * r2);
-        j.lin += l;
-        apply(l, V3{});
-        break;
-      }
-      case JointType::Distance: {
-        const f64 rate = dot(P.n, vb(P.pb) - va(P.pa));
-        if (j.stiffness > 0.0 && (P.value > j.max_length || P.value < j.min_length)) {
-          // (stretched beyond its range: a spring; a rope pulls only, a rod pushes back too)
-          const f64 l = -P.ksoft * (rate + P.soft + P.gamma * j.axial);
-          const f64 nl = j.min_length < j.max_length ? (P.value > j.max_length ? std::min(0.0, j.axial + l) : std::max(0.0, j.axial + l)) : j.axial + l;
-          apply(P.n * (nl - j.axial), V3{});
-          j.axial = nl;
-        } else if (j.min_length >= j.max_length) {
-          const f64 l = -P.kax * rate;
-          j.axial += l;
-          apply(P.n * l, V3{});
-        } else {
-          // (a rope pulls: its length may grow to the maximum within this substep, no further)
-          const f64 l = P.kax * ((j.max_length - P.value) / joint_dt_ - rate);
-          const f64 nl = std::min(0.0, j.axial + l);
-          apply(P.n * (nl - j.axial), V3{});
-          j.axial = nl;
-          if (j.min_length > 0.0) {
-            const f64 rate2 = dot(P.n, vb(P.pb) - va(P.pa));
-            const f64 l2 = P.kax * ((j.min_length - P.value) / joint_dt_ - rate2);
-            const f64 nl2 = std::max(0.0, j.limit + l2);
-            apply(P.n * (nl2 - j.limit), V3{});
-            j.limit = nl2;
-          }
-        }
-        break;
-      }
-    }
+    P.J += Jl;
+    P.L += Ja;
+  };
+  const JointType t = j.type;
+  // the muscle: a spring and a damper towards its target, of limited torque
+  if (P.mus_on) {
     if (t == JointType::Hinge) {
-      const V3 dw = wb() - wa();
-      const f64 r1 = -dot(P.t1, dw), r2 = -dot(P.t2, dw);
+      const f64 jv = dot(P.ax, wb() - wa() - P.mus_rate);
+      const f64 lam = dot(j.muscle_imp, P.ax);
+      f64 nl = lam - P.mus_k1 * (jv + P.mus_bias.x + P.mus_gamma * lam);
+      if (P.mus_cap > 0.0) nl = std::clamp(nl, -P.mus_cap, P.mus_cap);
+      apply(V3{}, P.ax * (nl - lam));
+      j.muscle_imp = P.ax * nl;
+    } else {
+      const V3 jv = wb() - wa() - P.mus_rate;
+      V3 nl = j.muscle_imp - P.mus_K * (jv + P.mus_bias + j.muscle_imp * P.mus_gamma);
+      if (P.mus_cap > 0.0) nl = capped(nl, P.mus_cap);
+      apply(V3{}, nl - j.muscle_imp);
+      j.muscle_imp = nl;
+    }
+  }
+  // (ball) the cone and the twist limit: speculative - it may close on its bound within this
+  // substep, not pass it
+  if (P.swing_on) {
+    const f64 rate = dot(P.swing_ax, wb() - wa());
+    const f64 nl = std::min(0.0, j.swing_imp + P.swing_k * (P.swing_room / joint_dt_ - rate));
+    apply(V3{}, P.swing_ax * (nl - j.swing_imp));
+    j.swing_imp = nl;
+  }
+  if (P.twist_on) {
+    const f64 rate = dot(P.twist_ax, wb() - wa());
+    const f64 l = j.twist_imp + P.twist_k * (P.twist_room / joint_dt_ - rate);
+    const f64 nl = P.twist_side > 0 ? std::min(0.0, l) : std::max(0.0, l);
+    apply(V3{}, P.twist_ax * (nl - j.twist_imp));
+    j.twist_imp = nl;
+  }
+  // the drive, then the limit: the motion along (hinge: about) the axis
+  const bool driven = j.drive.kind != JointDrive::Kind::Off && j.drive.max > 0.0;
+  if ((t == JointType::Hinge || t == JointType::Slider) && (driven || P.lim != 0)) {
+    const bool turn = t == JointType::Hinge;
+    auto rate = [&]() { return turn ? dot(P.ax, wb() - wa()) : dot(P.ax, vb(P.pb) - va(P.pb)); };
+    auto push = [&](f64 l) {
+      if (turn) apply(V3{}, P.ax * l);
+      else apply(P.ax * l, V3{});
+    };
+    if (driven) {
+      // the rate it asks for: its speed, or towards its goal (a hinge the short way round)
+      const f64 top = std::abs(j.drive.speed);
+      f64 want = j.drive.speed;
+      if (j.drive.kind != JointDrive::Kind::Speed) {
+        f64 e = P.goal - P.value;
+        if (turn) e = std::remainder(e, 6.283185307179586);
+        want = std::clamp(P.goal_rate + j.drive.stiffness * e, -top, top);
+      }
+      const f64 lim = j.drive.max * joint_dt_;
+      const f64 nd = std::clamp(j.motor + P.kax * (want - rate()), -lim, lim);
+      push(nd - j.motor);
+      j.motor = nd;
+    }
+    if (P.lim == 2) {
+      f64 l = -P.kax * rate();
+      if (t == JointType::Hinge && j.latched) {
+        // (a latch holds up to its strength; beyond, it gives way - finish_joints - and what it
+        // could not hold passes on: a door knocked open swings)
+        const f64 cap = j.latch * joint_dt_;
+        l = std::clamp(j.limit + l, -cap, cap) - j.limit;
+      }
+      j.limit += l;
+      push(l);
+    } else if (P.lim != 0) {
+      // (speculative: it may close on the bound within this substep, not pass it)
+      const f64 bound = P.lim < 0 ? j.lower : j.upper;
+      const f64 target = (bound - P.value) / joint_dt_;
+      const f64 l = P.kax * (target - rate());
+      const f64 nl = P.lim < 0 ? std::max(0.0, j.limit + l) : std::min(0.0, j.limit + l);
+      push(nl - j.limit);
+      j.limit = nl;
+    }
+  }
+  switch (t) {
+    case JointType::Ball:
+    case JointType::Hinge:
+    case JointType::Fixed: {
+      const V3 l = P.Kp * (va(P.pa) - vb(P.pb));
+      j.lin += l;
+      apply(l, V3{});
+      break;
+    }
+    case JointType::Slider: {
+      const V3 dv = vb(P.pb) - va(P.pb);
+      const f64 r1 = -dot(P.t1, dv), r2 = -dot(P.t2, dv);
       const V3 l = P.t1 * (P.K2[0] * r1 + P.K2[1] * r2) + P.t2 * (P.K2[2] * r1 + P.K2[3] * r2);
-      j.ang += l;
-      apply(V3{}, l);
+      j.lin += l;
+      apply(l, V3{});
+      break;
     }
-    if (t == JointType::Slider || t == JointType::Fixed) {
-      const V3 l = P.Ka * (wa() - wb());
-      j.ang += l;
-      apply(V3{}, l);
+    case JointType::Distance: {
+      const f64 rate = dot(P.n, vb(P.pb) - va(P.pa));
+      if (j.stiffness > 0.0 && (P.value > j.max_length || P.value < j.min_length)) {
+        // (stretched beyond its range: a spring; a rope pulls only, a rod pushes back too)
+        const f64 l = -P.ksoft * (rate + P.soft + P.gamma * j.axial);
+        const f64 nl = j.min_length < j.max_length ? (P.value > j.max_length ? std::min(0.0, j.axial + l) : std::max(0.0, j.axial + l)) : j.axial + l;
+        apply(P.n * (nl - j.axial), V3{});
+        j.axial = nl;
+      } else if (j.min_length >= j.max_length) {
+        const f64 l = -P.kax * rate;
+        j.axial += l;
+        apply(P.n * l, V3{});
+      } else {
+        // (a rope pulls: its length may grow to the maximum within this substep, no further)
+        const f64 l = P.kax * ((j.max_length - P.value) / joint_dt_ - rate);
+        const f64 nl = std::min(0.0, j.axial + l);
+        apply(P.n * (nl - j.axial), V3{});
+        j.axial = nl;
+        if (j.min_length > 0.0) {
+          const f64 rate2 = dot(P.n, vb(P.pb) - va(P.pa));
+          const f64 l2 = P.kax * ((j.min_length - P.value) / joint_dt_ - rate2);
+          const f64 nl2 = std::max(0.0, j.limit + l2);
+          apply(P.n * (nl2 - j.limit), V3{});
+          j.limit = nl2;
+        }
+      }
+      break;
     }
+  }
+  if (t == JointType::Hinge) {
+    const V3 dw = wb() - wa();
+    const f64 r1 = -dot(P.t1, dw), r2 = -dot(P.t2, dw);
+    const V3 l = P.t1 * (P.K2[0] * r1 + P.K2[1] * r2) + P.t2 * (P.K2[2] * r1 + P.K2[3] * r2);
+    j.ang += l;
+    apply(V3{}, l);
+  }
+  if (t == JointType::Slider || t == JointType::Fixed) {
+    const V3 l = P.Ka * (wa() - wb());
+    j.ang += l;
+    apply(V3{}, l);
   }
 }
 
 void RigidWorld::solve_joints_position(std::vector<V3>& pv, std::vector<V3>& pw) {
-  for (size_t k = 0; k < joints.size(); ++k) {
-    JointPrep& P = jprep_[k];
-    if (!P.on) continue;
-    const Joint& j = joints[k];
-    const Body* A = P.ia >= 0 ? bodies[size_t(P.ia)].get() : nullptr;
-    const Body* B = P.ib >= 0 ? bodies[size_t(P.ib)].get() : nullptr;
-    // (pseudo velocities: the immovable ends have none)
-    auto va = [&](const V3& X) { return A ? pv[size_t(P.ia)] + cross(pw[size_t(P.ia)], X - A->x) : V3{}; };
-    auto vb = [&](const V3& X) { return B ? pv[size_t(P.ib)] + cross(pw[size_t(P.ib)], X - B->x) : V3{}; };
-    auto wa = [&]() { return A ? pw[size_t(P.ia)] : V3{}; };
-    auto wb = [&]() { return B ? pw[size_t(P.ib)] : V3{}; };
-    auto apply = [&](const V3& Jl, const V3& Ja) {
-      if (B) {
-        pv[size_t(P.ib)] += Jl * P.mb;
-        pw[size_t(P.ib)] += P.Ib * (cross(P.rb, Jl) + Ja);
-      }
-      if (A) {
-        pv[size_t(P.ia)] -= Jl * P.ma;
-        pw[size_t(P.ia)] -= P.Ia * (cross(P.ra, Jl) + Ja);
-      }
-    };
-    const JointType t = j.type;
-    // (ball) past its cone or its twist range: turned back only
-    if (P.swing_e != 0.0) {
-      const f64 l = std::min(0.0, P.swing_k * (P.swing_e - dot(P.swing_ax, wb() - wa())));
-      apply(V3{}, P.swing_ax * l);
+  for (size_t k = 0; k < joints.size(); ++k) solve_joint_position(k, pv, pw);
+}
+
+void RigidWorld::solve_joint_position(size_t k, std::vector<V3>& pv, std::vector<V3>& pw) {
+  JointPrep& P = jprep_[k];
+  if (!P.on) return;
+  const Joint& j = joints[k];
+  const Body* A = P.ia >= 0 ? bodies[size_t(P.ia)].get() : nullptr;
+  const Body* B = P.ib >= 0 ? bodies[size_t(P.ib)].get() : nullptr;
+  // (pseudo velocities: the immovable ends have none)
+  auto va = [&](const V3& X) { return A ? pv[size_t(P.ia)] + cross(pw[size_t(P.ia)], X - A->x) : V3{}; };
+  auto vb = [&](const V3& X) { return B ? pv[size_t(P.ib)] + cross(pw[size_t(P.ib)], X - B->x) : V3{}; };
+  auto wa = [&]() { return A ? pw[size_t(P.ia)] : V3{}; };
+  auto wb = [&]() { return B ? pw[size_t(P.ib)] : V3{}; };
+  auto apply = [&](const V3& Jl, const V3& Ja) {
+    if (B) {
+      pv[size_t(P.ib)] += Jl * P.mb;
+      pw[size_t(P.ib)] += P.Ib * (cross(P.rb, Jl) + Ja);
     }
-    if (P.twist_e != 0.0) {
-      const f64 l = P.twist_k * (P.twist_e - dot(P.twist_ax, wb() - wa()));
-      apply(V3{}, P.twist_ax * (P.twist_e < 0.0 ? std::min(0.0, l) : std::max(0.0, l)));
+    if (A) {
+      pv[size_t(P.ia)] -= Jl * P.ma;
+      pw[size_t(P.ia)] -= P.Ia * (cross(P.ra, Jl) + Ja);
     }
-    if (P.eax != 0.0) {
-      // (a limit passed, a rope over its length: pushed back only)
-      if (t == JointType::Distance) {
-        const f64 rate = dot(P.n, vb(P.pb) - va(P.pa));
-        f64 l = P.kax * (P.eax - rate);
-        if (j.min_length < j.max_length) l = P.eax < 0.0 ? std::min(0.0, l) : std::max(0.0, l);
-        apply(P.n * l, V3{});
-      } else {
-        const bool turn = t == JointType::Hinge;
-        const f64 rate = turn ? dot(P.ax, wb() - wa()) : dot(P.ax, vb(P.pb) - va(P.pb));
-        f64 l = P.kax * (P.eax - rate);
-        if (P.lim != 2) l = P.eax < 0.0 ? std::min(0.0, l) : std::max(0.0, l);
-        if (turn) apply(V3{}, P.ax * l);
-        else apply(P.ax * l, V3{});
-      }
-    }
-    if (t == JointType::Ball || t == JointType::Hinge || t == JointType::Fixed) apply(P.Kp * (P.ep - (vb(P.pb) - va(P.pa))), V3{});
-    if (t == JointType::Slider) {
-      const V3 dv = vb(P.pb) - va(P.pb);
-      const f64 r1 = P.e2[0] - dot(P.t1, dv), r2 = P.e2[1] - dot(P.t2, dv);
-      apply(P.t1 * (P.K2[0] * r1 + P.K2[1] * r2) + P.t2 * (P.K2[2] * r1 + P.K2[3] * r2), V3{});
-    }
-    if (t == JointType::Hinge) {
-      const V3 dw = wb() - wa();
-      const f64 r1 = P.e2[0] - dot(P.t1, dw), r2 = P.e2[1] - dot(P.t2, dw);
-      apply(V3{}, P.t1 * (P.K2[0] * r1 + P.K2[1] * r2) + P.t2 * (P.K2[2] * r1 + P.K2[3] * r2));
-    }
-    if (t == JointType::Slider || t == JointType::Fixed) apply(V3{}, P.Ka * (P.ea - (wb() - wa())));
+  };
+  const JointType t = j.type;
+  // (ball) past its cone or its twist range: turned back only
+  if (P.swing_e != 0.0) {
+    const f64 l = std::min(0.0, P.swing_k * (P.swing_e - dot(P.swing_ax, wb() - wa())));
+    apply(V3{}, P.swing_ax * l);
   }
+  if (P.twist_e != 0.0) {
+    const f64 l = P.twist_k * (P.twist_e - dot(P.twist_ax, wb() - wa()));
+    apply(V3{}, P.twist_ax * (P.twist_e < 0.0 ? std::min(0.0, l) : std::max(0.0, l)));
+  }
+  if (P.eax != 0.0) {
+    // (a limit passed, a rope over its length: pushed back only)
+    if (t == JointType::Distance) {
+      const f64 rate = dot(P.n, vb(P.pb) - va(P.pa));
+      f64 l = P.kax * (P.eax - rate);
+      if (j.min_length < j.max_length) l = P.eax < 0.0 ? std::min(0.0, l) : std::max(0.0, l);
+      apply(P.n * l, V3{});
+    } else {
+      const bool turn = t == JointType::Hinge;
+      const f64 rate = turn ? dot(P.ax, wb() - wa()) : dot(P.ax, vb(P.pb) - va(P.pb));
+      f64 l = P.kax * (P.eax - rate);
+      if (P.lim != 2) l = P.eax < 0.0 ? std::min(0.0, l) : std::max(0.0, l);
+      if (turn) apply(V3{}, P.ax * l);
+      else apply(P.ax * l, V3{});
+    }
+  }
+  if (t == JointType::Ball || t == JointType::Hinge || t == JointType::Fixed) apply(P.Kp * (P.ep - (vb(P.pb) - va(P.pa))), V3{});
+  if (t == JointType::Slider) {
+    const V3 dv = vb(P.pb) - va(P.pb);
+    const f64 r1 = P.e2[0] - dot(P.t1, dv), r2 = P.e2[1] - dot(P.t2, dv);
+    apply(P.t1 * (P.K2[0] * r1 + P.K2[1] * r2) + P.t2 * (P.K2[2] * r1 + P.K2[3] * r2), V3{});
+  }
+  if (t == JointType::Hinge) {
+    const V3 dw = wb() - wa();
+    const f64 r1 = P.e2[0] - dot(P.t1, dw), r2 = P.e2[1] - dot(P.t2, dw);
+    apply(V3{}, P.t1 * (P.K2[0] * r1 + P.K2[1] * r2) + P.t2 * (P.K2[2] * r1 + P.K2[3] * r2));
+  }
+  if (t == JointType::Slider || t == JointType::Fixed) apply(V3{}, P.Ka * (P.ea - (wb() - wa())));
 }
 
 void RigidWorld::finish_joints(f64 dt) {
-  for (size_t k = 0; k < joints.size(); ++k) {
-    const JointPrep& P = jprep_[k];
-    Joint& j = joints[k];
-    if (!P.on) continue;  // (its bodies asleep: it carries what it carried when they fell asleep)
-    j.force = P.J * (1.0 / dt);
-    // (the turn it gives b about its anchor)
-    j.torque = P.L * (1.0 / dt);
-    j.value = P.value;
-    // (a latched hinge: what its latch holds shut is not its hinge's; past its strength the latch
-    // gives way, and it swings from the next substep)
-    V3 held = j.torque;
-    if (j.type == JointType::Hinge && j.latched) {
-      held -= P.ax * dot(P.ax, j.torque);
-      if (std::abs(j.limit) >= j.latch * dt * (1.0 - 1e-9)) {  // (it held all it could)
-        j.latched = false;
-        j.limit = 0.0;
-      }
+  for (size_t k = 0; k < joints.size(); ++k) finish_joint(k, dt);
+}
+
+void RigidWorld::finish_joint(size_t k, f64 dt) {
+  const JointPrep& P = jprep_[k];
+  Joint& j = joints[k];
+  if (!P.on) return;  // (its bodies asleep: it carries what it carried when they fell asleep)
+  j.force = P.J * (1.0 / dt);
+  // (the turn it gives b about its anchor)
+  j.torque = P.L * (1.0 / dt);
+  j.value = P.value;
+  // (a latched hinge: what its latch holds shut is not its hinge's; past its strength the latch
+  // gives way, and it swings from the next substep)
+  V3 held = j.torque;
+  if (j.type == JointType::Hinge && j.latched) {
+    held -= P.ax * dot(P.ax, j.torque);
+    if (std::abs(j.limit) >= j.latch * dt * (1.0 - 1e-9)) {  // (it held all it could)
+      j.latched = false;
+      j.limit = 0.0;
     }
-    if ((j.break_force > 0.0 && norm(j.force) > j.break_force) || (j.break_torque > 0.0 && norm(held) > j.break_torque)) j.broken = true;
-    // (a hinge turned past its capacity: a plastic hinge torn through, a door off its hinge)
-    if (j.type == JointType::Hinge && j.break_angle > 0.0 && std::abs(P.value) > j.break_angle) j.broken = true;
   }
+  if ((j.break_force > 0.0 && norm(j.force) > j.break_force) || (j.break_torque > 0.0 && norm(held) > j.break_torque)) j.broken = true;
+  // (a hinge turned past its capacity: a plastic hinge torn through, a door off its hinge)
+  if (j.type == JointType::Hinge && j.break_angle > 0.0 && std::abs(P.value) > j.break_angle) j.broken = true;
 }
 
 void RigidWorld::joint_partner_speeds(std::vector<f64>& partner) const {

@@ -448,6 +448,11 @@ class RigidWorld {
   void solve_joints(bool reverse = false);  // (reverse: last to first - a chain's sweeps alternate)
   void solve_joints_position(std::vector<V3>& pv, std::vector<V3>& pw);
   void finish_joints(f64 dt);
+  // (one joint k: its prep - jprep_[k] reset first by the caller, joint_dt_ set - and rows)
+  void prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, const std::vector<u8>* only);
+  void solve_joint(size_t k);
+  void solve_joint_position(size_t k, std::vector<V3>& pv, std::vector<V3>& pw);
+  void finish_joint(size_t k, f64 dt);
   void joint_partner_speeds(std::vector<f64>& partner) const;  // (the squeeze guard)
   void wake_jointed();     // a sleeper joined to a body awake wakes (and what is joined to it)
 void joint_stillness();  // joined bodies count towards sleep together (sleep_update)
@@ -499,6 +504,8 @@ void joint_stillness();  // joined bodies count towards sleep together (sleep_up
   f64 link_margin(const Body& b, f64 dt) const;  // (how far out a link looks for contacts this substep)
   void sense_links();                            // (the links' senses from contacts_)
   void integrate_link(Body& b, f64 dt);          // (a link's velocity over a step: gravity, forces, drag, tissue, limits)
+  void integrate_link(Body& b, f64 dt, const std::array<f64, 3>& keep);
+  std::array<f64, 3> link_keep(const Body& b, f64 dt) const;  // (what it keeps over dt: velocity, spin, spin about its length's share lost)
   // Fine stepping: per body, stepped on its own this substep (a link of an articulation that
   // touches no awake piece); none: every body is solved together.
   std::vector<u8> fine_;
@@ -529,6 +536,19 @@ void joint_stillness();  // joined bodies count towards sleep together (sleep_up
   void prepare_targets(f64 dt, const std::vector<M3>& Iw, const std::vector<u8>* only);
   void solve_targets();
   void finish_targets(f64 dt);
+  // (one target k: tprep_[k] reset first by the caller)
+  void prepare_target(size_t k, f64 dt, const std::vector<M3>& Iw, const std::vector<u8>* only);
+  void solve_target(size_t k);
+  void finish_target(size_t k, f64 dt);
+  // Fine islands: fine links joined by joints or touching each other, stepped on their own (in
+  // parallel: they share no body). Per island its bodies, joints, targets and contacts (indices,
+  // ascending).
+  struct FineIsland {
+    std::vector<i32> bodies;
+    std::vector<u32> joints, targets, contacts;
+  };
+  std::vector<FineIsland> fine_islands_;
+  void fine_islands(const std::vector<i32>& fb);
 };
 
 }  // namespace svx

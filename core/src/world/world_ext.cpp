@@ -399,6 +399,7 @@ void World::step_systems(bool step) {
   changed.erase(std::remove_if(changed.begin(), changed.end(), gone), changed.end());
   // (by index over the systems there are now: one added by a system starts next tick)
   const size_t n = systems_.size();
+  systems_phase_ = true;
   for (size_t i = 0; i < n; ++i) {
     const std::shared_ptr<WorldSystem> s = systems_[i];
     if (!evicted.empty()) s->on_evicted(*this, evicted);
@@ -406,6 +407,7 @@ void World::step_systems(bool step) {
     if (!changed.empty()) s->on_voxels_changed(*this, changed);
     if (step) s->step(*this, cfg_.dt);
   }
+  systems_phase_ = false;
 }
 
 }  // namespace svx

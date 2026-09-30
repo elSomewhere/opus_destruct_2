@@ -589,6 +589,22 @@ std::vector<u8> World::session_entries() const {
     put32(out, static_cast<u32>(rec.size()));
     out.insert(out.end(), rec.begin(), rec.end());
   }
+  // (v6) the articulations, then those archived out of range
+  put32(out, static_cast<u32>(arts_.size()));
+  for (const auto& a : arts_) {
+    const std::vector<u8> rec = articulation_record(*a);
+    put32(out, static_cast<u32>(rec.size()));
+    out.insert(out.end(), rec.begin(), rec.end());
+  }
+  put32(out, static_cast<u32>(archived_arts_.size()));
+  for (const auto& [key, chunks] : archived_arts_) {
+    put64(out, key);
+    put32(out, static_cast<u32>(chunks.size()));
+    for (u64 c : chunks) put64(out, c);
+    const std::vector<u8> rec = archive_->get(key);
+    put32(out, static_cast<u32>(rec.size()));
+    out.insert(out.end(), rec.begin(), rec.end());
+  }
   return out;
 }
 
@@ -621,6 +637,37 @@ bool World::read_session(Rd& in, SessionDelta* s, u32 version) const {
     const u8 gv = rin.u8_();
     if (gv < 1 || gv > kGroupVersion || !read_group(rin, &probe, gv) || rin.p != a.record.size()) return false;
     s->archived.push_back(std::move(a));
+  }
+  if (version >= 6) {
+    const u32 nl = in.u32_();
+    if (!in.ok || u64(nl) * 4 > in.b.size()) return false;
+    for (u32 k = 0; k < nl; ++k) {
+      const u32 sz = in.u32_();
+      if (!in.ok || !in.need(sz)) return false;
+      const std::vector<u8> rec(in.b.begin() + static_cast<long>(in.p), in.b.begin() + static_cast<long>(in.p + sz));
+      in.p += sz;
+      Rd rin{rec};
+      ArticulationSaved a;
+      if (!read_articulation_record(rin, &a) || rin.p != rec.size()) return false;
+      s->articulations.push_back(std::move(a));
+    }
+    const u32 na2 = in.u32_();
+    if (!in.ok || u64(na2) * 16 > in.b.size()) return false;
+    for (u32 k = 0; k < na2; ++k) {
+      SessionDelta::ArchivedArticulation a;
+      a.key = in.u64_();
+      const u32 nc = in.u32_();
+      if (!in.ok || (a.key >> 61) != 7 || u64(nc) * 8 > in.b.size()) return false;
+      for (u32 q = 0; q < nc; ++q) a.chunks.push_back(in.u64_());
+      const u32 sz = in.u32_();
+      if (!in.ok || !in.need(sz)) return false;
+      a.record.assign(in.b.begin() + static_cast<long>(in.p), in.b.begin() + static_cast<long>(in.p + sz));
+      in.p += sz;
+      Rd rin{a.record};
+      ArticulationSaved probe;
+      if (!read_articulation_record(rin, &probe) || rin.p != a.record.size()) return false;
+      s->archived_articulations.push_back(std::move(a));
+    }
   }
   return in.ok;
 }
@@ -660,6 +707,16 @@ void World::apply_session(SessionDelta&& s) {
       for (JointId j : a.joints) archived_joints_.insert(j);
       archived_groups_[a.key] = ArchivedGroup{std::move(a.chunks), std::move(a.joints), pieces};
       st_.archived_pieces += pieces;
+    }
+  // the articulations (their ids as they were), and those archived out of range
+  for (ArticulationSaved& a : s.articulations) restore_articulation(std::move(a));
+  if (source_)
+    for (SessionDelta::ArchivedArticulation& a : s.archived_articulations) {
+      if (a.chunks.empty()) continue;
+      archive_record(a.key, a.record, region_of(a.chunks.front()));
+      if (!archive_->has(a.key)) continue;
+      archived_arts_[a.key] = std::move(a.chunks);
+      ++st_.archived_articulations;
     }
 }
 
@@ -753,6 +810,10 @@ void World::restore_groups() {
 }
 
 void World::forget_group(u64 key) {
+  if (key & (1ull << 61)) {
+    forget_articulation(key);  // (an articulation's record, not a group's)
+    return;
+  }
   const auto it = archived_groups_.find(key);
   if (it == archived_groups_.end()) return;
   // (its pieces are gone for good; its source's joints are made again with its grids)

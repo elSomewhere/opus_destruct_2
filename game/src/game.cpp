@@ -438,6 +438,9 @@ void Game::drain_world_events() {
         continue;  // (its new place comes with take_grid_views)
       case WorldEvent::Kind::WheelDetached:
         continue;  // (wheels are drawn from their state each frame; the piece it became comes as a Detached)
+      case WorldEvent::Kind::ArticulationAdded:
+      case WorldEvent::Kind::ArticulationRemoved:
+        continue;  // (the characters' bodies: their system draws them from its own state)
       case WorldEvent::Kind::PieceReshaped: {
         // (crumpled in place: its new mesh, drawn from its pose now on)
         for (auto& [vid, v] : vehicles_)

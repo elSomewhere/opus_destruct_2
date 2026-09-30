@@ -513,3 +513,141 @@ TEST_CASE("articulations: a session with articulations and pieces is bit-identic
   set_num_threads(0);
   CHECK(a == b);
 }
+
+namespace {
+
+// Two rods joined by a hinge, lying on the ground: a body at rest, with its host's data.
+ArticulationDesc two_rods(const V3& at) {
+  ArticulationDesc d;
+  const Quat flat = rotation_of(V3{kPi / 2.0, 0, 0});  // (along y)
+  d.links.push_back(rod(at, 0.6, 0.06, 6.0, flat));
+  d.links.push_back(rod(at + V3{0, 0.62, 0}, 0.6, 0.06, 6.0, flat));
+  ArticulationJointDesc J;
+  J.parent = 0;
+  J.child = 1;
+  J.type = JointType::Hinge;
+  J.anchor_parent = V3{0, 0, 0.31};
+  J.anchor_child = V3{0, 0, -0.31};
+  J.hinge_limited = true;
+  J.hinge_lower = -1.0;
+  J.hinge_upper = 1.0;
+  d.joints.push_back(J);
+  d.group = 7;
+  d.tag = 42;
+  d.data = {1, 2, 3, 4, 5};
+  return d;
+}
+
+// A flat streamed world of rock, 64 x 64 chunks.
+class RockSource final : public ChunkSource {
+ public:
+  bool generate(const IVec3& c, std::vector<Vox>& out) const override {
+    out.assign(kChunkVox, kAir);
+    if (c[2] != -1) return false;
+    std::fill(out.begin(), out.end(), make_vox(MaterialId::Rock, true));
+    return true;
+  }
+  IVec3 chunk_lo() const override { return {-32, -32, -1}; }
+  IVec3 chunk_hi() const override { return {32, 32, 2}; }
+};
+
+}  // namespace
+
+TEST_CASE("articulations: a saved session brings them back as they were - their ids, host data, drives, sleep") {
+  World w;
+  w.load(ground());
+  const ArticulationId id = w.add_articulation(two_rods(V3{0.5, 0.0, 0.3}));
+  REQUIRE(id != 0);
+  w.articulation_control(id)->can_sleep = true;
+  w.articulation_control(id)->muscles[0].damping = 3.0;
+  for (int t = 0; t < 300; ++t) w.tick();
+  ArticulationState sa;
+  REQUIRE(w.articulation_state(id, &sa));
+  CHECK(sa.asleep);
+  const std::vector<u8> delta = w.save_delta();
+  World b;
+  b.load(ground());
+  REQUIRE(b.load_delta(delta));
+  REQUIRE(b.articulations().size() == 1);
+  CHECK(b.articulations()[0] == id);
+  bool added = false;
+  for (const WorldEvent& e : b.take_events()) added = added || (e.kind == WorldEvent::Kind::ArticulationAdded && e.id == id);
+  CHECK(added);
+  ArticulationState sb;
+  REQUIRE(b.articulation_state(id, &sb));
+  CHECK(sb.asleep);
+  CHECK(sb.group == 7);
+  CHECK(sb.tag == 42);
+  REQUIRE(b.articulation_data(id));
+  CHECK(*b.articulation_data(id) == std::vector<u8>{1, 2, 3, 4, 5});
+  CHECK(b.articulation_control(id)->muscles[0].damping == 3.0);
+  CHECK(b.articulation_control(id)->can_sleep);
+  for (size_t i = 0; i < 2; ++i) {
+    CHECK(norm(sb.links[i].pos - sa.links[i].pos) == 0.0);
+    CHECK(sb.links[i].mass == sa.links[i].mass);
+  }
+  // (and it goes on from there: woken, it is a body again)
+  REQUIRE(b.add_link_velocity(id, 1, V3{0, 0, 2.0}, V3{}));
+  for (int t = 0; t < 10; ++t) b.tick();
+  REQUIRE(b.articulation_state(id, &sb));
+  CHECK(!sb.asleep);
+  CHECK(sb.links[1].pos.z > sa.links[1].pos.z + 0.05);
+}
+
+TEST_CASE("articulations: one at rest goes out of range with its region, and comes back as it was") {
+  World w;
+  VoxelGrid g;
+  g.h = h;
+  w.load(std::move(g));
+  StreamConfig sc;
+  sc.load_radius = 24.0;
+  sc.evict_radius = 32.0;
+  sc.chunks_per_tick = 400;
+  w.enable_streaming(std::make_shared<RockSource>(), sc);
+  w.set_focus(V3{0, 0, 0});
+  for (int t = 0; t < 5; ++t) w.tick();
+  const ArticulationId id = w.add_articulation(two_rods(V3{2.0, 2.0, 0.3}));
+  REQUIRE(id != 0);
+  w.articulation_control(id)->can_sleep = true;
+  for (int t = 0; t < 300; ++t) w.tick();
+  ArticulationState s0;
+  REQUIRE(w.articulation_state(id, &s0));
+  REQUIRE(s0.asleep);
+  w.take_events();
+  w.set_focus(V3{120, 0, 0});
+  for (int t = 0; t < 30; ++t) w.tick();
+  CHECK(w.articulations().empty());
+  CHECK(w.stats().archived_articulations == 1);
+  bool unloaded = false;
+  for (const WorldEvent& e : w.take_events()) unloaded = unloaded || (e.kind == WorldEvent::Kind::ArticulationRemoved && e.id == id && e.end == PieceEnd::Unloaded);
+  CHECK(unloaded);
+  w.set_focus(V3{0, 0, 0});
+  for (int t = 0; t < 30; ++t) w.tick();
+  REQUIRE(w.articulations().size() == 1);
+  CHECK(w.articulations()[0] == id);
+  CHECK(w.stats().archived_articulations == 0);
+  ArticulationState s1;
+  REQUIRE(w.articulation_state(id, &s1));
+  CHECK(s1.tag == 42);
+  for (size_t i = 0; i < 2; ++i) CHECK(norm(s1.links[i].pos - s0.links[i].pos) < 1e-9);
+  // (a saved session keeps one archived out of range, too)
+  w.set_focus(V3{120, 0, 0});
+  for (int t = 0; t < 30; ++t) w.tick();
+  REQUIRE(w.articulations().empty());
+  const std::vector<u8> delta = w.save_delta();
+  World b;
+  VoxelGrid g2;
+  g2.h = h;
+  b.load(std::move(g2));
+  b.enable_streaming(std::make_shared<RockSource>(), sc);
+  b.set_focus(V3{120, 0, 0});
+  for (int t = 0; t < 5; ++t) b.tick();
+  REQUIRE(b.load_delta(delta));
+  CHECK(b.stats().archived_articulations == 1);
+  b.set_focus(V3{0, 0, 0});
+  for (int t = 0; t < 30; ++t) b.tick();
+  REQUIRE(b.articulations().size() == 1);
+  ArticulationState s2;
+  REQUIRE(b.articulation_state(id, &s2));
+  for (size_t i = 0; i < 2; ++i) CHECK(norm(s2.links[i].pos - s0.links[i].pos) < 1e-9);
+}

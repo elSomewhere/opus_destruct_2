@@ -1372,13 +1372,18 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
   // The articulations that touch no awake piece are stepped on their own, first: their contacts
   // found (a sleeper they strike hard wakes, and who steps on their own is decided again), then
   // their steps. Their contacts join the substep's after the pieces' solve.
+  using PClock = std::chrono::steady_clock;
+  static const bool fprof = diag("SVX_PROFILE_FINE");
+  const auto f0 = fprof ? PClock::now() : PClock::time_point{};
   mark_fine(dt);
   std::vector<Contact> fine_report;
   if (any_fine_ && collide_fine(dt, statics, true)) {
     mark_fine(dt);
     if (any_fine_) collide_fine(dt, statics, false);
   }
+  const auto f1 = fprof ? PClock::now() : PClock::time_point{};
   if (any_fine_) step_fine(dt, fine_report);
+  const auto f2 = fprof ? PClock::now() : PClock::time_point{};
   std::vector<std::pair<i64, i64>> fine_ids;  // (by identity: the pieces' fracture may change the body list)
   fine_ids.reserve(fine_report.size());
   for (const Contact& c : fine_report) fine_ids.push_back({bodies[size_t(c.a)]->id, c.b >= 0 ? bodies[size_t(c.b)]->id : -1});
@@ -1517,6 +1522,21 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
   prof_ms[4] += ms(t4, t5);
   for (auto& bp : bodies)
     if (bp->family_ticks > 0) --bp->family_ticks;
+  if (fprof) {
+    static f64 acc[5] = {0, 0, 0, 0, 0};
+    static int calls = 0;
+    const auto f9 = PClock::now();
+    auto msd = [](PClock::time_point a, PClock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
+    acc[0] += msd(f0, f1);
+    acc[1] += msd(f1, f2);
+    acc[2] += msd(t0, t1);
+    acc[3] += msd(t1, t2);
+    acc[4] += msd(t2, f9);
+    if (++calls % 120 == 0) {
+      std::printf("  [fine] mark+collide_fine %.3f step_fine %.3f coarse collide %.3f solve %.3f rest %.3f ms/substep\n", acc[0] / 120, acc[1] / 120, acc[2] / 120, acc[3] / 120, acc[4] / 120);
+      for (f64& a : acc) a = 0.0;
+    }
+  }
 }
 
 }  // namespace svx

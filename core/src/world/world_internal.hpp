@@ -730,6 +730,14 @@ struct World::ArticulationRec {
   std::vector<u8> data;
 };
 
+// An articulation read from a record (world_articulations.cpp).
+struct World::ArticulationSaved {
+  ArticulationId id = 0;
+  ArticulationDesc desc;
+  ArticulationControl control;
+  std::vector<u8> gone, asleep;  // per link
+};
+
 // A saved session's pieces and joints, read and checked before they are applied
 // (world_session.cpp).
 struct World::SessionDelta {
@@ -757,6 +765,14 @@ struct World::SessionDelta {
     std::vector<u8> record;
   };
   std::vector<Archived> archived;
+  // (v6) the articulations, and those archived out of range (their records as archived)
+  std::vector<ArticulationSaved> articulations;
+  struct ArchivedArticulation {
+    u64 key = 0;
+    std::vector<u64> chunks;
+    std::vector<u8> record;
+  };
+  std::vector<ArchivedArticulation> archived_articulations;
 };
 
 // A grid of the world (docs/GRIDS.md): its frame, voxels (oriented grids; the world grid's are

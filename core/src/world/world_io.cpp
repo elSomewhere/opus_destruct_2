@@ -201,8 +201,9 @@ namespace {
 //     and the sleeping pieces' dead loads
 //   (v4) as v3; the session also has the wheels, the joints their collide flags and break angles
 //   (v5) as v4; the joints also have their latches
+//   (v6) as v5; the session also has the articulations, and those archived out of range
 constexpr u32 kGridsMagic = 0x47585653;  // "SVXG"
-constexpr u32 kGridsVersion = 5;
+constexpr u32 kGridsVersion = 6;
 
 using world_detail::put32;
 using world_detail::put64;
@@ -311,7 +312,8 @@ std::vector<u8> World::save_delta() const {
       if ((k >> 62) == 2) archived.push_back({k, archive_->get(k)});  // (pieces' records: the session part)
   std::sort(archived.begin(), archived.end());
   // (a world of the world grid alone, with no pieces or joints, saves as it always did)
-  if (gds.empty() && removed.empty() && archived.empty() && rigid_.bodies.empty() && jrecs_.empty() && wrecs_.empty() && archived_groups_.empty())
+  if (gds.empty() && removed.empty() && archived.empty() && rigid_.bodies.empty() && jrecs_.empty() && wrecs_.empty() && archived_groups_.empty() &&
+      arts_.empty() && archived_arts_.empty())
     return out;
   put32(out, kGridsMagic);
   put32(out, kGridsVersion);
@@ -791,6 +793,18 @@ void World::unload_sleepers(const std::vector<u64>& chunks, const std::function<
     }
     if (asleep && hit) archive_group(g, chunks_of);
   }
+  // (and the articulations asleep there: a body lying in a street that goes, with it)
+  for (ArticulationId id : articulations()) {
+    const ArticulationRec* a = art(id);
+    bool asleep = true, hit = false;
+    for (u16 i = 0; i < a->links.size() && asleep; ++i) {
+      const Body* b = art_link(*a, i);
+      if (!b) continue;
+      asleep = b->asleep;
+      if (asleep) chunks_of(*b, [&](u64 k) { hit = hit || going.count(k) > 0; });
+    }
+    if (asleep && hit) archive_articulation(id, chunks_of);
+  }
 }
 
 std::vector<std::vector<i64>> World::piece_groups(bool touching) const {
@@ -985,8 +999,9 @@ int World::stream_update() {
   }
   for (auto& v : vox)
     if (v.capacity() > 0) grid_.release_buffer(std::move(v));  // (generated beyond the budget: dropped)
-  // pieces archived out of range whose chunks are all resident again: back
+  // pieces and articulations archived out of range whose chunks are all resident again: back
   restore_groups();
+  restore_articulations();
   if (st_.ticks % 60 == 0) forget_stale_regions();
   // (the rest walks every resident chunk: every few ticks (and on the memory budget's), or at
   // once when a focus point moved far since - eviction has the hysteresis of its radius over
@@ -1025,6 +1040,14 @@ int World::stream_update() {
       if (!far) break;
     }
     if (far) archive_group(g, chunks_of_body);
+  }
+  // (an articulation wholly out of range too: a body walking there, one thrown far)
+  for (ArticulationId id : articulations()) {
+    const ArticulationRec* a = art(id);
+    bool far = true;
+    for (u16 i = 0; i < a->links.size() && far; ++i)
+      if (const Body* b = art_link(*a, i)) chunks_of_body(*b, [&](u64 k) { far = far && hdist(unkey3(k)) > stream_.evict_radius; });
+    if (far) archive_articulation(id, chunks_of_body);
   }
   std::unordered_set<u64> busy;
   for (const auto& bp : rigid_.bodies)

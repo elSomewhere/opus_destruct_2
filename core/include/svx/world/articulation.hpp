@@ -86,6 +86,10 @@ struct ArticulationControl {
   std::vector<TargetDrive> targets;  // per target of its desc
   std::vector<V3> force, torque;     // per link: N at its centre of mass, N m - during the next tick only
   std::vector<u8> ghost;             // per link: it passes through other bodies (a limb that strikes)
+  // per joint: where it holds on to its parent and its child (their body frames, relative to their
+  // centres of mass), for a host that moves it (a shoulder that follows its clavicle); left empty,
+  // or not finite: where it was made
+  std::vector<V3> anchor_parent, anchor_child;
   f64 max_spin = 80.0;               // rad/s: no link spins faster (a limp body's: much less)
   f64 keep_linear = 0.98, keep_angular = 0.9;  // velocity kept per second (air, tissue; a body at rest settles with less)
   bool self_collide = true;          // its links collide with each other as its desc says

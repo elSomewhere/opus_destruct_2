@@ -23,6 +23,7 @@ struct Obstacle {
   V3 c;
   f64 r = 0.0;
   i32 owner = -1, part = -1;
+  V3 v;  // its velocity (a body barged into gives way as fast as the two come together)
 };
 
 class CollisionWorld {

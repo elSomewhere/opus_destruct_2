@@ -6,6 +6,8 @@
 #include <algorithm>
 #include <cmath>
 
+#include "archive.hpp"
+#include "bytes.hpp"
 #include "svx/world/world.hpp"
 #include "world_internal.hpp"
 
@@ -49,7 +51,11 @@ const Body* World::art_link(const ArticulationRec& a, u16 link) const { return c
 // The API
 
 ArticulationId World::add_articulation(const ArticulationDesc& d) {
-  if (in_tick_) return 0;
+  if (in_tick_ && !systems_phase_) return 0;
+  return add_articulation_now(d);
+}
+
+ArticulationId World::add_articulation_now(const ArticulationDesc& d, ArticulationId want) {
   const size_t nl = d.links.size();
   if (nl == 0 || nl > 256 || d.joints.size() > 1024 || d.targets.size() > 1024) return 0;
   for (const LinkDesc& L : d.links) {
@@ -71,7 +77,9 @@ ArticulationId World::add_articulation(const ArticulationDesc& d) {
   for (const auto& [a, b] : d.collide)
     if (a >= nl || b >= nl || a == b) return 0;
 
-  const ArticulationId id = next_art_++;
+  // (its id: the one it had, when it comes back and that one is free)
+  const ArticulationId id = want != 0 && !art(want) ? want : next_art_;
+  next_art_ = std::max(next_art_, id + 1);
   auto rec = std::make_unique<ArticulationRec>();
   rec->id = id;
   rec->joint_desc = d.joints;
@@ -177,12 +185,13 @@ ArticulationId World::add_articulation(const ArticulationDesc& d) {
   C.force.resize(nl);
   C.torque.resize(nl);
   C.ghost.assign(nl, 0);
-  arts_.push_back(std::move(rec));
+  const auto at = std::lower_bound(arts_.begin(), arts_.end(), id, [](const std::unique_ptr<ArticulationRec>& a, ArticulationId v) { return a->id < v; });
+  arts_.insert(at, std::move(rec));
   return id;
 }
 
 bool World::remove_articulation(ArticulationId id) {
-  if (in_tick_ || !art(id)) return false;
+  if ((in_tick_ && !systems_phase_) || !art(id)) return false;
   drop_articulation(id, PieceEnd::Removed);
   return true;
 }
@@ -228,6 +237,10 @@ void World::drop_articulation(ArticulationId id, PieceEnd end) {
 }
 
 void World::clear_articulations() {
+  // (the archived ones too: their records with them)
+  for (const auto& [key, chunks] : archived_arts_) archive_->erase(key);
+  archived_arts_.clear();
+  st_.archived_articulations = 0;
   std::vector<ArticulationId> ids;
   for (const auto& a : arts_) ids.push_back(a->id);
   for (ArticulationId id : ids) drop_articulation(id, PieceEnd::Removed);
@@ -315,7 +328,7 @@ bool World::set_articulation_data(ArticulationId id, std::vector<u8> data) {
 bool World::set_link(ArticulationId id, u16 link, const V3& pos, const Quat& rot, const V3& vel, const V3& ang) {
   ArticulationRec* a = art(id);
   Body* b = a ? art_link(*a, link) : nullptr;
-  if (!b || in_tick_ || !in_range(pos) || !finite_q(rot) || !finite3(vel) || !finite3(ang)) return false;
+  if (!b || (in_tick_ && !systems_phase_) || !in_range(pos) || !finite_q(rot) || !finite3(vel) || !finite3(ang)) return false;
   b->x = pos;
   b->q = qnormalized(rot);
   b->v = vel;
@@ -414,6 +427,12 @@ void World::apply_articulation_controls() {
       const JointId jid = a.joints[k];
       const auto it = std::lower_bound(jrecs_.begin(), jrecs_.end(), jid, [](const JointRec& r, JointId v) { return r.id < v; });
       if (it == jrecs_.end() || it->id != jid) continue;
+      // (its anchors, as its host moves them)
+      {
+        const size_t q = size_t(it - jrecs_.begin());
+        if (k < C.anchor_parent.size() && finite3(C.anchor_parent[k]) && norm(C.anchor_parent[k]) < 8.0) jrecs_[q].a.point = rigid_.joints[q].a.p = C.anchor_parent[k];
+        if (k < C.anchor_child.size() && finite3(C.anchor_child[k]) && norm(C.anchor_child[k]) < 8.0) jrecs_[q].b.point = rigid_.joints[q].b.p = C.anchor_child[k];
+      }
       JointMuscle m = C.muscles[k];
       if (!finite_q(m.target) || !finite3(m.target_rate) || !finite3(m.feed) || !std::isfinite(m.stiffness) || !std::isfinite(m.damping) ||
           !std::isfinite(m.max_torque) || !std::isfinite(m.inertia))
@@ -433,6 +452,342 @@ void World::apply_articulation_controls() {
       it->drive = d;
     }
   }
+}
+
+// ---------------------------------------------------------------------------------------------
+// Records: the streaming archive and sessions
+
+namespace {
+
+using world_detail::put3;
+using world_detail::put32;
+using world_detail::putf;
+using world_detail::putq;
+using world_detail::Rd;
+
+// v1: links (their state, flags), joints (anchors as they are now, limits, muscle), targets (and
+// their drives), rules, control, host data
+constexpr u8 kArticulationVersion = 1;
+
+void put_drive(std::vector<u8>& out, const TargetDrive& d) {
+  out.push_back(static_cast<u8>((d.on ? 1 : 0) | (d.axes[0] ? 2 : 0) | (d.axes[1] ? 4 : 0) | (d.axes[2] ? 8 : 0) | (d.tilt_only ? 16 : 0)));
+  put3(out, d.pos);
+  put3(out, d.vel);
+  putq(out, d.rot);
+  put3(out, d.up);
+  putf(out, d.stiffness);
+  putf(out, d.damping);
+  putf(out, d.max);
+}
+
+bool read_drive(Rd& in, TargetDrive* d) {
+  const u8 f = in.u8_();
+  d->on = (f & 1) != 0;
+  d->axes[0] = (f & 2) != 0;
+  d->axes[1] = (f & 4) != 0;
+  d->axes[2] = (f & 8) != 0;
+  d->tilt_only = (f & 16) != 0;
+  d->pos = in.v3();
+  d->vel = in.v3();
+  d->rot = in.q4();
+  d->up = in.v3();
+  d->stiffness = in.f64_();
+  d->damping = in.f64_();
+  d->max = in.f64_();
+  return in.ok && (f & ~31u) == 0 && finite3(d->pos) && finite3(d->vel) && finite_q(d->rot) && finite3(d->up) && std::isfinite(d->stiffness) &&
+         std::isfinite(d->damping) && std::isfinite(d->max);
+}
+
+void put_muscle(std::vector<u8>& out, const JointMuscle& m) {
+  putq(out, m.target);
+  put3(out, m.target_rate);
+  putf(out, m.stiffness);
+  putf(out, m.damping);
+  putf(out, m.max_torque);
+  putf(out, m.inertia);
+  put3(out, m.feed);
+}
+
+bool read_muscle(Rd& in, JointMuscle* m) {
+  m->target = in.q4();
+  m->target_rate = in.v3();
+  m->stiffness = in.f64_();
+  m->damping = in.f64_();
+  m->max_torque = in.f64_();
+  m->inertia = in.f64_();
+  m->feed = in.v3();
+  return in.ok && finite_q(m->target) && finite3(m->target_rate) && std::isfinite(m->stiffness) && std::isfinite(m->damping) &&
+         std::isfinite(m->max_torque) && std::isfinite(m->inertia) && finite3(m->feed);
+}
+
+}  // namespace
+
+std::vector<u8> World::articulation_record(const ArticulationRec& a) const {
+  std::vector<u8> out;
+  out.push_back(kArticulationVersion);
+  put32(out, a.id);
+  put32(out, a.group);
+  put32(out, a.tag);
+  put32(out, static_cast<u32>(a.data.size()));
+  out.insert(out.end(), a.data.begin(), a.data.end());
+  const ArticulationControl& C = *a.control;
+  // the links, as they are now
+  put32(out, static_cast<u32>(a.links.size()));
+  for (u16 i = 0; i < a.links.size(); ++i) {
+    const Body* b = art_link(a, i);
+    const LinkData* L = b ? b->link.get() : nullptr;
+    if (!b || !L) {
+      putf(out, -1.0);  // (never: its links go with it)
+      continue;
+    }
+    putf(out, L->kinematic ? 0.0 : b->mass);
+    put3(out, V3{b->inertia.m[0], b->inertia.m[4], b->inertia.m[8]});
+    put3(out, b->x);
+    putq(out, b->q);
+    put3(out, b->v);
+    put3(out, b->w);
+    out.push_back(static_cast<u8>(L->spheres.size()));
+    for (const BodySphere& sp : L->spheres) {
+      put3(out, sp.c);
+      putf(out, sp.r);
+    }
+    putf(out, L->friction);
+    put3(out, L->long_axis);
+    putf(out, L->twist_damping);
+    out.push_back(static_cast<u8>((L->gone ? 1 : 0) | (b->asleep ? 2 : 0) | (i < C.ghost.size() && C.ghost[i] ? 4 : 0)));
+  }
+  // the joints: their anchors as they are now, their muscles
+  put32(out, static_cast<u32>(a.joint_desc.size()));
+  for (size_t k = 0; k < a.joint_desc.size(); ++k) {
+    ArticulationJointDesc J = a.joint_desc[k];
+    if (k < a.joints.size()) {
+      const JointId jid = a.joints[k];
+      const auto it = std::lower_bound(jrecs_.begin(), jrecs_.end(), jid, [](const JointRec& r, JointId v) { return r.id < v; });
+      if (it != jrecs_.end() && it->id == jid) {
+        J.anchor_parent = it->a.point;
+        J.anchor_child = it->b.point;
+      }
+    }
+    put32(out, J.parent);
+    put32(out, J.child);
+    out.push_back(static_cast<u8>(J.type));
+    put3(out, J.anchor_parent);
+    put3(out, J.anchor_child);
+    putq(out, J.frame_parent);
+    putq(out, J.frame_child);
+    out.push_back(static_cast<u8>((J.swing_limited ? 1 : 0) | (J.twist_limited ? 2 : 0) | (J.hinge_limited ? 4 : 0)));
+    for (f64 x : J.swing) putf(out, x);
+    putf(out, J.twist_lower);
+    putf(out, J.twist_upper);
+    putf(out, J.hinge_lower);
+    putf(out, J.hinge_upper);
+    put_muscle(out, k < C.muscles.size() ? C.muscles[k] : JointMuscle{});
+  }
+  // the targets and their drives
+  put32(out, static_cast<u32>(a.target_desc.size()));
+  for (size_t k = 0; k < a.target_desc.size(); ++k) {
+    const ArticulationTargetDesc& T = a.target_desc[k];
+    put32(out, T.link);
+    out.push_back(static_cast<u8>(T.kind));
+    put3(out, T.local);
+    put_drive(out, k < C.targets.size() ? C.targets[k] : TargetDrive{});
+  }
+  put32(out, static_cast<u32>(a.collide.size()));
+  for (const auto& [x, y] : a.collide) {
+    put32(out, x);
+    put32(out, y);
+  }
+  putf(out, C.max_spin);
+  putf(out, C.keep_linear);
+  putf(out, C.keep_angular);
+  out.push_back(static_cast<u8>((C.self_collide ? 1 : 0) | (C.can_sleep ? 2 : 0)));
+  return out;
+}
+
+bool World::read_articulation_record(Rd& in, ArticulationSaved* out) const {
+  if (in.u8_() != kArticulationVersion) return false;
+  ArticulationSaved& s = *out;
+  s.id = in.u32_();
+  s.desc.group = in.u32_();
+  s.desc.tag = in.u32_();
+  const u32 nd = in.u32_();
+  if (!in.ok || !in.need(nd)) return false;
+  s.desc.data.assign(in.b.begin() + static_cast<long>(in.p), in.b.begin() + static_cast<long>(in.p + nd));
+  in.p += nd;
+  const u32 nl = in.u32_();
+  if (!in.ok || nl == 0 || nl > 256) return false;
+  s.control.ghost.assign(nl, 0);
+  for (u32 i = 0; i < nl; ++i) {
+    LinkDesc L;
+    L.mass = in.f64_();
+    L.inertia = in.v3();
+    L.pos = in.v3();
+    L.rot = in.q4();
+    L.vel = in.v3();
+    L.ang = in.v3();
+    const u8 ns = in.u8_();
+    if (!in.ok || ns == 0 || ns > 16) return false;
+    for (u8 q = 0; q < ns; ++q) {
+      BodySphere sp;
+      sp.c = in.v3();
+      sp.r = in.f64_();
+      L.spheres.push_back(sp);
+    }
+    L.friction = in.f64_();
+    L.long_axis = in.v3();
+    L.twist_damping = in.f64_();
+    const u8 f = in.u8_();
+    if (!in.ok || (f & ~7u) != 0) return false;
+    s.gone.push_back((f & 1) != 0);
+    s.asleep.push_back((f & 2) != 0);
+    s.control.ghost[i] = (f & 4) != 0;
+    s.desc.links.push_back(std::move(L));
+  }
+  const u32 nj = in.u32_();
+  if (!in.ok || nj > 1024) return false;
+  for (u32 k = 0; k < nj; ++k) {
+    ArticulationJointDesc J;
+    const u32 pa = in.u32_(), ch = in.u32_();
+    J.parent = static_cast<u16>(pa);
+    J.child = static_cast<u16>(ch);
+    const u8 t = in.u8_();
+    J.type = static_cast<JointType>(t);
+    J.anchor_parent = in.v3();
+    J.anchor_child = in.v3();
+    J.frame_parent = in.q4();
+    J.frame_child = in.q4();
+    const u8 f = in.u8_();
+    J.swing_limited = (f & 1) != 0;
+    J.twist_limited = (f & 2) != 0;
+    J.hinge_limited = (f & 4) != 0;
+    for (f64& x : J.swing) x = in.f64_();
+    J.twist_lower = in.f64_();
+    J.twist_upper = in.f64_();
+    J.hinge_lower = in.f64_();
+    J.hinge_upper = in.f64_();
+    JointMuscle m;
+    if (!in.ok || pa >= nl || ch >= nl || (f & ~7u) != 0 || !read_muscle(in, &m)) return false;
+    s.desc.joints.push_back(J);
+    s.control.muscles.push_back(m);
+    s.control.anchor_parent.push_back(J.anchor_parent);
+    s.control.anchor_child.push_back(J.anchor_child);
+  }
+  const u32 nt = in.u32_();
+  if (!in.ok || nt > 1024) return false;
+  for (u32 k = 0; k < nt; ++k) {
+    ArticulationTargetDesc T;
+    const u32 l = in.u32_();
+    T.link = static_cast<u16>(l);
+    const u8 kind = in.u8_();
+    T.kind = static_cast<Target::Kind>(kind);
+    T.local = in.v3();
+    TargetDrive d;
+    if (!in.ok || l >= nl || kind > 1 || !finite3(T.local) || !read_drive(in, &d)) return false;
+    s.desc.targets.push_back(T);
+    s.control.targets.push_back(d);
+  }
+  const u32 nc = in.u32_();
+  if (!in.ok || u64(nc) * 8 > in.b.size()) return false;
+  for (u32 k = 0; k < nc; ++k) {
+    const u32 x = in.u32_(), y = in.u32_();
+    if (!in.ok || x >= nl || y >= nl) return false;
+    s.desc.collide.emplace_back(static_cast<u16>(x), static_cast<u16>(y));
+  }
+  s.control.max_spin = in.f64_();
+  s.control.keep_linear = in.f64_();
+  s.control.keep_angular = in.f64_();
+  const u8 cf = in.u8_();
+  s.control.self_collide = (cf & 1) != 0;
+  s.control.can_sleep = (cf & 2) != 0;
+  s.control.force.assign(nl, V3{});
+  s.control.torque.assign(nl, V3{});
+  return in.ok && (cf & ~3u) == 0 && std::isfinite(s.control.max_spin) && std::isfinite(s.control.keep_linear) && std::isfinite(s.control.keep_angular);
+}
+
+ArticulationId World::restore_articulation(ArticulationSaved&& s) {
+  const ArticulationId id = add_articulation_now(s.desc, s.id);
+  if (id == 0) return 0;
+  ArticulationRec* a = art(id);
+  *a->control = std::move(s.control);
+  for (u16 i = 0; i < a->links.size(); ++i) {
+    Body* b = art_link(*a, i);
+    if (!b) continue;
+    // (its mass was saved as it was: a part lost keeps what it had left)
+    if (i < s.gone.size() && s.gone[i]) b->link->gone = true;
+    if (i < s.asleep.size() && s.asleep[i]) {
+      b->asleep = true;
+      b->was_asleep = true;
+      b->v = b->v_pre = V3{};
+      b->w = b->w_pre = V3{};
+    }
+  }
+  WorldEvent ev;
+  ev.kind = WorldEvent::Kind::ArticulationAdded;
+  ev.id = id;
+  if (const Body* b0 = art_link(*a, 0)) {
+    ev.pos = b0->x;
+    ev.rot = b0->q;
+    ev.vel = b0->v;
+  }
+  ev.voxels = static_cast<i32>(a->links.size());
+  events_.push_back(std::move(ev));
+  return id;
+}
+
+void World::archive_articulation(ArticulationId id, const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of) {
+  ArticulationRec* a = art(id);
+  if (!a || !source_) return;
+  const std::vector<u8> rec = articulation_record(*a);
+  // (the chunks that must be resident for it to come back: its links')
+  std::vector<u64> chunks;
+  const IVec3 lo = source_->chunk_lo(), hi = source_->chunk_hi();
+  auto add = [&](u64 k) {
+    const IVec3 c = unkey3(k);
+    for (int q = 0; q < 3; ++q)
+      if (c[q] < lo[q] || c[q] >= hi[q]) return;
+    chunks.push_back(k);
+  };
+  for (u16 i = 0; i < a->links.size(); ++i)
+    if (const Body* b = art_link(*a, i)) chunks_of(*b, add);
+  std::sort(chunks.begin(), chunks.end());
+  chunks.erase(std::unique(chunks.begin(), chunks.end()), chunks.end());
+  const Body* b0 = art_link(*a, 0);
+  const V3 at = b0 ? b0->x : V3{};
+  const IVec3 home = chunk_of(world_detail::voxel_of(at, grid_.h));
+  const u64 key = (3ull << 62) | (1ull << 61) | static_cast<u64>(id);
+  archive_record(key, rec, region_of(key3(home[0], home[1], home[2])));
+  if (!archive_->has(key)) {
+    ++st_.forgotten_articulations;  // (no room at all: it is gone)
+  } else {
+    archived_arts_[key] = std::move(chunks);
+    ++st_.archived_articulations;
+  }
+  drop_articulation(id, PieceEnd::Unloaded);
+}
+
+void World::restore_articulations() {
+  if (archived_arts_.empty()) return;
+  std::vector<u64> ready;
+  for (const auto& [key, chunks] : archived_arts_)
+    if (std::all_of(chunks.begin(), chunks.end(), [&](u64 c) { return generated_.count(c) > 0; })) ready.push_back(key);
+  for (u64 key : ready) {
+    archived_arts_.erase(key);
+    --st_.archived_articulations;
+    const std::vector<u8> rec = archive_->get(key);
+    archive_->erase(key);
+    Rd in{rec};
+    ArticulationSaved s;
+    if (!read_articulation_record(in, &s) || in.p != rec.size()) continue;  // (checked when made: never)
+    restore_articulation(std::move(s));
+  }
+}
+
+void World::forget_articulation(u64 key) {
+  const auto it = archived_arts_.find(key);
+  if (it == archived_arts_.end()) return;
+  archived_arts_.erase(it);
+  --st_.archived_articulations;
+  ++st_.forgotten_articulations;
 }
 
 }  // namespace svx

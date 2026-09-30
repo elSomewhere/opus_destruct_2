@@ -2390,7 +2390,16 @@ void World::tick() {
   const auto tr = Clock::now();
   rigid_.par = cfg_.rigid;
   rigid_.mats = mats_.get();
-  // (the articulations' drives, as their hosts set them, into the solver)
+  // the systems' drives for this tick (what their hosts changed since, too), then the
+  // articulations' into the solver
+  if (!systems_.empty()) {
+    systems_phase_ = true;
+    for (size_t i = 0, n = systems_.size(); i < n; ++i) {
+      const std::shared_ptr<WorldSystem> s = systems_[i];
+      s->pre_step(*this, cfg_.dt);
+    }
+    systems_phase_ = false;
+  }
   if (!arts_.empty()) apply_articulation_controls();
   // (the violent part of a collapse, or a large pile settling: one substep a tick)
   const bool busy = rigid_.busy() || rigid_.piece_contacts() > cfg_.rigid.busy_contacts;

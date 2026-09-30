@@ -351,6 +351,7 @@ struct WorldStats {
   f64 archive_used_mb = 0.0, archive_capacity_mb = 0.0;
   i64 forgotten_regions = 0, forgotten_chunks = 0;  // changes forgotten (the archive full, or forget_after_s)
   i64 archived_pieces = 0, forgotten_pieces = 0;    // pieces out of range, in the archive now; gone with their regions (totals)
+  i64 archived_articulations = 0, forgotten_articulations = 0;  // (the same for articulations)
   // memory budgets (MemoryBudget): what they removed
   i64 culled_pieces = 0, dropped_structures = 0, dropped_fragment_caches = 0, dropped_events = 0;
   // design (bake)
@@ -391,6 +392,9 @@ class WorldSystem {
   virtual void on_evicted(World& w, const std::vector<u64>& chunks) { (void)w, (void)chunks; }
   // Voxels changed in these chunks this tick (carves, detachments, edits, generation).
   virtual void on_voxels_changed(World& w, const std::vector<u64>& chunks) { (void)w, (void)chunks; }
+  // Once per tick, before the mechanics: what the system drives is set here (the controls of the
+  // articulations it moves, and the state its host changed in them since its step).
+  virtual void pre_step(World& w, f64 dt) { (void)w, (void)dt; }
   virtual void step(World& w, f64 dt) = 0;  // once per tick, after the mechanics
   virtual i64 memory_bytes() const { return 0; }
   virtual u64 state_hash() const { return 0; }  // (determinism checks: mixed into session_hash)
@@ -998,6 +1002,18 @@ class World {
   const Body* art_link(const ArticulationRec& a, u16 link) const;
   // (a tick begins: the hosts' drives into the solver, the links' senses afresh)
   void apply_articulation_controls();
+  ArticulationId add_articulation_now(const ArticulationDesc& d, ArticulationId want = 0);  // (no tick check; want: its id, if free)
+  // Records (the streaming archive, sessions): an articulation whole - its links as they are now,
+  // its joints (their anchors as they are), targets, rules, control and host data.
+  struct ArticulationSaved;
+  std::vector<u8> articulation_record(const ArticulationRec& a) const;
+  bool read_articulation_record(world_detail::Rd& in, ArticulationSaved* out) const;  // (checked whole; false: malformed)
+  ArticulationId restore_articulation(ArticulationSaved&& s);                          // (ArticulationAdded; 0: refused)
+  // Out of range (a streamed world): archived with its region's chunks, back when they all are.
+  void archive_articulation(ArticulationId id, const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of);
+  void restore_articulations();
+  void forget_articulation(u64 key);
+  std::map<u64, std::vector<u64>> archived_arts_;  // archive key ((3 << 62) | (1 << 61) | id) -> the chunks it needs
   // (its links, joints and targets go; ArticulationRemoved)
   void drop_articulation(ArticulationId id, PieceEnd end);
   void clear_articulations();  // (load: all go, quietly)
@@ -1105,6 +1121,9 @@ class World {
   u64 node_chunk(const Structure& s, i32 node) const;
   bool designed_all_ = false;
   bool in_tick_ = false;  // (a system calling tick / load from inside a tick is refused)
+  // (the systems' part of a tick - pre_step, step: the articulations are theirs to add, remove and
+  // move then; the mechanics' part is not)
+  bool systems_phase_ = false;
   struct DeadLoad {
     GVox vox;
     V3 p, F;

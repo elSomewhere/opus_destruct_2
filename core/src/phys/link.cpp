@@ -13,10 +13,13 @@
 // steps. Many short steps keep a chain of light and heavy links stiff (a hand on a forearm on a
 // chest); the pieces keep their substep. One that touches an awake piece is solved with it.
 #include <algorithm>
+#include <chrono>
+#include <cstdio>
 #include <climits>
 #include <cmath>
 
 #include "phys_internal.hpp"
+#include "svx/base/diag.hpp"
 #include "svx/base/dmath.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/phys/rigid.hpp"
@@ -508,6 +511,61 @@ bool RigidWorld::collide_fine(f64 dt, const std::vector<StaticGrid>& statics, bo
   return woke;
 }
 
+void RigidWorld::fine_islands(const std::vector<i32>& fb) {
+  const size_t nb = bodies.size();
+  auto index_of = [&](i64 id) -> i32 {
+    const auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
+    return (it != bodies.end() && (*it)->id == id) ? static_cast<i32>(it - bodies.begin()) : -1;
+  };
+  // (fine links joined to each other, or touching each other, are one island)
+  std::vector<i32> up(nb, -1);
+  for (i32 i : fb) up[size_t(i)] = i;
+  auto root = [&](i32 x) {
+    while (up[size_t(x)] != x) {
+      up[size_t(x)] = up[size_t(up[size_t(x)])];
+      x = up[size_t(x)];
+    }
+    return x;
+  };
+  auto unite = [&](i32 a, i32 b) {
+    a = root(a);
+    b = root(b);
+    if (a == b) return;
+    if (a < b) up[size_t(b)] = a;
+    else up[size_t(a)] = b;
+  };
+  std::vector<std::pair<i32, i32>> ends(joints.size(), {-1, -1});
+  for (size_t k = 0; k < joints.size(); ++k) {
+    const Joint& j = joints[k];
+    if (j.broken) continue;
+    const i32 ia = j.a.body != 0 ? index_of(j.a.body) : -1, ib = j.b.body != 0 ? index_of(j.b.body) : -1;
+    ends[k] = {ia >= 0 && fine_[size_t(ia)] ? ia : -1, ib >= 0 && fine_[size_t(ib)] ? ib : -1};
+    if (ends[k].first >= 0 && ends[k].second >= 0) unite(ends[k].first, ends[k].second);
+  }
+  for (const Contact& c : fine_cs_)
+    if (c.b >= 0 && fine_[size_t(c.b)]) unite(c.a, c.b);
+  // (in the order of their first body)
+  std::vector<i32> slot(nb, -1);
+  fine_islands_.clear();
+  for (i32 i : fb) {
+    const i32 r = root(i);
+    if (slot[size_t(r)] < 0) {
+      slot[size_t(r)] = static_cast<i32>(fine_islands_.size());
+      fine_islands_.emplace_back();
+    }
+    fine_islands_[size_t(slot[size_t(r)])].bodies.push_back(i);
+  }
+  for (size_t k = 0; k < joints.size(); ++k) {
+    const i32 e = ends[k].first >= 0 ? ends[k].first : ends[k].second;
+    if (e >= 0) fine_islands_[size_t(slot[size_t(root(e))])].joints.push_back(static_cast<u32>(k));
+  }
+  for (size_t k = 0; k < targets.size(); ++k) {
+    const i32 ib = index_of(targets[k].body);
+    if (ib >= 0 && fine_[size_t(ib)]) fine_islands_[size_t(slot[size_t(root(ib))])].targets.push_back(static_cast<u32>(k));
+  }
+  for (size_t k = 0; k < fine_cs_.size(); ++k) fine_islands_[size_t(slot[size_t(root(fine_cs_[k].a))])].contacts.push_back(static_cast<u32>(k));
+}
+
 void RigidWorld::step_fine(f64 dt, std::vector<Contact>& report) {
   const int n = std::max(1, par.link_substeps);
   const f64 h = dt / n;
@@ -533,6 +591,9 @@ void RigidWorld::step_fine(f64 dt, std::vector<Contact>& report) {
   auto invm = [&](i32 i) -> f64 { return (i < 0 || bodies[size_t(i)]->asleep) ? 0.0 : bodies[size_t(i)]->inv_mass; };
   std::vector<M3> Iw(nb);
   std::vector<V3> pv(nb), pw(nb);
+  // (what a link keeps of its velocity per step, and of its spin about its length: the same every step)
+  std::vector<std::array<f64, 3>> keep(nb);
+  for (i32 i : fb) keep[size_t(i)] = link_keep(*bodies[size_t(i)], h);
   auto vel = [&](i32 i, const V3& r) -> V3 {
     if (i < 0) return V3{};
     const Body& B = *bodies[size_t(i)];
@@ -558,116 +619,144 @@ void RigidWorld::step_fine(f64 dt, std::vector<Contact>& report) {
     }
     return k > 0.0 ? 1.0 / k : 0.0;
   };
+  auto pvel = [&](i32 i, const V3& r) -> V3 {
+    if (i < 0 || !fine_[size_t(i)]) return V3{};
+    return pv[size_t(i)] + cross(pw[size_t(i)], r);
+  };
   // (the pieces' joint rows are kept for the sleep rules: a machine's drive at work)
   std::vector<JointPrep> coarse_prep;
   coarse_prep.swap(jprep_);
+  jprep_.assign(joints.size(), JointPrep{});
+  tprep_.assign(targets.size(), TargetPrep{});
   const f64 coarse_joint_dt = joint_dt_;
-  for (int s = 0; s < n; ++s) {
-    for (i32 i : fb) {
-      Body& B = *bodies[size_t(i)];
-      integrate_link(B, h);
-      Iw[size_t(i)] = B.inv_inertia_world();
-    }
-    // the contacts where the bodies are now
-    for (size_t k = 0; k < nc; ++k) {
-      Contact& c = cs[k];
-      const Body& A = *bodies[size_t(c.a)];
-      const BodySphere& S = A.link->spheres[size_t(c.shape_a)];
-      const V3 ca = A.x + rotate(A.q, S.c);
-      if (spheres[k]) {
-        const Body& B = *bodies[size_t(c.b)];
-        const BodySphere& T = B.link->spheres[size_t(c.shape_b)];
-        const V3 d = ca - (B.x + rotate(B.q, T.c));
-        const f64 dist = norm(d);
-        if (dist > 1e-9) c.n = d * (1.0 / dist);
-        c.depth = S.r + T.r - dist;
-      } else {
-        c.depth = S.r - (dot(c.n, ca) - plane[k]);
+  joint_dt_ = h;
+  // the islands, each stepped on its own (in parallel: they share no body, and each is stepped
+  // the same whatever the threads)
+  static const bool fprof = diag("SVX_PROFILE_FINE");
+  const auto p0 = fprof ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  fine_islands(fb);
+  const auto p1 = fprof ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
+  auto step_island = [&](const FineIsland& I) {
+    for (int s = 0; s < n; ++s) {
+      for (i32 i : I.bodies) {
+        Body& B = *bodies[size_t(i)];
+        integrate_link(B, h, keep[size_t(i)]);
+        Iw[size_t(i)] = B.inv_inertia_world();
       }
-      c.p = ca - c.n * S.r;
-      c.ra = c.p - A.x;
-      c.rb = c.b >= 0 ? c.p - bodies[size_t(c.b)]->x : V3{};
-      tangents(c.n, c.t1, c.t2);
-      c.kn = eff(c, c.n);
-      c.k1 = eff(c, c.t1);
-      c.k2 = eff(c, c.t2);
-      // (links do not bounce; a gap may close within this step, no more)
-      c.bounce = c.depth < 0.0 ? c.depth / h : 0.0;
-      c.bias = std::min(par.max_correction, par.baumgarte * std::max(0.0, c.depth - par.slop) / h);
-      c.ln = c.depth < 0.0 && s == 0 ? 0.0 : 0.85 * lam[k][0];
-      c.l1 = 0.85 * lam[k][1];
-      c.l2 = 0.85 * lam[k][2];
-      c.lp = 0.0;
-      apply(c, c.n * c.ln + c.t1 * c.l1 + c.t2 * c.l2);
-    }
-    prepare_joints(h, Iw, &fine_);
-    prepare_targets(h, Iw, &fine_);
-    for (int it = 0; it < std::max(1, par.link_iterations); ++it) {
-      for (size_t k = 0; k < nc; ++k) {
+      // the contacts where the bodies are now
+      for (u32 k : I.contacts) {
         Contact& c = cs[k];
-        V3 dv = vel(c.a, c.ra) - vel(c.b, c.rb);
-        const f64 ln = std::max(0.0, c.ln + c.kn * (c.bounce - dot(dv, c.n)));
-        apply(c, c.n * (ln - c.ln));
-        c.ln = ln;
-        dv = vel(c.a, c.ra) - vel(c.b, c.rb);
-        const f64 lim = c.mu * c.ln;
-        const f64 l1 = std::clamp(c.l1 - c.k1 * dot(dv, c.t1), -lim, lim);
-        const f64 l2 = std::clamp(c.l2 - c.k2 * dot(dv, c.t2), -lim, lim);
-        apply(c, c.t1 * (l1 - c.l1) + c.t2 * (l2 - c.l2));
-        c.l1 = l1;
-        c.l2 = l2;
-      }
-      // (the joints swept both ways in turn: along a chain and back, an impulse reaches its end)
-      solve_joints((it & 1) != 0);
-      solve_targets();
-    }
-    // (a limp link spins no faster than its limit: an impact does not set it whirling)
-    for (i32 i : fb) {
-      Body& B = *bodies[size_t(i)];
-      const f64 cap = B.link->max_spin, ws = norm(B.w);
-      if (cap > 0.0 && ws > cap) B.w *= cap / ws;
-    }
-    // position error, on pseudo velocities (split impulse: no energy added)
-    for (i32 i : fb) {
-      pv[size_t(i)] = V3{};
-      pw[size_t(i)] = V3{};
-    }
-    auto pvel = [&](i32 i, const V3& r) -> V3 {
-      if (i < 0 || !fine_[size_t(i)]) return V3{};
-      return pv[size_t(i)] + cross(pw[size_t(i)], r);
-    };
-    for (int it = 0; it < std::max(0, par.link_position_iterations); ++it) {
-      for (size_t k = 0; k < nc; ++k) {
-        Contact& c = cs[k];
-        if (c.bias <= 0.0) continue;
-        const f64 vn = dot(pvel(c.a, c.ra) - pvel(c.b, c.rb), c.n);
-        const f64 lp = std::max(0.0, c.lp + c.kn * (c.bias - vn));
-        const V3 J = c.n * (lp - c.lp);
-        c.lp = lp;
-        pv[size_t(c.a)] += J * bodies[size_t(c.a)]->inv_mass;
-        pw[size_t(c.a)] += Iw[size_t(c.a)] * cross(c.ra, J);
-        if (c.b >= 0 && fine_[size_t(c.b)]) {
-          pv[size_t(c.b)] -= J * bodies[size_t(c.b)]->inv_mass;
-          pw[size_t(c.b)] -= Iw[size_t(c.b)] * cross(c.rb, J);
+        const Body& A = *bodies[size_t(c.a)];
+        const BodySphere& S = A.link->spheres[size_t(c.shape_a)];
+        const V3 ca = A.x + rotate(A.q, S.c);
+        if (spheres[k]) {
+          const Body& B = *bodies[size_t(c.b)];
+          const BodySphere& T = B.link->spheres[size_t(c.shape_b)];
+          const V3 d = ca - (B.x + rotate(B.q, T.c));
+          const f64 dist = norm(d);
+          if (dist > 1e-9) c.n = d * (1.0 / dist);
+          c.depth = S.r + T.r - dist;
+        } else {
+          c.depth = S.r - (dot(c.n, ca) - plane[k]);
         }
+        c.p = ca - c.n * S.r;
+        c.ra = c.p - A.x;
+        c.rb = c.b >= 0 ? c.p - bodies[size_t(c.b)]->x : V3{};
+        tangents(c.n, c.t1, c.t2);
+        c.kn = eff(c, c.n);
+        c.k1 = eff(c, c.t1);
+        c.k2 = eff(c, c.t2);
+        // (links do not bounce; a gap may close within this step, no more)
+        c.bounce = c.depth < 0.0 ? c.depth / h : 0.0;
+        c.bias = std::min(par.max_correction, par.baumgarte * std::max(0.0, c.depth - par.slop) / h);
+        c.ln = c.depth < 0.0 && s == 0 ? 0.0 : 0.85 * lam[k][0];
+        c.l1 = 0.85 * lam[k][1];
+        c.l2 = 0.85 * lam[k][2];
+        c.lp = 0.0;
+        apply(c, c.n * c.ln + c.t1 * c.l1 + c.t2 * c.l2);
       }
-      solve_joints_position(pv, pw);
+      for (u32 k : I.joints) {
+        jprep_[k] = JointPrep{};
+        prepare_joint(k, h, Iw, &fine_);
+      }
+      for (u32 k : I.targets) {
+        tprep_[k] = TargetPrep{};
+        prepare_target(k, h, Iw, &fine_);
+      }
+      for (int it = 0; it < std::max(1, par.link_iterations); ++it) {
+        for (u32 k : I.contacts) {
+          Contact& c = cs[k];
+          V3 dv = vel(c.a, c.ra) - vel(c.b, c.rb);
+          const f64 ln = std::max(0.0, c.ln + c.kn * (c.bounce - dot(dv, c.n)));
+          apply(c, c.n * (ln - c.ln));
+          c.ln = ln;
+          dv = vel(c.a, c.ra) - vel(c.b, c.rb);
+          const f64 lim = c.mu * c.ln;
+          const f64 l1 = std::clamp(c.l1 - c.k1 * dot(dv, c.t1), -lim, lim);
+          const f64 l2 = std::clamp(c.l2 - c.k2 * dot(dv, c.t2), -lim, lim);
+          apply(c, c.t1 * (l1 - c.l1) + c.t2 * (l2 - c.l2));
+          c.l1 = l1;
+          c.l2 = l2;
+        }
+        // (the joints swept both ways in turn: along a chain and back, an impulse reaches its end)
+        const size_t nj = I.joints.size();
+        const bool reverse = (it & 1) != 0;
+        for (size_t q = 0; q < nj; ++q) solve_joint(I.joints[reverse ? nj - 1 - q : q]);
+        for (u32 k : I.targets) solve_target(k);
+      }
+      // (a limp link spins no faster than its limit: an impact does not set it whirling)
+      for (i32 i : I.bodies) {
+        Body& B = *bodies[size_t(i)];
+        const f64 cap = B.link->max_spin, ws = norm(B.w);
+        if (cap > 0.0 && ws > cap) B.w *= cap / ws;
+      }
+      // position error, on pseudo velocities (split impulse: no energy added)
+      for (i32 i : I.bodies) {
+        pv[size_t(i)] = V3{};
+        pw[size_t(i)] = V3{};
+      }
+      for (int it = 0; it < std::max(0, par.link_position_iterations); ++it) {
+        for (u32 k : I.contacts) {
+          Contact& c = cs[k];
+          if (c.bias <= 0.0) continue;
+          const f64 vn = dot(pvel(c.a, c.ra) - pvel(c.b, c.rb), c.n);
+          const f64 lp = std::max(0.0, c.lp + c.kn * (c.bias - vn));
+          const V3 J = c.n * (lp - c.lp);
+          c.lp = lp;
+          pv[size_t(c.a)] += J * bodies[size_t(c.a)]->inv_mass;
+          pw[size_t(c.a)] += Iw[size_t(c.a)] * cross(c.ra, J);
+          if (c.b >= 0 && fine_[size_t(c.b)]) {
+            pv[size_t(c.b)] -= J * bodies[size_t(c.b)]->inv_mass;
+            pw[size_t(c.b)] -= Iw[size_t(c.b)] * cross(c.rb, J);
+          }
+        }
+        for (u32 k : I.joints) solve_joint_position(k, pv, pw);
+      }
+      for (u32 k : I.joints) finish_joint(k, h);
+      for (u32 k : I.targets) finish_target(k, h);
+      for (i32 i : I.bodies) {
+        Body& B = *bodies[size_t(i)];
+        B.x += (B.v + pv[size_t(i)]) * h;
+        B.q = integrate(B.q, B.w + pw[size_t(i)], h);
+        B.age += h;
+      }
+      for (u32 k : I.contacts) {
+        lam[k] = {cs[k].ln, cs[k].l1, cs[k].l2};
+        tot[k][0] += cs[k].ln;
+        tot[k][1] += cs[k].l1;
+        tot[k][2] += cs[k].l2;
+      }
     }
-    finish_joints(h);
-    finish_targets(h);
-    for (i32 i : fb) {
-      Body& B = *bodies[size_t(i)];
-      B.x += (B.v + pv[size_t(i)]) * h;
-      B.q = integrate(B.q, B.w + pw[size_t(i)], h);
-      B.age += h;
-    }
-    for (size_t k = 0; k < nc; ++k) {
-      lam[k] = {cs[k].ln, cs[k].l1, cs[k].l2};
-      tot[k][0] += cs[k].ln;
-      tot[k][1] += cs[k].l1;
-      tot[k][2] += cs[k].l2;
-    }
+  };
+  const std::vector<FineIsland>& islands = fine_islands_;
+  if (islands.size() == 1) {
+    step_island(islands[0]);
+  } else {
+    parallel_for(static_cast<i64>(islands.size()), 1, [&](i64 i0, i64 i1) {
+      for (i64 i = i0; i < i1; ++i) step_island(islands[size_t(i)]);
+    });
   }
+  const auto p2 = fprof ? std::chrono::steady_clock::now() : std::chrono::steady_clock::time_point{};
   // (the pieces' rows back, for the sleep rules; the fine joints' prepared as last stepped)
   for (size_t k = 0; k < coarse_prep.size() && k < jprep_.size(); ++k)
     if (coarse_prep[k].on) jprep_[k] = coarse_prep[k];
@@ -692,21 +781,44 @@ void RigidWorld::step_fine(f64 dt, std::vector<Contact>& report) {
     report.push_back(c);
   }
   fine_cs_.clear();
+  if (fprof) {
+    const auto p3 = std::chrono::steady_clock::now();
+    static f64 acc[3] = {0, 0, 0};
+    static int calls = 0;
+    auto msd = [](std::chrono::steady_clock::time_point a, std::chrono::steady_clock::time_point b) { return std::chrono::duration<f64, std::milli>(b - a).count(); };
+    acc[0] += msd(p0, p1);
+    acc[1] += msd(p1, p2);
+    acc[2] += msd(p2, p3);
+    if (++calls % 120 == 0) {
+      std::printf("  [step_fine] islands %.3f parallel %.3f after %.3f ms (%zu islands, %zu contacts)\n", acc[0] / 120, acc[1] / 120, acc[2] / 120, fine_islands_.size(), nc);
+      for (f64& a : acc) a = 0.0;
+    }
+  }
+}
+
+// What a link keeps of its velocity over a step of dt (air, tissue), and of its spin about its
+// length.
+std::array<f64, 3> RigidWorld::link_keep(const Body& b, f64 dt) const {
+  const LinkData& L = *b.link;
+  return {L.keep_linear < 1.0 ? pow01(std::max(0.0, L.keep_linear), dt) : 1.0, L.keep_angular < 1.0 ? pow01(std::max(0.0, L.keep_angular), dt) : 1.0,
+          L.twist_damping > 0.0 ? 1.0 - dm::exp(-L.twist_damping * dt) : 0.0};
 }
 
 // A link's velocity over a step of dt: gravity and the forces on it, air drag and tissue, its
 // limits. (A kinematic link keeps the velocity its host gives it.)
-void RigidWorld::integrate_link(Body& b, f64 dt) {
+void RigidWorld::integrate_link(Body& b, f64 dt) { integrate_link(b, dt, link_keep(b, dt)); }
+
+void RigidWorld::integrate_link(Body& b, f64 dt, const std::array<f64, 3>& keep) {
   const LinkData& L = *b.link;
   if (!L.kinematic) {
     b.v.z -= par.gravity * dt;
     if (norm2(b.force) > 0.0) b.v += b.force * (b.inv_mass * dt);
     if (norm2(b.torque) > 0.0) b.w += b.inv_inertia_world() * b.torque * dt;
-    if (L.keep_linear < 1.0) b.v *= pow01(std::max(0.0, L.keep_linear), dt);
-    if (L.keep_angular < 1.0) b.w *= pow01(std::max(0.0, L.keep_angular), dt);
+    if (L.keep_linear < 1.0) b.v *= keep[0];
+    if (L.keep_angular < 1.0) b.w *= keep[1];
     if (L.twist_damping > 0.0) {
       const V3 a = normalized(rotate(b.q, L.long_axis));
-      b.w -= a * (dot(b.w, a) * (1.0 - dm::exp(-L.twist_damping * dt)));
+      b.w -= a * (dot(b.w, a) * keep[2]);
     }
     const f64 top = b.max_speed > 0.0 ? b.max_speed : par.link_max_speed;
     const f64 s = norm(b.v);
