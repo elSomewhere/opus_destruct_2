@@ -268,6 +268,14 @@ the same world is loaded again. Worlds are identified by:
   `svx_poll_joints` / `svx_joint_info`, `svx_poll_events` (`svx_event_occupancy`: a piece's
   voxels), `svx_debris` (15 values a piece), `svx_stats`,
   `svx_poll_env` (flames and smoke), `svx_poll_water` / `svx_poll_water_removed`;
+- characters (**ext**, [`ANIM.md`](ANIM.md)): `svx_set_pedestrians` (logged), meshes in the
+  svx_anim character vertex format (`svx_poll_character_meshes` / `svx_character_mesh_info` /
+  `_vertices` / `_indices`, `svx_poll_character_meshes_removed`), palettes
+  (`svx_poll_character_palettes` / `svx_character_palette`), the characters after every tick
+  (`svx_characters`: 12 values each - id, mesh, palette, flags, bounding sphere, flash, prop
+  mesh, health - with `svx_characters_skin`: 23 skin matrices each, and `svx_characters_prop`),
+  a shot's ray that sees them (`svx_raycast_shot`) and a round into one (`svx_wound_character`,
+  logged); stats 51..56;
 - persistence: `svx_save_delta` / `svx_load_delta`;
 - determinism: `svx_state_hash`, a digest of the session including debris poses, identical
   across thread counts and between native and WASM builds.

@@ -62,7 +62,13 @@ the world together (hinges, sliders, ropes, rods, welds; limits, a breaking stre
 what they hold on to; a hinge's or a slider's **drive** moves it at a speed, to a target, or on a
 program of the world's clock. A machine - a lift's car, a turntable, a drawbridge, a crane's jib -
 is pieces on driven joints held by structures: what rides on it is carried, and it comes down
-with what holds it. See [`MOTION.md`](MOTION.md).
+with what holds it. **Articulations** are bodies of linked parts - links that collide as
+spheres, on joints with anatomical limits and muscles, pulled by targets - that their host drives
+every tick: a person, a creature, a robot, a rag doll. Their links are bodies of the world like
+the pieces (a car that hits one hits it; it stands on the structures and loads them), stepped
+finer on their own while no awake piece is near; they sleep, save and stream with their host's
+data. See [`MOTION.md`](MOTION.md) (§6) and, for the characters built on them,
+[`ANIM.md`](ANIM.md).
 
 **Materials** live in tables (`svx/material/material.hpp`): every world has its own
 (`World::materials`, `set_material`, `register_material`), made from the process's
@@ -363,7 +369,9 @@ points, without touching the core. `svx_env` ([`ENV.md`](ENV.md)) is built on th
   every tick.)
 - **Forces on pieces** (`apply_force`, for the next tick only; `wake_piece`).
 - **Systems** (`add_system(std::shared_ptr<WorldSystem>)`): objects stepped at the end of every
-  tick, in the order added.
+  tick, in the order added (and, before the mechanics, `pre_step`: what they drive - an
+  articulation's muscles and targets - is set there; they may add and remove articulations in
+  both).
   - The world tells them what they could not see coming: `on_load`, `on_generated` and
     `on_evicted` (streaming), and `on_voxels_changed` (only chunks resident when they are
     told). Paused, they are told but not stepped.

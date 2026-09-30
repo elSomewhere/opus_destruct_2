@@ -50,7 +50,13 @@ and when that is shot away it comes down; a wrecking ball swings on a crane's ro
 - **Structures off the lattice:** [`docs/GRIDS.md`](docs/GRIDS.md): oriented grids, the
   junctions that bond them, priority and displacement, voxel sizes, their persistence,
   streaming and API.
-- **Joints and machines:** [`docs/MOTION.md`](docs/MOTION.md).
+- **Joints and machines:** [`docs/MOTION.md`](docs/MOTION.md); articulations (bodies of linked
+  parts with anatomical joints and muscles: people, creatures, robots) in §6.
+- **Characters:** [`docs/ANIM.md`](docs/ANIM.md). `svx_anim`: voxel people with a motion plan, a
+  physical body and the behaviours between them (balance, stagger, bracing, falls, getting up,
+  dying), simulated on their own (shallow) or as articulations of the world (deep: a car that
+  hits one hits a body), or both by distance (hybrid). The drive city has pedestrians on its
+  sidewalks, streamed with the city.
 - **Fire, smoke and water:** [`docs/ENV.md`](docs/ENV.md). `svx_env` is built on the core's
   public extension points (voxel layers, damage, loads, piece forces, systems), so the core
   stays a clean destruction and structural-integrity engine.
@@ -67,6 +73,7 @@ The WASM builds need Emscripten: run `source ~/emsdk/emsdk_env.sh` so that `EMSD
 cmake --preset native-release && cmake --build --preset native-release -j
 ./build/native-release/tests/svx_core_tests       # the physics core alone (stress, fragments, rigid, world)
 ./build/native-release/tests/svx_env_tests        # fire, smoke, water on the core
+./build/native-release/tests/svx_anim_tests       # characters, on both of their physics paths
 ./build/native-release/tests/svx_game_tests       # the game harness (collapse, game, movers, replay, doom, ...)
 
 ./build/native-release/examples/svx_core_minimal # the core from C++ (and svx_core_c: from C)
@@ -129,6 +136,7 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
 | `svx_map_check [--threads T] [--movers] WAD...` | Imports, bakes and design-checks every map, then runs it idle. |
 | `svx_soak [--world city\|tower\|rooms\|yard] [--wad F --map M] [--minutes M] [--archive-mb MB] [--forget-s S] [--no-shoot] [--no-env]` | Long sessions and their memory: a streamed city crossed for minutes with continuous destruction, fires and water (or a bounded level shot at), printing the world's memory by kind (the environment systems included), the change archive, forgotten regions and the process's physical footprint. |
 | `svx_env_bench [--scenario fire\|flood\|city\|all] [--threads T] [--repeat N] [--slow MS]` | Deterministic environment scenarios, timed: the yard's timber house burning, the reservoir breached, the streamed city crossed with fires and water. Prints the tick cost (mean, 99th percentile, max), the environment's share and the session hash (an optimization that changes no result keeps every hash); `--slow` breaks down the slow ticks by phase. |
+| `svx_people_bench [--seconds S] [--speed M/S] [--counts 24,48,96] [--policies deep,shallow,hybrid] [--threads T]` | The drive city's people: the viewer drives through the city with its traffic; per way of simulating the bodies and crowd size, the tick and the characters' part (mean, 95th percentile, worst), the bodies' split, the people made and gone, the memory. |
 | `svx_stream_bench`, `svx_wad_textures` | Streaming cost of the city; WAD graphics. |
 
 Diagnostics of the core (printing only, never changing results; compiled out with
@@ -153,13 +161,17 @@ core/      svx_core: the destruction physics (docs/CORE.md). Depends on the stan
   capi/      the C API
 mesh/      svx_mesh: chunk, piece, far-tile and water meshing for renderers
 env/       svx_env: fire, smoke, water on the core's extension points (docs/ENV.md)
+anim/      svx_anim: characters (docs/ANIM.md) - voxel models, the motion plan, the physical body
+           (its own XPBD system, or an articulation of the world), behaviours, the character and
+           its system, brawls
 game/      svx_game: the prototype game harness
-  game.hpp   svx::Game: viewer, movers, triggers, command log, piece meshes and poses, far tier
+  game.hpp   svx::Game: viewer, movers, triggers, command log, piece meshes and poses, far tier,
+             vehicles and traffic, pedestrians
   procgen, city, columns, replay; doom/ (WAD reader, voxelizer, textures, specials,
   movers); api/ (the web worker's flat C ABI)
 examples/  minimal hosts of the core (C++, C)
 tools/     command-line tools (game level runs, replays, map checks, benches), WASM modules
-tests/     core/ (links svx_core only), env/ (svx_env) and game/ doctest suites
+tests/     core/ (links svx_core only), env/ (svx_env), anim/ (svx_anim) and game/ doctest suites
 web/       TypeScript + Vite front end: worker host, WebGPU renderer, FPS sandbox
 docs/      the core guide, design, grids, motion, environment, game API, v1 history
 ```
