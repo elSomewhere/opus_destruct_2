@@ -284,7 +284,10 @@ A gamepad drives too (RT/LT, left stick, A handbrake, Y in/out, right stick look
 
 Browser check: `node scripts/drive-wasm.mjs` (dev server running) takes the wheel of a car,
 drives, slides, rams a van, gets out - screenshots, and it fails on any console error, or if
-driving shakes a part off or the crash takes none.
+driving shakes a part off or the crash takes none. On a machine without a GPU (software WebGPU)
+it draws one frame in six but for its screenshots (`renderer.drawEvery`): the software GPU
+otherwise takes the cores the page and the engine need, and every look at the page waits
+seconds to minutes (the whole check runs in two minutes instead of seven or more).
 
 ## Performance
 
@@ -359,6 +362,9 @@ Measured natively on 4 threads in the drive city: a building's first touch is ~0
   through its hinge until it gives way.
 - Crumpling folds along lattice axes: a side impact folds a door in, a frontal one the front;
   a very oblique blow folds along the axis nearest to it.
+- Two cars folded into each other can stay hooked: a car that rode up onto the side it hit, its
+  nose among the other's folds, may not back out (its driven wheels spin with the weight off
+  them) - as a real car wedged in a crash.
 - The first touch of a large building is a hitch (above): its design runs at once, on the
   simulation's threads.
 - There is no sound yet.

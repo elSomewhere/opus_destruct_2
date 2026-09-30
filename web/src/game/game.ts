@@ -451,16 +451,18 @@ export class Game {
 
     this.lastEye = camera.eye;
     this.lastForward = camera.forward;
-    this.lastRender = this.renderer.render({
-      camera,
-      timeS: nowS,
-      debugView: this.params.debugView,
-      flashPos: this.effects.flashPos,
-      flashIntensity: this.effects.flashIntensity,
-      voxelSize: this.voxelSize,
-      gridFrames: this.gridFrames,
-      wheels,
-    });
+    if (this.frameCount % Math.max(1, Math.round(this.renderer.drawEvery)) === 0) {
+      this.lastRender = this.renderer.render({
+        camera,
+        timeS: nowS,
+        debugView: this.params.debugView,
+        flashPos: this.effects.flashPos,
+        flashIntensity: this.effects.flashIntensity,
+        voxelSize: this.voxelSize,
+        gridFrames: this.gridFrames,
+        wheels,
+      });
+    }
     this.hud.setMuzzleFlash(this.effects.muzzle > 0 && !this.driving.driving);
     this.hud.setDriving(this.driving.driving);
     this.updateDriveHud(car, nowS);

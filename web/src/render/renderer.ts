@@ -191,6 +191,12 @@ export class Renderer {
   private readonly planes = new Float32Array(20);
   /** Render resolution scale relative to device pixels (<= 1 trades sharpness for speed). */
   renderScale = 1;
+  /**
+   * Draw one frame in this many (the rest are simulated, not drawn): a software GPU on a small
+   * machine takes the cores the page and the engine need (the browser checks draw only for their
+   * screenshots).
+   */
+  drawEvery = 1;
 
   static async create(canvas: HTMLCanvasElement, onDeviceLost: (reason: string) => void): Promise<Renderer> {
     const gpu = await initWebGpu(canvas, onDeviceLost);

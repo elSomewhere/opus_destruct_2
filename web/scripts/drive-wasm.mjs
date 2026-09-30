@@ -17,8 +17,10 @@ const outDir = resolve(process.argv[3] ?? 'drive-out');
 mkdirSync(outDir, { recursive: true });
 const chrome = process.env.CHROME_PATH ?? '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
 const failures = [];
+const started = Date.now();
+const since = () => `${((Date.now() - started) / 1000).toFixed(0)} s`;
 const check = (cond, what) => {
-  console.log(cond ? `ok   ${what}` : `FAIL ${what}`);
+  console.log(`${cond ? 'ok  ' : 'FAIL'} ${what} (at ${since()})`);
   if (!cond) failures.push(what);
 };
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -58,11 +60,14 @@ try {
   // page falls minutes behind it)
   if (containerArgs().length > 0) await page.evaluateOnNewDocument(() => Object.defineProperty(navigator, 'hardwareConcurrency', { get: () => 2 }));
   await page.goto(`${base}?engine=wasm&world=drive&seed=1`, { waitUntil: 'load' });
-  // (software WebGPU: fewer pixels, or the page falls far behind the engine)
-  if (containerArgs().length > 0) {
+  // (software WebGPU: fewer pixels, and a frame drawn in six but for the screenshots - or the
+  // GPU process takes the cores the page and the engine need, and the page falls minutes behind)
+  const slow = containerArgs().length > 0;
+  if (slow) {
     while (!(await page.evaluate(() => !!window.__structvox))) await sleep(200);
     await page.evaluate(() => {
       window.__structvox.renderer.renderScale = 0.35;
+      window.__structvox.renderer.drawEvery = 6;
     });
   }
   const t0 = Date.now();
@@ -82,7 +87,14 @@ try {
     await sleep(250);
   }
   check(true, `drive city loaded in ${((Date.now() - t0) / 1000).toFixed(1)} s`);
-  const shot = async (name) => page.screenshot({ path: `${outDir}/${name}.png` });
+  const shot = async (name) => {
+    if (slow) {
+      await page.evaluate(() => (window.__structvox.renderer.drawEvery = 1));
+      await sleep(600);
+    }
+    await page.screenshot({ path: `${outDir}/${name}.png` });
+    if (slow) await page.evaluate(() => (window.__structvox.renderer.drawEvery = 6));
+  };
   const state = () => page.evaluate(() => window.__structvox.state());
   const vehicles = () => page.evaluate(() => window.__structvox.vehicles());
   // traffic comes
@@ -148,6 +160,10 @@ try {
   for (let k = 0; k < 40; k++) {
     await sleep(100);
     car = await mine();
+    if (k % 5 === 0) {
+      const st = await state();
+      console.log(`  braking: ${car?.speed.toFixed(1)} m/s (tick ${st.engine?.ticks}, ${st.fps.toFixed(0)} fps, at ${since()})`);
+    }
     if (!car || Math.abs(car.speed) < 0.5) break;
   }
   car = await mine();
@@ -169,6 +185,10 @@ try {
     await sleep(100);
     car = await mine();
     if (car && (car.damage > damage0 + 0.02 || (await vanDamage()) > 0.02)) hit = true;
+    if (k % 10 === 0) {
+      const st = await state();
+      console.log(`  ramming: ${car?.speed.toFixed(1)} m/s (tick ${st.engine?.ticks}, ${st.fps.toFixed(0)} fps, at ${since()})`);
+    }
     if (k === 30) await shot('drive-06-approach');
   }
   await sleep(300);
@@ -195,6 +215,10 @@ try {
   for (let k = 0; k < 60; k++) {
     await sleep(100);
     car = await mine();
+    if (k % 10 === 0) {
+      const st = await state();
+      console.log(`  reversing: ${car?.speed.toFixed(1)} m/s (tick ${st.engine?.ticks}, ${st.fps.toFixed(0)} fps, at ${since()})`);
+    }
     if (!car || car.speed < -7 || Math.hypot(car.pos[0] - back0[0], car.pos[1] - back0[1]) > 15) break;
   }
   await page.evaluate(() => window.__structvox.drive(0, 1, true));
