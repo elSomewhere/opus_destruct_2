@@ -38,7 +38,15 @@ void CharacterSystem::attach(World& w) {
   collision_ = std::make_unique<WorldCollision>(w);
 }
 
-void CharacterSystem::on_load(World& /*w*/) {
+void CharacterSystem::rebind(World& w) {
+  if (&w == world_) return;
+  world_ = &w;
+  if (collision_) collision_->rebind(w);
+  for (Entry& e : chars_) e.c->rebind_world(&w);
+}
+
+void CharacterSystem::on_load(World& w) {
+  rebind(w);
   // (a new grid: the world's articulations went with the old one, and so do the characters)
   chars_.clear();
 }
@@ -105,6 +113,7 @@ bool CharacterSystem::despawn(CharacterId id) {
 }
 
 void CharacterSystem::on_evicted(World& w, const std::vector<u64>& chunks) {
+  rebind(w);
   if (chars_.empty() || chunks.empty()) return;
   // (a character whose ground went out of range goes with it: nothing holds it up there)
   const f64 h = w.voxel_size();
@@ -126,6 +135,7 @@ void CharacterSystem::on_evicted(World& w, const std::vector<u64>& chunks) {
 // shallow ones meet, the plans and the drives (pushed to the deep bodies' articulations).
 void CharacterSystem::pre_step(World& w, f64 dt) {
   const auto t0 = std::chrono::steady_clock::now();
+  rebind(w);
   if (chars_.empty()) {
     stats_.pre_ms = 0.0;
     return;
@@ -198,8 +208,9 @@ void CharacterSystem::level_of_detail(World& w) {
     chars_[deep_candidates[k].i].c->set_backend(static_cast<i32>(k) < config.max_deep ? BodyBackend::Deep : BodyBackend::Shallow, &w);
 }
 
-void CharacterSystem::step(World& /*w*/, f64 /*dt*/) {
+void CharacterSystem::step(World& w, f64 /*dt*/) {
   const auto t0 = std::chrono::steady_clock::now();
+  rebind(w);
   if (chars_.empty()) {
     stats_ = CharacterStats{};
     return;

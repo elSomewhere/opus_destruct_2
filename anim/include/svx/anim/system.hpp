@@ -85,6 +85,9 @@ class CharacterSystem final : public WorldSystem {
   // The focus points of the level of detail (the player, the camera), set by the host each frame.
   std::vector<V3> focus;
 
+  // The world it is in moved (its host's): the characters follow it. (Its hooks do this
+  // themselves; a host spawning between a move and the next tick calls it.)
+  void rebind(World& w);
   CharacterId spawn(const CharacterDesc& d);  // 0: refused
   bool despawn(CharacterId id);
   Character* get(CharacterId id);

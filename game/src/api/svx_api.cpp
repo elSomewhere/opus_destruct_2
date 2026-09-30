@@ -6,6 +6,7 @@
 #include <string>
 #include <vector>
 
+#include "svx/anim/system.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/game/doom/movers.hpp"
 #include "svx/game/doom/world.hpp"
@@ -37,6 +38,11 @@ struct svx_engine {
   std::vector<ChunkMesh> water;
   std::vector<u64> water_removed;
   std::vector<f64> vehicles, wheels;
+  std::vector<CharacterMeshData> char_meshes;
+  std::vector<u32> char_meshes_removed;
+  std::vector<CharacterPalette> char_palettes;
+  std::vector<f64> characters;
+  std::vector<float> char_skin, char_prop;
   MeshOptions mesh_base() const {
     MeshOptions mo;
     if (doom) {
@@ -691,12 +697,109 @@ void svx_set_traffic(svx_engine* e, int enabled, int cars, int parked, double ne
   e->eng.set_traffic(c);
 }
 
-int svx_stats_count(void) { return 51; }
+void svx_set_pedestrians(svx_engine* e, int enabled, int count, double near_radius, double radius, int bodies, int max_deep) {
+  PedestrianConfig c;
+  c.enabled = enabled != 0;
+  c.count = count;
+  c.near_radius = near_radius;
+  c.radius = radius;
+  c.bodies = bodies;
+  c.max_deep = max_deep;
+  e->eng.set_pedestrians(c);
+}
+
+int svx_poll_character_meshes(svx_engine* e) {
+  e->char_meshes = e->eng.take_character_meshes();
+  return static_cast<int>(e->char_meshes.size());
+}
+
+void svx_character_mesh_info(svx_engine* e, int i, double* out3) {
+  std::fill(out3, out3 + 3, 0.0);
+  if (!in_range(e->char_meshes, i)) return;
+  const CharacterMeshData& m = e->char_meshes[size_t(i)];
+  out3[0] = static_cast<double>(m.id);
+  out3[1] = static_cast<double>(m.vertex_count);
+  out3[2] = static_cast<double>(m.indices.size());
+}
+
+const void* svx_character_mesh_vertices(svx_engine* e, int i) { return in_range(e->char_meshes, i) ? e->char_meshes[size_t(i)].vertices.data() : nullptr; }
+
+const void* svx_character_mesh_indices(svx_engine* e, int i) { return in_range(e->char_meshes, i) ? e->char_meshes[size_t(i)].indices.data() : nullptr; }
+
+int svx_poll_character_meshes_removed(svx_engine* e) {
+  e->char_meshes_removed = e->eng.take_removed_character_meshes();
+  return static_cast<int>(e->char_meshes_removed.size());
+}
+
+unsigned svx_character_mesh_removed(svx_engine* e, int i) { return in_range(e->char_meshes_removed, i) ? e->char_meshes_removed[size_t(i)] : 0u; }
+
+int svx_poll_character_palettes(svx_engine* e) {
+  e->char_palettes = e->eng.take_character_palettes();
+  return static_cast<int>(e->char_palettes.size());
+}
+
+unsigned svx_character_palette(svx_engine* e, int i, float* out48) {
+  if (!in_range(e->char_palettes, i)) return 0u;
+  const CharacterPalette& p = e->char_palettes[size_t(i)];
+  std::copy(p.rgb.begin(), p.rgb.end(), out48);
+  return p.id;
+}
+
+int svx_characters(svx_engine* e) {
+  const std::vector<CharacterView> cs = e->eng.character_views();
+  constexpr size_t kStride = 12, kSkin = size_t(kCharacterBones) * 16;
+  e->characters.assign(kStride * cs.size(), 0.0);
+  e->char_skin.assign(kSkin * cs.size(), 0.0f);
+  e->char_prop.assign(16 * cs.size(), 0.0f);
+  for (size_t k = 0; k < cs.size(); ++k) {
+    const CharacterView& v = cs[k];
+    f64* o = e->characters.data() + kStride * k;
+    o[0] = static_cast<double>(v.id);
+    o[1] = static_cast<double>(v.mesh);
+    o[2] = static_cast<double>(v.palette);
+    o[3] = static_cast<double>(v.flags);
+    for (int q = 0; q < 3; ++q) o[4 + q] = v.centre[q];
+    o[7] = v.radius;
+    o[8] = v.flash;
+    o[9] = static_cast<double>(v.prop_mesh);
+    if (v.skin) std::copy(v.skin, v.skin + kSkin, e->char_skin.data() + kSkin * k);
+    std::copy(v.prop.begin(), v.prop.end(), e->char_prop.data() + 16 * k);
+  }
+  return static_cast<int>(cs.size());
+}
+
+const double* svx_characters_data(svx_engine* e) { return e->characters.data(); }
+
+const float* svx_characters_skin(svx_engine* e) { return e->char_skin.data(); }
+
+const float* svx_characters_prop(svx_engine* e) { return e->char_prop.data(); }
+
+int svx_raycast_shot(svx_engine* e, double ox, double oy, double oz, double dx, double dy, double dz, double max_dist, double* out10) {
+  std::fill(out10, out10 + 10, 0.0);
+  const Game::ShotHit h = e->eng.raycast_shot(V3{ox, oy, oz}, V3{dx, dy, dz}, max_dist);
+  if (!h.hit) return 0;
+  for (int q = 0; q < 3; ++q) {
+    out10[q] = h.pos[q];
+    out10[3 + q] = h.normal[q];
+  }
+  out10[6] = h.distance;
+  out10[7] = h.material;
+  out10[8] = static_cast<double>(h.character);
+  out10[9] = h.bone;
+  return h.character ? 2 : 1;
+}
+
+int svx_wound_character(svx_engine* e, unsigned id, double x, double y, double z, double radius, double energy) {
+  return e->eng.wound_character(id, V3{x, y, z}, radius, energy) ? 1 : 0;
+}
+
+int svx_stats_count(void) { return 57; }
 
 void svx_stats(svx_engine* e, double* out) {
   const GameStats gs = e->eng.stats();
   const WorldStats& s = gs;
   const MemoryReport mem = e->eng.world().memory();
+  const anim::CharacterStats cs = e->eng.characters() ? e->eng.characters()->stats() : anim::CharacterStats{};
   auto mbytes = [](i64 b) { return static_cast<double>(b) / 1048576.0; };
   const double v[] = {
       s.tick_ms,                                       // 0
@@ -750,6 +853,12 @@ void svx_stats(svx_engine* e, double* out) {
       static_cast<double>(gs.water_active),            // 48
       static_cast<double>(gs.water_loads),             // 49
       static_cast<double>(gs.floating),                // 50
+      static_cast<double>(cs.characters),              // 51
+      static_cast<double>(cs.deep),                    // 52
+      static_cast<double>(cs.shallow),                 // 53
+      static_cast<double>(cs.plan_only),               // 54
+      static_cast<double>(cs.asleep),                  // 55
+      cs.pre_ms + cs.step_ms,                          // 56
   };
   for (size_t k = 0; k < sizeof(v) / sizeof(v[0]); ++k) out[k] = v[k];
 }

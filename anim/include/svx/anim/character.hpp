@@ -121,6 +121,8 @@ class Character {
   ArticulationId articulation() const { return binding_.id(); }
   // Moves the body to the other path (its state goes with it). Deep needs a world.
   bool set_backend(BodyBackend b, World* world = nullptr);
+  // (deep) Its world moved (the host's): the same world at a new address.
+  void rebind_world(World* w) { world_ = w; }
   // (deep) The articulation came back (a session loaded, the streaming archive): adopt it.
   bool adopt(ArticulationId id);
   // (deep) Its articulation is gone from the world (removed, archived, out of the world): the body

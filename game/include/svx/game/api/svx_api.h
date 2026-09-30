@@ -219,6 +219,43 @@ void svx_shoot(svx_engine* e, double x, double y, double z, double radius, doubl
  * parked around the viewer, spawned beyond near_radius and within radius (m), speed x the limits. */
 void svx_set_traffic(svx_engine* e, int enabled, int cars, int parked, double near_radius, double radius, double speed_scale);
 
+/* Pedestrians of a streamed world with walkways (the "drive" city; logged): on/off, how many about
+ * the viewer, spawned beyond near_radius and within radius (m), their bodies (0 deep: every
+ * physical body an articulation of the world; 1 shallow: their own; 2 hybrid: deep near the viewer
+ * and near moving pieces, shallow further, on their plans alone far), the most deep bodies. */
+void svx_set_pedestrians(svx_engine* e, int enabled, int count, double near_radius, double radius, int bodies, int max_deep);
+/* Characters (docs/ANIM.md) are drawn from meshes in the svx_anim character vertex format (20
+ * bytes: position float32x3 in rest model space; normal snorm8x3 and ambient occlusion snorm8
+ * (-1..1 = 0..1); uint32 bone | palette slot << 8 | shade << 12 (128 = 1.0); uint32 indices,
+ * counter-clockwise from outside), with a palette (16 slots) and each character's skin matrices:
+ * a vertex is drawn at skin[bone] x its position (rigid skinning).
+ * Meshes new since the last poll: count, then per mesh info[3] = id, vertex count, index count,
+ * and its buffers; meshes no character draws any more: count, then their ids. Palettes new since
+ * the last poll: count, then per palette its id (returned) and 48 floats (16 slots' linear rgb). */
+int svx_poll_character_meshes(svx_engine* e);
+void svx_character_mesh_info(svx_engine* e, int i, double* out3);
+const void* svx_character_mesh_vertices(svx_engine* e, int i);
+const void* svx_character_mesh_indices(svx_engine* e, int i);
+int svx_poll_character_meshes_removed(svx_engine* e);
+unsigned svx_character_mesh_removed(svx_engine* e, int i);
+int svx_poll_character_palettes(svx_engine* e);
+unsigned svx_character_palette(svx_engine* e, int i, float* out48);
+/* The characters now (after a tick): count, then svx_characters_data holds 12 doubles each: id,
+ * mesh, palette, flags (1 alive, 2 deep: a body of the world, 4 physical, 8 asleep: a body at
+ * rest, 16 down), bounding sphere centre xyz and radius, hit flash 0..1, its prop's mesh (0: none),
+ * 2 reserved; svx_characters_skin holds 23 x 16 floats each (column-major 4x4 skin matrices, bone
+ * by bone), svx_characters_prop 16 floats each (its prop's matrix). */
+int svx_characters(svx_engine* e);
+const double* svx_characters_data(svx_engine* e);
+const float* svx_characters_skin(svx_engine* e);
+const float* svx_characters_prop(svx_engine* e);
+/* A shot's line against the world and the characters: out[10] = pos xyz, normal xyz, distance,
+ * material (-1: a character), character id (0: the world), bone; returns 0 (nothing), 1 (the
+ * world) or 2 (a character). A round into a character (logged; where the ray found it, fired from
+ * the viewer; energy and radius as svx_shoot's): returns 1 if it hit. */
+int svx_raycast_shot(svx_engine* e, double ox, double oy, double oz, double dx, double dy, double dz, double max_dist, double* out10);
+int svx_wound_character(svx_engine* e, unsigned id, double x, double y, double z, double radius, double energy);
+
 /* The number of doubles svx_stats writes. */
 int svx_stats_count(void);
 /* out[svx_stats_count()]: 0 tick ms, 1 structural ms, 2 event ms, 3 rigid ms, 4 mesh ms, 5 voxels, 6 chunks,
@@ -231,7 +268,8 @@ int svx_stats_count(void);
  * MB (all kinds), 36 fragment caches MB, 37 structures MB, 38 pieces MB, 39 archive used MB,
  * 40 archive capacity MB, 41 forgotten regions, 42 culled pieces, 43 hot voxels (fire),
  * 44 burning voxels, 45 environment ms, 46 smoke cells, 47 smoke blocks, 48 moving water voxels,
- * 49 water loads, 50 pieces in water (51 doubles). */
+ * 49 water loads, 50 pieces in water, 51 characters, 52 deep bodies, 53 shallow bodies, 54 on their
+ * plans alone, 55 at rest, 56 characters ms (57 doubles). */
 void svx_stats(svx_engine* e, double* out);
 /* Deterministic digest of the session (voxels, bonds, damage, debris poses), split in two
  * 32-bit halves (JS numbers). */

@@ -323,6 +323,80 @@ class DriveCity final : public GameSource, public RoadNetwork {
     }
   }
 
+  // ---- the walkways: the sidewalks from street corner to street corner, the crossings on the
+  // zebras. A junction has four corners, where its zebras meet the sidewalks (on the zebras' centre
+  // lines); a corner's walks are the sidewalks along its two roads and the crossings over them.
+  void walks_in(const V3& lo, const V3& hi, std::vector<Walk>& out) const override {
+    const i32 vx0 = static_cast<i32>(std::floor(lo.x / h_)), vx1 = static_cast<i32>(std::ceil(hi.x / h_));
+    const i32 vy0 = static_cast<i32>(std::floor(lo.y / h_)), vy1 = static_cast<i32>(std::ceil(hi.y / h_));
+    auto meets = [&](const Walk& w) {
+      return std::max(w.a.x, w.b.x) >= lo.x && std::min(w.a.x, w.b.x) <= hi.x && std::max(w.a.y, w.b.y) >= lo.y && std::min(w.a.y, w.b.y) <= hi.y;
+    };
+    // (each walk once: with the junction at its a end)
+    for (i32 i = floordiv(vx0, kP) - 1; i * kP <= vx1 + kP; ++i)
+      for (i32 j = floordiv(vy0, kP) - 1; j * kP <= vy1 + kP; ++j)
+        for (int k = 0; k < 8; ++k) {
+          const int side = k & 1, kind = (k >> 2) & 1, axis = (k >> 1) & 1;
+          const u64 id = kind == 0 ? walk_id(0, axis, side, axis == 0 ? j : i, axis == 0 ? i : j) : walk_id(1, axis, side, axis == 0 ? j : i, axis == 0 ? i : j);
+          Walk w;
+          if (walk(id, &w) && meets(w)) out.push_back(w);
+        }
+  }
+  bool walk(u64 id, Walk* out) const override {
+    int kind, axis, side;
+    i32 road, seg;
+    unpack_walk(id, &kind, &axis, &side, &road, &seg);
+    const f64 z = 0.5 * h_;  // (the sidewalks' surface: the top of voxels z = 0)
+    // (x, y) in voxels, the road's axis first: along, then across
+    auto at = [&](f64 along, f64 across) { return axis == 0 ? V3{wx(along), wx(across), z} : V3{wx(across), wx(along), z}; };
+    const f64 sg = side ? 1.0 : -1.0;
+    Walk w;
+    w.id = id;
+    if (kind == 0) {
+      // a sidewalk along the road, from junction seg to junction seg + 1, on its side
+      const f64 across = road * kP + sg * corner(road);
+      w.a = at(seg * kP + corner(seg), across);
+      w.b = at((seg + 1) * kP - corner(seg + 1), across);
+      const f64 in = sg * (line(road) - corner(road)) * h_;
+      w.inset = axis == 0 ? V3{0.0, in, 0.0} : V3{in, 0.0, 0.0};
+      w.width = (avenue(road) ? kAvenueWalk : kStreetWalk) * h_;
+    } else {
+      // a crossing over the road at junction seg, on its side of the junction
+      const f64 along = seg * kP + sg * corner(seg);
+      w.a = at(along, road * kP - corner(road));
+      w.b = at(along, road * kP + corner(road));
+      w.width = 24 * h_;
+      w.crossing = true;
+    }
+    *out = w;
+    return true;
+  }
+  void walk_next(u64 id, int end, std::vector<std::pair<u64, int>>& out) const override {
+    i32 i, j;
+    int sx, sy;
+    corner_of(id, end, &i, &j, &sx, &sy);
+    const std::pair<u64, int> at_corner[4] = {
+        {walk_id(0, 0, sy > 0, j, sx > 0 ? i : i - 1), sx > 0 ? 0 : 1},  // (the sidewalk along x)
+        {walk_id(0, 1, sx > 0, i, sy > 0 ? j : j - 1), sy > 0 ? 0 : 1},  // (the sidewalk along y)
+        {walk_id(1, 0, sx > 0, j, i), sy > 0 ? 1 : 0},                  // (the crossing over the road along x)
+        {walk_id(1, 1, sy > 0, i, j), sx > 0 ? 1 : 0},                  // (the crossing over the road along y)
+    };
+    for (const auto& w : at_corner)
+      if (w.first != id || w.second != end) out.push_back(w);
+  }
+  bool walk_open(u64 id, f64 t) const override {
+    int kind, axis, side;
+    i32 road, seg;
+    unpack_walk(id, &kind, &axis, &side, &road, &seg);
+    if (kind == 0) return true;
+    // (the junction's signals, as green(): a road's traffic stopped - the other road's going, the
+    // way the people cross - for the first seconds of that)
+    const i32 ji = axis == 0 ? seg : road, jj = axis == 0 ? road : seg;
+    const f64 cycle = 34.0;
+    const f64 u = std::fmod(t + unit(hash2(seed_, ji, jj, 7)) * cycle, cycle);
+    return axis == 0 ? (u >= 17.0 && u < 21.0) : u < 4.0;
+  }
+
  private:
   // ---- layout
   bool avenue(i32 road) const { return ((road % 4) + 4) % 4 == 0; }
@@ -332,6 +406,41 @@ class DriveCity final : public GameSource, public RoadNetwork {
   // (a voxel boundary in world metres: voxel p spans (p - 1/2) h .. (p + 1/2) h)
   f64 wx(f64 b) const { return (b - 0.5) * h_; }
   f64 road_z() const { return -0.5 * h_; }  // (the road's surface: the top of voxels z = -1)
+
+  // A walkway's corners: off the road's centre line (the zebras' centre lines), and the walking
+  // line along a sidewalk (towards the buildings, clear of the lamps and trees near the kerb).
+  i32 corner(i32 road) const { return carriage(road) + 16; }
+  i32 line(i32 road) const { return carriage(road) + (avenue(road) ? 20 : 19); }
+  static u64 walk_id(int kind, int axis, int side, i32 road, i32 seg) {
+    return static_cast<u64>(kind) | (static_cast<u64>(axis) << 1) | (static_cast<u64>(side & 1) << 2) | (static_cast<u64>(static_cast<u32>(road + (1 << 29)) & 0x3FFFFFFFu) << 3) |
+           (static_cast<u64>(static_cast<u32>(seg + (1 << 29)) & 0x3FFFFFFFu) << 33);
+  }
+  static void unpack_walk(u64 id, int* kind, int* axis, int* side, i32* road, i32* seg) {
+    *kind = static_cast<int>(id & 1);
+    *axis = static_cast<int>((id >> 1) & 1);
+    *side = static_cast<int>((id >> 2) & 1);
+    *road = static_cast<i32>((id >> 3) & 0x3FFFFFFFu) - (1 << 29);
+    *seg = static_cast<i32>((id >> 33) & 0x3FFFFFFFu) - (1 << 29);
+  }
+  // The corner at a walk's end: junction (i, j) and its quadrant (sx, sy: -1 / 1).
+  static void corner_of(u64 id, int end, i32* i, i32* j, int* sx, int* sy) {
+    int kind, axis, side;
+    i32 road, seg;
+    unpack_walk(id, &kind, &axis, &side, &road, &seg);
+    const int sg = side ? 1 : -1;
+    if (kind == 0) {
+      // (a sidewalk: its road's junctions seg and seg + 1, on its side)
+      const i32 g = end == 0 ? seg : seg + 1;
+      const int e = end == 0 ? 1 : -1;
+      if (axis == 0) *i = g, *j = road, *sx = e, *sy = sg;
+      else *i = road, *j = g, *sx = sg, *sy = e;
+    } else {
+      // (a crossing: junction seg of its road, from the road's - side to its + side)
+      const int e = end == 0 ? -1 : 1;
+      if (axis == 0) *i = seg, *j = road, *sx = sg, *sy = e;
+      else *i = road, *j = seg, *sx = e, *sy = sg;
+    }
+  }
 
   static u64 lane_id(int axis, int d, int k, i32 road, i32 seg) {
     return static_cast<u64>(axis) | (static_cast<u64>(d) << 1) | (static_cast<u64>(k & 3) << 2) | (static_cast<u64>(static_cast<u32>(road + (1 << 29)) & 0x3FFFFFFFu) << 4) |

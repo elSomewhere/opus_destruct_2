@@ -226,6 +226,9 @@ void Game::shoot(const V3& pos, f64 radius, f64 energy) {
   if (shot_resolver && !movers_.empty())
     for (const MoverTrigger& t : shot_resolver(pos)) activate_mover(t.mover, t.move);
   if (!movers_.empty()) shots_.push_back({pos, radius});
+  // (people hear the shot where it was fired from - the viewer - and where it struck)
+  noise(viewer_, 35.0, 0);
+  noise(pos, 16.0, 1);
   world_.shoot(pos, radius, energy);
 }
 
@@ -630,6 +633,7 @@ void Game::vehicles_after_tick() {
     const bool rolled = rotate(q, V3{0.0, 0.0, 1.0}).z < 0.4;
     const bool crushed = v.voxels0 > 0 && b->count < v.voxels0 * 0.97;
     if ((v.flags & WheelTag::kTagNpc) && (jolt || lost || rolled || crushed)) v.wreck = true;
+    if (jolt) noise(b->x, 30.0, 5);  // (a crash: people hear it)
   }
   step_traffic();
 }

@@ -11,8 +11,12 @@ namespace svx::anim {
 class WorldCollision final : public VoxelCollision {
  public:
   explicit WorldCollision(const World& w);
-  const World& world;
+  const World& world() const { return *world_; }
+  void rebind(const World& w) { world_ = &w; }  // (the world moved)
   f64 raycast(const V3& o, const V3& d, f64 max_dist) const override;
+
+ private:
+  const World* world_;
 };
 
 }  // namespace svx::anim

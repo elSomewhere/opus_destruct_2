@@ -22,7 +22,8 @@ class Game;
 struct Command {
   enum class Type : u8 {
     Carve = 1, Blast = 2, Viewer = 3, Params = 4, Use = 5, Ignite = 6, Extinguish = 7, Pour = 8,
-    Heat = 9, Drain = 10, EnvParam = 11, Tunable = 12, Shoot = 13, Vehicle = 14, Drive = 15, Traffic = 16
+    Heat = 9, Drain = 10, EnvParam = 11, Tunable = 12, Shoot = 13, Vehicle = 14, Drive = 15, Traffic = 16,
+    Pedestrians = 17, Wound = 18
   };
   i64 tick = 0;
   Type type = Type::Carve;
@@ -32,7 +33,9 @@ struct Command {
   // xyz, radius, degC. EnvParam: index (env_param_*), value. Tunable: index (tunable_*), value.
   // Shoot: pos xyz, radius, energy. Vehicle: action (1 spawn: kind + 256 paint + 65536 flags,
   // pos xyz, yaw; 2 remove: id; 3 enter: id; 4 exit). Drive: throttle, brake, steer, handbrake.
-  // Traffic: enabled, cars, parked, near radius, radius, speed scale.
+  // Traffic: enabled, cars, parked, near radius, radius, speed scale. Pedestrians: enabled, count,
+  // near radius, radius, bodies (0 deep, 1 shallow, 2 hybrid), max deep. Wound: character id,
+  // pos xyz, radius, energy.
   std::array<f64, 6> a{};
 };
 

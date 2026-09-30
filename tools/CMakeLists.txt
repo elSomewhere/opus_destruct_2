@@ -44,6 +44,10 @@ if(SVX_WASM)
     _svx_set_tunable _svx_get_tunable _svx_tunable_count _svx_tunable_name _svx_tunable_setup _svx_stats_count _svx_poll_water _svx_water_info _svx_water_vertices _svx_water_indices _svx_poll_water_removed _svx_water_removed
     _svx_spawn_vehicle _svx_remove_vehicle _svx_enter_vehicle _svx_exit_vehicle _svx_player_vehicle _svx_drive _svx_vehicle_near
     _svx_vehicles _svx_vehicles_data _svx_wheels _svx_wheels_data _svx_shoot _svx_set_traffic
+    _svx_set_pedestrians _svx_poll_character_meshes _svx_character_mesh_info _svx_character_mesh_vertices
+    _svx_character_mesh_indices _svx_poll_character_meshes_removed _svx_character_mesh_removed
+    _svx_poll_character_palettes _svx_character_palette _svx_characters _svx_characters_data
+    _svx_characters_skin _svx_characters_prop _svx_raycast_shot _svx_wound_character
     _malloc _free)
   string(REPLACE ";" "," _svx_exports_csv "${_svx_exports}")
   target_link_options(svx_web PRIVATE

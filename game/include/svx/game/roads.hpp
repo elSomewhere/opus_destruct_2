@@ -17,6 +17,18 @@ struct Lane {
   f64 speed = 13.9;   // m/s: its limit
 };
 
+// A walkway: a straight run people walk from one street corner to the next - a sidewalk along a
+// block's side, or a crossing over a road (its zebra) - between two corners (on the sidewalks'
+// surface, world metres). Along a sidewalk people keep to `inset` off the a-b line (towards the
+// buildings, clear of the lamps and the trees), coming back onto it at the corners.
+struct Walk {
+  u64 id = 0;
+  V3 a, b;
+  V3 inset;           // (a sidewalk) the walking line's offset from a-b in its middle (world)
+  f64 width = 3.0;    // m
+  bool crossing = false;
+};
+
 // A kerbside parking place: where a car stands (on the road's surface) and its heading.
 struct ParkingSpot {
   V3 pos;
@@ -41,6 +53,24 @@ class RoadNetwork {
   // Kerbside parking places in the box.
   virtual void parking_in(const V3& lo, const V3& hi, std::vector<ParkingSpot>& out) const {
     (void)lo, (void)hi, (void)out;
+  }
+  // Walkways (none: a network without people) in the box, in a stable order; one by its id; the
+  // ones that meet one's end (0: a, 1: b) at its corner, and at which of their ends.
+  virtual void walks_in(const V3& lo, const V3& hi, std::vector<Walk>& out) const {
+    (void)lo, (void)hi, (void)out;
+  }
+  virtual bool walk(u64 id, Walk* out) const {
+    (void)id, (void)out;
+    return false;
+  }
+  virtual void walk_next(u64 id, int end, std::vector<std::pair<u64, int>>& out) const {
+    (void)id, (void)end, (void)out;
+  }
+  // Whether people may step onto a crossing now (the traffic over it is held by its signal long
+  // enough to get across); sidewalks: always.
+  virtual bool walk_open(u64 id, f64 time) const {
+    (void)id, (void)time;
+    return true;
   }
 };
 

@@ -9,7 +9,7 @@ namespace {
 
 constexpr u32 kMagic = 0x4C585653;  // "SVXL"
 constexpr u32 kVersion = 2;
-constexpr u8 kMaxType = static_cast<u8>(Command::Type::Traffic);
+constexpr u8 kMaxType = static_cast<u8>(Command::Type::Wound);
 
 template <typename T>
 void put(std::vector<u8>& out, T v) {
@@ -142,6 +142,20 @@ void apply_command(Game& e, const Command& c) {
       e.set_traffic(t);
       break;
     }
+    case Command::Type::Pedestrians: {
+      PedestrianConfig p;
+      p.enabled = c.a[0] != 0.0;
+      p.count = static_cast<i32>(c.a[1]);
+      p.near_radius = c.a[2];
+      p.radius = c.a[3];
+      p.bodies = static_cast<i32>(c.a[4]);
+      p.max_deep = static_cast<i32>(c.a[5]);
+      e.set_pedestrians(p);
+      break;
+    }
+    case Command::Type::Wound:
+      e.wound_character(static_cast<u32>(c.a[0]), V3{c.a[1], c.a[2], c.a[3]}, c.a[4], c.a[5]);
+      break;
     case Command::Type::Params: {
       GameParams p;
       p.fragility = c.a[0];

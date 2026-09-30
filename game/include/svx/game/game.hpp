@@ -32,6 +32,11 @@
 namespace svx {
 
 class CommandLog;
+class Pedestrians;
+namespace anim {
+class CharacterSystem;
+class ModelMesher;
+}  // namespace anim
 
 struct GameParams {
   f64 fragility = 1.0;  // WorldParams
@@ -149,6 +154,50 @@ struct TrafficConfig {
   f64 speed_scale = 1.0;        // x the roads' limits
 };
 
+// Pedestrians (a streamed city with walkways, RoadNetwork::walks_in; docs/ANIM.md): people on its
+// sidewalks around the viewer, svx_anim characters in the world - near the viewer and near moving
+// pieces their bodies are articulations of it (a car that hits one hits a body). The living out
+// of range go and others come; the dead stay while in range.
+struct PedestrianConfig {
+  bool enabled = true;
+  i32 count = 24;            // about the viewer
+  f64 near_radius = 30.0;    // m: not spawned nearer (out of sight)
+  f64 radius = 70.0;         // m: spawned within, the living removed beyond
+  i32 bodies = 2;            // 0: deep (every physical body an articulation of the world), 1: shallow (their own), 2: hybrid
+  i32 max_deep = 24;         // (hybrid) the most deep bodies: the nearest
+};
+
+// A character for the front end (docs/ANIM.md): its mesh (take_character_meshes) drawn with its
+// palette (take_character_palettes) and skin matrices - rigid skinning: a vertex at
+// skin[bone] x its rest position - and its held prop's mesh with the prop's matrix.
+constexpr i32 kCharacterBones = 23;
+struct CharacterView {
+  u32 id = 0;
+  u32 mesh = 0, prop_mesh = 0;  // (0: none)
+  u32 palette = 0;
+  u8 flags = 0;
+  V3 centre;                    // its bounding sphere (world)
+  f64 radius = 1.0;
+  f64 flash = 0.0;              // 0..1: a hit's flash (a tint)
+  const f32* skin = nullptr;    // kCharacterBones x 16 floats (column-major 4x4), until the next tick
+  std::array<f32, 16> prop{};   // the prop's matrix
+  static constexpr u8 kAlive = 1, kDeep = 2, kPhysical = 4, kAsleep = 8, kDown = 16;
+};
+
+// A character mesh (the svx_anim character vertex format: 20 bytes a vertex, svx/anim/voxel/mesh.hpp).
+struct CharacterMeshData {
+  u32 id = 0;
+  std::vector<u8> vertices;
+  std::vector<u32> indices;
+  i32 vertex_count = 0;
+};
+
+// A character palette: its 16 slots' colours (linear rgb).
+struct CharacterPalette {
+  u32 id = 0;
+  std::array<f32, 48> rgb{};
+};
+
 // A joint for the renderer: its ends in the world (a rope is drawn between them).
 struct JointView {
   JointId id = 0;
@@ -241,6 +290,33 @@ class Game {
   void set_traffic(const TrafficConfig& c);  // (logged)
   const TrafficConfig& traffic() const { return traffic_; }
   int paint_layer() const { return paint_layer_; }
+
+  // Pedestrians (game/src/pedestrians.cpp). A shot or a blast frightens them; a car coming at
+  // them makes them jump aside; one that hits them hurts them.
+  void set_pedestrians(const PedestrianConfig& c);  // (logged)
+  const PedestrianConfig& pedestrians() const { return peds_; }
+  // The characters (null until people come: a world with walkways, pedestrians enabled).
+  anim::CharacterSystem* characters() { return chars_.get(); }
+  const anim::CharacterSystem* characters() const { return chars_.get(); }
+  std::vector<CharacterView> character_views() const;
+  // A shot's line against the world and the characters: the nearest hit (character: whose body,
+  // and the bone; 0: the world's voxels or a piece).
+  struct ShotHit {
+    bool hit = false;
+    V3 pos, normal;
+    f64 distance = 0.0;
+    i32 material = -1;
+    u32 character = 0;
+    i32 bone = -1;
+  };
+  ShotHit raycast_shot(const V3& origin, const V3& dir, f64 max_dist) const;
+  // A round into a character (logged): where raycast_shot found its body, fired from the viewer;
+  // `energy` (J) and `radius` as shoot's. False: no such character, or no body there now.
+  bool wound_character(u32 id, const V3& pos, f64 radius, f64 energy);
+  // Character meshes and palettes the front end has not had, and meshes no character draws any more.
+  std::vector<CharacterMeshData> take_character_meshes();
+  std::vector<u32> take_removed_character_meshes();
+  std::vector<CharacterPalette> take_character_palettes();
 
   // Movers (game/src/movers.cpp).
   i32 add_mover(const MoverDef& d);
@@ -419,6 +495,16 @@ class Game {
   TrafficConfig traffic_;
   f64 traffic_clock_ = 0.0;
   std::set<u64> parked_spots_;      // (kerbside places with a parked car now, or one that is out of range)
+
+  // pedestrians (game/src/pedestrians.cpp)
+  friend class Pedestrians;
+  PedestrianConfig peds_;
+  std::shared_ptr<anim::CharacterSystem> chars_;
+  std::unique_ptr<Pedestrians> people_;
+  Pedestrians* people() const;
+  void pedestrians_before_tick();
+  void pedestrians_after_tick();
+  void noise(const V3& pos, f64 radius, int kind);  // (what people hear: a shot, a blast, a crash)
 
   std::vector<Drop> drops_;
   std::vector<Mover> movers_;

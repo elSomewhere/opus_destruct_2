@@ -15,6 +15,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "svx/anim/system.hpp"
 #include "svx/base/dmath.hpp"
 #include "svx/game/game.hpp"
 
@@ -199,6 +200,15 @@ void Game::steer_driver(Vehicle& v, const Body& b) {
     const f64 ahead = dot(d, fwd), side = dot(d, left);
     if (ahead > 0.0 && ahead < 45.0 && std::abs(side) < 2.4) gap = std::min(gap, ahead);
   }
+  // (people in its path: on a crossing, stepping off the kerb, lying in the road)
+  if (chars_)
+    for (anim::CharacterId cid : chars_->ids()) {
+      const anim::Character* c = chars_->get(cid);
+      if (!c) continue;
+      const V3 d = c->bounds_center() - p;
+      const f64 ahead = dot(d, fwd), side = dot(d, left);
+      if (ahead > 0.0 && ahead < 40.0 && std::abs(side) < 2.2) gap = std::min(gap, ahead);
+    }
   // (rubble, a wall: a ray from its front)
   const VehicleModel& mm = m;
   const V3 nose = b.lattice_to_world(0, V3{mm.half_extent.x + 0.25, 0.0, 0.6});

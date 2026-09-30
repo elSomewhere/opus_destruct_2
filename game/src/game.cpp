@@ -2,6 +2,8 @@
 // Movers: movers.cpp.
 #include "svx/game/game.hpp"
 
+#include "pedestrians.hpp"
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -106,6 +108,7 @@ void Game::load(VoxelGrid&& g, const V3& spawn_pos, const V3& spawn_dir) {
   player_input_ = VehicleInput{};
   parked_spots_.clear();
   traffic_clock_ = 0.0;
+  if (Pedestrians* p = people()) p->clear();
   views_.clear();
   fading_.clear();
   events_.clear();
@@ -171,6 +174,7 @@ void Game::carve(const V3& pos, f64 radius) {
 void Game::blast(const V3& pos, f64 radius, f64 energy) {
   if (log_) log_->push({world_.ticks(), Command::Type::Blast, {pos.x, pos.y, pos.z, radius, energy, 0.0}});
   if (!movers_.empty()) shots_.push_back({pos, radius});
+  if (Pedestrians* p = people()) p->blast(pos, radius, energy);
   world_.blast(pos, radius, energy);
   // (dust: into the smoke)
   if (env_.smoke() && std::isfinite(energy) && energy > 0.0) env_.smoke()->emit_sphere(pos, 1.5 * radius, std::min(40.0, 6.0 * energy / 1e6));
@@ -282,11 +286,13 @@ void Game::tick() {
   using PClock = std::chrono::steady_clock;
   const auto p0 = PClock::now();
   if (!par_.paused) vehicles_before_tick();
+  if (!par_.paused) pedestrians_before_tick();
   const auto p1 = PClock::now();
   world_.tick();
   const auto p2 = PClock::now();
   if (!par_.paused) check_movers_hit();
   if (!par_.paused) vehicles_after_tick();
+  if (!par_.paused) pedestrians_after_tick();
   const auto p3 = PClock::now();
   for (Fading& f : fading_) f.t += world_.config().dt;
   fading_.erase(std::remove_if(fading_.begin(), fading_.end(), [&](const Fading& f) { return f.t >= fade_time; }), fading_.end());
