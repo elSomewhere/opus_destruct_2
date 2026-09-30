@@ -401,14 +401,25 @@ void Pedestrians::move(Walker& w, anim::Character& c, f64 dt) {
       }
     }
   }
-  // keep apart: a little space between shoulders, and a step aside for someone coming
+  // keep apart: a little space between shoulders, and a step aside for someone coming (the player
+  // on foot too: the viewer, its eye at their height)
   V3 sep;
   if (!locked) {
-    for (const auto& [oid, o] : walkers_) {
-      if (oid == w.id || !o.alive) continue;
+    Walker player;
+    const bool on_foot = g_->player_vehicle_ == 0 && g_->viewer_set_;
+    if (on_foot) {
+      player.id = ~0u;
+      player.pos = g_->viewer_ - V3{0.0, 0.0, 1.6};
+    }
+    auto others = [&](auto&& f) {
+      for (const auto& [oid, o] : walkers_) f(oid, o);
+      if (on_foot) f(player.id, player);
+    };
+    others([&](u32 oid, const Walker& o) {
+      if (oid == w.id || !o.alive) return;
       const f64 ox = w.pos.x - o.pos.x, oy = w.pos.y - o.pos.y;
       const f64 d2 = ox * ox + oy * oy;
-      if (d2 > 4.0 || d2 < 1e-6 || std::abs(w.pos.z - o.pos.z) > 1.0) continue;
+      if (d2 > 4.0 || d2 < 1e-6 || std::abs(w.pos.z - o.pos.z) > 1.0) return;
       const f64 d = std::sqrt(d2);
       if (d < 0.8) {
         const f64 push = (0.8 - d) * (d < 0.55 ? 9.0 : 4.0);
@@ -428,7 +439,7 @@ void Pedestrians::move(Walker& w, anim::Character& c, f64 dt) {
           sep.y += (pd > 1e-3 ? py / pd : rvx / rl) * k;
         }
       }
-    }
+    });
   }
   // the body's move this frame when it leads; else the walker's, with the body's weight
   const V3 rm = c.take_root_motion();
