@@ -68,4 +68,14 @@ std::vector<VoxelPart> sever_disconnected(VoxelModel& model, i32 part, f64 ancho
 // their place in model.parts with count 0 and a bumped version.
 std::vector<VoxelPart> detach_subtree(VoxelModel& model, i32 bone, bool include_children);
 
+// The damage a model took, to keep with a body (a corpse the world archives comes back as it
+// was): the cells of `whole` that `damaged` - a damaged copy of it (carving and severing clear
+// cells in place: the same parts, the same boxes) - no longer has, as runs per changed part.
+// Empty if none are gone.
+std::vector<u8> encode_damage(const VoxelModel& whole, const VoxelModel& damaged);
+// Clears the cells a damage record says are gone (from a copy of the model it was taken from),
+// bumping the changed parts' versions. False if the record does not fit the model's parts (the
+// model is then left as it was).
+bool apply_damage(VoxelModel& model, std::span<const u8> record);
+
 }  // namespace svx::anim

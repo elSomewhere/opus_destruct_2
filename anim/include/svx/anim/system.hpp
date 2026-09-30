@@ -120,7 +120,8 @@ class CharacterSystem final : public WorldSystem {
     std::vector<u8> data;
     std::unique_ptr<Character> c;
     ArticulationId recorded = 0;  // (the articulation its record was written to, and ...)
-    bool recorded_alive = true;   // (... whether it was alive then)
+    bool recorded_alive = true;   // (... whether it was alive then, ...)
+    u32 recorded_geometry = 0;    // (... and its model's version)
   };
   std::vector<ArticulationId> strangers_;  // (the world's articulations that are not the system's: ascending)
   i64 scan_tick_ = -1;

@@ -209,3 +209,49 @@ TEST_CASE("anim damage: listed parts, joint balls, pieces largest first, a limb 
   CHECK(source->parts[size_t(source->part_of_bone[H::forearmR])].count == hand[0].count);
   CHECK(source->parts[size_t(source->part_of_bone[H::forearmR])].version == 0u);
 }
+
+TEST_CASE("anim damage: a damage record gives a copy of the whole model the same holes and cuts") {
+  const ModelPtr whole = make_soldier(1).model;
+  const ModelPtr hurt = whole->clone();
+  CHECK(encode_damage(*whole, *hurt).empty());
+  const Skeleton& sk = *hurt->skeleton;
+  carve_model(*hurt, vlerp(sk.rest_head[H::chest], sk.rest_tail[H::chest], 0.5) + V3{0, -0.1, 0}, 0.05);
+  carve_model(*hurt, vlerp(sk.rest_head[H::forearmL], sk.rest_tail[H::forearmL], 0.45), 0.06);
+  REQUIRE(!sever_disconnected(*hurt, hurt->part_of_bone[H::forearmL], 0.05).empty());
+  REQUIRE(!detach_subtree(*hurt, H::shinR, true).empty());
+  const std::vector<u8> record = encode_damage(*whole, *hurt);
+  REQUIRE(!record.empty());
+  // (runs: far smaller than the model)
+  CHECK_MESSAGE(record.size() < 400, record.size() << " bytes");
+
+  const ModelPtr again = whole->clone();
+  REQUIRE(apply_damage(*again, record));
+  CHECK(again->voxel_count() == hurt->voxel_count());
+  for (size_t pi = 0; pi < again->parts.size(); ++pi) {
+    const VoxelPart& a = again->parts[pi];
+    const VoxelPart& b = hurt->parts[pi];
+    CHECK(a.cells == b.cells);
+    CHECK(a.count == b.count);
+    // (a changed part has a new version: meshes cached by it are made again)
+    CHECK((a.version != whole->parts[pi].version) == (b.count != whole->parts[pi].count));
+  }
+  CHECK(encode_damage(*whole, *again) == record);
+  // (twice: nothing more is gone)
+  REQUIRE(apply_damage(*again, record));
+  CHECK(again->voxel_count() == hurt->voxel_count());
+
+  // a record that does not fit changes nothing
+  const ModelPtr other = whole->clone();
+  const i32 n0 = other->voxel_count();
+  std::vector<u8> cut(record.begin(), record.end() - 1);
+  CHECK(!apply_damage(*other, cut));
+  std::vector<u8> bad = record;
+  bad[2] ^= 1;  // (the part count)
+  CHECK(!apply_damage(*other, bad));
+  bad = record;
+  bad[0] = 'X';
+  CHECK(!apply_damage(*other, bad));
+  CHECK(other->voxel_count() == n0);
+  CHECK(apply_damage(*other, std::vector<u8>{}));
+  CHECK(other->voxel_count() == n0);
+}

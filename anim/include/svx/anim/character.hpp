@@ -194,6 +194,13 @@ class Character {
   std::optional<GibSpec> drop_weapon();  // the held prop as a gib (on death); the character lets go of it
   // A blast at `center` (radius of full effect, m; strength 1 ~ a rocket).
   BlastResult blast(const V3& center, f64 radius, f64 strength = 1.0);
+  // The damage it took, to keep with its body (a corpse the world archives comes back as it was):
+  // the limbs lost and the model's cells gone (encode_damage). Empty while whole.
+  std::vector<u8> damage_record() const;
+  // Made again with the damage it had (a character just made from the same model): the holes, the
+  // limbs gone and the body without their use, a gun hand's prop let go. False if the record does
+  // not fit the model (nothing changes).
+  bool restore_damage(std::span<const u8> record);
 
   // ---- where things are
   V3 muzzle() const;
@@ -210,6 +217,7 @@ class Character {
   CoreBinding binding_;
   u32 group_ = 0, tag_ = 0;
   std::vector<i32> part_full_;  // each model part's voxel count when whole (a limb mostly shot away is lost)
+  ModelPtr whole_;              // the model it was made with (shared: its damage is told against it)
   f64 pain_ = 0.0;
   f64 firing_ = 0.0;
   f64 last_dt_ = 1.0 / 60.0;

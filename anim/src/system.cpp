@@ -109,30 +109,47 @@ CharacterId CharacterSystem::spawn(const CharacterDesc& d) {
 
 namespace {
 
-// An articulation's host data, the system's record: "SVXC", version, kind, alive, health, then
-// the host's data.
+// An articulation's host data, the system's record: "SVXC", version, kind, alive, health, the
+// host's data (version 1: the rest), then (version 2: its length first) the damage the character
+// took (Character::damage_record: a corpse comes back as it was).
 constexpr u32 kRecordMagic = 0x43585653u;  // "SVXC"
+constexpr size_t kRecordHead = 4 + 1 + 4 + 1 + 8;
 
-std::vector<u8> encode_record(u32 kind, bool alive, f64 health, const std::vector<u8>& data) {
-  std::vector<u8> out(4 + 1 + 4 + 1 + 8);
+std::vector<u8> encode_record(u32 kind, bool alive, f64 health, const std::vector<u8>& data, const std::vector<u8>& damage) {
+  std::vector<u8> out(kRecordHead + 4);
   std::memcpy(out.data(), &kRecordMagic, 4);
-  out[4] = 1;
+  out[4] = 2;
   std::memcpy(out.data() + 5, &kind, 4);
   out[9] = alive ? 1 : 0;
   std::memcpy(out.data() + 10, &health, 8);
+  const u32 n = static_cast<u32>(data.size());
+  std::memcpy(out.data() + kRecordHead, &n, 4);
   out.insert(out.end(), data.begin(), data.end());
+  out.insert(out.end(), damage.begin(), damage.end());
   return out;
 }
 
-bool decode_record(const std::vector<u8>* in, u32* kind, bool* alive, f64* health, std::vector<u8>* data) {
-  if (!in || in->size() < 18) return false;
+bool decode_record(const std::vector<u8>* in, u32* kind, bool* alive, f64* health, std::vector<u8>* data, std::vector<u8>* damage) {
+  if (!in || in->size() < kRecordHead) return false;
   u32 magic;
   std::memcpy(&magic, in->data(), 4);
-  if (magic != kRecordMagic || (*in)[4] != 1) return false;
+  const u8 version = (*in)[4];
+  if (magic != kRecordMagic || (version != 1 && version != 2)) return false;
   std::memcpy(kind, in->data() + 5, 4);
   *alive = (*in)[9] != 0;
   std::memcpy(health, in->data() + 10, 8);
-  data->assign(in->begin() + 18, in->end());
+  damage->clear();
+  if (version == 1) {
+    data->assign(in->begin() + kRecordHead, in->end());
+    return true;
+  }
+  if (in->size() < kRecordHead + 4) return false;
+  u32 n;
+  std::memcpy(&n, in->data() + kRecordHead, 4);
+  if (n > in->size() - kRecordHead - 4) return false;
+  const auto at = in->begin() + static_cast<std::ptrdiff_t>(kRecordHead + 4);
+  data->assign(at, at + n);
+  damage->assign(at + n, in->end());
   return true;
 }
 
@@ -143,10 +160,12 @@ void CharacterSystem::record(World& w) {
     const Character& c = *e.c;
     if (!c.bound()) continue;
     const ArticulationId id = c.articulation();
-    if (id == e.recorded && c.alive() == e.recorded_alive) continue;
-    w.set_articulation_data(id, encode_record(e.kind, c.alive(), c.health, e.data));
+    // (the dead with their wounds: a corpse shot again is recorded again)
+    if (id == e.recorded && c.alive() == e.recorded_alive && (c.alive() || c.geometry_version == e.recorded_geometry)) continue;
+    w.set_articulation_data(id, encode_record(e.kind, c.alive(), c.health, e.data, c.alive() ? std::vector<u8>{} : c.damage_record()));
     e.recorded = id;
     e.recorded_alive = c.alive();
+    e.recorded_geometry = c.geometry_version;
   }
 }
 
@@ -168,8 +187,8 @@ void CharacterSystem::take_back(World& w) {
     u32 kind = 0;
     bool alive = false;
     f64 health = 0.0;
-    std::vector<u8> data;
-    if (!decode_record(w.articulation_data(id), &kind, &alive, &health, &data)) {
+    std::vector<u8> data, damage;
+    if (!decode_record(w.articulation_data(id), &kind, &alive, &health, &data, &damage)) {
       strangers.push_back(id);
       continue;
     }
@@ -207,8 +226,10 @@ void CharacterSystem::take_back(World& w) {
     }
     e.c->die(nullptr, nullptr, 0.0);
     e.c->health = 0.0;
+    e.c->restore_damage(damage);
     e.recorded = id;
     e.recorded_alive = false;
+    e.recorded_geometry = e.c->geometry_version;
     chars_.push_back(std::move(e));
   }
   strangers_ = std::move(strangers);

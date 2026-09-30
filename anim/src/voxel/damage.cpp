@@ -357,4 +357,141 @@ std::vector<VoxelPart> detach_subtree(VoxelModel& model, i32 bone, bool include_
   return out;
 }
 
+// ---- damage records ------------------------------------------------------------------------------
+//
+// "D", version 1, the model's part count (u16), the changed parts (u16), then per changed part: its
+// index (u16), its cell count (u32; the record fits the model), the runs of cells gone (varint),
+// and each run as the cells skipped since the last one and its length (varints; cells x fastest).
+
+namespace {
+
+void put_varint(std::vector<u8>& out, u64 v) {
+  while (v >= 0x80) {
+    out.push_back(static_cast<u8>(v | 0x80));
+    v >>= 7;
+  }
+  out.push_back(static_cast<u8>(v));
+}
+
+template <typename T>
+void put_raw(std::vector<u8>& out, T v) {
+  for (size_t i = 0; i < sizeof(T); ++i) out.push_back(static_cast<u8>(static_cast<u64>(v) >> (8 * i)));
+}
+
+struct Reader {
+  std::span<const u8> in;
+  size_t at = 0;
+  bool ok = true;
+  u64 varint() {
+    u64 v = 0;
+    for (int shift = 0; shift < 64; shift += 7) {
+      if (at >= in.size()) break;
+      const u8 b = in[at++];
+      v |= static_cast<u64>(b & 0x7f) << shift;
+      if ((b & 0x80) == 0) return v;
+    }
+    ok = false;
+    return 0;
+  }
+  u64 raw(size_t n) {
+    if (at + n > in.size()) {
+      ok = false;
+      return 0;
+    }
+    u64 v = 0;
+    for (size_t i = 0; i < n; ++i) v |= static_cast<u64>(in[at + i]) << (8 * i);
+    at += n;
+    return v;
+  }
+};
+
+constexpr u8 kDamageMagic = 'D';
+constexpr u8 kDamageVersion = 1;
+
+}  // namespace
+
+std::vector<u8> encode_damage(const VoxelModel& whole, const VoxelModel& damaged) {
+  std::vector<u8> out;
+  if (whole.parts.size() != damaged.parts.size() || whole.parts.size() > 0xffff) return out;
+  std::vector<u8> body;
+  u32 changed = 0;
+  for (size_t pi = 0; pi < whole.parts.size(); ++pi) {
+    const VoxelPart& a = whole.parts[pi];
+    const VoxelPart& b = damaged.parts[pi];
+    if (a.cells.size() != b.cells.size() || a.dims != b.dims || a.origin != b.origin) return {};
+    if (a.count == b.count && a.cells == b.cells) continue;
+    std::vector<std::pair<u64, u64>> runs;  // (start, length)
+    const size_t n = a.cells.size();
+    for (size_t i = 0; i < n;) {
+      if (a.cells[i] == 0 || b.cells[i] != 0) {
+        ++i;
+        continue;
+      }
+      const size_t s = i;
+      while (i < n && a.cells[i] != 0 && b.cells[i] == 0) ++i;
+      runs.emplace_back(s, i - s);
+    }
+    if (runs.empty()) continue;
+    ++changed;
+    put_raw<u16>(body, static_cast<u16>(pi));
+    put_raw<u32>(body, static_cast<u32>(n));
+    put_varint(body, runs.size());
+    u64 last = 0;
+    for (const auto& [s, l] : runs) {
+      put_varint(body, s - last);
+      put_varint(body, l);
+      last = s + l;
+    }
+  }
+  if (changed == 0) return out;
+  out.push_back(kDamageMagic);
+  out.push_back(kDamageVersion);
+  put_raw<u16>(out, static_cast<u16>(whole.parts.size()));
+  put_raw<u16>(out, static_cast<u16>(changed));
+  out.insert(out.end(), body.begin(), body.end());
+  return out;
+}
+
+bool apply_damage(VoxelModel& model, std::span<const u8> record) {
+  if (record.empty()) return true;
+  Reader r{record};
+  if (r.raw(1) != kDamageMagic || r.raw(1) != kDamageVersion || !r.ok) return false;
+  if (r.raw(2) != model.parts.size() || !r.ok) return false;
+  const u64 changed = r.raw(2);
+  // (read it all first: a record that does not fit changes nothing)
+  struct Run {
+    u32 part;
+    u64 start, length;
+  };
+  std::vector<Run> runs;
+  for (u64 c = 0; c < changed && r.ok; ++c) {
+    const u64 pi = r.raw(2);
+    const u64 n = r.raw(4);
+    if (!r.ok || pi >= model.parts.size() || n != model.parts[size_t(pi)].cells.size()) return false;
+    const u64 count = r.varint();
+    u64 at = 0;
+    for (u64 k = 0; k < count && r.ok; ++k) {
+      const u64 skip = r.varint(), len = r.varint();
+      if (!r.ok || skip > n - at || len > n - at - skip) return false;
+      runs.push_back(Run{static_cast<u32>(pi), at + skip, len});
+      at += skip + len;
+    }
+  }
+  if (!r.ok || r.at != record.size()) return false;
+  std::vector<u8> touched(model.parts.size(), 0);
+  for (const Run& run : runs) {
+    VoxelPart& p = model.parts[run.part];
+    for (u64 i = run.start; i < run.start + run.length; ++i) {
+      if (p.cells[size_t(i)] == 0) continue;
+      p.cells[size_t(i)] = 0;
+      p.shade[size_t(i)] = 0;
+      --p.count;
+      touched[run.part] = 1;
+    }
+  }
+  for (size_t pi = 0; pi < model.parts.size(); ++pi)
+    if (touched[pi]) ++model.parts[pi].version;
+  return true;
+}
+
 }  // namespace svx::anim

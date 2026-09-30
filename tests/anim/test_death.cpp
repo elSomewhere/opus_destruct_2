@@ -302,3 +302,50 @@ TEST_CASE("character: limb shots sever the limb with the parts below it; a blast
     CHECK(b.gibs.size() >= 8);
   }
 }
+
+TEST_CASE("character: its damage record makes it again with its wounds, without the limbs it lost") {
+  for (Path path : kPaths) {
+    const std::string pn = path_name(path);
+    INFO(pn);
+    Scene s(path);
+    Character& c = soldier4(s);
+    CHECK(c.damage_record().empty());
+    // the gun arm shot off from the side (facing +y: the right is +x), then a round in the chest
+    for (i32 k = 0; k < 16 && !c.gun_hand_lost(); ++k) {
+      const V3 p = c.pose.point_of(H::forearmR, c.model->skeleton->rest_head[H::forearmR] + V3{0, 0, -0.1});
+      const V3 dir{-1, 0, 0};
+      const f64 dz = (k % 3 - 1) * 0.02;
+      if (const std::optional<CharacterHit> hit = c.raycast(V3{p.x + 3.0, p.y, p.z + dz}, dir, 10.0)) c.wound(*hit, dir, 10.0, 0.05);
+      s.frame({&c});
+    }
+    REQUIRE(c.gun_hand_lost());
+    CHECK(!c.weapon);
+    const V3 chest = c.pose.p[H::chest];
+    const std::optional<CharacterHit> hit = c.raycast(V3{chest.x, chest.y + 3.0, chest.z + 0.1}, V3{0, -1, 0}, 10.0);
+    REQUIRE(hit);
+    c.wound(*hit, V3{0, -1, 0}, 10.0, 0.05);
+    const std::vector<u8> rec = c.damage_record();
+    REQUIRE(!rec.empty());
+    MESSAGE(pn << ": record " << rec.size() << " bytes, " << c.model->voxel_count() << " voxels left");
+
+    Character& d = s.add(make_soldier(4), 2.0, kPi / 2.0, V3{3, 0, s.ground}, make_rifle());
+    REQUIRE(d.restore_damage(rec));
+    CHECK(d.owns_model);
+    CHECK(d.model->voxel_count() == c.model->voxel_count());
+    for (size_t pi = 0; pi < d.model->parts.size(); ++pi) CHECK(d.model->parts[pi].cells == c.model->parts[pi].cells);
+    for (i32 i = 0; i < kBodyCount; ++i) CHECK(d.behaviours.lost[size_t(i)] == c.behaviours.lost[size_t(i)]);
+    CHECK(d.body.parts[B::handR]->gone);
+    CHECK(!d.weapon);
+    CHECK(d.damage_record() == rec);
+    // (a record that does not fit is refused, the model left alone)
+    Character& e = s.add(make_soldier(4), 3.0, kPi / 2.0, V3{-3, 0, s.ground});
+    std::vector<u8> bad = rec;
+    bad.pop_back();
+    CHECK(!e.restore_damage(bad));
+    CHECK(!e.owns_model);
+    // it goes on as a body: dies, falls and lies
+    d.die(nullptr, nullptr, 0.0);
+    for (i32 i = 0; i < 180; ++i) s.frame({&c, &d, &e});
+    CHECK(d.pose.p[H::head].z - s.ground < 0.6);
+  }
+}

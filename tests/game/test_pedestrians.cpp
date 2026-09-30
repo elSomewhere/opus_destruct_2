@@ -195,6 +195,21 @@ TEST_CASE("pedestrians: the dead stay where they fell - the world keeps a body w
       }
   }
   REQUIRE(rests);
+  // (and shot again where it lies: the holes it has go with it)
+  for (int k = 0; k < 3; ++k) {
+    const anim::Character* body = game.characters()->get(victim);
+    REQUIRE(body);
+    const V3 c = body->pose.p[anim::H::chest];
+    const V3 from{c.x, c.y, c.z + 2.0};
+    const Game::ShotHit h = game.raycast_shot(from, V3{0, 0, -1}, 5.0);
+    if (h.character == victim) game.wound_character(victim, h.pos, 0.05, 50.0);
+    game.tick();
+  }
+  REQUIRE(game.characters()->get(victim));
+  const i32 voxels = game.characters()->get(victim)->model->voxel_count();
+  i32 whole = 0;
+  for (const anim::VoxelPart& p : game.characters()->get(victim)->model->parts) whole += p.initial_count;
+  CHECK(game.characters()->get(victim)->owns_model);
   // the viewer goes far away: the body goes with its region
   game.set_viewer(V3{spawn.x + 600.0, spawn.y, spawn.z});
   for (int t = 0; t < 60 * 10; ++t) game.tick();
@@ -207,18 +222,27 @@ TEST_CASE("pedestrians: the dead stay where they fell - the world keeps a body w
   game.set_viewer(spawn);
   f64 off = 1e9;
   bool dead = false;
+  u32 back = 0;
   for (int t = 0; t < 60 * 10; ++t) game.tick();
   for (const CharacterView& v : game.character_views()) {
     const f64 d = std::hypot(v.centre.x - at.x, v.centre.y - at.y);
     if (d < off) {
       off = d;
       dead = !(v.flags & CharacterView::kAlive);
+      back = v.id;
     }
   }
   const std::string state = dead ? "dead" : "alive";
   MESSAGE("the body lay at " << at.x << ", " << at.y << "; back, the nearest character is " << off << " m from there, " << state);
   CHECK(off < 0.3);
   CHECK(dead);
+  // with its wounds
+  const anim::Character* again = game.characters()->get(back);
+  REQUIRE(again);
+  MESSAGE("voxels: " << voxels << " of " << whole << " when it went, " << again->model->voxel_count() << " back");
+  CHECK(voxels < whole);
+  CHECK(again->owns_model);
+  CHECK(again->model->voxel_count() == voxels);
 }
 
 TEST_CASE("pedestrians: a car driven into someone knocks them down and hurts them - their body is the world's") {

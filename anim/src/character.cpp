@@ -52,6 +52,7 @@ Character::Character(const CharacterOptions& o)
   motion.weapon = weapon;
   skin.assign(size_t(model->skeleton->count) * 16, 0.0f);
   for (const VoxelPart& p : model->parts) part_full_.push_back(p.count);
+  whole_ = model;
   backend_ = o.backend == BodyBackend::Deep && o.world ? BodyBackend::Deep : BodyBackend::Shallow;
   world_ = o.world;
   group_ = o.group;
@@ -687,6 +688,45 @@ BlastResult Character::blast(const V3& center, f64 radius, f64 strength) {
   res.killed = was_alive && !alive();
   res.gibbed = gibbed;
   return res;
+}
+
+// ---- damage kept with the body -------------------------------------------------------------------
+//
+// The lost limbs (u16: a bit per body part) and the model's cells gone (encode_damage).
+
+static_assert(kBodyCount <= 16);
+
+std::vector<u8> Character::damage_record() const {
+  u32 lost = 0;
+  for (i32 i = 0; i < kBodyCount; ++i)
+    if (behaviours.lost[size_t(i)]) lost |= 1u << i;
+  const std::vector<u8> cells = owns_model && whole_ ? encode_damage(*whole_, *model) : std::vector<u8>{};
+  if (lost == 0 && cells.empty()) return {};
+  std::vector<u8> out{static_cast<u8>(lost), static_cast<u8>(lost >> 8)};
+  out.insert(out.end(), cells.begin(), cells.end());
+  return out;
+}
+
+bool Character::restore_damage(std::span<const u8> record) {
+  if (record.empty()) return true;
+  if (record.size() < 2) return false;
+  const u32 lost = u32(record[0]) | (u32(record[1]) << 8);
+  const std::span<const u8> cells = record.subspan(2);
+  if (!cells.empty()) {
+    // (on a copy: a record that does not fit leaves the model as it was)
+    ModelPtr m = model->clone();
+    if (!apply_damage(*m, cells)) return false;
+    model = std::move(m);
+    owns_model = true;
+    ++geometry_version;
+  }
+  for (i32 i = 1; i < kBodyCount; ++i)
+    if (lost & (1u << i)) behaviours.lose_limb(i);
+  if (gun_hand_lost() && weapon) {
+    weapon.reset();
+    motion.weapon.reset();
+  }
+  return true;
 }
 
 // ---- where things are -------------------------------------------------------------------------------

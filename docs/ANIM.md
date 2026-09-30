@@ -82,10 +82,12 @@ always deep**: a body at rest sleeps in the world and costs nothing, and the wor
 
 A character whose ground goes out of range goes with it (`on_evicted`). The living are the
 host's to make again (a population). The dead are the world's: each bound body's articulation
-carries a record of what it is (the system's kind, alive, health, and the host's data - a look);
-the world archives a sleeping body with its region (or any body wholly beyond the evict radius)
-and gives it back with it, and the system makes the character again - the host's `restore`
-callback turns the record into a model and palette - and adopts the body where it lies.
+carries a record of what it is (the system's kind, alive, health, the host's data - a look -
+and the damage it took: the limbs lost and the model's voxels gone, as runs against the look's
+whole model, a few hundred bytes); the world archives a sleeping body with its region (or any
+body wholly beyond the evict radius) and gives it back with it, and the system makes the
+character again - the host's `restore` callback turns the record into a model and palette, the
+damage is cut into a copy of it - and adopts the body where it lies, wounds and all.
 
 Models are shared between characters until the first wound (then copied); meshes are made per
 model and geometry version. The system's memory is in the world's report (`systems`).
@@ -162,8 +164,8 @@ look until a wound.
 characters, melee), those with a body on both paths; bodies in a world (a heavy piece knocks a
 body down, and the body feels the blow). `svx_game_tests` (`pedestrians:`): people walk the
 sidewalks, wait and cross; replays the same; they come and go with the viewer in bounded memory;
-the dead stay where they fell across the streaming; a car driven into someone knocks them down; a
-rocket among people tears them apart into gibs and blood.
+the dead stay where they fell across the streaming, with their wounds; a car driven into someone
+knocks them down; a rocket among people tears them apart into gibs and blood.
 
 ## 8. Known limits
 
@@ -171,4 +173,5 @@ rocket among people tears them apart into gibs and blood.
   (docs/MOTION.md §5): its muscles and limits are stiffer there than in its own fine steps.
 - The shallow bodies meet the world's pieces only as obstacles (a car does not push a shallow
   body): the hybrid policy makes bodies near awake pieces deep for that.
-- A model's wounds are not saved with a body the world archives: it comes back whole.
+- What the host does not know how to make again (a `restore` that returns nothing: a look it
+  no longer has) stays in the world as a stranger's body (an articulation no one draws).
