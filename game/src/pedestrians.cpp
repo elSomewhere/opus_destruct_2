@@ -265,6 +265,7 @@ void Pedestrians::flee(Walker& w) {
 }
 
 void Pedestrians::hear(Walker& w, const Noise& n) {
+  if (n.source == w.id) return;
   const f64 d = flat_dist(w.pos, n.pos);
   if (d > n.radius) return;
   const f64 near = 1.0 - d / n.radius;
@@ -339,14 +340,17 @@ void Pedestrians::think(Walker& w, anim::Character& c, f64 dt) {
         w.mind = Mind::Walk;
         w.speed = std::max(w.pace * 1.2, w.speed);
       } else if (w.timer <= 0.0) {
-        // (tired of waiting: back along the sidewalk it came by)
+        // (tired of waiting: on from the corner it stands at, the crossing's near end - round
+        // the corner, or over the other road)
+        w.toward = 1 - w.toward;
+        w.mind = Mind::Walk;
         at_corner(w, false);
       }
       break;
     case Mind::Flee:
       if (w.fear > 0.9 && time_ - w.screamed > 4.0) {
         w.screamed = time_;
-        noise(w.pos, 14.0, kScream);
+        noise(w.pos, 14.0, kScream, w.id);
       }
       if (w.timer <= 0.0 && w.fear < 0.35) choose(w);
       break;
@@ -524,7 +528,7 @@ void Pedestrians::blows(Walker& w, anim::Character& c) {
   if (c.health <= 0.0 && c.alive()) {
     c.health = 0.0;
     c.die();
-    noise(w.pos, 18.0, kDeath);
+    noise(w.pos, 18.0, kDeath, w.id);
   } else if (w.mind != Mind::Flee) {
     flee(w);
   }

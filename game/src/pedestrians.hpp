@@ -53,6 +53,7 @@ class Pedestrians {
     V3 pos;
     f64 radius = 0.0;
     int kind = kShot;
+    u32 source = 0;  // (the walker who made it: it does not frighten itself)
   };
 
   explicit Pedestrians(Game& g);
@@ -61,7 +62,7 @@ class Pedestrians {
 
   void before_tick();  // minds and moves (the roots and inputs for the characters' frames)
   void after_tick();   // blows, deaths, the population, the front end's meshes
-  void noise(const V3& pos, f64 radius, int kind) { noises_.push_back(Noise{pos, radius, kind}); }
+  void noise(const V3& pos, f64 radius, int kind, u32 source = 0) { noises_.push_back(Noise{pos, radius, kind, source}); }
   void blast(const V3& pos, f64 radius, f64 energy);  // (Game::blast: before the world's)
   bool wound(u32 id, const V3& from, const V3& pos, f64 radius, f64 energy);  // (Game::wound_character)
   void clear();        // (a new level)
