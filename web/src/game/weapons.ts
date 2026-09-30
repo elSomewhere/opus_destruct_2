@@ -1,7 +1,8 @@
 /**
  * Weapons, mapped onto the engine's damage commands (docs/API.md):
- * - pistol and shotgun are hitscan: `raycast`, then `shoot` a small sphere at the hit with the
- *   round's energy (it holes what that gets through: brick, concrete, a car's sheet metal and
+ * - pistol and shotgun are hitscan: a shot's `raycast` (people's bodies are hit too), then a round
+ *   into the character hit (`woundCharacter`), or `shoot` a small sphere at the world's hit with
+ *   the round's energy (it holes what that gets through: brick, concrete, a car's sheet metal and
  *   glass - not armour; docs/VEHICLES.md);
  * - the flamethrower and the water hose are short-range hitscan streams: `ignite` a sphere at
  *   the hit, or `pour` water there (and `extinguish` it) (the engine's environment, docs/ENV.md);
@@ -191,9 +192,14 @@ export class Weapons {
 
   private hitscan(eye: Vec3, dir: Vec3, radius: number, energy: number): void {
     this.engine
-      .raycast(eye, dir, HITSCAN_RANGE)
+      .raycast(eye, dir, HITSCAN_RANGE, true)
       .then((hit: RaycastHit | null) => {
         if (!hit) return;
+        if (hit.character) {
+          this.engine.woundCharacter(hit.character, hit.pos, radius, energy);
+          this.effects.bloodHit(hit.pos, dir);
+          return;
+        }
         this.engine.shoot(hit.pos, radius, energy);
         this.effects.bulletImpact(hit);
       })

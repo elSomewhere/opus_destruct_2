@@ -8,6 +8,8 @@
  * changed chunk meshes, removed chunks and events; stats go out at ~4 Hz.
  */
 import type {
+  CharacterMesh,
+  CharacterPalette,
   ChunkMesh,
   ChunkOccupancy,
   DisplacementField,
@@ -17,12 +19,19 @@ import type {
   EngineStats,
   InitConfig,
   ProceduralKind,
+  RaycastHit,
   TextureInfo,
   Vec3,
   WadOptions,
   WorldInfo,
 } from '../engine/protocol.ts';
 import {
+  BLOOD_DROP_STRIDE,
+  BLOOD_STAIN_STRIDE,
+  CHAR_VERTEX_STRIDE,
+  CHARACTER_PALETTE_SLOTS,
+  CHARACTER_SKIN_FLOATS,
+  CHARACTER_STRIDE,
   DEBRIS_STRIDE,
   DEFAULT_PARAMS,
   FLAME_STRIDE,
@@ -137,6 +146,26 @@ interface SvxModule {
   _svx_wheels_data(e: number): number;
   _svx_shoot(e: number, x: number, y: number, z: number, r: number, energy: number): void;
   _svx_set_traffic(e: number, enabled: number, cars: number, parked: number, near: number, radius: number, speedScale: number): void;
+  _svx_set_pedestrians(e: number, enabled: number, count: number, near: number, radius: number, bodies: number, maxDeep: number): void;
+  _svx_poll_character_meshes(e: number): number;
+  _svx_character_mesh_info(e: number, i: number, out3: number): void;
+  _svx_character_mesh_vertices(e: number, i: number): number;
+  _svx_character_mesh_indices(e: number, i: number): number;
+  _svx_poll_character_meshes_removed(e: number): number;
+  _svx_character_mesh_removed(e: number, i: number): number;
+  _svx_poll_character_palettes(e: number): number;
+  _svx_character_palette(e: number, i: number, out48: number): number;
+  _svx_characters(e: number): number;
+  _svx_characters_data(e: number): number;
+  _svx_characters_skin(e: number): number;
+  _svx_characters_prop(e: number): number;
+  _svx_raycast_shot(e: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number, out10: number): number;
+  _svx_wound_character(e: number, id: number, x: number, y: number, z: number, r: number, energy: number): number;
+  // (modules from before the people's gibs and blood have none of these)
+  _svx_blood?(e: number): number;
+  _svx_blood_drops?(e: number): number;
+  _svx_blood_stain_count?(e: number): number;
+  _svx_blood_stains?(e: number): number;
 }
 
 const TICK_MS = 1000 / 60;
@@ -144,8 +173,8 @@ const STATS_MS = 250;
 // job and budget timeline: per-tick samples since the last stats message (TIMELINE_FIELDS)
 let timeline: number[] = [];
 const AUTOSAVE_MS = 5000;
-/** svx_stats fills out[0..50] (svx_stats_count: checked when the module starts). */
-const STATS_COUNT = 51;
+/** svx_stats fills out[0..56] (svx_stats_count: checked when the module starts). */
+const STATS_COUNT = 57;
 /** Flames and smoke cells sent to the renderer at most, and how often (ticks: their step). */
 const MAX_FLAMES = 4096;
 const MAX_SMOKE = 4096;
@@ -156,15 +185,20 @@ let eng = 0;
 let scratch = 0; // 64 doubles of call scratch space
 let jointsLive = false; // (the last joints message had some: one empty follows when they are gone)
 let vehiclesLive = false; // (likewise the vehicles)
+let charactersLive = false; // (and the characters)
+let bloodLive = false; // (and their blood)
 /**
- * Pose messages (debris, vehicles) posted and the last the page handled (frameAck): while it is
- * more than POSE_LAG behind, poses are held back (each message carries every pose: the next one
- * sent brings the page up to date, and it never works through a backlog).
+ * Pose messages (debris, vehicles, characters) posted and the last the page handled (frameAck):
+ * while it is more than POSE_LAG behind, poses are held back (each message carries every pose: the
+ * next one sent brings the page up to date, and it never works through a backlog).
  */
 let poseSeq = 0;
 let poseAcked = -1;
 const POSE_LAG = 6;
-/** This tick's pose batch: debris and vehicles go together or not at all (a car's body and its wheels, its camera). */
+/**
+ * This tick's pose batch: debris, vehicles and characters go together or not at all (a car's body
+ * and its wheels, its camera, the people it hits).
+ */
 let posesHeldNow = false;
 
 function posesHeld(): boolean {
@@ -499,6 +533,73 @@ function flushVehicles(): void {
   postToMain({ type: 'vehicles', vehicles, wheels, player: m._svx_player_vehicle(eng) >>> 0, seq: poseSeq });
 }
 
+/**
+ * The characters: their meshes, the meshes gone and their palettes as they come (never held back:
+ * each poll hands them over once), then the characters themselves - a pose message, while any
+ * exist (and once empty after the last).
+ */
+function flushCharacters(): void {
+  const m = mod as SvxModule;
+  const nm = m._svx_poll_character_meshes(eng);
+  const nr = m._svx_poll_character_meshes_removed(eng);
+  const np = m._svx_poll_character_palettes(eng);
+  if (nm > 0 || nr > 0 || np > 0) {
+    const meshes: CharacterMesh[] = [];
+    for (let i = 0; i < nm; i++) {
+      m._svx_character_mesh_info(eng, i, scratch);
+      const id = f64(0);
+      const vc = f64(1);
+      const ic = f64(2);
+      meshes.push({
+        id,
+        vertices: copyOut(m._svx_character_mesh_vertices(eng, i), vc * CHAR_VERTEX_STRIDE),
+        vertexCount: vc,
+        indices: copyOut(m._svx_character_mesh_indices(eng, i), ic * 4),
+        indexCount: ic,
+      });
+    }
+    const removed: number[] = [];
+    for (let i = 0; i < nr; i++) removed.push(m._svx_character_mesh_removed(eng, i) >>> 0);
+    const palettes: CharacterPalette[] = [];
+    for (let i = 0; i < np; i++) {
+      const id = m._svx_character_palette(eng, i, scratch) >>> 0;
+      palettes.push({ id, rgb: m.HEAPF32.slice(scratch >> 2, (scratch >> 2) + CHARACTER_PALETTE_SLOTS * 3) });
+    }
+    postToMain({ type: 'characterMeshes', meshes, removed, palettes });
+  }
+  const n = m._svx_characters(eng);
+  if (n === 0 && !charactersLive) return;
+  if (n > 0 && posesHeld()) return;
+  charactersLive = n > 0;
+  const b = m._svx_characters_data(eng) >> 3;
+  const characters = m.HEAPF64.slice(b, b + n * CHARACTER_STRIDE);
+  const bs = m._svx_characters_skin(eng) >> 2;
+  const skin = m.HEAPF32.slice(bs, bs + n * CHARACTER_SKIN_FLOATS);
+  // (a prop's matrix only when someone holds one)
+  let props: Float32Array<ArrayBuffer> | undefined;
+  for (let k = 0; k < n && !props; k++) {
+    if (characters[k * CHARACTER_STRIDE + 9]! > 0) {
+      const bp = m._svx_characters_prop(eng) >> 2;
+      props = m.HEAPF32.slice(bp, bp + n * 16);
+    }
+  }
+  postToMain(props ? { type: 'characters', characters, skin, props, seq: poseSeq } : { type: 'characters', characters, skin, seq: poseSeq });
+}
+
+/** The people's blood: its drops and stains while there are any (and once empty after), with the poses. */
+function flushBlood(): void {
+  const m = mod as SvxModule;
+  if (!m._svx_blood || !m._svx_blood_drops || !m._svx_blood_stain_count || !m._svx_blood_stains) return;
+  const n = m._svx_blood(eng);
+  const ns = m._svx_blood_stain_count(eng);
+  if (n === 0 && ns === 0 && !bloodLive) return;
+  if ((n > 0 || ns > 0) && posesHeld()) return;
+  bloodLive = n > 0 || ns > 0;
+  const b = m._svx_blood_drops(eng) >> 2;
+  const bs = m._svx_blood_stains(eng) >> 2;
+  postToMain({ type: 'blood', drops: m.HEAPF32.slice(b, b + n * BLOOD_DROP_STRIDE), stains: m.HEAPF32.slice(bs, bs + ns * BLOOD_STAIN_STRIDE) });
+}
+
 /** A piece event's voxels for the client's collision (svx_event_occupancy), if it has them. */
 function eventOccupancy(i: number): { occupancy?: ArrayBuffer } {
   const m = mod as SvxModule;
@@ -714,6 +815,12 @@ function sendStats(now: number): void {
     waterActive: f64(48),
     waterLoads: f64(49),
     floating: f64(50),
+    characters: f64(51),
+    charactersDeep: f64(52),
+    charactersShallow: f64(53),
+    charactersPlanOnly: f64(54),
+    charactersAtRest: f64(55),
+    charactersMs: r2(56),
   };
   eventsSinceStats = 0;
   lastStats = now;
@@ -764,6 +871,11 @@ function clearChunks(): void {
   jointsLive = false;
   if (vehiclesLive) postToMain({ type: 'vehicles', vehicles: new Float64Array(0), wheels: new Float64Array(0), player: 0 });
   vehiclesLive = false;
+  // (the old world's people: their meshes go as the engine drops them after the load)
+  if (charactersLive) postToMain({ type: 'characters', characters: new Float64Array(0), skin: new Float32Array(0) });
+  charactersLive = false;
+  if (bloodLive) postToMain({ type: 'blood', drops: new Float32Array(0), stains: new Float32Array(0) });
+  bloodLive = false;
   debrisSent = new Float64Array(0);
   // (the old world's flames and smoke go now: a message sent before the load may still be on
   // its way)
@@ -864,16 +976,21 @@ async function handle(cmd: EngineCommand): Promise<void> {
       if (mod && loaded) mod._svx_use(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.dir[0], cmd.dir[1], cmd.dir[2]);
       break;
     case 'raycast': {
-      let hit = null;
+      let hit: RaycastHit | null = null;
       if (mod && loaded) {
+        const o = cmd.origin;
         const d = cmd.dir;
-        if (mod._svx_raycast(eng, cmd.origin[0], cmd.origin[1], cmd.origin[2], d[0], d[1], d[2], cmd.maxDist, scratch) === 1)
-          hit = {
-            pos: [f64(0), f64(1), f64(2)] as Vec3,
-            normal: [f64(3), f64(4), f64(5)] as Vec3,
-            distance: f64(6),
-            material: f64(7),
-          };
+        // (a shot's line: the characters too - out[8] the one hit, out[9] its bone)
+        const r = cmd.characters
+          ? mod._svx_raycast_shot(eng, o[0], o[1], o[2], d[0], d[1], d[2], cmd.maxDist, scratch)
+          : mod._svx_raycast(eng, o[0], o[1], o[2], d[0], d[1], d[2], cmd.maxDist, scratch);
+        if (r !== 0) {
+          hit = { pos: [f64(0), f64(1), f64(2)], normal: [f64(3), f64(4), f64(5)], distance: f64(6), material: f64(7) };
+          if (cmd.characters && r === 2) {
+            hit.character = f64(8);
+            hit.bone = f64(9);
+          }
+        }
       }
       postToMain({ type: 'raycastResult', id: cmd.id, hit });
       break;
@@ -923,6 +1040,16 @@ async function handle(cmd: EngineCommand): Promise<void> {
       m._svx_set_traffic(eng, t.enabled ? 1 : 0, t.cars | 0, t.parked | 0, t.nearRadius, t.radius, t.speedScale);
       break;
     }
+    case 'setPedestrians': {
+      // (likewise the pedestrians')
+      const m = await ensureModule();
+      const p = cmd.pedestrians;
+      m._svx_set_pedestrians(eng, p.enabled ? 1 : 0, p.count | 0, p.nearRadius, p.radius, p.bodies | 0, p.maxDeep | 0);
+      break;
+    }
+    case 'woundCharacter':
+      if (mod && loaded) mod._svx_wound_character(eng, cmd.id >>> 0, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius, cmd.energy);
+      break;
   }
 }
 
@@ -941,6 +1068,8 @@ function loop(): void {
       beginPoses();
       flushDebris();
       flushVehicles();
+      flushCharacters();
+      flushBlood();
       flushEnv();
       flushGrids();
       flushMeshes();

@@ -1,9 +1,9 @@
 /**
- * Settings panel: engine tunables (sent as `setParams`), the debug view, and world
- * loading (procedural worlds, or a WAD file + map name -> `loadWad`).
+ * Settings panel: engine tunables (sent as `setParams`), the debug view, the drive city's traffic
+ * and people, and world loading (procedural worlds, or a WAD file + map name -> `loadWad`).
  */
-import type { EngineParams, ProceduralKind, TrafficSettings, WadOptions } from '../engine/protocol.ts';
-import { DEBUG_VIEW_NAMES, DebugView, PROCEDURAL_KINDS } from '../engine/protocol.ts';
+import type { EngineParams, PedestrianSettings, ProceduralKind, TrafficSettings, WadOptions } from '../engine/protocol.ts';
+import { DEBUG_VIEW_NAMES, DebugView, PEDESTRIAN_BODY_NAMES, PedestrianBodies, PROCEDURAL_KINDS } from '../engine/protocol.ts';
 import { h } from './dom.ts';
 
 export interface SettingsCallbacks {
@@ -13,6 +13,8 @@ export interface SettingsCallbacks {
   onLoadProcedural(kind: ProceduralKind, seed: number): void;
   /** Traffic of a world with roads (the `drive` city). */
   onTraffic(traffic: TrafficSettings): void;
+  /** Pedestrians of a world with walkways (the `drive` city). */
+  onPedestrians(pedestrians: PedestrianSettings): void;
   onLoadWad(file: File, map: string, options: WadOptions): void;
 }
 
@@ -111,6 +113,7 @@ export class SettingsPanel {
     initial: EngineParams,
     world: { kind: ProceduralKind; seed: number },
     trafficInitial: TrafficSettings,
+    pedestriansInitial: PedestrianSettings,
     callbacks: SettingsCallbacks,
   ) {
     this.params = { ...initial };
@@ -134,6 +137,35 @@ export class SettingsPanel {
       namedRow({ kind: 'env', name: 'speed', label: 'Traffic speed', min: 0.3, max: 2, step: 0.05, value: traffic.speedScale, hint: 'x the roads\' speed limits' }, (v) => {
         traffic.speedScale = v;
         callbacks.onTraffic({ ...traffic });
+      }),
+    ];
+
+    // People (the drive city): pedestrians on the sidewalks around the player.
+    const people = { ...pedestriansInitial };
+    const bodiesSelect = h('select', {}, ...Object.values(PedestrianBodies).map((b) => h('option', { value: b }, PEDESTRIAN_BODY_NAMES[b])));
+    bodiesSelect.value = String(people.bodies);
+    bodiesSelect.addEventListener('change', () => {
+      people.bodies = Number(bodiesSelect.value) as PedestrianBodies;
+      callbacks.onPedestrians({ ...people });
+    });
+    const peopleRows = [
+      namedRow({ kind: 'env', name: 'people', label: 'People', toggle: true, value: people.enabled ? 1 : 0, hint: 'Pedestrians on the sidewalks, crossing at the zebras' }, (v) => {
+        people.enabled = v !== 0;
+        callbacks.onPedestrians({ ...people });
+      }),
+      namedRow({ kind: 'env', name: 'count', label: 'People about', min: 0, max: 96, step: 1, value: people.count, hint: 'Pedestrians around the player' }, (v) => {
+        people.count = v;
+        callbacks.onPedestrians({ ...people });
+      }),
+      h(
+        'label',
+        { class: 'row', title: 'Their bodies: deep (articulations of the world: a car hits a body), shallow (their own), hybrid (deep near the player and moving pieces)' },
+        h('span', {}, 'Bodies'),
+        bodiesSelect,
+      ),
+      namedRow({ kind: 'env', name: 'deep', label: 'Deep bodies', min: 0, max: 64, step: 1, value: people.maxDeep, hint: '(hybrid) The most deep bodies: the nearest' }, (v) => {
+        people.maxDeep = v;
+        callbacks.onPedestrians({ ...people });
       }),
     ];
 
@@ -206,6 +238,8 @@ export class SettingsPanel {
       ...ENVIRONMENT.map((d) => namedRow(d, (v) => callbacks.onSetting(d.kind, d.name, v))),
       h('h2', {}, 'Traffic'),
       ...trafficRows,
+      h('h2', {}, 'People'),
+      ...peopleRows,
       h('h2', {}, 'World'),
       h('div', { class: 'row' }, kindSelect, h('span', {}, 'seed'), seedInput, loadProc),
       h('h2', {}, 'Doom WAD'),

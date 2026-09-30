@@ -7,11 +7,13 @@
  *                             city with the WASM engine, rooms with the mock)
  *   ?seed=N                   world seed (default 1)
  *   ?debug=none|utilization|fragments   initial debug view ('bubbles', from v1 links, = fragments)
+ *   ?people=N                 pedestrians about the player in the drive city (0: none)
+ *   ?bodies=deep|shallow|hybrid   their bodies (default hybrid)
  */
 import './styles.css';
 import { EngineClient } from './engine/client.ts';
-import type { ProceduralKind } from './engine/protocol.ts';
-import { DEFAULT_PARAMS, DebugView, PROCEDURAL_KINDS } from './engine/protocol.ts';
+import type { PedestrianSettings, ProceduralKind } from './engine/protocol.ts';
+import { DEFAULT_PARAMS, DEFAULT_PEDESTRIANS, DebugView, PEDESTRIAN_BODY_NAMES, PedestrianBodies, PROCEDURAL_KINDS } from './engine/protocol.ts';
 import { createEngineWorker, engineKindFromUrl, EngineUnavailableError } from './engine/select.ts';
 import { Game, type StructvoxDebugApi } from './game/game.ts';
 import { WebGpuUnavailableError } from './render/gpu.ts';
@@ -37,6 +39,24 @@ function parseDebug(v: string | null): DebugView {
   return DebugView.None;
 }
 
+/** Pedestrians from ?people= and ?bodies= (null: neither given - the engine's defaults). */
+function parsePedestrians(url: URL): PedestrianSettings | null {
+  const count = url.searchParams.get('people');
+  const bodies = url.searchParams.get('bodies');
+  if (count === null && bodies === null) return null;
+  const p = { ...DEFAULT_PEDESTRIANS };
+  if (count !== null) {
+    const n = Math.floor(Number(count));
+    if (Number.isFinite(n)) {
+      p.count = Math.max(0, Math.min(256, n));
+      p.enabled = p.count > 0;
+    }
+  }
+  const b = Object.values(PedestrianBodies).find((v) => PEDESTRIAN_BODY_NAMES[v] === bodies);
+  if (b !== undefined) p.bodies = b;
+  return p;
+}
+
 function message(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
@@ -50,6 +70,7 @@ async function main(): Promise<void> {
   const kind = engineKindFromUrl(url);
   const world = { kind: parseWorld(url.searchParams.get('world'), kind), seed: Math.max(0, Math.floor(Number(url.searchParams.get('seed') ?? 1) || 0)) };
   const params = { ...DEFAULT_PARAMS, debugView: parseDebug(url.searchParams.get('debug')) };
+  const pedestrians = parsePedestrians(url);
 
   overlay.setLoading('Initializing WebGPU', 0.02);
   let game: Game | null = null;
@@ -81,7 +102,7 @@ async function main(): Promise<void> {
   }
 
   const engine = new EngineClient(worker, kind);
-  game = new Game({ canvas, uiRoot, overlay, renderer, engine, world, params, voxelSize: VOXEL_SIZE });
+  game = new Game({ canvas, uiRoot, overlay, renderer, engine, world, params, voxelSize: VOXEL_SIZE, ...(pedestrians ? { pedestrians } : {}) });
   game.start();
   window.__structvox = { ...game.debugApi(), engine, renderer };
 }

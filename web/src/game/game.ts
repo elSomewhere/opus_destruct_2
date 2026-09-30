@@ -5,8 +5,8 @@
  */
 import type { EngineClient } from '../engine/client.ts';
 import { GridFrames } from '../engine/gridframes.ts';
-import type { DebugView, EngineEvent, EngineParams, EngineStats, ProceduralKind, TrafficSettings, Vec3, WorldInfo } from '../engine/protocol.ts';
-import { CAR_PAINTS, DEFAULT_TRAFFIC, VEHICLE_KINDS } from '../engine/protocol.ts';
+import type { DebugView, EngineEvent, EngineParams, EngineStats, PedestrianSettings, ProceduralKind, TrafficSettings, Vec3, WorldInfo } from '../engine/protocol.ts';
+import { CAR_PAINTS, DEFAULT_PEDESTRIANS, DEFAULT_TRAFFIC, VEHICLE_KINDS } from '../engine/protocol.ts';
 import type { Camera, Renderer, RenderStats } from '../render/renderer.ts';
 import type { WheelDraw } from '../render/wheels.ts';
 import { DriveHud } from '../ui/drivehud.ts';
@@ -18,6 +18,7 @@ import { Input } from './input.ts';
 import { PieceBodies } from '../engine/pieces.ts';
 import { OccupancyStore } from './occupancy.ts';
 import { Driving, padPressed, type CameraMode } from './driving.ts';
+import { CharacterTracker } from './people.ts';
 import { PLAYER, Player } from './player.ts';
 import { VehicleEffects } from './vehicle-effects.ts';
 import { kindName, paintName, rotate, VehicleTracker } from './vehicles.ts';
@@ -32,6 +33,8 @@ export interface GameOptions {
   world: { kind: ProceduralKind; seed: number };
   params: EngineParams;
   voxelSize: number;
+  /** Pedestrians settings for the engine at start (URL parameters); absent: its defaults. */
+  pedestrians?: PedestrianSettings;
 }
 
 const FOV_Y = (70 * Math.PI) / 180;
@@ -62,7 +65,11 @@ export class Game {
   /** The next kind of car B drops in front of the player. */
   private spawnKind = 1;
   private traffic: TrafficSettings = { ...DEFAULT_TRAFFIC };
-  /** The last pose message (debris, vehicles) handled, acknowledged to the worker every frame. */
+  /** The people (`characters` messages): their meshes and palettes go to the renderer as they come. */
+  private readonly people = new CharacterTracker();
+  private pedestrians: PedestrianSettings;
+  private readonly pedestriansAtStart: boolean;
+  /** The last pose message (debris, vehicles, characters) handled, acknowledged to the worker every frame. */
   private poseSeq = 0;
   private ackedSeq = 0;
   private readonly settings: SettingsPanel;
@@ -92,11 +99,13 @@ export class Game {
     this.voxelSize = opts.voxelSize;
     this.world = { ...opts.world };
     this.params = { ...opts.params };
+    this.pedestrians = { ...(opts.pedestrians ?? DEFAULT_PEDESTRIANS) };
+    this.pedestriansAtStart = opts.pedestrians !== undefined;
     this.effects = new Effects(this.renderer.particles);
     this.weapons = new Weapons(this.engine, this.effects);
     this.hud = new Hud(opts.uiRoot);
     this.driveHud = new DriveHud(opts.uiRoot);
-    this.settings = new SettingsPanel(opts.uiRoot, this.params, this.world, this.traffic, {
+    this.settings = new SettingsPanel(opts.uiRoot, this.params, this.world, this.traffic, this.pedestrians, {
       onParams: (p) => {
         this.params = p;
         this.engine.setParams(p);
@@ -109,6 +118,10 @@ export class Game {
       onTraffic: (t) => {
         this.traffic = { ...t };
         this.engine.setTraffic(t);
+      },
+      onPedestrians: (p) => {
+        this.pedestrians = { ...p };
+        this.engine.setPedestrians(p);
       },
       onLoadWad: (file, map, options) => {
         this.beginLoad(`Reading ${file.name}`);
@@ -139,6 +152,8 @@ export class Game {
       persist: new URLSearchParams(location.search).get('persist') === '1',
       gpuDisplacement: new URLSearchParams(location.search).get('gpudisp') !== '0',
     });
+    // (the engine keeps them across loads: set before the first)
+    if (this.pedestriansAtStart) this.engine.setPedestrians(this.pedestrians);
     this.loadProcedural(this.world.kind, this.world.seed);
     this.running = true;
     requestAnimationFrame(this.frame);
@@ -158,6 +173,7 @@ export class Game {
     this.driving.scripted = null;
     this.tracker.clear();
     this.vehicleFx.clear();
+    this.people.clear();
     this.meshesSinceReady = 0;
     // Engines remove the old world's chunks with chunkRemoved; clearing here as well
     // keeps the view clean if one does not.
@@ -220,6 +236,17 @@ export class Game {
       if (!this.driving.confirm(this.tracker)) this.leaveVehicle(false);
       this.poseSeq = msg.seq ?? this.poseSeq;
     });
+    e.on('characterMeshes', (msg) => {
+      const c = this.renderer.characters;
+      for (const id of msg.removed) c.removeMesh(id);
+      for (const m of msg.meshes) c.addMesh(m);
+      for (const p of msg.palettes) c.setPalette(p.id, p.rgb);
+    });
+    e.on('characters', (msg) => {
+      this.people.apply(msg.characters, msg.skin, msg.props, performance.now() / 1000);
+      this.poseSeq = msg.seq ?? this.poseSeq;
+    });
+    e.on('blood', (msg) => this.renderer.characters.setBlood(msg.drops, msg.stains));
     e.on('events', (msg) => this.handleEvents(msg.list));
     e.on('occupancy', (msg) => this.occupancy.apply(msg));
     e.on('debris', (msg) => {
@@ -461,6 +488,7 @@ export class Game {
         voxelSize: this.voxelSize,
         gridFrames: this.gridFrames,
         wheels,
+        characters: this.people.frame(nowS),
       });
     }
     this.hud.setMuzzleFlash(this.effects.muzzle > 0 && !this.driving.driving);
@@ -534,6 +562,12 @@ export class Game {
         this.player.yaw = (yawDeg * Math.PI) / 180;
         this.player.pitch = (pitchDeg * Math.PI) / 180;
       },
+      aimAt: (x, y, z) => {
+        const eye = this.player.eye();
+        const d: Vec3 = [x - eye[0], y - eye[1], z - eye[2]];
+        this.player.yaw = Math.atan2(d[1], d[0]);
+        this.player.pitch = Math.atan2(d[2], Math.hypot(d[0], d[1]));
+      },
       collideLocal: (min, max, move) => (this.occupancy.ready ? this.occupancy.collide(min, max, move) : null),
       teleport: (x, y, z) => {
         this.player.pos = [x, y, z];
@@ -581,6 +615,19 @@ export class Game {
         this.traffic = { ...this.traffic, ...t };
         this.engine.setTraffic(this.traffic);
       },
+      characters: () =>
+        [...this.people.characters.values()]
+          .filter((c) => c.gone < 0)
+          .map((c) => {
+            const k = c.cur.skin;
+            // (bone 5, the head's, at the rest pose's (0, 0.02, 1.62): an average person's head)
+            const head = [0, 1, 2].map((r) => k[84 + r]! * 0.02 + k[88 + r]! * 1.62 + k[92 + r]!);
+            return { id: c.id, flags: c.flags, centre: [...c.centre], radius: c.radius, flash: c.flash, health: c.health, mesh: c.mesh, palette: c.palette, root: [k[12]!, k[13]!, k[14]!], forward: [k[4]!, k[5]!, k[6]!], head, shadow: c.draw.shadow ? [...c.draw.shadow] : null };
+          }),
+      setPedestrians: (p) => {
+        this.pedestrians = { ...this.pedestrians, ...p };
+        this.engine.setPedestrians(this.pedestrians);
+      },
       state: () => ({
         ready: this.info !== null,
         player: [...this.player.pos],
@@ -609,6 +656,8 @@ export interface StructvoxDebugApi {
   fire(): void;
   select(id: WeaponId): void;
   look(yawDeg: number, pitchDeg: number): void;
+  /** Turns the player's view to a point (from their eye). */
+  aimAt(x: number, y: number, z: number): void;
   teleport(x: number, y: number, z: number): void;
   /** Free flight without collision or gravity (the V key; keys need pointer lock). */
   noclip(on: boolean): void;
@@ -640,6 +689,27 @@ export interface StructvoxDebugApi {
   drive(throttle: number, steer: number, handbrake?: boolean, brake?: number): void;
   camera(mode: CameraMode): void;
   setTraffic(t: Partial<TrafficSettings>): void;
+  /**
+   * The characters and gibs (as the last `characters` message had them): flags (CharacterFlag),
+   * bounding sphere, hit flash, health, mesh and palette ids, the root (bone 0: on the ground
+   * between the feet of a posed body; a physical body's rides with its pelvis) and the way it
+   * faces, about where the head is, where its shadow was drawn (null: none).
+   */
+  characters(): {
+    id: number;
+    flags: number;
+    centre: number[];
+    radius: number;
+    flash: number;
+    health: number;
+    mesh: number;
+    palette: number;
+    root: number[];
+    forward: number[];
+    head: number[];
+    shadow: number[] | null;
+  }[];
+  setPedestrians(p: Partial<PedestrianSettings>): void;
   state(): {
     ready: boolean;
     player: number[];

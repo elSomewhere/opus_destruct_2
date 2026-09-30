@@ -104,6 +104,7 @@ export class Hud {
         `detach ${formatCount(e.detachedPieces)} pieces  ${formatCount(e.detachedVoxels)} voxels  (${formatCount(e.ticks)} ticks  ${e.movers} movers)`,
         `bake   ${formatCount(e.bakeMs)} ms  design util ${ms(e.designMaxUtilization)}  ${formatCount(e.strengthenedVoxels)} strengthened  ${formatCount(e.floatingVoxelsRemoved)} floating removed`,
         `env    fire ${formatCount(e.fireBurning)} burning  ${formatCount(e.fireHot)} hot  smoke ${formatCount(e.smokeCells)} cells  water ${formatCount(e.waterActive)} moving  ${formatCount(e.waterLoads)} loads  ${e.floating} afloat  ${ms(e.envMs)} ms`,
+        `people ${e.characters} characters  ${e.charactersDeep} deep  ${e.charactersShallow} shallow  ${e.charactersPlanOnly} plan only  ${e.charactersAtRest} at rest  ${ms(e.charactersMs)} ms  (${r.charactersDrawn}/${r.characters} drawn)  blood ${r.bloodDrops} drops ${r.bloodStains} stains`,
         `memory ${e.worldMemoryMB.toFixed(0)} MB  (frags ${e.fragmentCacheMB.toFixed(0)}  structs ${e.structureMemoryMB.toFixed(0)}  pieces ${e.pieceMemoryMB.toFixed(0)})  archive ${e.archiveMB.toFixed(1)}/${e.archiveCapacityMB.toFixed(0)} MB  forgot ${formatCount(e.forgottenRegions)} regions  culled ${formatCount(e.culledPieces)}`,
       );
       const extras = Object.entries(e).filter(([k]) => !KNOWN.has(k));

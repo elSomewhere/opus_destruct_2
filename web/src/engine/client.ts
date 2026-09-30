@@ -11,6 +11,7 @@ import type {
   EngineCommand,
   EngineParams,
   InitConfig,
+  PedestrianSettings,
   ProceduralKind,
   RaycastHit,
   TrafficSettings,
@@ -186,17 +187,27 @@ export class EngineClient {
     this.send({ type: 'setTraffic', traffic: { ...traffic } });
   }
 
+  setPedestrians(pedestrians: PedestrianSettings): void {
+    this.send({ type: 'setPedestrians', pedestrians: { ...pedestrians } });
+  }
+
+  /** A round into a character (its id from a raycast with `characters`), where the ray found it. */
+  woundCharacter(id: number, pos: Vec3, radius: number, energy: number): void {
+    this.send({ type: 'woundCharacter', id, pos, radius, energy });
+  }
+
   /** The last pose message handled (once per frame). */
   frameAck(seq: number): void {
     this.send({ type: 'frameAck', seq });
   }
 
-  raycast(origin: Vec3, dir: Vec3, maxDist: number): Promise<RaycastHit | null> {
+  /** `characters`: a shot's line - the characters' bodies are hit too (`RaycastHit.character`). */
+  raycast(origin: Vec3, dir: Vec3, maxDist: number, characters = false): Promise<RaycastHit | null> {
     return new Promise((resolve, reject) => {
       if (this.dead) return reject(this.dead);
       const id = this.nextId++;
       this.raycasts.set(id, { resolve, reject });
-      this.send({ type: 'raycast', id, origin, dir, maxDist });
+      this.send(characters ? { type: 'raycast', id, origin, dir, maxDist, characters } : { type: 'raycast', id, origin, dir, maxDist });
     });
   }
 

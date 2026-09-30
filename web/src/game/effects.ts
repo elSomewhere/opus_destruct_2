@@ -141,6 +141,20 @@ export class Effects {
     }
   }
 
+  /** A round into someone: blood spraying out along the shot and back out of the wound, a red mist. */
+  bloodHit(pos: Vec3, dir: Vec3): void {
+    for (let k = 0; k < 12; k++) {
+      const out = k % 3 === 0 ? -0.6 : 1; // (most go on through, some back out)
+      const d = normalize([dir[0] * out + rand(-0.5, 0.5), dir[1] * out + rand(-0.5, 0.5), dir[2] * out + rand(-0.2, 0.6)]);
+      const v = rand(1.2, 4.5);
+      this.particles.spawn({ pos, vel: [d[0] * v, d[1] * v, d[2] * v], life: rand(0.35, 0.8), size: rand(0.01, 0.025), color: [0.22, 0.008, 0.008, 1], gravity: 1, drag: 0.8 });
+    }
+    for (let k = 0; k < 3; k++) {
+      const d = randomUnit();
+      this.particles.spawn({ pos, vel: [d[0] * 0.3 + dir[0] * 0.6, d[1] * 0.3 + dir[1] * 0.6, d[2] * 0.3], life: rand(0.3, 0.6), size: rand(0.05, 0.09), grow: 0.25, color: [0.2, 0.012, 0.01, 0.4], drag: 3, gravity: 0.05 });
+    }
+  }
+
   explosion(pos: Vec3, radius: number): void {
     this.light(pos, 14);
     for (let k = 0; k < 40; k++) {

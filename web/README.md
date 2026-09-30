@@ -27,7 +27,10 @@ npm run smoke -- http://localhost:5190/ smoke-out     # screenshots in smoke-out
 URL parameters: `?engine=mock|wasm` (default: `wasm` when it is built, else `mock`),
 `?world=drive|rooms|city|tower|yard|angles|machines` (default: `drive` with the WASM engine - the
 endless city with roads, traffic and cars to drive, docs/VEHICLES.md - `rooms` with the mock),
-`?seed=N`, `?debug=none|utilization|fragments` (`bubbles`, from v1 links, means `fragments`).
+`?seed=N`, `?debug=none|utilization|fragments` (`bubbles`, from v1 links, means `fragments`),
+`?people=N` (pedestrians about the player in the drive city; 0: none) and
+`?bodies=deep|shallow|hybrid` (their bodies: every one an articulation of the world, bodies of
+their own, or deep near the player and moving pieces - the default).
 
 Controls: click the view to lock the pointer, WASD move, mouse look, Space jump, Shift run,
 1-5 or wheel for pistol/shotgun/rocket launcher/flamethrower/water hose, left click fire, E use
@@ -38,8 +41,11 @@ gamepad works too (RT/LT, left stick, A handbrake, Y in/out, right stick looks).
 
 Browser checks of the WASM engine (dev server running): `node scripts/drive-wasm.mjs` drives a
 car through the city, slides it, rams a van and gets out (screenshots; fails on console errors,
-or when the car does not drive, crumple or let the player out). In a container without a GPU it
-runs Chrome's WebGPU on SwiftShader (`SMOKE_SWIFTSHADER=0` turns that off).
+or when the car does not drive, crumple or let the player out). `node scripts/people-wasm.mjs`
+looks at the city's people (the street, one close up, a group from above), shoots one with the
+pistol until it dies and tears the body apart with a rocket (fails on console errors, or when no
+one comes, is drawn, dies, bleeds or makes gibs). In a container without a GPU they run Chrome's
+WebGPU on SwiftShader (`SMOKE_SWIFTSHADER=0` turns that off).
 
 Engine knobs (settings panel, sent as `setParams`; `svx_set_params` of the v2 core):
 
@@ -91,18 +97,22 @@ src/
     atlas.ts            atlas upload (rgba8unorm-srgb 2D array + per-texture storage records)
     islands.ts          detached pieces: engine poses (rigid, kept as rubble) or ballistic motion
     wheels.ts, wheel-mesh.ts   vehicles' wheels: a tyre on a five-spoke rim per wheel, spokes blurred when fast
+    characters.ts       people and gibs: svx_anim meshes, rigid skinning from a storage buffer of
+                        bone matrices, palettes, hit flash; blob shadows, blood stains and drops
     skids.ts            skid marks: a ring of translucent quads on the road
                         + dithered 1.5 s fade; Map by id, fixed uniform slot per piece
     particles.ts        CPU particles, instanced camera-facing sprites
     math.ts             column-major mat4, reversed-Z infinite projection, frustum planes
-    shaders/*.wgsl      frame uniforms, world, sky, particles
+    shaders/*.wgsl      frame uniforms, world, sky, particles, characters
   game/
     game.ts             message wiring + frame loop + debug handle (window.__structvox)
     player.ts           FPS controller (z up) on engine `collide`
     stepmove.ts         step-up built from plain `collide` sweeps
-    weapons.ts          pistol/shotgun (raycast -> shoot), rocket (look-ahead raycasts -> blast)
+    weapons.ts          pistol/shotgun (a shot's raycast -> woundCharacter or shoot), rocket
+                        (look-ahead raycasts -> blast)
     driving.ts          the player's car: controls (keys, gamepad), chase/far/roof cameras, getting out
     vehicles.ts         the vehicles and wheels of `vehicles` messages, interpolated; the car to take
+    people.ts           the characters of `characters` messages, posed a tick behind; their shadows
     vehicle-effects.ts  skid marks, tyre smoke, wheel dust, crash sparks
     effects.ts          particles for hits/cracks/impacts/detachments, flash light, camera shake
     input.ts            keyboard/mouse, pointer lock
@@ -119,8 +129,11 @@ Rendering: one 4x MSAA pass into the sRGB view of the canvas (linear shading), r
 `depth32float` (clear 0, compare `greater`, infinite far plane). Sky first, then chunks
 front-to-back after frustum and distance culling, then islands (up to 4096 pieces, culled by
 bounding sphere; per-object dynamic uniform offsets, 256 B slots, only changed slots are
-uploaded, so resting rubble costs no uniform traffic), then particles (premultiplied alpha,
-additive when flagged; event dust and crack chips draw on per-frame budgets).
+uploaded, so resting rubble costs no uniform traffic), then the characters (one instance per
+character in view, their skin matrices and palettes in storage buffers, one call per mesh;
+their shadows and the blood's stains before them, its drops after), then particles
+(premultiplied alpha, additive when flagged; event dust and crack chips draw on per-frame
+budgets).
 
 ## Protocol notes (how the front end reads docs/API.md)
 
@@ -149,9 +162,10 @@ additive when flagged; event dust and crack chips draw on per-frame budgets).
   (split: the children arrive as new detached events; over the ~3000-piece budget: faded by
   opacity first). Without poses the island rotates about `centroid` with `angular` and falls
   with `velocity` and g = 9.81 m/s² (no collision), fading out over 1.5 s with dust.
-* **Stats:** `EngineStats` mirrors `svx_stats` (35 values: tick / structural / event / rigid /
+* **Stats:** `EngineStats` mirrors `svx_stats` (57 values: tick / structural / event / rigid /
   mesh / stream ms, structures and solver counters, bonds broken, detached voxels and pieces,
-  max utilization, pieces / awake / contacts / splits, streaming, bake). The HUD shows them
+  max utilization, pieces / awake / contacts / splits, streaming, bake, memory, fire, smoke,
+  water; 51..56 the characters: all, deep, shallow, on their plans alone, at rest, ms). The HUD shows them
   grouped; the job and budget timeline plots structural, rigid, event and stream ms (plus the
   rest of the tick and the worker's flush) per tick against the 8 ms budget, with the awake
   pieces as a line. v2 sends no displacement fields; their plumbing stays (unused).
@@ -170,6 +184,8 @@ Optional front-end extensions (an engine that never uses them works unchanged):
 | `{type:'progress', stage, done, total}` | worker → main | loading bar |
 | texture ids `0xFF00 + material` | vertices | untextured with that material's palette colour (the mock uses this; `0xFFFF` stays the default) |
 | `{type:'debris', poses}` + `DetachedEvent.rigid` | worker → main | poses of rigid pieces (see above) |
+| `{type:'characterMeshes', meshes, removed, palettes}`, `{type:'characters', characters, skin, props?, seq}`, `{type:'blood', drops, stains}` | worker → main | the people (and gibs): meshes in the svx_anim character format, palettes, per-tick skin matrices (rigid skinning); their blood |
+| `raycast.characters` (+ `RaycastHit.character`), `woundCharacter`, `setPedestrians` | main → worker | shots that hit people, a round into one, the pedestrians' settings |
 
 ## What the mock does vs. the real engine
 
@@ -211,4 +227,5 @@ Optional front-end extensions (an engine that never uses them works unchanged):
   help at 10⁷ voxels or thousands of pieces in view.
 * The mock never streams (`viewer` only orders meshing) and does not voxelize WADs.
 * Pointer lock needs a real user click; the automated checks drive the game through
-  `window.__structvox` (`fire`, `select`, `look`, `teleport`, `setDebugView`, `load`, `state`).
+  `window.__structvox` (`fire`, `select`, `look`, `aimAt`, `teleport`, `setDebugView`, `load`,
+  `characters`, `state`).

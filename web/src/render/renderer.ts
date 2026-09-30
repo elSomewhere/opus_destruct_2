@@ -1,18 +1,20 @@
 /**
- * WebGPU renderer: sky, chunk meshes, detached islands, water and particles in one 4x MSAA pass
- * with a reversed-Z depth buffer (depth32float, clear 0, compare 'greater').
+ * WebGPU renderer: sky, chunk meshes, detached islands, characters, water and particles in one 4x
+ * MSAA pass with a reversed-Z depth buffer (depth32float, clear 0, compare 'greater').
  *
  * Bind groups: group 0 = frame uniforms + texture atlas + displacement fields (shared by all
  * pipelines); group 1 = per-object uniforms (model matrix, opacity, displaced flag) with
  * dynamic offsets: slot 0 is the identity used by chunks (displaced by the fields), slots
  * 1..MAX_ISLANDS belong to islands, the next MAX_GRIDS to the oriented grids (each keeps its
  * slot; only changed slots are uploaded) and the next MAX_WHEELS to vehicles' wheels (every
- * frame). Skid marks are drawn translucent after the opaque world.
+ * frame). The characters (skinned, render/characters.ts) have a group 1 of their own and come
+ * after the world pipeline's draws. Skid marks are drawn translucent after the opaque world.
  */
 import type { GridFrames } from '../engine/gridframes.ts';
 import type { TextureInfo, Vec3 } from '../engine/protocol.ts';
 import { DebugView, Material, Paint, PAINT_SLOT_BASE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { GpuAtlas } from './atlas.ts';
+import { CharacterRenderer, type CharacterDraw } from './characters.ts';
 import { ChunkStore } from './chunks.ts';
 import { FIELD_UNIFORM_FLOATS, FieldStore, MAX_FIELDS } from './fields.ts';
 import { initWebGpu, type GpuContext } from './gpu.ts';
@@ -23,6 +25,7 @@ import { ParticleSystem } from './particles.ts';
 import { RopeRenderer } from './ropes.ts';
 import { SkidMarks } from './skids.ts';
 import { RIM_BLUR_SLOT, WheelRenderer, type WheelDraw } from './wheels.ts';
+import characterWgsl from './shaders/character.wgsl?raw';
 import frameWgsl from './shaders/frame.wgsl?raw';
 import particlesWgsl from './shaders/particles.wgsl?raw';
 import skidsWgsl from './shaders/skids.wgsl?raw';
@@ -66,6 +69,8 @@ export interface FrameInputs {
   gridFrames?: GridFrames;
   /** Vehicles' wheels, posed for this frame. */
   wheels?: readonly WheelDraw[];
+  /** The characters (people), posed for this frame. */
+  characters?: readonly CharacterDraw[];
 }
 
 export interface RenderStats {
@@ -80,6 +85,11 @@ export interface RenderStats {
   particles: number;
   wheels: number;
   skidMarks: number;
+  /** The characters posed this frame, and those drawn (in view); the blood's drops and stains. */
+  characters: number;
+  charactersDrawn: number;
+  bloodDrops: number;
+  bloodStains: number;
   gpuMB: number;
   width: number;
   height: number;
@@ -161,6 +171,8 @@ export class Renderer {
   readonly ropes: RopeRenderer;
   readonly wheels: WheelRenderer;
   readonly skids: SkidMarks;
+  /** The people: character meshes and palettes (as the engine sends them), drawn skinned. */
+  readonly characters: CharacterRenderer;
   readonly particles: ParticleSystem;
   readonly fields: FieldStore;
   private readonly canvas: HTMLCanvasElement;
@@ -406,6 +418,7 @@ export class Renderer {
     this.ropes = new RopeRenderer(device);
     this.wheels = new WheelRenderer(device, 1 + MAX_ISLANDS + MAX_GRIDS, MAX_WHEELS);
     this.skids = new SkidMarks(device);
+    this.characters = new CharacterRenderer(device, this.frameLayout, module('characters', characterWgsl), format, SAMPLES, DEPTH_FORMAT);
     this.particles = new ParticleSystem(device);
   }
 
@@ -434,6 +447,7 @@ export class Renderer {
     this.ropes.clear();
     this.wheels.clear();
     this.skids.clear();
+    this.characters.clear();
     this.particles.clear();
     this.fields.clear();
   }
@@ -546,6 +560,7 @@ export class Renderer {
     const wr = this.wheels.set(input.wheels ?? [], o, stride);
     if (wr.hi >= wr.lo) this.device.queue.writeBuffer(this.objectBuffer, wr.lo * this.objectStride, o, wr.lo * stride, (wr.hi - wr.lo + 1) * stride);
     this.skids.upload();
+    this.characters.prepare(input.characters ?? [], this.planes, cam.eye, MAX_VIEW_DISTANCE);
 
     const particleCount = this.particles.upload();
     if (this.fields.version !== this.boundFieldsVersion) this.rebuildFrameBindGroup();
@@ -587,6 +602,10 @@ export class Renderer {
       pass.setBindGroup(1, this.objectBindGroup, [0]);
       triangles += this.ropes.draw(pass);
     }
+    // (their shadows and the blood's stains, them, the blood's drops: after the world pipeline's
+    // draws - they bind a group 1 of their own)
+    const people = this.characters.draw(pass);
+    triangles += people.triangles;
     if (this.skids.count > 0) {
       pass.setPipeline(this.skidPipeline);
       triangles += this.skids.draw(pass);
@@ -615,7 +634,11 @@ export class Renderer {
       particles: particleCount,
       wheels: wheels.drawn,
       skidMarks: this.skids.count,
-      gpuMB: (this.chunks.bytes + this.grids.bytes + this.water.bytes + this.atlas.bytes) / (1024 * 1024),
+      characters: people.characters,
+      charactersDrawn: people.drawn,
+      bloodDrops: people.drops,
+      bloodStains: people.stains,
+      gpuMB: (this.chunks.bytes + this.grids.bytes + this.water.bytes + this.atlas.bytes + this.characters.gpuBytes) / (1024 * 1024),
       width,
       height,
     };
