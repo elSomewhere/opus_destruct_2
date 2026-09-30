@@ -7,6 +7,7 @@
 #include "doctest.h"
 #include "svx/base/parallel.hpp"
 #include "svx/world/world.hpp"
+#include "vehicle_materials.hpp"
 
 using namespace svx;
 
@@ -23,7 +24,7 @@ void box(VoxelGrid& g, const IVec3& lo, const IVec3& hi, Vox v) {
 VoxelGrid ground(i32 half = 480) {
   VoxelGrid g;
   g.h = h;
-  box(g, {-half, -half, -4}, {half, half, 0}, make_vox(MaterialId::Asphalt, true));
+  box(g, {-half, -half, -4}, {half, half, 0}, make_vox(testmat::Asphalt, true));
   g.lo = {-half, -half, -4};
   g.hi = {half, half, 64};
   g.compact();
@@ -40,7 +41,7 @@ struct TestCar {
 TestCar car(World& w, const V3& at, f64 break_force = 0.0, f64 yaw = 0.0) {
   VoxelGrid g;
   g.h = h;
-  box(g, {-16, -6, 0}, {16, 7, 2}, make_vox(MaterialId::CarFrame, false));
+  box(g, {-16, -6, 0}, {16, 7, 2}, make_vox(testmat::CarFrame, false));
   g.compact();
   const Quat q{0.0, 0.0, std::sin(0.5 * yaw), std::cos(0.5 * yaw)};
   TestCar c;
@@ -50,6 +51,7 @@ TestCar car(World& w, const V3& at, f64 break_force = 0.0, f64 yaw = 0.0) {
   for (int k = 0; k < 4; ++k) {
     const f64 lx = k < 2 ? 1.5 : -1.5, ly = (k % 2 == 0) ? 0.75 : -0.75;
     WheelDesc d;
+    d.material = testmat::Tyre;  // (what comes off is a tyre)
     d.mount.kind = JointAnchor::Kind::Grid;
     d.mount.id = c.grid;
     d.mount.point = at + V3{lx * cy - ly * sy, lx * sy + ly * cy, 0.0};
@@ -80,6 +82,7 @@ void drive(World& w, const TestCar& c, f64 rear_torque, f64 brake, f64 steer) {
 }  // namespace
 
 TEST_CASE("wheels: a chassis settles on its springs at its static sag, and sleeps") {
+  testmat::ensure();
   World w;
   w.load(ground());
   w.bake();
@@ -112,6 +115,7 @@ TEST_CASE("wheels: a chassis settles on its springs at its static sag, and sleep
 }
 
 TEST_CASE("wheels: a car's door sleeps with it and wakes with it - woken still, the car does not hang its weight on it") {
+  testmat::ensure();
   World w;
   w.load(ground());
   w.bake();
@@ -121,7 +125,7 @@ TEST_CASE("wheels: a car's door sleeps with it and wakes with it - woken still, 
   // to carry the car (1.1 t): asleep, a door is a static support to the solver
   VoxelGrid g;
   g.h = h;
-  box(g, {-4, 7, 0}, {4, 8, 6}, make_vox(MaterialId::CarFrame, false));
+  box(g, {-4, 7, 0}, {4, 8, 6}, make_vox(testmat::CarFrame, false));
   g.compact();
   const GridId door = w.add_grid(GridFrame{at + V3{0, 0, 0.5 * h}, kId}, std::move(g), false);
   REQUIRE(door != 0);
@@ -172,6 +176,7 @@ TEST_CASE("wheels: a car's door sleeps with it and wakes with it - woken still, 
 }
 
 TEST_CASE("wheels: driven, a car accelerates; braked, it stops; steered, it turns") {
+  testmat::ensure();
   World w;
   w.load(ground());
   w.bake();
@@ -209,6 +214,7 @@ TEST_CASE("wheels: driven, a car accelerates; braked, it stops; steered, it turn
 }
 
 TEST_CASE("wheels: a hard landing tears off wheels that are weaker than it, and they roll on as pieces") {
+  testmat::ensure();
   World w;
   w.load(ground());
   w.bake();
@@ -232,6 +238,7 @@ TEST_CASE("wheels: a hard landing tears off wheels that are weaker than it, and 
 TEST_CASE("wheels: a driven car is bit-identical on any thread count") {
   auto run = [](int threads) {
     set_num_threads(threads);
+    testmat::ensure();
     World w;
     w.load(ground());
     w.bake();
@@ -256,7 +263,7 @@ class Road final : public ChunkSource {
   bool generate(const IVec3& c, std::vector<Vox>& out) const override {
     out.assign(kChunkVox, kAir);
     if (c[2] != -1) return false;
-    std::fill(out.begin(), out.end(), make_vox(MaterialId::Asphalt, true));
+    std::fill(out.begin(), out.end(), make_vox(testmat::Asphalt, true));
     return true;
   }
   IVec3 chunk_lo() const override { return {-32, -32, -1}; }
@@ -266,6 +273,7 @@ class Road final : public ChunkSource {
 }  // namespace
 
 TEST_CASE("wheels: a saved session brings its car back on its wheels, driving on") {
+  testmat::ensure();
   World w;
   w.load(ground());
   w.bake();
@@ -278,6 +286,7 @@ TEST_CASE("wheels: a saved session brings its car back on its wheels, driving on
   for (int t = 0; t < 60; ++t) w.tick();
   const Body* ba = w.piece(chassis(w, c));
   REQUIRE(ba);
+  testmat::ensure();
   World b;
   b.load(ground());
   b.bake();
@@ -299,6 +308,7 @@ TEST_CASE("wheels: a saved session brings its car back on its wheels, driving on
 }
 
 TEST_CASE("wheels: a parked car goes out of range with its wheels, and comes back on them") {
+  testmat::ensure();
   World w;
   VoxelGrid g;
   g.h = h;

@@ -1,4 +1,4 @@
-#include "svx/game/city.hpp"
+#include "svx/procgen/city.hpp"
 
 #include <algorithm>
 #include <cmath>

@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "doctest.h"
+#include "svx/game/materials.hpp"
 #include "svx/game/vehicles.hpp"
 #include "svx/material/material.hpp"
 
@@ -157,8 +158,8 @@ TEST_CASE("vehicles: a model's parts - doors, bonnet, boot, bumpers, cargo - are
 
 #include "svx/base/parallel.hpp"
 #include "svx/game/game.hpp"
-#include "svx/game/procgen.hpp"
 #include "svx/game/replay.hpp"
+#include "svx/procgen/levels.hpp"
 
 namespace {
 
@@ -171,7 +172,7 @@ void fill(VoxelGrid& g, const IVec3& lo, const IVec3& hi, Vox v) {
 void load_road(Game& game, bool wall = false) {
   VoxelGrid g;
   g.h = 0.125;
-  fill(g, {-960, -160, -4}, {960, 160, 0}, make_vox(MaterialId::Asphalt, true));
+  fill(g, {-960, -160, -4}, {960, 160, 0}, make_vox(mat::Asphalt, true));
   if (wall) {
     fill(g, {600, -40, -4}, {606, 40, 0}, make_vox(MaterialId::Rc, true));
     fill(g, {601, -40, 0}, {605, 40, 24}, make_vox(MaterialId::Rc, false));
@@ -555,7 +556,7 @@ TEST_CASE("vehicles: at 100 km/h a car does not pass through a thin loose slab (
 }
 
 TEST_CASE("vehicles: a car driven over a bridge loads its deck - solved again as it goes, a few times a second, not at every fragment") {
-  ProcWorld w = make_procedural("bridge", 1);
+  Level w = make_procedural("bridge", 1);
   Game game;
   game.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
   add_grids(game.world(), std::move(w.grids));

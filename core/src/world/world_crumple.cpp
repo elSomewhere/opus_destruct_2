@@ -1,25 +1,27 @@
-// structvox — crumpling (docs/VEHICLES.md): the crash damage of ductile, crumpling material.
+// structvox — crumpling (docs/DAMAGE.md §4): the crash damage of ductile, crumpling material -
+// a vehicle's body, a machine's housing, a container, a duct: whatever a host builds of it.
 //
-// A contact with a crumpling side (Material::crush: sheet metal, a car's frame) carries at most
+// A contact with a crumpling side (Material::crush: sheet metal, a thin-walled frame) carries at most
 // crush x its area (phys/rigid.cpp): the bodies keep closing while it does, and here, after the
 // substep, the crumpling side folds out of what it hit. Along the axis of its lattice nearest the
 // push, in columns: each column whose front voxel is pressed into what it hit is pushed back until
 // its front is out of it - and its neighbours are dragged along, a cell less per column (a dent
 // has sloped sides: the panel around it bends, it does not shear). A column's front segment moves
-// back as a whole where there is room behind it (a panel over the hollow of a car); where there
+// back as a whole where there is room behind it (a panel over a hollow body); where there
 // is not (a run of material: a fender, a rail, along the push), what does not fit folds out to
 // the side of the run near its new front, outwards and upwards first (the crumpled metal piles up
-// in folds), or where it cannot, is compacted. When both sides crumple (two cars), the first
+// in folds), or where it cannot, is compacted. When both sides crumple (two such bodies), the first
 // folds by half the overlap and the other by the rest. Glass near what folds shatters.
 //
 // The piece is edited in place: it keeps its id, its place and its motion (its mass and samples
 // are made again), and is announced reshaped once per tick (PieceReshaped: its host meshes it
 // again); bits that no longer hold on to it come off (dust, or pieces of their own).
 //
-// With the contact's force capped, the collision's energy goes out over the distance the car's
-// front folds, as in a crash: a 1.2 t car at 50 km/h folds some half a metre of its front
-// against a wall, at a few hundred kN, over tens of milliseconds - and the wall feels those few
-// hundred kN, not the rigid spike of a car stopped in a substep.
+// With the contact's force capped, the collision's energy goes out over the distance the body's
+// front folds, as in a crash: with a car's sheet metal (the game's: docs/VEHICLES.md) a 1.2 t
+// car at 50 km/h folds some half a metre of its front against a wall, at a few hundred kN, over
+// tens of milliseconds - and the wall feels those few hundred kN, not the rigid spike of a body
+// stopped in a substep.
 #include <algorithm>
 #include <cmath>
 #include <climits>
@@ -456,13 +458,13 @@ void World::crumple(f64 dt) {
   flush_body_changes();
 }
 
-// A crumpling body pressing into a static structure (a car into a wall): where the force it
+// A crumpling body pressing into a static structure (a vehicle into a wall): where the force it
 // presses with is more than the wall takes around the patch - its punching shear: the patch's
 // perimeter x the wall's thickness there x its material's shear strength - the wall's fragments
 // in front of the patch, through its thickness, break out and go on with the body, which slows
 // as they take up their share of its momentum (a plastic collision). A car's crumpling front
-// presses at a few hundred kN: glass gives way to it, a brick wall to its engine block once the
-// front has folded back to it, concrete to neither. (Slower failure - a wall bending over, its
+// presses at a few hundred kN: glass gives way to it, a brick wall to its stiffest part (an
+// engine block) once the front has folded back to it, concrete to neither. (Slower failure - a wall bending over, its
 // bonds overloaded - is the structure's own solve.)
 bool World::punch(Body& b, u16 g, const V3& n, const V3& plo, const V3& phi, f64 force, f64 dt) {
   if (!(force > 0.0) || !live(g)) return false;
@@ -480,7 +482,7 @@ bool World::punch(Body& b, u16 g, const V3& n, const V3& plo, const V3& phi, f64
   const i32 s = ul[ax] > 0.0 ? 1 : -1;
   const int a1 = (ax + 1) % 3, a2 = (ax + 2) % 3;
   // the footprint: the body's crush front - the columns of its lattice along the push whose
-  // foremost voxels are near the foremost of all, near the patch (a car's whole front against a
+  // foremost voxels are near the foremost of all, near the patch (a body's whole front against a
   // wall, the contacts kept being a few of it) - in the wall's lattice
   V3 llo{INFINITY, INFINITY, INFINITY}, lhi{-INFINITY, -INFINITY, -INFINITY};
   for (size_t k = 0; k < b.shapes.size(); ++k) {
@@ -549,7 +551,7 @@ bool World::punch(Body& b, u16 g, const V3& n, const V3& plo, const V3& phi, f64
   const i32 start = s > 0 ? vlo[ax] : vhi[ax];
   constexpr i32 kDeep = 16;
   i32 thick = 0, cols = 0;
-  std::array<i32, kStandardMaterials + 1> seen{};
+  std::array<i32, kMaxMaterials> seen{};  // (per material id: a host's registered ones too)
   for (i32 c1 = vlo[a1]; c1 <= vhi[a1]; ++c1)
     for (i32 c2 = vlo[a2]; c2 <= vhi[a2]; ++c2) {
       i32 d = 0, run = 0;
@@ -565,8 +567,7 @@ bool World::punch(Body& b, u16 g, const V3& n, const V3& plo, const V3& phi, f64
         const Vox v = G.get(p);
         if (!vox_solid(v)) break;
         if (run == 0) {
-          const size_t m = static_cast<size_t>(vox_mat(v));
-          ++seen[std::min(m, seen.size() - 1)];
+          ++seen[std::min(static_cast<size_t>(vox_mat(v)), seen.size() - 1)];
         }
         ++run;
       }
@@ -579,7 +580,6 @@ bool World::punch(Body& b, u16 g, const V3& n, const V3& plo, const V3& phi, f64
   size_t mat = 0;
   for (size_t m = 1; m < seen.size(); ++m)
     if (seen[m] > seen[mat]) mat = m;
-  if (mat >= kStandardMaterials && mat >= static_cast<size_t>(kMaxMaterials)) return false;
   const Material& M = mats()[static_cast<MaterialId>(mat)];
   if (M.indestructible) return false;
   // (its strength to break out: between its tensile and shear strengths; glass: next to nothing)

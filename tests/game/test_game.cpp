@@ -8,8 +8,8 @@
 #include "doctest.h"
 #include "svx/base/parallel.hpp"
 #include "svx/game/game.hpp"
-#include "svx/game/procgen.hpp"
-#include "svx/game/city.hpp"
+#include "svx/procgen/city.hpp"
+#include "svx/procgen/levels.hpp"
 
 using namespace svx;
 
@@ -35,7 +35,7 @@ void play(Game& eng, int ticks) {
 }
 
 Game fresh_rooms() {
-  ProcWorld w = make_procedural("rooms", 7);
+  Level w = make_procedural("rooms", 7);
   Game eng;
   eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
   eng.bake();
@@ -226,7 +226,7 @@ TEST_CASE("game: a streamed world keeps to its byte budget, farthest chunks firs
 TEST_CASE("game: a level loaded again keeps its meshes (chunks and water): no removal of what was just sent") {
   Game g;
   auto load = [&] {
-    ProcWorld w = make_procedural("yard", 1);
+    Level w = make_procedural("yard", 1);
     g.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
     g.bake();
   };
@@ -253,7 +253,7 @@ TEST_CASE("game: a level loaded again keeps its meshes (chunks and water): no re
 
 TEST_CASE("game: burning pieces are meshed again (charring, glow); charring chunks for their decoration only") {
   Game g;
-  ProcWorld w = make_procedural("yard", 1);
+  Level w = make_procedural("yard", 1);
   g.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
   g.bake();
   g.set_env("fire.wood.burn_s", 12.0);
@@ -348,7 +348,7 @@ TEST_CASE("game: the machines world - its machines run on their drives, its free
     set_num_threads(threads);
     Run r;
     Game g;
-    load_procedural(g, make_procedural("machines", 1));
+    load_level(g, make_procedural("machines", 1));
     g.bake();
     // (the joints in the order the level made them: the lift's slider, the turntable's hinge, the
     // drawbridge's, the jib's, the rope, the rod, the chain's four, the door's hinge; the crane's
@@ -390,7 +390,7 @@ TEST_CASE("game: the machines world - its machines run on their drives, its free
 
 TEST_CASE("game: the machines come down with what holds them - shot, carved, blasted") {
   Game g;
-  load_procedural(g, make_procedural("machines", 1));
+  load_level(g, make_procedural("machines", 1));
   g.bake();
   for (int t = 0; t < 120; ++t) g.tick();
   // (the joints: 1 the lift's slider, 2 the turntable's hinge, 3 the drawbridge's, 4 the jib's,
@@ -455,13 +455,13 @@ TEST_CASE("game: the machines come down with what holds them - shot, carved, bla
 
 TEST_CASE("game: the machines world saved in play comes back as it was - its pieces, machines and clock") {
   Game a;
-  load_procedural(a, make_procedural("machines", 1));
+  load_level(a, make_procedural("machines", 1));
   a.bake();
   for (int t = 0; t < 180; ++t) a.tick();
   const std::vector<u8> delta = a.save_delta();
   // (the level made again, as a host loads it, then the saved session)
   Game b;
-  load_procedural(b, make_procedural("machines", 1));
+  load_level(b, make_procedural("machines", 1));
   b.bake();
   REQUIRE(b.load_delta(delta));
   MESSAGE("machines saved at 3 s: " << delta.size() << " bytes, " << a.world().pieces().size() << " pieces, " << a.world().joints().size()

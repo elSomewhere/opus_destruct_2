@@ -33,7 +33,11 @@ constexpr u32 kSessionMagic = 0x53534553;  // "SESS"
 // (an archived group's record; the session of a delta's trailer v3 is a group of v1, of v4 v2)
 // v1: pieces, joints, dead loads. v2: the joints' collide flags and break angles; the wheels.
 // v3: the joints' latches.
-constexpr u8 kGroupVersion = 3;
+// (4: a wheel's material)
+constexpr u8 kGroupVersion = 4;
+// (a wheel saved before its material was: the tyre it then always became - the standard preset
+// 16 of that time, now the id a host's tyre material keeps)
+constexpr u8 kLegacyWheelMaterial = 16;
 constexpr i64 kMaxCells = i64(1) << 24;    // (a piece's box at most: 16 M cells)
 
 // Runs of equal values (a piece's box is mostly air): count, value.
@@ -361,6 +365,7 @@ std::vector<u8> World::wheel_record(size_t k) const {
   put32(out, w.id);
   put32(out, r.group);
   put32(out, r.tag);
+  out.push_back(static_cast<u8>(r.material));
   for (f64 x : {w.radius, w.width, w.rest, w.travel, w.stiffness, w.damping, w.inertia, w.grip, w.break_force, w.drive, w.brake, w.steer, w.spin,
                 w.angle, w.length})
     putf(out, x);
@@ -376,11 +381,14 @@ std::vector<u8> World::wheel_record(size_t k) const {
   return out;
 }
 
-bool World::read_wheel_record(Rd& in, WheelRec* r, Wheel* w) const {
+bool World::read_wheel_record(Rd& in, WheelRec* r, Wheel* w, u8 version) const {
   w->id = in.u32_();
   r->id = w->id;
   r->group = in.u32_();
   r->tag = in.u32_();
+  const u8 m = version >= 4 ? in.u8_() : kLegacyWheelMaterial;
+  if (m >= kMaxMaterials) return false;
+  r->material = static_cast<MaterialId>(m);
   f64* fs[] = {&w->radius, &w->width, &w->rest, &w->travel, &w->stiffness, &w->damping, &w->inertia, &w->grip, &w->break_force, &w->drive,
                &w->brake, &w->steer, &w->spin, &w->angle, &w->length};
   for (f64* x : fs) *x = in.f64_();
@@ -496,7 +504,7 @@ bool World::read_group(Rd& in, SessionDelta* s, u8 version) const {
     for (u32 k = 0; k < nw; ++k) {
       WheelRec r;
       Wheel w;
-      if (!read_wheel_record(in, &r, &w)) return false;
+      if (!read_wheel_record(in, &r, &w, version)) return false;
       s->wheels.push_back({r, w});
     }
     std::sort(s->wheels.begin(), s->wheels.end(), [](const auto& a, const auto& b) { return a.second.id < b.second.id; });
@@ -615,7 +623,7 @@ bool World::read_session(Rd& in, SessionDelta* s, u32 version) const {
   s->next_joint = in.u32_();
   if (version >= 4) s->next_wheel = in.u32_();
   if (!in.ok || s->steps < 0 || s->next_id < 1) return false;
-  if (!read_group(in, s, version >= 5 ? 3 : version >= 4 ? 2 : 1)) return false;
+  if (!read_group(in, s, version >= 7 ? 4 : version >= 5 ? 3 : version >= 4 ? 2 : 1)) return false;
   const u32 na = in.u32_();
   if (!in.ok || u64(na) * 20 > in.b.size()) return false;
   for (u32 k = 0; k < na; ++k) {
@@ -740,7 +748,7 @@ void World::archive_group(const std::vector<i64>& ids, const std::function<void(
     js.push_back(k);
     jids.push_back(rigid_.joints[k].id);
   }
-  // (and the wheels on its pieces: a car goes whole)
+  // (and the wheels on its pieces: an assembly goes whole)
   std::vector<size_t> ws;
   for (size_t k = 0; k < rigid_.wheels.size(); ++k)
     if (!rigid_.wheels[k].broken && wrecs_[k].mount.piece > 0 && std::binary_search(ids.begin(), ids.end(), wrecs_[k].mount.piece)) ws.push_back(k);

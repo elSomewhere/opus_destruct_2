@@ -1,4 +1,4 @@
-// structvox game — an endless procedural city to drive through (docs/VEHICLES.md).
+// structvox procgen — an endless procedural city to drive through (docs/VEHICLES.md).
 //
 // A grid of streets and avenues - lanes with their markings, kerbs and sidewalks, street lamps
 // and trees, signals at the junctions, parking along the streets - and on its blocks houses,

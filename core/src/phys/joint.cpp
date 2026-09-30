@@ -701,7 +701,7 @@ bool RigidWorld::driving(const Joint& j, const JointPrep& P) {
 void RigidWorld::wake_jointed() {
   // A body awake (hit, driven, pushed by the host, woken by one moving near) wakes what is joined
   // to it, and what is joined to that: asleep, a body is a static support to the solver, and would
-  // pin what it holds - a car's chassis would hang its weight on its doors.
+  // pin what it holds - a body would hang its weight on the doors joined to it.
   auto index_of = [&](i64 id) -> i32 {
     const auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
     return (it != bodies.end() && (*it)->id == id) ? static_cast<i32>(it - bodies.begin()) : -1;

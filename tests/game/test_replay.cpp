@@ -8,14 +8,14 @@
 #include "svx/base/parallel.hpp"
 #include "svx/game/game.hpp"
 #include "svx/game/replay.hpp"
-#include "svx/game/procgen.hpp"
+#include "svx/procgen/levels.hpp"
 
 using namespace svx;
 
 namespace {
 
 void load_rooms(Game& eng, CommandLog* log) {
-  ProcWorld w = make_procedural("rooms", 3);
+  Level w = make_procedural("rooms", 3);
   eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
   if (log) eng.record_to(log);
   GameParams p;
@@ -123,7 +123,7 @@ TEST_CASE("replay: fire replays bit for bit (the yard's timber house, on 1 and 4
   auto run = [](int threads, CommandLog* rec, const CommandLog* play) {
     set_num_threads(threads);
     Game g;
-    ProcWorld w = make_procedural("yard", 1);
+    Level w = make_procedural("yard", 1);
     g.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
     g.bake();
     if (rec) g.record_to(rec);
@@ -158,7 +158,7 @@ TEST_CASE("replay: fire replays bit for bit (the yard's timber house, on 1 and 4
 TEST_CASE("replay: every environment command and setting replays bit for bit") {
   auto run = [](CommandLog* rec, const CommandLog* play) {
     Game g;
-    ProcWorld w = make_procedural("yard", 1);
+    Level w = make_procedural("yard", 1);
     g.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
     g.bake();
     if (rec) g.record_to(rec);

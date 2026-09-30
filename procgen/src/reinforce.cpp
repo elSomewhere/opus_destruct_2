@@ -1,4 +1,4 @@
-#include "svx/game/reinforce.hpp"
+#include "svx/procgen/reinforce.hpp"
 
 #include <algorithm>
 

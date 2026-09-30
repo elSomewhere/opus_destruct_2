@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <cstring>
 
+#include "svx/world/tunables.hpp"
+
 namespace svx {
 
 namespace {
 
 constexpr u32 kMagic = 0x4C585653;  // "SVXL"
-constexpr u32 kVersion = 2;
+constexpr u32 kVersion = 3;  // (3: a tunable by its id, not its index)
 constexpr u8 kMaxType = static_cast<u8>(Command::Type::Wound);
 
 template <typename T>
@@ -59,6 +61,8 @@ bool CommandLog::parse(const std::vector<u8>& bytes, CommandLog* out) {
     c.type = static_cast<Command::Type>(type);
     for (f64& v : c.a)
       if (!get(bytes, at, &v)) return false;
+    // (an older log's tunable: its index then, taken as this build's)
+    if (version < 3 && c.type == Command::Type::Tunable) c.a[0] = static_cast<f64>(tunable_id(static_cast<i32>(c.a[0])));
     last = c.tick;
     log.cmds_.push_back(c);
   }
@@ -100,7 +104,7 @@ void apply_command(Game& e, const Command& c) {
       e.set_env(static_cast<i32>(c.a[0]), c.a[1]);
       break;
     case Command::Type::Tunable:
-      e.set_tunable(static_cast<i32>(c.a[0]), c.a[1]);
+      e.set_tunable(tunable_by_id(static_cast<u32>(c.a[0])), c.a[1]);
       break;
     case Command::Type::Shoot:
       e.shoot({c.a[0], c.a[1], c.a[2]}, c.a[3], c.a[4]);

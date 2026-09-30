@@ -35,21 +35,13 @@ enum class MaterialId : u8 {
   Stone,      // cut natural stone in mortar (blocks)
   Glass,
   Rebar,      // concrete around a reinforcing bar (ductile): explicit reinforcement in thick members
-  // Smeared sections (docs/VEHICLES.md): a member's real section baked into a voxel material, as
+  // A smeared section (docs/DAMAGE.md): a member's real section baked into a voxel material, as
   // rebar bakes a bar into its concrete cell - the weight and strength of thin-walled steel, not of
-  // solid 12.5 cm cubes of it.
+  // solid 12.5 cm cubes of it. Hosts make more of them (a vehicle's sheet metal, its frame) by
+  // registering materials with these properties.
   SteelSection,  // a rolled steel section (HEB 200 as 2 x 2 voxels): 980 kg/m^3, 44 MPa, ductile
-  Sheet,         // car body: pressed sheet steel and its stiffeners, smeared (crumples)
-  CarFrame,      // a car's frame rails, floor pan and pillars (crumples, stiffer)
-  Engine,        // an engine block and gearbox (solid, heavy: it does not crumple)
-  Window,        // a car's glazing: 5 mm glass smeared over a voxel (light, shatters)
-  Tyre,          // rubber on a rim (a wheel that came off)
-  Plastic,       // bumpers, trim, lamps' housings (crumples, light)
-  Asphalt,       // road surface (anchored ground)
-  Paint,         // road markings (anchored ground)
-  Lamp,          // head and tail lamps' glass (shatters)
 };
-constexpr int kStandardMaterials = 21;
+constexpr int kStandardMaterials = 12;
 constexpr int kMaxMaterials = 127;
 
 struct Material {
@@ -76,19 +68,20 @@ struct Material {
   // them, so every interface across a member has the bars in its section (a composite section:
   // the bars carry its tension). Bars with nothing around them form fragments of their own.
   bool reinforcement = false;
-  // Crumpling (docs/VEHICLES.md): the pressure (Pa) at which it folds where it is pressed in a
+  // Crumpling (docs/DAMAGE.md): the pressure (Pa) at which it folds where it is pressed in a
   // contact. A contact with a crumpling side carries at most crush x its area: the softer side
   // folds (its voxels dent, buckle and compact), taking the collision's energy out over the
   // distance it folds, and what it hits feels that force, not a rigid body's spike. Sheet metal
-  // and a car's smeared sections crumple; 0: it does not (brittle material cracks and crushes by
-  // its bonds instead; an engine block or steel plate is rigid).
+  // and thin-walled smeared sections crumple; 0: it does not (brittle material cracks and crushes
+  // by its bonds instead; a solid block or steel plate is rigid).
   f64 crush = 0.0;
   // Penetration resistance (J/m^3): the energy density an impact (a bullet's carve, a blast's
   // crater) needs to remove it. 0: any impact removes it (brittle materials). Bullets hole sheet
   // metal, rockets hole a steel section, nothing holes armour plate. A cut (a carve of no given
   // energy) removes everything but indestructible materials.
   f64 penetration = 0.0;
-  // Tyre grip on it (the friction coefficient of a tyre on it; 0: 1.35 x its friction).
+  // Wheel grip on it (the friction coefficient of a wheel's contact on it - a tyre on a road;
+  // 0: 1.35 x its friction).
   f64 grip = 0.0;
 };
 

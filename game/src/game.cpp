@@ -14,6 +14,7 @@
 #include "svx/base/diag.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/base/rotation.hpp"
+#include "svx/game/materials.hpp"
 #include "svx/game/replay.hpp"
 #include "svx/world/tunables.hpp"
 
@@ -44,8 +45,11 @@ inline u8 char_light(u8 light, u8 burn) {
 
 }  // namespace
 
+Game::MaterialsFirst::MaterialsFirst() { register_game_materials(); }
+
 Game::Game() {
   env_.attach(world_);
+  if (FireSystem* f = env_.fire()) set_game_fire_materials(*f);
   paint_layer_ = world_.add_layer({"paint", true, LayerBind::Solid});
 }
 Game::~Game() = default;
@@ -244,7 +248,7 @@ bool Game::set_env(i32 index, f64 value) {
 
 bool Game::set_tunable(i32 index, f64 value) {
   if (!tunable(index) || !std::isfinite(value)) return false;
-  if (log_) log_->push({world_.ticks(), Command::Type::Tunable, {static_cast<f64>(index), value, 0.0, 0.0, 0.0, 0.0}});
+  if (log_) log_->push({world_.ticks(), Command::Type::Tunable, {static_cast<f64>(tunable_id(index)), value, 0.0, 0.0, 0.0, 0.0}});
   return svx::set_tunable(world_, index, value);
 }
 

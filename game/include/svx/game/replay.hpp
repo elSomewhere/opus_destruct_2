@@ -30,7 +30,7 @@ struct Command {
   // Carve: pos xyz, radius. Blast: pos xyz, radius, energy. Viewer: pos xyz.
   // Params: fragility, impact, dif, (unused), debug_view, paused.
   // Use: eye xyz, direction xyz. Ignite, Extinguish, Pour, Drain: pos xyz, radius. Heat: pos
-  // xyz, radius, degC. EnvParam: index (env_param_*), value. Tunable: index (tunable_*), value.
+  // xyz, radius, degC. EnvParam: index (env_param_*), value. Tunable: id (tunable_id: stable across builds), value.
   // Shoot: pos xyz, radius, energy. Vehicle: action (1 spawn: kind + 256 paint + 65536 flags,
   // pos xyz, yaw; 2 remove: id; 3 enter: id; 4 exit). Drive: throttle, brake, steer, handbrake.
   // Traffic: enabled, cars, parked, near radius, radius, speed scale. Pedestrians: enabled, count,
@@ -44,8 +44,9 @@ class CommandLog {
   void clear() { cmds_.clear(); }
   void push(const Command& c) { cmds_.push_back(c); }
   const std::vector<Command>& commands() const { return cmds_; }
-  // Binary format "SVXL" v2: magic, version, count, then per command tick (i64), type (u8)
-  // and 6 f64 (little-endian, bit-exact). (v1 logs - types 1..5 - read the same.)
+  // Binary format "SVXL" v3: magic, version, count, then per command tick (i64), type (u8)
+  // and 6 f64 (little-endian, bit-exact). (v1 logs - types 1..5 - and v2 logs read the same;
+  // their tunables are indices, taken as this build's.)
   std::vector<u8> serialize() const;
   static bool parse(const std::vector<u8>& bytes, CommandLog* out);
 

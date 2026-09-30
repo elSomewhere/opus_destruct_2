@@ -17,12 +17,22 @@ mesh/   svx_mesh   voxel meshing for renderers: world chunks, pieces (in their s
                    coarse far tiles, water surfaces. Optional. Depends on svx_core.
 env/    svx_env    environment systems on the core's extension points (§5): fire, smoke,
                    water (docs/ENV.md). Optional. Depends on svx_core.
+anim/   svx_anim   characters (docs/ANIM.md): voxel people, their motion plan, their bodies (an
+                   articulation of the world, or their own), behaviours. Depends on svx_core.
 game/   svx_game   the prototype harness: svx::Game (viewer, movers, triggers, command log,
-                   piece meshes and poses, fading, far tier, the environment), procedural and
-                   city levels, Doom WAD import, the web worker's C ABI. Depends on svx_core,
-                   svx_mesh and svx_env.
-web/               the TypeScript / WebGPU front end of the game (talks to svx_game's ABI).
+                   piece meshes and poses, fading, far tier, the environment, vehicles and
+                   traffic, pedestrians), the game's materials, levels as it loads them, Doom
+                   WAD import. Depends on svx_core, svx_mesh, svx_env and svx_anim.
+procgen/ svx_procgen  procedural generation (to be replaced): the test levels, the streamed
+                   city, the endless drive city - Levels and chunk sources the game loads.
+                   Depends on svx_game's level and source interfaces.
+game/api svx_api   the web worker's C ABI (svx/game/api/svx_api.h): picks the levels.
+web/               the TypeScript / WebGPU front end of the game (talks to svx_api).
 ```
+
+The core knows nothing of what is built on it: a vehicle is voxels of a host's materials on the
+core's wheels and joints, and it crumples, loses parts and is holed by the core's generic rules
+([`DAMAGE.md`](DAMAGE.md), [`MOTION.md`](MOTION.md) §7); a person is an articulation.
 
 The rule that keeps them apart: **code only reaches down**, and only through public headers.
 The game harness uses nothing of the core but `World`'s public API (it has no friend access and
@@ -32,8 +42,12 @@ be rewritten without touching the core. Each layer has its own tests:
 - `svx_core_tests` links `svx_core` alone (stress, fragments, rigid bodies, the world API, the
   C API, the extension points, audit regressions).
 - `svx_env_tests` links `svx_env` and the core (fire, smoke, water).
+- `svx_anim_tests` links `svx_anim` and the core (motion, bodies on both physics paths,
+  behaviours, voxel models).
 - `svx_game_tests` exercises the harness (collapse scenarios on game levels, streaming city,
-  Doom maps and movers, replays).
+  Doom maps and movers, replays, vehicles, pedestrians, the C ABI).
+- `tools/baseline/golden.sh` pins the engine's world hashes in fixed scenarios, and the
+  structural reference's, reproduced bit for bit with its switches ([`BASELINE.md`](BASELINE.md)).
 - `examples/core_minimal` (C++) and `examples/c_api` (C) are complete hosts in ~80 lines.
 
 ## 2. Concepts
@@ -391,7 +405,8 @@ points, without touching the core. `svx_env` ([`ENV.md`](ENV.md)) is built on th
   (`svxc_enable_streaming`).
 - Every `WorldConfig` / `WorldParams` field is settable by name (`svxc_set(w, "rigid.gravity",
   9.81)`): the registry of `svx/world/tunables.hpp`, which C++ hosts use as well (settings UIs,
-  command logs: an index is stable within a build; setup tunables are meant for before a load).
+  command logs: an index is stable within a build, an id - `tunable_id`, a hash of the name -
+  across builds, and logs record the id; setup tunables are meant for before a load).
 - Events, pieces (with their voxels), changed chunks and queries come out as plain structs and
   arrays.
 

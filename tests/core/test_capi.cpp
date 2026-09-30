@@ -5,6 +5,7 @@
 
 #include "doctest.h"
 #include "svx/svx_core.h"
+#include "vehicle_materials.hpp"
 
 namespace {
 
@@ -595,8 +596,11 @@ TEST_CASE("capi: joints - a hinged block swinging, its state, a drive, breaking"
 }
 
 TEST_CASE("capi: wheels - a chassis on four wheels settles, drives, loses a wheel") {
+  // (a host's own materials: a vehicle's frame and sheet metal, the road)
+  testmat::ensure();
+  const int asphalt = static_cast<int>(testmat::Asphalt), frame = static_cast<int>(testmat::CarFrame), sheet = static_cast<int>(testmat::Sheet);
   svxc_world* w = svxc_create(0.125);
-  std::vector<uint8_t> g(320 * 64 * 4, svxc_vox(SVXC_ASPHALT, 1));
+  std::vector<uint8_t> g(320 * 64 * 4, svxc_vox(asphalt, 1));
   svxc_load_box(w, g.data(), 320, 64, 4, -160, -32, -4);
   CHECK(svxc_bake(w) == 1);
   // a chassis of car frame and a sheet metal shell (6.25 cm voxels), 4 m x 1.5 m
@@ -606,7 +610,7 @@ TEST_CASE("capi: wheels - a chassis on four wheels settles, drives, loses a whee
     for (int y = 0; y < ny; ++y)
       for (int z = 0; z < nz; ++z) {
         const bool shell = z == 0 || z == nz - 1 || x == 0 || x == nx - 1 || y == 0 || y == ny - 1;
-        if (shell) c[(size_t(x) * ny + y) * nz + z] = svxc_vox(z == 0 ? SVXC_CAR_FRAME : SVXC_SHEET, 0);
+        if (shell) c[(size_t(x) * ny + y) * nz + z] = svxc_vox(z == 0 ? frame : sheet, 0);
       }
   svxc_grid_desc gd{};
   gd.rot[3] = 1.0;
@@ -619,6 +623,7 @@ TEST_CASE("capi: wheels - a chassis on four wheels settles, drives, loses a whee
   for (int k = 0; k < 4; ++k) {
     svxc_wheel_desc d;
     svxc_wheel_defaults(&d);
+    d.material = static_cast<int>(testmat::Tyre);
     CHECK(d.radius == 0.33);
     CHECK(d.down[2] == -1.0);
     d.mount.kind = SVXC_ANCHOR_GRID;
@@ -653,7 +658,7 @@ TEST_CASE("capi: wheels - a chassis on four wheels settles, drives, loses a whee
   CHECK(s.tag == 3);
   CHECK(s.contact == 1);
   CHECK(s.load > 0.0);
-  CHECK(s.material == SVXC_ASPHALT);
+  CHECK(s.material == asphalt);
   // driven on its rear wheels, fast: its chassis may go faster than rubble
   CHECK(svxc_set_piece_max_speed(w, s.piece, 60.0) == 1);
   CHECK(svxc_set_wheel_input(w, wheel[2], 800.0, 0.0, 0.0) == 1);

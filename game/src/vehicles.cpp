@@ -10,6 +10,7 @@
 
 #include "svx/base/dmath.hpp"
 #include "svx/game/game.hpp"
+#include "svx/game/materials.hpp"
 #include "svx/game/replay.hpp"
 
 namespace svx {
@@ -137,6 +138,7 @@ u32 Game::spawn_vehicle_internal(const VehicleSpec& spec0, const V3& pos, f64 ya
     wd.damping = s.damping;
     wd.inertia = s.inertia;
     wd.grip = 1.0;
+    wd.material = mat::Tyre;  // (what comes off is a tyre on its rim)
     // (a hard crash on a wheel tears it off: many times what it carries)
     wd.break_force = m.wheel_break > 0.0 ? m.wheel_break : 16.0 * static_load * (s.stiffness / 32e3);
     wd.group = id;

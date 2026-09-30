@@ -138,24 +138,9 @@ FireSystem::FireSystem(const FireConfig& c) : cfg_(sanitized(c)) {
   bar.weaken_c = 450.0;
   bar.gone_c = 1100.0;
   mats_[size_t(MaterialId::Rebar)] = bar;
-  // (smeared steel: a section's flanges and a car's sheet heat through fast, and weaken as steel)
+  // (smeared steel: a section's flanges heat through fast, and weaken as steel; a host's own
+  // materials - sheet metal, plastics - are its to describe: set_material)
   mats_[size_t(MaterialId::SteelSection)] = steel;
-  FireMaterial sheet = steel;
-  sheet.conduct = 0.5;
-  sheet.cool = 0.06;
-  mats_[size_t(MaterialId::Sheet)] = sheet;
-  mats_[size_t(MaterialId::CarFrame)] = sheet;
-  // (a car's plastic and tyres burn: a wreck on fire)
-  FireMaterial plastic = wood;
-  plastic.ignition_c = 350.0;
-  plastic.burn_s = 25.0;
-  plastic.flame_c = 850.0;
-  plastic.char_damage = 1.0;
-  mats_[size_t(MaterialId::Plastic)] = plastic;
-  FireMaterial tyre = plastic;
-  tyre.ignition_c = 400.0;
-  tyre.burn_s = 70.0;
-  mats_[size_t(MaterialId::Tyre)] = tyre;
   FireMaterial conc;  // (spalls and loses strength slowly past 600 degC)
   conc.conduct = 0.02;
   conc.cool = 0.04;

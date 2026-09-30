@@ -621,11 +621,20 @@ World::Structure* World::extract(const FragKey& seed, i32 max_nodes, f64 max_rad
       return again;
     }
     if (pristine(*out)) {
-      // (designed in place: extracted again, it would have the same nodes and bonds)
-      design_structure(*out);
       static const bool dbg = diag("SVX_DEBUG_DESIGN");
-      if (dbg) design_structure(*out, true);
-      return out;
+      design_structure(*out);
+      if (cfg_.design_in_place) {
+        // (designed in place: extracted again, it would have the same nodes and bonds - and it
+        // starts from the design's solution)
+        if (dbg) design_structure(*out, true);
+        return out;
+      }
+      // (the reference's way: extracted again with the new strengths, a structure of a new id
+      // that starts its solve afresh)
+      drop_structure(id);
+      Structure* again = extract(seed, max_nodes, max_radius, detach_free);
+      if (dbg && again) design_structure(*again, true);
+      return again;
     }
     for (const FragKey& f : out->frags)
       if (f.idx >= 0) gs(f.grid).undesigned.erase(f.chunk);
@@ -800,8 +809,9 @@ void World::refresh_structures() {
     // held the old ones go stale, and are patched below, not taken over and extracted again
     // whole: a hole in a tower is a few chunks' work, not the tower's. Unless a structure cut
     // short by its reach would then have its frontier - an artificial support - near what
-    // happened: that one is extracted again about it, as a seed's.)
+    // happened: that one is extracted again about it, as a seed's. WorldConfig::patch_cut_structures)
     for (const GVox& p : seeds_) {
+      if (!cfg_.patch_cut_structures) break;
       if (!live(p.grid) || !vox_free(vg(p.grid).get(p.p))) continue;
       const IVec3 cc = chunk_of(p.p);
       const FragChunk* fc = frag_chunk_if(p.grid, key3(cc[0], cc[1], cc[2]));
@@ -951,7 +961,7 @@ void World::step_structures() {
       detach_unsupported(s);
       continue;
     }
-    if (!r.converged && (s.run_iters + r.iters > 120 || !(r.rel_res < 10.0))) {
+    if (!r.converged && (s.run_iters + r.iters > 120 || (cfg_.restart_diverging_solves && !(r.rel_res < 10.0)))) {
       // a stale preconditioner (after many breaks; diverging: a crash's breaks at once): rebuild
       // it, and restart from here. A small
       // structure's block-Jacobi one that did not converge meets a near-mechanism (a frame left
@@ -1763,7 +1773,7 @@ void World::finish_loads(int substeps) {
       s.pending_impact = true;
       ++st_.impacts;
     }
-    // (a creeping load on a large structure - a car over a bridge - is solved again at most every
+    // (a creeping load on a large structure - wheels rolling over a bridge - is solved again at most every
     // load_trigger_gap ticks: its wheels cross a fragment every few ticks, and a solve of the
     // whole bridge each time is wasted work; what it breaks, it breaks a tenth of a second later)
     if (trigger && !impact && worst < 4.0 && s.rounds == 0 && static_cast<i32>(n) >= cfg_.load_trigger_gap_nodes &&
@@ -1852,6 +1862,7 @@ void World::shoot(const V3& pos, f64 radius, f64 energy) {
 
 bool World::penetrates(const Material& M, f64 energy, f64 r, f64 d) const {
   if (M.indestructible) return false;
+  if (!cfg_.impact_penetration) return !M.ductile;  // (the reference: carves and craters leave steel and bars)
   if (energy < 0.0 || M.penetration <= 0.0) return true;  // (a cut; or brittle material: any impact)
   // The impact's energy density: its energy over the sphere's volume, concentrated at its centre
   // (1.5 x there, 0.5 x at its edge: a bullet's hole is deepest where it strikes).
@@ -2413,7 +2424,7 @@ void World::tick() {
       rigid_.time = clock0 + static_cast<f64>(k + 1) * dts;  // (the drives' clock)
     }
     if (!wrecs_.empty()) {
-      update_wheel_mounts();  // (their mounts where the chassis are now)
+      update_wheel_mounts();  // (their mounts where the carriers are now)
       reap_wheels();
     }
     rigid_.substep(dts, statics_, [this](f64 dt) { return fracture_hook(dt); });

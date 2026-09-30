@@ -15,33 +15,10 @@
 #include <vector>
 
 #include "svx/base/vec.hpp"
+#include "svx/game/paint.hpp"
 #include "svx/world/grid.hpp"
 
 namespace svx {
-
-// The "paint" layer's values: a voxel's colour over its material's (0: its material's). Cars'
-// paints, facades' plasters and the road's markings; the front end has their colours.
-enum class Paint : u8 {
-  None = 0,
-  // car paints
-  White, Silver, Black, Red, Blue, Green, Yellow, Orange, TaxiYellow, NavyBlue, Maroon, Beige, Graphite, Teal,
-  // trim: bumpers, grilles, tail lamps, indicators
-  Trim, TailRed, Amber,
-  // facades
-  Plaster, Cream, Terracotta, Sand, Slate, Ochre, Mint,
-  // the road
-  LineWhite, LineYellow, Kerb,
-  Count
-};
-
-// A painted voxel's texture id for the renderer: kPaintTexture + its paint (palette slot 31 +
-// paint: after the materials').
-inline constexpr u16 kPaintTexture = 0xFF00 + 31;
-
-// The paints a car is sprayed in (at random).
-inline constexpr std::array<Paint, 14> kCarPaints = {Paint::White,  Paint::Silver,     Paint::Black,    Paint::Red,    Paint::Blue,
-                                                     Paint::Green,  Paint::Yellow,     Paint::Orange,   Paint::NavyBlue, Paint::Maroon,
-                                                     Paint::Beige,  Paint::Graphite,   Paint::Teal,     Paint::TaxiYellow};
 
 enum class VehicleKind : u8 { Compact = 0, Sedan = 1, Van = 2, Pickup = 3, Truck = 4, Count };
 

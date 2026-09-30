@@ -11,14 +11,15 @@
 // that what overlaps between cells comes out the same whichever cell is drawn first. The same
 // boxes make a chunk's voxels, its paint (the "paint" layer: facades, markings, cars' colours)
 // and the far tier's coarse view.
-#include "svx/game/drive_city.hpp"
+#include "svx/procgen/drive_city.hpp"
 
 #include <algorithm>
 #include <array>
 #include <cmath>
 #include <string>
 
-#include "svx/game/vehicles.hpp"
+#include "svx/game/materials.hpp"
+#include "svx/game/paint.hpp"
 
 namespace svx {
 
@@ -162,18 +163,18 @@ class CoarseSink final : public Sink {
 };
 
 const Vox kRockV = make_vox(MaterialId::Rock, true);
-const Vox kAsphaltV = make_vox(MaterialId::Asphalt, true);
+const Vox kAsphaltV = make_vox(mat::Asphalt, true);
 const Vox kWalkV = make_vox(MaterialId::Concrete, true);
 const Vox kSoilV = make_vox(MaterialId::Soil, true);
-const Vox kLotAsphaltV = make_vox(MaterialId::Asphalt, true);
+const Vox kLotAsphaltV = make_vox(mat::Asphalt, true);
 const Vox kRcV = make_vox(MaterialId::Rc, false);
 const Vox kBrickV = make_vox(MaterialId::Masonry, false);
 const Vox kWoodV = make_vox(MaterialId::Wood, false);
-const Vox kGlassV = make_vox(MaterialId::Window, false);
+const Vox kGlassV = make_vox(mat::Window, false);
 const Vox kSteelV = make_vox(MaterialId::SteelSection, false);
-const Vox kSheetV = make_vox(MaterialId::Sheet, false);
-const Vox kPlasticV = make_vox(MaterialId::Plastic, false);
-const Vox kLampV = make_vox(MaterialId::Lamp, false);
+const Vox kSheetV = make_vox(mat::Sheet, false);
+const Vox kPlasticV = make_vox(mat::Plastic, false);
+const Vox kLampV = make_vox(mat::Lamp, false);
 const Vox kStoneV = make_vox(MaterialId::Stone, false);
 const Vox kRebarV = make_vox(MaterialId::Rebar, false);
 

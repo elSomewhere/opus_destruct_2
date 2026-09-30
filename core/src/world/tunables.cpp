@@ -63,6 +63,13 @@ const Field kFields[] = {
     SVX_T_F64("hinge_rotation", hinge_rotation),
     SVX_T_F64("hinge_shape", hinge_shape),
     SVX_T_BOOL("spread_contacts", spread_contacts),
+    SVX_T_BOOL("impact_penetration", impact_penetration),
+    SVX_T_BOOL("restart_diverging_solves", restart_diverging_solves),
+    SVX_T_BOOL("jointed_keep_identity", jointed_keep_identity),
+    SVX_T_BOOL("spread_per_partner", spread_per_partner),
+    SVX_T_BOOL("design_in_place", design_in_place),
+    SVX_T_BOOL("patch_cut_structures", patch_cut_structures),
+    SVX_T_I32("evict_scan_ticks", evict_scan_ticks),
     SVX_T_F64("fracture_energy", fracture_energy),
     SVX_T_F64("impact_wave_speed", impact_wave_speed),
     SVX_T_I32("body_check_ticks", body_check_ticks),
@@ -84,6 +91,7 @@ const Field kFields[] = {
     {"frag.noise_scale", true, [](WorldConfig& c) -> f64* { return &c.frag.noise_scale; }, nullptr, nullptr, nullptr},
     SVX_T_F64("rigid.gravity", rigid.gravity),
     SVX_T_INT("rigid.substeps", rigid.substeps),
+    SVX_T_BOOL("rigid.piece_ccd", rigid.piece_ccd),
     SVX_T_INT("rigid.iterations", rigid.iterations),
     SVX_T_INT("rigid.position_iterations", rigid.position_iterations),
     SVX_T_INT("rigid.busy_bodies", rigid.busy_bodies),
@@ -146,6 +154,20 @@ i32 tunable_index(const char* name) {
   if (!name) return -1;
   for (i32 i = 0; i < tunable_count(); ++i)
     if (std::strcmp(tunable(i)->name, name) == 0) return i;
+  return -1;
+}
+
+u32 tunable_id(i32 index) {
+  const TunableInfo* t = tunable(index);
+  if (!t) return 0;
+  u32 h = 2166136261u;
+  for (const char* c = t->name; *c; ++c) h = (h ^ static_cast<u8>(*c)) * 16777619u;
+  return h;
+}
+
+i32 tunable_by_id(u32 id) {
+  for (i32 i = 0; i < tunable_count(); ++i)
+    if (tunable_id(i) == id) return i;
   return -1;
 }
 

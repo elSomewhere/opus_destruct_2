@@ -47,7 +47,7 @@ void tangents(const V3& n, V3& t1, V3& t2) {
 
 // Crumpling patches (Material::crush): the samples of a body that found one other thing (before
 // its manifold is reduced; the speculative ones as well), by what they found (a static grid) and
-// the side they face (the signed axis nearest their normal: a car against a wall and on the road
+// the side they face (the signed axis nearest their normal: a vehicle against a wall and on the road
 // has two patches). A patch carries at most the crush strength of the body's side it presses
 // over that side's area there (frontal()): a car's front against a wall, its sheet metal's over
 // most of the front, its frame rails' over their ends, its engine's once the front has folded
@@ -448,7 +448,7 @@ void RigidWorld::integrate_velocities(f64 dt) {
     if (norm2(b.torque) > 0.0) b.w += b.inv_inertia_world() * b.torque * dt;
     b.v *= ld;
     b.w *= ad;
-    // (a body's own limit - a car's - or the rubble's)
+    // (a body's own limit - a vehicle's - or the rubble's)
     const f64 top = b.max_speed > 0.0 ? b.max_speed : par.max_speed;
     const f64 s = norm(b.v);
     if (s > top) b.v *= top / s;
@@ -665,7 +665,7 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
   for (auto& v : wc)
     for (const Contact& c : v) contacts_.push_back(c);
   const auto c1 = CClock::now();
-  // (the pairs a joint keeps from colliding: a car's welded parts and its frame)
+  // (the pairs a joint keeps from colliding: welded parts and the frame they are welded into)
   std::vector<std::pair<i64, i64>> apart;
   for (const Joint& j : joints)
     if (!j.collide && !j.broken && j.a.body != 0 && j.b.body != 0) apart.push_back({std::min(j.a.body, j.b.body), std::max(j.a.body, j.b.body)});
@@ -736,10 +736,10 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
           hmin = std::min(hmin, SB.h);
         }
         // (continuous collision between pieces: a pair that may close more than half a voxel of
-        // B's in a substep looks along its relative motion - two cars at speed do not pass through
+        // B's in a substep looks along its relative motion - two bodies at speed do not pass through
         // each other's panels)
         const f64 motion = (norm(A.v) + A.radius * norm(A.w) + norm(B.v) + B.radius * norm(B.w)) * step_dt_;
-        const bool fast = par.speculative && motion > 0.5 * hmin && !(A.asleep && B.asleep);
+        const bool fast = par.speculative && par.piece_ccd && motion > 0.5 * hmin && !(A.asleep && B.asleep);
         const f64 reach = B.radius + hb + (fast ? motion : 0.0);
         const f64 reach2 = reach * reach;
         const auto& W = A.wpts;
@@ -1326,7 +1326,7 @@ void RigidWorld::sleep_update(f64 dt) {
     else if ((b.held > 0 || (!hung.empty() && hung[i])) && b.sleep_ema < sleep_speed) b.still += steps;
     else b.still = std::max(0, b.still - 2 * steps);
   }
-  // (bodies joined sleep together - a driven car's parts too; one joined to a moving frame
+  // (bodies joined sleep together - a driven vehicle's parts too; one joined to a moving frame
   // never sleeps)
   if (!wheels.empty()) wheel_stillness();
   if (!joints.empty()) joint_stillness();

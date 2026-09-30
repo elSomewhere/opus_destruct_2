@@ -1,9 +1,9 @@
-#include "svx/game/procgen.hpp"
+#include "svx/procgen/levels.hpp"
 
 #include <algorithm>
 #include <cmath>
 
-#include "svx/game/reinforce.hpp"
+#include "svx/procgen/reinforce.hpp"
 
 namespace svx {
 
@@ -172,7 +172,7 @@ Quat turn(f64 deg, f64 x, f64 y, f64 z) {
 
 // Structures off the lattice, each in a grid of its own (docs/GRIDS.md): what they stand on or are
 // cast into is the world grid's (or another grid's), their joints are the grids' junctions.
-void angles(ProcWorld& w, Rng& rng) {
+void angles(Level& w, Rng& rng) {
   VoxelGrid& g = w.grid;
   const f64 h = g.h;
   const Vox rc = make_vox(MaterialId::Rc, false), steel = make_vox(MaterialId::SteelSection, false);  // (sections)
@@ -180,7 +180,7 @@ void angles(ProcWorld& w, Rng& rng) {
   const Vox stone = make_vox(MaterialId::Stone, false);
   // (a grid at world voxel coordinates o, turned by r: its voxel p's centre is h (o + R p))
   auto place = [&](const V3& o, const Quat& r) -> VoxelGrid& {
-    ProcGrid pg;
+    LevelGrid pg;
     pg.frame = GridFrame{V3{h * o.x, h * o.y, h * o.z}, r};
     pg.grid.h = h;
     w.grids.push_back(std::move(pg));
@@ -241,7 +241,7 @@ void angles(ProcWorld& w, Rng& rng) {
 // carries the machine (its weight, its drive's reaction) and can be shot away: the machine comes
 // down with it. The free parts are grids of the level the bake keeps (they are held): pieces from
 // the first tick. (Each keeps a voxel's gap to what it moves along: it bonds to nothing.)
-void machines(ProcWorld& w) {
+void machines(Level& w) {
   VoxelGrid& g = w.grid;
   const f64 h = g.h;
   constexpr f64 kPi = 3.14159265358979323846;
@@ -252,7 +252,7 @@ void machines(ProcWorld& w) {
   // (a free part of the level: a grid on the world's lattice, voxel p of it at world voxel o + p;
   // its grid id: the order it is added in)
   auto part = [&](const IVec3& o) -> std::pair<VoxelGrid&, GridId> {
-    ProcGrid pg;
+    LevelGrid pg;
     pg.frame = GridFrame{V3{h * o[0], h * o[1], h * o[2]}, id};
     pg.grid.h = h;
     w.grids.push_back(std::move(pg));
@@ -369,7 +369,7 @@ void machines(ProcWorld& w) {
     rope.stiffness = 1e6;
     rope.damping = 2e4;
     const f64 a = 60.0 * kPi / 180.0, r = 5.2;
-    ProcGrid pg;
+    LevelGrid pg;
     pg.frame = GridFrame{V3{h * 95.5 + r * std::cos(a), h * 223.5 + r * std::sin(a), 0.0}, Quat{0.0, 0.0, std::sin(0.5 * a), std::cos(0.5 * a)}};
     pg.grid.h = h;
     box(pg.grid, -12, 12, -1, 1, 0, 32, masonry);
@@ -384,7 +384,7 @@ void machines(ProcWorld& w) {
   {
     const f64 L = 3.0, th = 60.0 * kPi / 180.0;
     const V3 bob{pivot.x + L * std::sin(th), pivot.y, pivot.z - L * std::cos(th)};
-    ProcGrid pg;
+    LevelGrid pg;
     pg.frame = GridFrame{bob, id};
     pg.grid.h = h;
     box(pg.grid, -1, 2, -1, 2, -1, 2, steel);
@@ -402,7 +402,7 @@ void machines(ProcWorld& w) {
     V3 up = hook;
     for (int k = 0; k < 4; ++k) {
       const V3 c{hook.x, hook.y, hook.z - 0.75 - 1.0 * k};
-      ProcGrid pg;
+      LevelGrid pg;
       pg.frame = GridFrame{c, id};
       pg.grid.h = h;
       box(pg.grid, -2, 2, -2, 2, -2, 2, wood);
@@ -432,23 +432,8 @@ void machines(ProcWorld& w) {
 
 }  // namespace
 
-void add_grids(World& world, std::vector<ProcGrid>&& grids) {
-  for (ProcGrid& pg : grids) world.add_grid(pg.frame, std::move(pg.grid));
-  grids.clear();
-}
-
-void load_procedural(Game& game, ProcWorld&& w) {
-  game.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
-  World& world = game.world();
-  add_grids(world, std::move(w.grids));
-  for (const JointDesc& j : w.joints) world.add_joint(j);
-  for (Drop& d : w.drops) game.add_drop(std::move(d));
-  w.joints.clear();
-  w.drops.clear();
-}
-
-ProcWorld make_procedural(const std::string& kind, u64 seed, f64 h) {
-  ProcWorld w;
+Level make_procedural(const std::string& kind, u64 seed, f64 h) {
+  Level w;
   VoxelGrid& g = w.grid;
   g.h = h;
   Rng rng{seed * 0x9E3779B97F4A7C15ull + 1};

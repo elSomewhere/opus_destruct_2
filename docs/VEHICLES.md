@@ -3,143 +3,64 @@
 Drivable, fully physical vehicles in the destructible voxel world: cars that drive on cast
 wheels, crumple in crashes (car against car, car against wall), lose their wheels, doors,
 bonnets and bumpers, break through walls at speed, and fill an endless procedural city with
-traffic. This document
-describes how it works, layer by layer, and how to use it.
+traffic. They are the game's (`svx_game`): authored from the core's generic building blocks -
+voxels of smeared-section materials, the wheel constraint, crumpling, joints with latches - which
+know nothing of cars ([`DAMAGE.md`](DAMAGE.md), [`MOTION.md`](MOTION.md) §7). This document
+describes how the game builds them on those, and how to use them.
 
 | Layer | Where | What |
 | --- | --- | --- |
-| Materials | `core/src/material/material.cpp` | smeared sections: sheet, car frame, engine, window, tyre, plastic, lamp; `crush` and `penetration` |
-| Wheels | `core/src/phys/wheel.cpp`, `core/src/world/world_wheels.cpp` | the cast-wheel constraint: suspension, bump stop, tyre, brake; breakage |
-| Crash damage | `core/src/phys/rigid.cpp` (crush patches), `core/src/world/world_crumple.cpp` | force-capped crumple contacts, the crumple pass, punch-through |
-| In-place edits | `core/src/world/world_pieces.cpp` | a car keeps its id through crumpling and damage |
-| Parts | `game/src/vehicle_models.cpp`, `core/src/phys/joint.cpp` | doors, bonnet, boot, bumpers, cargo on latched hinges and fixed joints |
+| Materials | `game/src/materials.cpp` | the game's smeared sections: sheet, car frame, engine, window, tyre, plastic, lamp; asphalt, paint |
+| Wheels | the core's (`World::add_wheel`: [`MOTION.md`](MOTION.md) §7) | suspension, bump stop, tyre, brake; breakage |
+| Crash damage | the core's ([`DAMAGE.md`](DAMAGE.md) §4) | force-capped crumple contacts, the crumple pass, punch-through, in-place edits |
+| Parts | `game/src/vehicle_models.cpp` on the core's joints ([`DAMAGE.md`](DAMAGE.md) §5) | doors, bonnet, boot, bumpers, cargo on latched hinges and fixed joints |
 | Game | `game/src/vehicles.cpp`, `vehicle_models.cpp`, `traffic.cpp` | models, drivetrain, player driving, traffic |
-| City | `game/src/drive_city.cpp` | the endless city with roads, lanes, signals, parking |
-| C ABI | `game/src/api/svx_api.cpp`, `core/src/capi/svx_core.cpp` | vehicles, wheels, drive, shoot, traffic |
+| City | `procgen/src/drive_city.cpp` (`svx_procgen`) | the endless city with roads, lanes, signals, parking |
+| C ABI | `game/src/api/svx_api.cpp` (the core's own: `core/src/capi/svx_core.cpp`) | vehicles, drive, shoot, traffic (wheels) |
 | Front end | `web/src/game/driving.ts`, `vehicles.ts`, `vehicle-effects.ts`, `web/src/render/wheels.ts`, `skids.ts` | controls, cameras, wheels, skid marks, effects, HUD |
 
-## Materials: smeared sections
+## Materials
 
-A voxel is 12.5 cm (the world) or 6.25 cm (a car). A car body is 1 mm steel sheet over a
-hollow; a girder is thin-walled. Voxels of solid steel would weigh and resist ten to a
-hundred times too much. So a thin-walled member's real section is *smeared* into the
-material of its voxels, as reinforced concrete smears its bars into the concrete cell: its
-density, stiffness and strength are what the member has per unit of its bounding volume.
+A car's voxels are 6.25 cm; its body is 1 mm steel sheet over a hollow. Its materials are
+**smeared sections** ([`DAMAGE.md`](DAMAGE.md) §1): what the real, thin-walled part has per unit
+of its bounding volume. The game registers them when it starts (`register_game_materials`, in
+`Game`'s constructor, before its world: `svx/game/materials.hpp`), at the ids after the core's
+standard presets (`mat::Sheet` = `kStandardMaterials` + 0 ... `mat::Lamp` + 8, the ids they
+always had: saves and replays read as before), and gives the fire module their fire properties
+(`set_game_fire_materials`: sheet steel heats through fast, plastic and tyres burn).
 
 | Material | rho (kg/m3) | notes |
 | --- | --- | --- |
-| `steel_section` | 980 | HEB 200 as 2 x 2 voxels: 44 MPa smeared |
-| `sheet` | 260 | a car's body panels; **crush 90 kPa** |
+| `sheet` | 260 | a car's body panels; **crush 90 kPa**, penetration 2e4 J/m3 |
 | `car_frame` | 700 | rails, floor pan, pillars; crush 1.2 MPa |
 | `engine` | 1200 | engine block and gearbox; crush 1.5 MPa (barely crumples) |
 | `window` | 200 | 5 mm glazing; shatters |
-| `tyre` | 265 | a wheel that came off |
+| `tyre` | 265 | a wheel that came off (its wheels' `WheelDesc::material`) |
 | `plastic` | 300 | bumpers, trim; crush 150 kPa |
-| `asphalt`, `paint` | 2300 | road surface and markings (tyre grip 1.0 / 0.9) |
+| `asphalt`, `paint` | 2300 | road surface and markings (tyre grip 1.0 / 0.9: `Material::grip`) |
 | `lamp` | 400 | head and tail lamps; shatter |
 
-Two properties drive vehicle damage:
-
-- **`crush`** (Pa): the contact pressure at which a material folds. A contact with a crumpling
-  side carries at most `crush x area`. 90 kPa over a car's frontal area is the few hundred kN
-  (some 20 g) of a real front structure: a 1.2 t car at 50 km/h folds some 0.45 m of its front
-  against a wall.
-- **`penetration`** (J/m3): the energy density an impact (a bullet, a blast crater) needs to
-  remove the material. Bullets hole sheet metal and shatter glass; they do not hole armour
-  plate. Brittle materials (0) are removed by any impact.
-
-The procedural levels' steel members (the yard's greenhouse and shed frames, the angles
-world's portal and brace, the crane's jib) are `steel_section`; solid `steel` is kept for what
-is solid (a wrecking ball, a pendulum's bob, bearing blocks). Fire weakens both alike.
-
-## Plastic hinges
-
-Steel yields: a member bent past its strength does not snap like glass, it folds. When a
-structure's bond fails and its section is ductile on both sides (steel, steel sections, rebar)
-and bending is what failed it (at least 1.5 times its tension, compression or shear share), the
-part that comes loose there does not drop: it stays on a **plastic hinge** (`World::judge`,
-`plastic_hinge`, `detach_unsupported`) -
-
-- a `Hinge` joint about the axis it bends, found from the solved rotation of the two sides
-  (no sign conventions to trust), pivoting at the section's compression edge so the parts fold
-  about it rather than grind into each other;
-- holding the section's plastic moment while it turns: a drive at speed 0 whose strength is
-  `hinge_shape` (1.3) x the section's elastic moment - a friction hinge that absorbs moment x
-  angle, the plastic work of a real hinge;
-- tearing once turned past its rotation capacity (`break_angle` = `hinge_rotation`, 0.35 rad),
-  or pulled harder than its section's tension capacity;
-- anchored on the voxels either side of the section before they become a piece (the joint goes
-  with them), one per pair of parts, the sections' moments summed.
-
-A steel arm overloaded at its root folds down on its hinge, hangs bent if the load eases (a
-weight that comes to rest on the ground), or tears off once turned too far. `plastic_hinges`
-(tunable) turns it off; `WorldStats::plastic_hinges` counts them.
-
-**Loose pieces** yield the same way (`World::piece_hinges`): a piece's stress check that breaks a
-ductile section in bending records its hinge (in the piece's frame), and when the piece comes
-apart there, a hinge of the same kind joins the parts - anchored on the piece's voxels either
-side of the section before it splits (the joint follows them into the parts), both ends at the
-pivot. A loose steel plate (6 m of 12.5 cm steel section) on two supports with 15 t set on its
-middle - half as much again as its section holds - yields and holds, bent a hundredth of a
-radian; with 30 t it folds on its hinge and tears at its rotation capacity, letting the block
-through; without hinges it snaps at once. (For a piece to feel that bending at all, its stress
-check spreads each partner's contacts on its own: see [`V2_DESIGN.md`](V2_DESIGN.md) §5.)
+90 kPa of `crush` over a car's frontal area is the few hundred kN (some 20 g) of a real front
+structure: a 1.2 t car at 50 km/h folds some 0.45 m of its front against a wall. Bullets hole
+sheet metal (`penetration`) and shatter glass; they do not hole the engine block.
 
 ## Wheels
 
-A wheel is not voxels: it is a constraint cast from the chassis (`World::add_wheel`,
-`WheelDesc` in `core/include/svx/world/joint_desc.hpp`). Its mount is a voxel of the chassis
-(a grid dropped in, or a piece) at the top of its suspension.
-
-Each substep the tyre is **cast** along the suspension axis: samples on its lower arc (0, 15,
-30, 45 degrees fore and aft) and across its width, against the static grids and the other
-bodies, find the ground (a kerb is met by the front of the arc before the axle gets there).
-Its rows are solved with the contacts and joints (sequential impulses, warm-started):
-
-- **suspension**: a soft row (spring and damper as a constraint's softness: stable at any
-  stiffness), from full droop (`rest`) to the **bump stop** (`travel`): a hard row beyond;
-- **tyre**: longitudinal and lateral rows in the contact plane with a slip-dependent grip
-  (peak at 8 % slip ratio, 0.1 rad slip angle; 72 % of it when sliding), limited to the
-  **friction ellipse** of the load the suspension carries x the surface's grip; rigid below
-  0.6 m/s (a car holds on a slope);
-- **drive and brake**: the wheel's spin is a degree of freedom of its own (`inertia`); drive
-  torque turns it, the brake row stops it (a locked wheel skids), rolling resistance slows it.
-
-A wheel **comes off** when its mount voxel is gone (crushed, shot away) or its force passes
-`break_force` (a hard crash on it): it becomes a wheel-shaped piece of `tyre` voxels
-(`WheelDetached`), tumbling away. Wheels are saved with sessions and archived with their
-chassis when it streams out; their `group` and `tag` (host data) let the game find its
-vehicles again after a load.
+A car's wheels are the core's wheel constraint ([`MOTION.md`](MOTION.md) §7), mounted on voxels
+of its body's frame: each model's wheel slots give the mount, radius, suspension (rest, travel,
+stiffness, damping), spin inertia and breaking strength, and `mat::Tyre` as what a wheel that
+comes off is made of. Their host data is the game's registry: `group` is the vehicle's id, `tag`
+its kind, paint, slot and flags - after a session is loaded, or a car comes back from the
+streaming archive, the game finds its vehicles again from their wheels.
 
 ## Crash damage
 
-**Crush patches** (`core/src/phys/rigid.cpp`). The contacts of a body pair (or a body and a
-static grid) are grouped per grid and facing into patches. For each patch a frontal voxel scan
-finds the area pressed and the pressure its materials can take; the patch's force is capped at
-`crush x area` of the softer side, spread over its contacts. A crushing contact does no
-position correction: the bodies keep closing - the car's front goes *into* the wall - and the
-collision's energy goes out over the distance it folds, as in a real crash. The wall feels
-those few hundred kN, not the rigid spike of a car stopped in one substep (so a crash loads a
-building like a crash, and breaks what it should).
-
-**The crumple pass** (`World::crumple`, after each substep). The crushing side folds out of
-what it hit: along its lattice axis nearest the push, column by column, each column whose front
-is pressed in is pushed back until it is out; its neighbours are dragged along a cell less per
-column (a dent has sloped sides). A column's front moves back as a whole where there is room
-(a panel over a hollow); where there is not (a rail, a fender), what does not fit folds out
-sideways and upwards (crumpled metal piles up in folds), or is compacted. Between two cars,
-each folds half the overlap. Glass near a fold shatters (glittering dust events).
-
-**Punch-through**. A wall pressed harder than it can hold around the patch - its punching
-capacity, perimeter x thickness x its tensile and cohesive strength - is broken through: the
-voxels in the car's way become rubble thrown ahead with its speed, and the car's excess
-impulse is refunded. At speed a car goes through a brick wall where reinforced concrete stops
-it (and folds its front).
-
-**In-place edits** (`split_body(..., in_place)`, `refresh_in_place`). A crumpled car keeps its
-piece id, its place and its motion (mass and contact samples are rebuilt); a car that breaks
-in two keeps its id on the part with its wheels. Each changed piece is announced once per tick
-(`PieceReshaped`; the game remeshes it: `GameEvent::Remesh`).
+A car crumples by the core's rules ([`DAMAGE.md`](DAMAGE.md) §4): its contacts carry at most its
+materials' crush strength over the area pressed, the crumple pass folds its front (or its side)
+out of what it hit, and a wall pressed past its punching capacity is broken through - at speed a
+car goes through a brick wall where reinforced concrete stops it (and folds its front). A
+crumpled car keeps its piece id, its place and its motion; a car that breaks in two keeps its id
+on the part with its wheels; each changed piece is remeshed (`GameEvent::Remesh`).
 
 **Damage** (`VehicleView::damage`, the HUD's): how much of the car is not as it was built -
 its body's voxels gone or changed in its lattice, cells filled that were empty (the folds), and
@@ -151,44 +72,29 @@ scrape shows a little, a crash into a wall at 60 km/h about two thirds (its bump
 In a real crash the connections fail first: a door is torn off its hinges, a bonnet's latch
 pops, a bumper's mounts shear. So a car's doors, bonnet, boot lid, tailgate, bumpers and the
 cargo strapped in a pickup's bed are **grids of their own** in the car's frame (`VehiclePart`,
-`VehicleModel::parts`), their voxels beside the body's along their seams, held to it by joints
-made before any of it comes loose (the joints hold on to their ends' voxels and go with the
-pieces they become):
+`VehicleModel::parts`), their voxels beside the body's along their seams, held to it by the
+core's joints ([`DAMAGE.md`](DAMAGE.md) §5: latches, one latch per hinge, parts that sleep and
+wake with their body):
 
 - **hinged parts** (doors on a vertical axis at their front edge, a van's and a lorry's rear
   doors at their outer edges, a bonnet at its rear, a boot lid at its front, a tailgate at its
-  foot) are on a `Hinge` joint with a **latch** (`JointDesc::latch`, N m): latched, the hinge
-  does not turn at all; the latch holds up to its strength about the axis and, knocked past
-  it, gives way - what it could not hold passes on, and the part swings within its limits (a
-  door out, never in; a bonnet up). A hinge that is turned past its stop, or pulled or twisted
-  beyond its strength (what the latch held does not count), tears: the part is loose.
-- **bumpers** (and the cargo's straps) are on `Fixed` joints that shear beyond their
-  strength (a bumper takes a car's deceleration times its share of the car; the first to meet
-  a wall, it comes off).
+  foot) are on a `Hinge` joint with a **latch**: latched, the hinge does not turn at all;
+  knocked past the latch's strength, the part swings within its limits (a door out, never in; a
+  bonnet up); turned past its stop, or pulled or twisted beyond its strength, it tears off.
+- **bumpers** (and the cargo's straps) are on `Fixed` joints that shear beyond their strength (a
+  bumper takes a car's deceleration times its share of the car; the first to meet a wall, it
+  comes off).
 
-A part does not collide with its car while its joint holds (`collide = false`: a door welded
-into its frame); once loose it is rubble like any piece - it collides with the car it came off,
-lies on the road, and is archived with its region. The strengths are set so that driving (full
-throttle, a handbrake turn, an emergency stop, the traffic's driving) shakes nothing loose, a
-knock pops latches, and a crash tears off what it hits: a van at 40 km/h into a car's side
-takes its door off; a car into a wall at 60 km/h loses its bumper.
+A part does not collide with its car while its joint holds; once loose it is rubble like any
+piece. The strengths are set so that driving (full throttle, a handbrake turn, an emergency
+stop, the traffic's driving) shakes nothing loose, a knock pops latches, and a crash tears off
+what it hits: a van at 40 km/h into a car's side takes its door off; a car into a wall at
+60 km/h loses its bumper.
 
-**One latch, one hinge**: a second joint as the latch (a ball joint on the far edge of the
-door) over-constrains the hinge: its stop and the ball's slop disagree by a millimetre, and the
-two fight with growing impulses until something breaks. A latch on the hinge itself - its free
-turn held as a stop until the torque passes the latch's strength - does not.
-
-**Sleep**: a car at rest sleeps with its parts; a body woken (driven, hit, woken by one moving
-near) wakes what is joined to it and what is joined to that (`RigidWorld::wake_jointed`, each
-substep and in the solve) - a sleeping body is a static support to the solver, and a car woken
-still would hang its weight on its sleeping doors. A driven wheel keeps its chassis awake
-before joined bodies' stillness is shared (`wheel_stillness`, then `joint_stillness`).
-
-The registry needs nothing more: a car's parts are the pieces joined to its chassis
+The registry needs nothing more: a car's parts are the pieces joined to its body
 (`World::joined_pieces`, `Game::vehicle_parts`; `VehicleView::parts` and `parts0`). A car
-removed (or gone out of range untouched) takes the parts still on it along; a car archived
-out of range goes with its parts as one joint group, and comes back with them, latches and all
-(the joints' latches are in sessions and the archive: `kGroupVersion` 3, deltas v5).
+removed (or gone out of range untouched) takes the parts still on it along; a car archived out
+of range goes with its parts as one joint group, and comes back with them, latches and all.
 
 ## The game
 
@@ -225,7 +131,7 @@ their distance (raycasts ahead: cars, rubble, walls), and become wrecks after a 
 lost wheel or a roll. Parked cars wait at the kerbs. Cars out of range that nobody touched go
 (and come again); wrecks stay (archived with their region). The player can take any car.
 
-**The drive city** (`game/src/drive_city.cpp`, `make_drive_city`). Endless in every direction
+**The drive city** (`procgen/src/drive_city.cpp`, `make_drive_city`). Endless in every direction
 (some 130 km each way): a grid of 56 m cells; streets (a lane each way, parking at the kerbs)
 and every fourth an avenue (two lanes each way, a double yellow centre line); sidewalks with
 lamps and trees; blocks of apartment buildings, shops with glass fronts, houses with gardens,
@@ -337,18 +243,8 @@ Measured natively on 4 threads in the drive city: a building's first touch is ~0
 
 ## Tests
 
-- `tests/core/test_crumple.cpp`: a crate-like car against a reinforced-concrete wall at
-  50 km/h (its front folds, the wall stands), faster folds further, at speed it goes through
-  masonry where concrete stops it; a head-on crash is deterministic.
-- `tests/core/test_capi.cpp`: a chassis on four wheels settles, drives, loses a wheel.
-- `tests/core/test_joints.cpp`: a steel arm bent past its strength folds down on a plastic
-  hinge and tears off only once turned past its capacity; without hinges it snaps at once; a
-  loose steel plate loaded past its strength between its supports yields on a hinge and holds,
-  and under twice the load folds and tears; a
-  latched door holds against a nudge, a hard knock opens its latch and it swings to its stop,
-  and a session keeps its latch shut or open.
-- `tests/core/test_wheels.cpp`: a car's door sleeps and wakes with it - woken still, the car
-  does not hang its weight on its sleeping door; driven off, the door comes along, shut.
+- The core's mechanisms (crumpling, hinges, latches, wheels): [`DAMAGE.md`](DAMAGE.md) §6,
+  [`MOTION.md`](MOTION.md) §7.
 - `tests/game/test_vehicles.cpp`: every model is connected and heavy enough; every model's
   parts are grids of their own beside its body, held at their seams, the body and its parts
   one connected vehicle; a car settles, shifts up, steers, brakes and reverses; every kind
@@ -366,18 +262,10 @@ Measured natively on 4 threads in the drive city: a building's first touch is ~0
 
 ## Limits
 
-- A plastic hinge forms where one breaks off: an impact must still pay for the cracks from
-  the energy it takes out of the collision (steel's is large), so a blow bends a steel piece
-  only when it has the energy to; a load resting on it is not limited.
-- A part is held at one point of its seam (a door's two hinges are one hinge joint): a part
-  crushed at that voxel comes off; one crushed elsewhere stays on, crumpled. Parts do not
-  collide with their car while they hold: a door pushed in by a crash transfers the push
-  through its hinge until it gives way.
-- Crumpling folds along lattice axes: a side impact folds a door in, a frontal one the front;
-  a very oblique blow folds along the axis nearest to it.
-- Two cars folded into each other can stay hooked: a car that rode up onto the side it hit, its
-  nose among the other's folds, may not back out (its driven wheels spin with the weight off
-  them) - as a real car wedged in a crash.
+The core's mechanisms' limits (a plastic hinge's energy, a part held at one point of its seam,
+folds along lattice axes, wrecks that stay hooked) are in [`DAMAGE.md`](DAMAGE.md) §7. The
+game's:
+
 - The first touch of a large building is a hitch (above): its design runs at once, on the
   simulation's threads.
 - There is no sound yet.

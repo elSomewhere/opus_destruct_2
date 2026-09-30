@@ -45,16 +45,8 @@ enum {
   SVXC_STONE,
   SVXC_GLASS,
   SVXC_REBAR,
-  SVXC_STEEL_SECTION, /* smeared sections (docs/VEHICLES.md): a rolled steel member */
-  SVXC_SHEET,         /* a car's body (crumples) */
-  SVXC_CAR_FRAME,     /* a car's frame rails, floor and pillars (crumples) */
-  SVXC_ENGINE,        /* an engine block */
-  SVXC_WINDOW,        /* a car's glazing */
-  SVXC_TYRE,
-  SVXC_PLASTIC,       /* bumpers and trim (crumples) */
-  SVXC_ASPHALT,
-  SVXC_PAINT,         /* road markings */
-  SVXC_LAMP
+  SVXC_STEEL_SECTION /* a smeared section (docs/DAMAGE.md): a rolled steel member */
+  /* (a host's own materials - a vehicle's sheet metal, its tyres: svxc_material_set) */
 };
 
 typedef struct svxc_material {
@@ -70,7 +62,7 @@ typedef struct svxc_material {
   int reinforcement;         /* bars: part of the fragments of the material around them */
   double crush;              /* Pa: contact pressure at which it crumples (0: it does not) */
   double penetration;        /* J/m^3: the energy density an impact needs to remove it (0: any) */
-  double grip;               /* a tyre's friction coefficient on it (0: from friction) */
+  double grip;               /* a wheel's friction coefficient on it (0: from friction) */
 } svxc_material;
 
 /* Registers a material (the next free id, returned; -1 when all 127 are taken) or overrides
@@ -230,24 +222,26 @@ typedef struct svxc_joint_state {
 int svxc_joint(svxc_world* w, uint32_t id, svxc_joint_state* out); /* 1, or 0: none */
 int svxc_joints(svxc_world* w, uint32_t* out, int max);             /* ids (ascending) into out: their count */
 
-/* ---- wheels (docs/VEHICLES.md): a chassis's wheels - cast against what is under them (the
- * statics, other pieces), on a sprung suspension, with a tyre; driven, braked and steered by the
- * host. A wheel comes off beyond its strength, or when its mount voxel is gone (crushed,
- * carved): SVXC_WHEEL_DETACHED, and a wheel-shaped piece rolls on. Wheels are saved with the
- * session and archived with their chassis when it streams out. */
+/* ---- wheels (docs/MOTION.md §7): the wheels of a body, their carrier (a vehicle, a trolley, a
+ * machine's undercarriage) - cast against what is under them (the statics, other pieces), on a
+ * sprung suspension, with a tyre; driven, braked and steered by the host. A wheel comes off
+ * beyond its strength, or when its mount voxel is gone (crushed, carved): SVXC_WHEEL_DETACHED,
+ * and a wheel-shaped piece rolls on. Wheels are saved with the session and archived with their
+ * carrier when it streams out. */
 typedef struct svxc_wheel_desc {
-  svxc_anchor mount;        /* the top of its suspension: a grid's (the chassis dropped in) or a piece's solid voxel */
+  svxc_anchor mount;        /* the top of its suspension: a grid's (the carrier dropped in) or a piece's solid voxel */
   double down[3], axle[3];  /* its suspension's axis, its spin axis at zero steer (in the world now) */
   double radius, width;     /* m */
   double rest, travel;      /* m: its suspension at full droop; how far it compresses to the bump stop */
   double stiffness, damping; /* N/m, N s/m */
   double inertia;           /* kg m^2: the wheel's and its driveline's spin inertia */
-  double grip;              /* x the surface's tyre friction */
+  double grip;              /* x the surface's grip */
   double break_force;       /* N: it comes off beyond (0: never) */
-  uint32_t group, tag;      /* the host's: which vehicle it belongs to, what it is to it (saved with it) */
+  int material;             /* what it is made of when it comes off (a material id) */
+  uint32_t group, tag;      /* the host's: what it belongs to (a vehicle, a machine), what it is to it (saved with it) */
 } svxc_wheel_desc;
 /* down -z, axle +y, radius 0.33, width 0.22, rest 0.35, travel 0.2, 35 kN/m, 3.5 kN s/m, inertia
- * 1.2, grip 1, never breaks, group and tag 0 */
+ * 1.2, grip 1, never breaks, steel, group and tag 0 */
 void svxc_wheel_defaults(svxc_wheel_desc* d);
 uint32_t svxc_add_wheel(svxc_world* w, const svxc_wheel_desc* d); /* its id, or 0: refused */
 int svxc_remove_wheel(svxc_world* w, uint32_t id);
@@ -255,7 +249,7 @@ int svxc_remove_wheel(svxc_world* w, uint32_t id);
  * steer: rad about its suspension's axis (left positive). They hold until changed. */
 int svxc_set_wheel_input(svxc_world* w, uint32_t id, double drive, double brake, double steer);
 typedef struct svxc_wheel_state {
-  int64_t piece;            /* its chassis now (0: not a piece yet) */
+  int64_t piece;            /* its carrier now (0: not a piece yet) */
   double mount[3], centre[3];
   double rot[4];            /* x the way it rolls, y its axle (steered), z up; spun by its angle about y */
   double radius, width, length, compression; /* m; 0 at full droop .. 1 at the bump stop */
@@ -266,14 +260,13 @@ typedef struct svxc_wheel_state {
   int64_t ground_piece;     /* the piece it stands on (0: a grid, or nothing) */
   int material;             /* the surface's (-1: none) */
   double load;              /* N: its suspension's force */
-  double force[3];          /* N: what the chassis received through it */
+  double force[3];          /* N: what the carrier received through it */
   double slip_long, slip_lat; /* m/s: the tyre sliding over the ground (skids, smoke) */
   uint32_t group, tag;
 } svxc_wheel_state;
 int svxc_wheel(svxc_world* w, uint32_t id, svxc_wheel_state* out); /* 1, or 0: none */
 int svxc_wheels(svxc_world* w, uint32_t* out, int max);             /* ids (ascending) into out: their count */
-/* The fastest a piece moves (m/s; 0: the world's limit): a vehicle's chassis goes faster than
- * rubble may. */
+/* The fastest a piece moves (m/s; 0: the world's limit): a vehicle goes faster than rubble may. */
 int svxc_set_piece_max_speed(svxc_world* w, int64_t piece, double max_speed);
 
 /* ---- commands (carve / blast: the next tick; edits: now) */
@@ -372,7 +365,7 @@ typedef struct svxc_event {
                   /* FORGOTTEN: id is the region, pos its centre, voxels its chunks */
                   /* GRID_ADDED, GRID_REMOVED, GRID_MOVED: id is the grid, pos its origin, rot its turn */
                   /* JOINT_BROKEN: id is the joint, pos where, strength the force it carried (0: it lost its hold) */
-                  /* WHEEL_DETACHED: id is the wheel (gone), parent its chassis, pos and vel its centre, normal
+                  /* WHEEL_DETACHED: id is the wheel (gone), parent its carrier, pos and vel its centre, normal
                      its axle, voxels the wheel piece it became (its id; 0: none), strength its force (0: its mount went) */
                   /* PIECE_RESHAPED: id is a piece whose voxels changed in place (crumpled): same id and pose; mesh it again */
   double pos[3], vel[3], ang[3], normal[3];
@@ -452,7 +445,7 @@ typedef struct svxc_sweep_hit {
 } svxc_sweep_hit;
 int svxc_sweep_ex(svxc_world* w, const double mn[3], const double mx[3], const double move[3], svxc_sweep_hit* out);
 /* Whether the box overlaps a grid's or a piece's voxels (1), and how far it must rise to overlap
- * nothing (0: it does not; -1: not within max_rise): a rider lifted out of a rising car. */
+ * nothing (0: it does not; -1: not within max_rise): a rider lifted out of a rising lift's car. */
 int svxc_overlaps(svxc_world* w, const double mn[3], const double mx[3]);
 double svxc_depenetrate(svxc_world* w, const double mn[3], const double mx[3], double max_rise);
 

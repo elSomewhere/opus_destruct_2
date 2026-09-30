@@ -19,8 +19,8 @@
 
 #include "svx/anim/system.hpp"
 #include "svx/base/parallel.hpp"
-#include "svx/game/drive_city.hpp"
 #include "svx/game/game.hpp"
+#include "svx/procgen/drive_city.hpp"
 
 using namespace svx;
 

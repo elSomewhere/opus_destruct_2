@@ -193,7 +193,7 @@ Body* World::make_body_from_world(const std::vector<FragKey>& frags, const V3& v
   Body* ptr = b.get();
   rigid_.add(std::move(b));
   if (!jrecs_.empty()) joints_to_piece(*ptr);  // (joints on its voxels hold on to it now)
-  if (!wrecs_.empty()) wheels_to_piece(*ptr);  // (wheels too: a car's chassis dropped in)
+  if (!wrecs_.empty()) wheels_to_piece(*ptr);  // (wheels too: a carrier dropped in)
   return ptr;
 }
 
@@ -1190,8 +1190,9 @@ bool World::keeps_identity(const Body& b) const {
   if (b.keep) return true;
   for (const WheelRec& r : wrecs_)
     if (r.mount.piece == b.id) return true;
-  for (const JointRec& r : jrecs_)
-    if (r.a.piece == b.id || r.b.piece == b.id) return true;
+  if (cfg_.jointed_keep_identity)
+    for (const JointRec& r : jrecs_)
+      if (r.a.piece == b.id || r.b.piece == b.id) return true;
   return false;
 }
 
@@ -1279,8 +1280,15 @@ void spread_group(std::vector<PF>& fs, const std::vector<size_t>& idx) {
 // a beam) and what holds it from below (its supports) keep their places - pooled, they would
 // cancel, and a beam loaded between its supports would feel no bending.
 template <class PF>
-void spread_contact_forces(std::vector<PF>& fs) {
+void spread_contact_forces(std::vector<PF>& fs, bool per_partner) {
   if (fs.size() < 2) return;
+  if (!per_partner) {
+    // (pooled: all of them, the reference's way - WorldConfig::spread_per_partner)
+    std::vector<size_t> all(fs.size());
+    for (size_t k = 0; k < all.size(); ++k) all[k] = k;
+    spread_group(fs, all);
+    return;
+  }
   std::vector<size_t> order;
   for (size_t k = 0; k < fs.size(); ++k)
     if (fs[k].with != 0) order.push_back(k);
@@ -1349,7 +1357,7 @@ int World::fracture_hook(f64 dt) {
       fsum[size_t(c.b)] += norm(Fb);
     }
   }
-  // (what hangs on joints, and what they pull: a steady load; a chassis on its wheels, and what
+  // (what hangs on joints, and what they pull: a steady load; a carrier on its wheels, and what
   // they stand on)
   if (!jrecs_.empty()) joint_piece_forces(per, fsum);
   if (!wrecs_.empty()) wheel_piece_forces(per, fsum);
@@ -1376,7 +1384,7 @@ int World::fracture_hook(f64 dt) {
     // harder knock). Its cracks are paid from the approach's kinetic energy, so rubble cannot
     // grind itself down and a hard landing shatters what it overloads.
     const f64 v_min = std::max(cfg_.body_impact_speed, cfg_.small_impact_speed * (1.0 - b.mass / cfg_.small_piece_mass));
-    // (a piece crumpling as it goes - a car along a wall - spends the collision in its folds: its
+    // (a piece crumpling as it goes - a vehicle along a wall - spends the collision in its folds: its
     // checks come further apart while it does)
     const i32 gap = b.crumpling > 0 ? std::max(2, cfg_.crumple_check_gap) : 2;
     const bool impact = approach[i] > v_min && fsum[i] > cfg_.body_trigger * weight && b.stress_cooldown <= cfg_.body_check_ticks - gap;
@@ -1408,7 +1416,7 @@ int World::fracture_hook(f64 dt) {
         events_.push_back(std::move(ev));
       }
     }
-    if (cfg_.spread_contacts) spread_contact_forces(per[i]);
+    if (cfg_.spread_contacts) spread_contact_forces(per[i], cfg_.spread_per_partner);
     Check c;
     c.i = i;
     c.impact = impact;
@@ -1649,7 +1657,7 @@ void World::remove_bodies(std::vector<i64> ids, PieceEnd end) {
     events_.push_back(std::move(ev));
   }
   rigid_.remove_if([&](const Body& b) { return std::binary_search(ids.begin(), ids.end(), b.id); });
-  // (a chassis gone other than by breaking - removed, culled, fallen out, archived - takes its
+  // (a carrier gone other than by breaking - removed, culled, fallen out, archived - takes its
   // wheels with it; a split's parts keep theirs: flush_body_changes)
   if (end != PieceEnd::Split && !wrecs_.empty())
     for (size_t k = wrecs_.size(); k-- > 0;) {
@@ -1674,7 +1682,7 @@ void World::limit_bodies() {
     if (!j.broken)
       for (const i64 id : {j.a.body, j.b.body})
         if (id != 0) jointed.push_back(id);
-  for (const Wheel& w : rigid_.wheels)  // (a vehicle's chassis)
+  for (const Wheel& w : rigid_.wheels)  // (a carrier on wheels)
     if (!w.broken && w.body != 0) jointed.push_back(w.body);
   std::sort(jointed.begin(), jointed.end());
   std::vector<std::tuple<int, i32, i64>> cand;  // (awake, voxels, id)

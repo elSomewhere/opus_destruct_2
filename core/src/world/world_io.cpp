@@ -202,8 +202,9 @@ namespace {
 //   (v4) as v3; the session also has the wheels, the joints their collide flags and break angles
 //   (v5) as v4; the joints also have their latches
 //   (v6) as v5; the session also has the articulations, and those archived out of range
+//   (v7) as v6; the wheels also have their material (what one becomes when it comes off)
 constexpr u32 kGridsMagic = 0x47585653;  // "SVXG"
-constexpr u32 kGridsVersion = 6;
+constexpr u32 kGridsVersion = 7;
 
 using world_detail::put32;
 using world_detail::put64;
@@ -310,7 +311,7 @@ std::vector<u8> World::save_delta() const {
   if (source_)
     for (u64 k : archive_->keys())
       if ((k >> 62) == 2) archived.push_back({k, archive_->get(k)});  // (pieces' records: the session part)
-  std::sort(archived.begin(), archived.end());
+  std::sort(archived.begin(), archived.end(), [](const auto& a, const auto& b) { return a.first < b.first; });  // (keys are unique)
   // (a world of the world grid alone, with no pieces or joints, saves as it always did)
   if (gds.empty() && removed.empty() && archived.empty() && rigid_.bodies.empty() && jrecs_.empty() && wrecs_.empty() && archived_groups_.empty() &&
       arts_.empty() && archived_arts_.empty())
@@ -945,7 +946,6 @@ bool World::chunk_resident(const IVec3& cc) const {
 }
 
 // Ticks between the scans of the resident chunks for eviction (while the focus stays near).
-constexpr i64 kEvictScanTicks = 10;
 
 int World::stream_update() {
   if (!source_ || focus_.empty()) return 0;  // (no focus yet: nothing is loaded or evicted)
@@ -1002,9 +1002,10 @@ int World::stream_update() {
   // pieces and articulations archived out of range whose chunks are all resident again: back
   restore_groups();
   restore_articulations();
-  if (st_.ticks % 60 == 0) forget_stale_regions();
-  // (the rest walks every resident chunk: every few ticks (and on the memory budget's), or at
-  // once when a focus point moved far since - eviction has the hysteresis of its radius over
+  const bool every_tick = cfg_.evict_scan_ticks <= 1;  // (the reference's way: forgets after the scan)
+  if (!every_tick && st_.ticks % 60 == 0) forget_stale_regions();
+  // (the rest walks every resident chunk: every evict_scan_ticks (and on the memory budget's), or
+  // at once when a focus point moved far since - eviction has the hysteresis of its radius over
   // the load radius to spare)
   {
     bool moved = evict_scan_focus_.size() != focus_.size();
@@ -1012,7 +1013,7 @@ int World::stream_update() {
       const V3 d = focus_[i] - evict_scan_focus_[i];
       moved = d.x * d.x + d.y * d.y > 64.0;
     }
-    if (!moved && st_.ticks - evict_scan_tick_ < kEvictScanTicks && st_.ticks % 30 != 0) {
+    if (!moved && st_.ticks - evict_scan_tick_ < cfg_.evict_scan_ticks && st_.ticks % 30 != 0) {
       st_.stream_ms = ms_since(t0);
       return generated;
     }
@@ -1107,6 +1108,7 @@ int World::stream_update() {
       if (!go.empty()) unload_joints();
     }
   }
+  if (every_tick && st_.ticks % 60 == 0) forget_stale_regions();
   st_.stream_ms = ms_since(t0);
   return generated;
 }

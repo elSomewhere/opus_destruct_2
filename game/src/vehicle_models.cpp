@@ -8,6 +8,7 @@
 // firewall, an engine block between the front wheels, seats and a dashboard, and at each wheel
 // the top of its strut, where the wheel hangs from. What crumples in a crash is the body's own:
 // the front folds back to the engine block, the rails fold last.
+#include "svx/game/materials.hpp"
 #include "svx/game/vehicles.hpp"
 
 #include <algorithm>
@@ -292,7 +293,7 @@ void shell(Canvas& c, const Envelope& e, const std::function<std::pair<MaterialI
 // A wheel of the model: its strut's top (a frame voxel block the wheel hangs from, in the top of
 // its arch) and its slot.
 void wheel(Canvas& c, VehicleModel& m, i32 ax, i32 wy, i32 mount_z, f64 radius, f64 width, bool driven, bool steered, const WheelSlot& base) {
-  c.box2({ax - 1, wy - 1, mount_z}, {ax + 1, wy + 1, mount_z + 1}, MaterialId::CarFrame, Paint::Graphite);
+  c.box2({ax - 1, wy - 1, mount_z}, {ax + 1, wy + 1, mount_z + 1}, mat::CarFrame, Paint::Graphite);
   for (int s : {1, -1}) {
     WheelSlot w = base;
     w.mount = V3{kVehicleVoxel * ax, kVehicleVoxel * wy * s, kVehicleVoxel * (mount_z + 0.5)};
@@ -408,7 +409,7 @@ void bumper(Canvas& c, Parts& ps, const Envelope& e, bool front, i32 height = 4,
   P.break_torque = torque;
   const i32 xa = front ? e.x1 - 2 : e.x0, xb = front ? e.x1 : e.x0 + 2;
   const u8 id = ps.add(P, V3{front ? e.x1 - 1.0 : e.x0 + 1.0, 0.0, e.bottom + height + 0.5});
-  c.mark({xa, -e.hw, e.bottom}, {xb, e.hw, e.bottom + height}, id, [&](const IVec3& p) { return vox_mat(c.get(p)) == MaterialId::Plastic; });
+  c.mark({xa, -e.hw, e.bottom}, {xb, e.hw, e.bottom + height}, id, [&](const IVec3& p) { return vox_mat(c.get(p)) == mat::Plastic; });
 }
 
 // A box body's rear doors (a van's, a lorry's): two leaves of its rear face between z0 and z1,
@@ -463,8 +464,8 @@ void cargo(Canvas& c, Parts& ps, const IVec3& lo, const IVec3& hi) {
 
 // Seats: a cushion and a backrest (y from its outboard side inwards, x its front).
 void seat(Canvas& c, i32 xf, i32 y0, i32 y1, i32 floor, i32 cushion, i32 back) {
-  c.fill_air({xf - 5, y0, floor + 1}, {xf, y1, cushion}, MaterialId::Plastic, Paint::Graphite);
-  c.fill_air({xf - 7, y0, floor + 1}, {xf - 6, y1, back}, MaterialId::Plastic, Paint::Graphite);
+  c.fill_air({xf - 5, y0, floor + 1}, {xf, y1, cushion}, mat::Plastic, Paint::Graphite);
+  c.fill_air({xf - 7, y0, floor + 1}, {xf - 6, y1, back}, mat::Plastic, Paint::Graphite);
 }
 
 // A car body: bumpers, grille and lamps front and back, glass in its greenhouse.
@@ -483,27 +484,27 @@ std::pair<MaterialId, Paint> car_skin(const Envelope& e, const CarLook& k, Paint
   const i32 x = p[0], y = std::abs(p[1]), z = p[2];
   const i32 w = e.half_width(x, z);
   const f64 top = e.top_at(x);
-  if (f.bottom && z == e.bottom) return {MaterialId::Sheet, Paint::Graphite};
+  if (f.bottom && z == e.bottom) return {mat::Sheet, Paint::Graphite};
   // bumpers: the lowest band front and back
-  if (z <= e.bottom + 4 && (x >= e.x1 - 2 || x <= e.x0 + 2)) return {MaterialId::Plastic, Paint::Trim};
+  if (z <= e.bottom + 4 && (x >= e.x1 - 2 || x <= e.x0 + 2)) return {mat::Plastic, Paint::Trim};
   if (z > e.belt) {
-    if (f.top && x > k.ws0 && x < k.ws1 && y < w) return {MaterialId::Window, Paint::None};
-    if (f.top && x > k.rw0 && x < k.rw1 && y < w) return {MaterialId::Window, Paint::None};
-    if (f.front && k.front_glass && y < w - 1 && z < top - 1) return {MaterialId::Window, Paint::None};
-    if (f.rear && k.rear_glass_z >= 0 && z > k.rear_glass_z && y < w - 1 && z < top - 1) return {MaterialId::Window, Paint::None};
+    if (f.top && x > k.ws0 && x < k.ws1 && y < w) return {mat::Window, Paint::None};
+    if (f.top && x > k.rw0 && x < k.rw1 && y < w) return {mat::Window, Paint::None};
+    if (f.front && k.front_glass && y < w - 1 && z < top - 1) return {mat::Window, Paint::None};
+    if (f.rear && k.rear_glass_z >= 0 && z > k.rear_glass_z && y < w - 1 && z < top - 1) return {mat::Window, Paint::None};
     if (f.side && !f.top && x > k.side0 && x < k.side1 && z < top - 1) {
       bool pillar = false;
       for (const auto& pr : k.pillars) pillar = pillar || (x >= pr[0] && x <= pr[1]);
-      if (!pillar) return {MaterialId::Window, Paint::None};
+      if (!pillar) return {mat::Window, Paint::None};
     }
   }
   if (f.front && !f.top && x >= e.x1 - 1) {
-    if (z >= k.lamp_z0 && z <= k.lamp_z1 && y >= k.lamp_y0 && y < w - 1) return {MaterialId::Lamp, Paint::None};
-    if (z >= e.bottom + 5 && z < k.lamp_z0 && y < k.lamp_y0) return {MaterialId::Plastic, Paint::Trim};  // (the grille)
-    if (z >= k.lamp_z0 && z <= k.lamp_z1 && y == w - 1) return {MaterialId::Lamp, Paint::Amber};
+    if (z >= k.lamp_z0 && z <= k.lamp_z1 && y >= k.lamp_y0 && y < w - 1) return {mat::Lamp, Paint::None};
+    if (z >= e.bottom + 5 && z < k.lamp_z0 && y < k.lamp_y0) return {mat::Plastic, Paint::Trim};  // (the grille)
+    if (z >= k.lamp_z0 && z <= k.lamp_z1 && y == w - 1) return {mat::Lamp, Paint::Amber};
   }
-  if (f.rear && !f.top && x <= e.x0 + 1 && z >= k.tail_z0 && z <= k.tail_z1 && y >= k.tail_y0 && y < w) return {MaterialId::Lamp, Paint::TailRed};
-  return {MaterialId::Sheet, body};
+  if (f.rear && !f.top && x <= e.x0 + 1 && z >= k.tail_z0 && z <= k.tail_z1 && y >= k.tail_y0 && y < w) return {mat::Lamp, Paint::TailRed};
+  return {mat::Sheet, body};
 }
 
 VehicleModel sedan(Paint paint) {
@@ -535,12 +536,12 @@ VehicleModel sedan(Paint paint) {
   bumper(c, ps, e, true);
   bumper(c, ps, e, false);
   // the frame: rails, cross members, the firewall, the engine between the front wheels
-  c.box2({-36, 8, 4}, {35, 9, 5}, MaterialId::CarFrame, Paint::Graphite);
-  for (i32 x : {-30, -21, -8, 8, 22, 31}) c.fill_air({x, -13, 4}, {x, 13, 4}, MaterialId::CarFrame, Paint::Graphite);
-  c.fill_air({14, -13, 4}, {15, 13, 13}, MaterialId::Sheet, Paint::Graphite);
-  c.box({17, -6, 5}, {29, 6, 11}, MaterialId::Engine, Paint::Graphite);
+  c.box2({-36, 8, 4}, {35, 9, 5}, mat::CarFrame, Paint::Graphite);
+  for (i32 x : {-30, -21, -8, 8, 22, 31}) c.fill_air({x, -13, 4}, {x, 13, 4}, mat::CarFrame, Paint::Graphite);
+  c.fill_air({14, -13, 4}, {15, 13, 13}, mat::Sheet, Paint::Graphite);
+  c.box({17, -6, 5}, {29, 6, 11}, mat::Engine, Paint::Graphite);
   // the cabin: dashboard, seats
-  c.fill_air({10, -13, 11}, {13, 13, 13}, MaterialId::Plastic, Paint::Graphite);
+  c.fill_air({10, -13, 11}, {13, 13, 13}, mat::Plastic, Paint::Graphite);
   seat(c, 1, 2, 10, 3, 8, 15);
   seat(c, 1, -10, -2, 3, 8, 15);
   seat(c, -13, -12, 12, 3, 8, 15);
@@ -584,11 +585,11 @@ VehicleModel compact(Paint paint) {
   lid(c, ps, e, PartKind::Bonnet, 17, 28, true);
   bumper(c, ps, e, true);
   bumper(c, ps, e, false);
-  c.box2({-31, 7, 4}, {30, 8, 5}, MaterialId::CarFrame, Paint::Graphite);
-  for (i32 x : {-26, -19, -6, 8, 20, 27}) c.fill_air({x, -12, 4}, {x, 12, 4}, MaterialId::CarFrame, Paint::Graphite);
-  c.fill_air({14, -12, 4}, {15, 12, 13}, MaterialId::Sheet, Paint::Graphite);
-  c.box({17, -5, 5}, {27, 5, 10}, MaterialId::Engine, Paint::Graphite);
-  c.fill_air({10, -12, 11}, {13, 12, 13}, MaterialId::Plastic, Paint::Graphite);
+  c.box2({-31, 7, 4}, {30, 8, 5}, mat::CarFrame, Paint::Graphite);
+  for (i32 x : {-26, -19, -6, 8, 20, 27}) c.fill_air({x, -12, 4}, {x, 12, 4}, mat::CarFrame, Paint::Graphite);
+  c.fill_air({14, -12, 4}, {15, 12, 13}, mat::Sheet, Paint::Graphite);
+  c.box({17, -5, 5}, {27, 5, 10}, mat::Engine, Paint::Graphite);
+  c.fill_air({10, -12, 11}, {13, 12, 13}, mat::Plastic, Paint::Graphite);
   seat(c, 2, 2, 9, 3, 8, 16);
   seat(c, 2, -9, -2, 3, 8, 16);
   seat(c, -13, -11, 11, 3, 8, 16);
@@ -647,7 +648,7 @@ VehicleModel van(Paint paint) {
   shell(c, e, [&](const IVec3& p, const Facing& f) {
     auto r = car_skin(e, k, paint, p, f);
     // (its cargo's sides are blank; a stripe of trim along its flanks)
-    if (r.first == MaterialId::Sheet && f.side && p[2] == 12) r.second = Paint::Trim;
+    if (r.first == mat::Sheet && f.side && p[2] == 12) r.second = Paint::Trim;
     return r;
   });
   // (the cab's doors, the cargo's two rear doors, the bumpers)
@@ -656,11 +657,11 @@ VehicleModel van(Paint paint) {
   rear_doors(c, ps, e, e.bottom + 5, 30);
   bumper(c, ps, e, true);
   bumper(c, ps, e, false);
-  c.box2({-39, 9, 5}, {38, 10, 6}, MaterialId::CarFrame, Paint::Graphite);
-  for (i32 x : {-32, -24, -12, 0, 12, 26, 34}) c.fill_air({x, -14, 5}, {x, 14, 5}, MaterialId::CarFrame, Paint::Graphite);
-  c.fill_air({8, -14, 5}, {9, 14, 31}, MaterialId::Sheet, Paint::Graphite);  // (the bulkhead behind the cab)
-  c.box({27, -6, 6}, {36, 6, 14}, MaterialId::Engine, Paint::Graphite);
-  c.fill_air({22, -14, 14}, {25, 14, 17}, MaterialId::Plastic, Paint::Graphite);
+  c.box2({-39, 9, 5}, {38, 10, 6}, mat::CarFrame, Paint::Graphite);
+  for (i32 x : {-32, -24, -12, 0, 12, 26, 34}) c.fill_air({x, -14, 5}, {x, 14, 5}, mat::CarFrame, Paint::Graphite);
+  c.fill_air({8, -14, 5}, {9, 14, 31}, mat::Sheet, Paint::Graphite);  // (the bulkhead behind the cab)
+  c.box({27, -6, 6}, {36, 6, 14}, mat::Engine, Paint::Graphite);
+  c.fill_air({22, -14, 14}, {25, 14, 17}, mat::Plastic, Paint::Graphite);
   seat(c, 17, 3, 12, 4, 11, 21);
   seat(c, 17, -12, -3, 4, 11, 21);
   WheelSlot base;
@@ -724,7 +725,7 @@ VehicleModel pickup(Paint paint) {
   shell(c, e, [&](const IVec3& p, const Facing& f) {
     auto r = car_skin(e, k, paint, p, f);
     // (the cab's back is glass above the bed's walls)
-    if (p[0] == -10 && f.rear && p[2] > 18 && p[2] < 26 && std::abs(p[1]) < 11) r = {MaterialId::Window, Paint::None};
+    if (p[0] == -10 && f.rear && p[2] > 18 && p[2] < 26 && std::abs(p[1]) < 11) r = {mat::Window, Paint::None};
     return r;
   });
   // (the cab's doors, the bonnet, the tailgate on the bed's rear sill, the bumpers - the rear's
@@ -736,14 +737,14 @@ VehicleModel pickup(Paint paint) {
   bumper(c, ps, e, false, 1);
   for (i32 x = e.x0; x <= e.x0 + 2; ++x) {
     const i32 w = e.half_width(x, e.bed_z);
-    c.box({x, -w, e.bed_z}, {x, w, e.bed_z}, MaterialId::CarFrame, Paint::Graphite);
+    c.box({x, -w, e.bed_z}, {x, w, e.bed_z}, mat::CarFrame, Paint::Graphite);
   }
   tailgate(c, ps, e, e.bed_z + 1);
-  c.box2({-42, 9, 6}, {41, 10, 7}, MaterialId::CarFrame, Paint::Graphite);
-  for (i32 x : {-36, -26, -14, 0, 14, 27, 36}) c.fill_air({x, -14, 6}, {x, 14, 6}, MaterialId::CarFrame, Paint::Graphite);
-  c.fill_air({15, -14, 6}, {16, 14, 17}, MaterialId::Sheet, Paint::Graphite);
-  c.box({19, -6, 7}, {33, 6, 15}, MaterialId::Engine, Paint::Graphite);
-  c.fill_air({10, -14, 15}, {14, 14, 18}, MaterialId::Plastic, Paint::Graphite);
+  c.box2({-42, 9, 6}, {41, 10, 7}, mat::CarFrame, Paint::Graphite);
+  for (i32 x : {-36, -26, -14, 0, 14, 27, 36}) c.fill_air({x, -14, 6}, {x, 14, 6}, mat::CarFrame, Paint::Graphite);
+  c.fill_air({15, -14, 6}, {16, 14, 17}, mat::Sheet, Paint::Graphite);
+  c.box({19, -6, 7}, {33, 6, 15}, mat::Engine, Paint::Graphite);
+  c.fill_air({10, -14, 15}, {14, 14, 18}, mat::Plastic, Paint::Graphite);
   seat(c, 3, 3, 12, 5, 10, 20);
   seat(c, 3, -12, -3, 5, 10, 20);
   WheelSlot base;
@@ -752,7 +753,7 @@ VehicleModel pickup(Paint paint) {
   base.inertia = 1.8;
   wheel(c, m, 27, 12, 14, 0.38, 0.26, true, true, base);  // (four wheel drive)
   wheel(c, m, -26, 12, 14, 0.38, 0.26, true, false, base);
-  c.box2({-27, 14, 14}, {-25, 14, 15}, MaterialId::CarFrame, Paint::Graphite);  // (the rear struts' tops on the bed's walls)
+  c.box2({-27, 14, 14}, {-25, 14, 15}, mat::CarFrame, Paint::Graphite);  // (the rear struts' tops on the bed's walls)
   // two crates strapped down in the bed
   cargo(c, ps, {-38, -9, 8}, {-32, -3, 13});
   cargo(c, ps, {-29, 2, 8}, {-23, 8, 13});
@@ -818,20 +819,20 @@ VehicleModel truck(Paint paint) {
   box.tumble = 0;
   box.corner = 1;
   shell(c, box, [&](const IVec3& p, const Facing& f) -> std::pair<MaterialId, Paint> {
-    if (f.rear && p[2] >= 18 && p[2] <= 20 && std::abs(p[1]) >= 13) return {MaterialId::Lamp, Paint::TailRed};
-    if (f.bottom) return {MaterialId::Sheet, Paint::Graphite};
-    return {MaterialId::Sheet, (p[2] >= 50 || p[2] <= 16) ? paint : Paint::White};
+    if (f.rear && p[2] >= 18 && p[2] <= 20 && std::abs(p[1]) >= 13) return {mat::Lamp, Paint::TailRed};
+    if (f.bottom) return {mat::Sheet, Paint::Graphite};
+    return {mat::Sheet, (p[2] >= 50 || p[2] <= 16) ? paint : Paint::White};
   });
   rear_doors(c, ps, box, box.bottom + 4, 54);
   // the frame: two heavy rails the length of it, cross members, the engine under the cab
-  c.box2({-58, 9, 9}, {57, 11, 13}, MaterialId::CarFrame, Paint::Graphite);
-  for (i32 x : {-52, -40, -28, -16, -4, 8, 20, 32, 45, 54}) c.fill_air({x, -13, 10}, {x, 13, 12}, MaterialId::CarFrame, Paint::Graphite);
-  c.box({40, -7, 14}, {54, 7, 26}, MaterialId::Engine, Paint::Graphite);
-  c.fill_air({44, -16, 27}, {48, 16, 30}, MaterialId::Plastic, Paint::Graphite);
+  c.box2({-58, 9, 9}, {57, 11, 13}, mat::CarFrame, Paint::Graphite);
+  for (i32 x : {-52, -40, -28, -16, -4, 8, 20, 32, 45, 54}) c.fill_air({x, -13, 10}, {x, 13, 12}, mat::CarFrame, Paint::Graphite);
+  c.box({40, -7, 14}, {54, 7, 26}, mat::Engine, Paint::Graphite);
+  c.fill_air({44, -16, 27}, {48, 16, 30}, mat::Plastic, Paint::Graphite);
   seat(c, 41, 3, 15, 9, 20, 32);
   seat(c, 41, -15, -3, 9, 20, 32);
   // bumper: a steel beam bolted to the rails' ends
-  c.box({57, -17, 10}, {59, 17, 14}, MaterialId::CarFrame, Paint::Trim);
+  c.box({57, -17, 10}, {59, 17, 14}, mat::CarFrame, Paint::Trim);
   {
     VehiclePart P;
     P.kind = PartKind::Bumper;
@@ -854,8 +855,8 @@ VehicleModel truck(Paint paint) {
             for (int s : {1, -1}) c.clear({x, y * s, z});
   // (their struts' tops on posts up from the rails)
   for (i32 ax : {-30, -47}) {
-    c.box2({ax - 1, 10, 13}, {ax + 1, 11, 18}, MaterialId::CarFrame, Paint::Graphite);
-    c.box2({ax - 1, 12, 17}, {ax + 1, 15, 18}, MaterialId::CarFrame, Paint::Graphite);
+    c.box2({ax - 1, 10, 13}, {ax + 1, 11, 18}, mat::CarFrame, Paint::Graphite);
+    c.box2({ax - 1, 12, 17}, {ax + 1, 15, 18}, mat::CarFrame, Paint::Graphite);
   }
   wheel(c, m, -30, 14, 17, 0.5, 0.32, true, false, base);
   wheel(c, m, -47, 14, 17, 0.5, 0.32, true, false, base);

@@ -182,7 +182,7 @@ struct Body {
   i64 parent = 0;
   i64 origin = 0;  // (world) the piece it was split from, until it joins the world (joints follow their voxels)
   bool keep = false;  // (world) never culled (World::set_piece_keep; a joint's pieces are kept too)
-  f64 max_speed = 0.0;  // m/s: its speed limit (0: RigidParams::max_speed; a car's is higher)
+  f64 max_speed = 0.0;  // m/s: its speed limit (0: RigidParams::max_speed; a vehicle's is higher)
   // world data (fracture layer)
   std::shared_ptr<BodyGraph> graph;
   i32 stress_cooldown = 0;
@@ -272,6 +272,10 @@ struct RigidParams {
   // through a thin wall or floor.
   bool speculative = true;
   int speculative_contacts = 8;
+  // Pieces closing fast (more than half a voxel a substep, faster than 4 m/s) look ahead for each
+  // other too: a speculative contact where a sample would strike, so thin panels are not passed
+  // through (docs/BASELINE.md: off, only the statics are looked ahead for).
+  bool piece_ccd = true;
   int manifold = 12;                 // contacts kept per body pair ...
   f64 manifold_per_m = 8.0;          // ... plus this per m of the body's radius (a bearing surface)
   f64 kill_depth = 30.0;             // m below the world: removed
@@ -307,7 +311,7 @@ struct Contact {
   f64 approach = 0;                  // normal approach speed before the solve (m/s, > 0 closing)
   f64 mu = 0.6;
   u64 key = 0;
-  // Crumpling (Material::crush, docs/VEHICLES.md): where a side crumples, the contact carries at
+  // Crumpling (Material::crush, docs/DAMAGE.md §4): where a side crumples, the contact carries at
   // most the softer side's crush strength x its share of the contact area: cap (N s this
   // substep; 0: no cap). crush: the sides that fold (1 a, 2 b, 3 both). crushing: it carried its
   // cap (the bodies keep closing: its crumpling side folds, no position correction).
@@ -463,7 +467,7 @@ void joint_stillness();  // joined bodies count towards sleep together (sleep_up
   struct WheelPrep {
     bool on = false;                   // (mounted on an awake body)
     bool touch = false;                // (its tyre touches something)
-    i32 ia = -1, ib = -1;              // the chassis; the body it stands on (-1: a static grid, a sleeping body)
+    i32 ia = -1, ib = -1;              // the carrier; the body it stands on (-1: a static grid, a sleeping body)
     f64 ma = 0.0, mb = 0.0;
     M3 Ia, Ib;
     V3 ra, rb;                         // arms to the contact point
@@ -483,7 +487,7 @@ void joint_stillness();  // joined bodies count towards sleep together (sleep_up
   void solve_wheels();
   void finish_wheels(f64 dt);
   void wheel_support(const std::function<void(i32 body, bool up, f64 jz)>& push) const;  // (sleep: what stands on its wheels is held)
-  void wheel_stillness();                                                                // (a driven or spinning wheel keeps its chassis awake)
+  void wheel_stillness();                                                                // (a driven or spinning wheel keeps its carrier awake)
   std::vector<u8> hanging(const std::vector<u8>& held) const;  // bodies a joint holds up (to what is held or immovable)
   std::vector<u8> machine_parts() const;                        // per body: an end of a drive at work
 

@@ -10,10 +10,10 @@
 #include "svx/base/parallel.hpp"
 #include "svx/game/doom/movers.hpp"
 #include "svx/game/doom/world.hpp"
-#include "svx/game/city.hpp"
-#include "svx/game/drive_city.hpp"
 #include "svx/game/game.hpp"
-#include "svx/game/procgen.hpp"
+#include "svx/procgen/city.hpp"
+#include "svx/procgen/drive_city.hpp"
+#include "svx/procgen/levels.hpp"
 #include "svx/world/tunables.hpp"
 
 using namespace svx;
@@ -113,7 +113,7 @@ int svx_load_procedural(svx_engine* e, const char* kind, double seed) {
     e->eng.load_streaming(make_drive_city(seed_of(seed), e->h), e->h, sc, far);
     return 0;
   }
-  load_procedural(e->eng, make_procedural(k, seed_of(seed), e->h));
+  load_level(e->eng, make_procedural(k, seed_of(seed), e->h));
   return 0;
 }
 

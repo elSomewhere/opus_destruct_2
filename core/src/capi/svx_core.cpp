@@ -26,7 +26,7 @@ struct svxc_world {
 };
 
 static_assert(SVXC_REBAR == static_cast<int>(MaterialId::Rebar) && SVXC_WOOD == static_cast<int>(MaterialId::Wood) &&
-                  SVXC_LAMP == static_cast<int>(MaterialId::Lamp) && SVXC_LAMP + 1 == kStandardMaterials,
+                  SVXC_STEEL_SECTION == static_cast<int>(MaterialId::SteelSection) && SVXC_STEEL_SECTION + 1 == kStandardMaterials,
               "svx_core.h's materials are the registry's standard ones");
 static_assert(SVXC_JOINT_DISTANCE == static_cast<int>(JointType::Distance) && SVXC_ANCHOR_PIECE == static_cast<int>(JointAnchor::Kind::Piece),
               "svx_core.h's joints are the core's");
@@ -795,6 +795,7 @@ void svxc_wheel_defaults(svxc_wheel_desc* d) {
   d->inertia = def.inertia;
   d->grip = def.grip;
   d->break_force = def.break_force;
+  d->material = static_cast<int>(def.material);
 }
 
 uint32_t svxc_add_wheel(svxc_world* w, const svxc_wheel_desc* d) {
@@ -814,6 +815,8 @@ uint32_t svxc_add_wheel(svxc_world* w, const svxc_wheel_desc* d) {
   wd.inertia = d->inertia;
   wd.grip = d->grip;
   wd.break_force = d->break_force;
+  if (d->material < 0 || d->material >= kMaxMaterials) return 0;
+  wd.material = static_cast<MaterialId>(d->material);
   wd.group = d->group;
   wd.tag = d->tag;
   return w->w.add_wheel(wd);

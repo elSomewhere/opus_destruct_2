@@ -1,11 +1,11 @@
-// structvox — the wheel solver (phys/wheel.hpp, docs/VEHICLES.md): each wheel's tyre cast
+// structvox — the wheel solver (phys/wheel.hpp, docs/MOTION.md §7): each wheel's tyre cast
 // along its suspension, and its rows - suspension, bump stop, brake, tyre - solved with the
 // contacts and the joints.
 //
 // Conventions (world): d the suspension axis down, u = -d; a the axle (steered), f = d x a the
 // direction the wheel rolls; a positive spin rolls it forward (its contact patch moves back
 // against the hub at spin x radius). In the contact plane (normal n): fx along f, fy = n x fx
-// (to the left). Rows act between the chassis (A) and what the wheel stands on (B: a body, or a
+// (to the left). Rows act between the carrier (A) and what the wheel stands on (B: a body, or a
 // static grid or a sleeping body that nothing moves).
 #include <algorithm>
 #include <cmath>
@@ -34,7 +34,7 @@ constexpr f64 kAcross[3] = {0.0, 0.35, -0.35};  // x the width
 constexpr f64 kAbove = 0.35;
 // Tyre model: slip stiffness per unit load (1/rad, per unit slip ratio), where grip peaks (the
 // slip angle and ratio), how much it keeps when it slides, and the speed below which the tyre
-// rows are rigid (a car at rest holds on a slope, a creeping car does not drift).
+// rows are rigid (a carrier at rest holds on a slope, a creeping one does not drift).
 constexpr f64 kCornering = 12.0, kLongitudinal = 16.0;
 constexpr f64 kPeakAngle = 0.10, kPeakRatio = 0.08;
 constexpr f64 kSlide = 0.72;
@@ -76,7 +76,7 @@ void RigidWorld::cast_wheels(const std::vector<StaticGrid>& statics) {
     const auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
     return (it != bodies.end() && (*it)->id == id) ? static_cast<i32>(it - bodies.begin()) : -1;
   };
-  // (what a wheel does not see: its chassis and what is joined to it - a car's doors, bumpers)
+  // (what a wheel does not see: its carrier and what is joined to it - the carrier's own parts)
   std::vector<i32> group(nb);
   for (size_t i = 0; i < nb; ++i) group[i] = static_cast<i32>(i);
   auto root = [&](i32 i) {
@@ -270,7 +270,7 @@ void RigidWorld::prepare_wheels(f64 dt, const std::vector<M3>& Iw) {
     P.Ia = Iw[size_t(ia)];
     const f64 I = std::max(1e-3, w.inertia);
     const f64 r = w.radius;
-    // drive: the engine's torque spins the wheel up (explicitly; the tyre row takes it to the ground)
+    // drive: the drive torque spins the wheel up (explicitly; the tyre row takes it to the ground)
     w.spin = std::clamp(w.spin + w.drive * dt / I, -kMaxSpin, kMaxSpin);
     const M3 R = to_matrix(A.q);
     const V3 d = normalized(R * w.down);
@@ -395,7 +395,7 @@ void RigidWorld::solve_wheels() {
       apply(P.u * (nl - w.lbump));
       w.lbump = nl;
     }
-    // brake: holds the spin (relative to the chassis) at most with its torque
+    // brake: holds the spin (relative to the carrier) at most with its torque
     if (P.brake > 0.0) {
       const f64 nl = std::clamp(w.lb - w.spin * I, -P.brake, P.brake);
       w.spin += (nl - w.lb) / I;
@@ -435,7 +435,7 @@ void RigidWorld::finish_wheels(f64 dt) {
   for (size_t k = 0; k < wheels.size(); ++k) {
     Wheel& w = wheels[k];
     const WheelPrep& P = k < wprep_.size() ? wprep_[k] : WheelPrep{};
-    if (!P.on) continue;  // (its chassis asleep: it carries what it did when it fell asleep)
+    if (!P.on) continue;  // (its carrier asleep: it carries what it did when it fell asleep)
     w.angle += w.spin * dt;
     if (w.angle >= 0.5 * kTwoPi || w.angle < -0.5 * kTwoPi) w.angle -= kTwoPi * std::floor(w.angle / kTwoPi + 0.5);
     if (!P.touch) {
@@ -460,7 +460,7 @@ void RigidWorld::finish_wheels(f64 dt) {
 }
 
 void RigidWorld::wheel_support(const std::function<void(i32, bool, f64)>& push) const {
-  // (a chassis on grounded wheels is held up by them, as by contacts facing up)
+  // (a carrier on grounded wheels is held up by them, as by contacts facing up)
   constexpr f64 kUp = 0.1;
   auto index_of = [&](i64 id) -> i32 {
     const auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
@@ -479,7 +479,7 @@ void RigidWorld::wheel_support(const std::function<void(i32, bool, f64)>& push) 
 }
 
 void RigidWorld::wheel_stillness() {
-  // (a wheel driven, or spinning, keeps its chassis awake: a car accelerating from rest)
+  // (a wheel driven, or spinning, keeps its carrier awake: one accelerating from rest)
   auto index_of = [&](i64 id) -> i32 {
     const auto it = std::lower_bound(bodies.begin(), bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
     return (it != bodies.end() && (*it)->id == id) ? static_cast<i32>(it - bodies.begin()) : -1;

@@ -94,11 +94,28 @@ if(SVX_BUILD_ANIM)
 endif()
 
 if(SVX_BUILD_GAME)
-  file(GLOB_RECURSE SVX_GAME_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/game/src/*.cpp)
+  # The game: its authored systems (vehicles, traffic, people, movers, replays, the Doom importer)
+  # on the core and the modules. Levels and streamed worlds are handed to it (svx/game/level.hpp,
+  # svx/game/source.hpp): it knows nothing of how they are made.
+  file(GLOB SVX_GAME_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/game/src/*.cpp
+       ${CMAKE_CURRENT_SOURCE_DIR}/game/src/doom/*.cpp)
   add_library(svx_game STATIC ${SVX_GAME_SOURCES})
   target_include_directories(svx_game PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/game/include)
   target_link_libraries(svx_game PUBLIC svx_core svx_mesh svx_env svx_anim)
   target_compile_options(svx_game PRIVATE -fno-exceptions -fno-rtti ${SVX_WARNINGS})
+
+  # Procedural generation (to be replaced: a module of its own): the test levels, the streamed
+  # city and the endless drive city, made of the game's materials and paints.
+  file(GLOB SVX_PROCGEN_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/procgen/src/*.cpp)
+  add_library(svx_procgen STATIC ${SVX_PROCGEN_SOURCES})
+  target_include_directories(svx_procgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/procgen/include)
+  target_link_libraries(svx_procgen PUBLIC svx_game)
+  target_compile_options(svx_procgen PRIVATE -fno-exceptions -fno-rtti ${SVX_WARNINGS})
+
+  # The game's C ABI (svx/game/api/svx_api.h: the web worker's engine), which picks the levels.
+  add_library(svx_api STATIC ${CMAKE_CURRENT_SOURCE_DIR}/game/src/api/svx_api.cpp)
+  target_link_libraries(svx_api PUBLIC svx_game svx_procgen)
+  target_compile_options(svx_api PRIVATE -fno-exceptions -fno-rtti ${SVX_WARNINGS})
 endif()
 
 # Helper for executables that must run under node when cross-compiled to WASM.

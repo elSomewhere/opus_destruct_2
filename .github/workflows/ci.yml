@@ -1,5 +1,10 @@
 name: ci
-on: [push, pull_request]
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+  schedule:
+    - cron: "17 3 * * *"  # (nightly: the browser checks)
 jobs:
   native:
     runs-on: ubuntu-24.04
@@ -9,8 +14,42 @@ jobs:
         run: scripts/fetch_freedoom.sh
       - name: Configure + build
         run: cmake --preset native-release && cmake --build --preset native-release -j
-      - name: Test (unit + golden parity)
+      - name: Test
         run: ctest --test-dir build/native-release --output-on-failure
+      # The engine's behaviour pinned (docs/BASELINE.md): its own world hashes, and the structural
+      # reference's (oriented_1) reproduced bit for bit with the switches that restore its solver.
+      - name: Golden hashes
+        run: tools/baseline/golden.sh build/native-release/tools --threads 4
+      # Long sessions: the drive city with its traffic and people, shooting and blasting - the
+      # memory it holds must level off.
+      - name: Soak (memory levels off)
+        run: build/native-release/tools/svx_soak --world drive --minutes 4 --threads 4 --check
+      - name: Environment bench (timings, for the log)
+        run: |
+          build/native-release/tools/svx_env_bench --scenario fire --threads 4
+          build/native-release/tools/svx_env_bench --scenario flood --threads 4
+
+  sanitize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [native-asan, native-tsan]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fetch Freedoom
+        run: scripts/fetch_freedoom.sh
+      - name: Configure + build
+        run: cmake --preset ${{ matrix.preset }} && cmake --build --preset ${{ matrix.preset }} -j
+      - name: Test
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+          TSAN_OPTIONS: halt_on_error=1:second_deadlock_stack=1
+        # (the game suite takes most of an hour under a sanitizer)
+        run: ctest --test-dir build/${{ matrix.preset }} --output-on-failure --timeout 7200
+
   wasm:
     runs-on: ubuntu-24.04
     steps:
@@ -25,5 +64,57 @@ jobs:
         run: scripts/fetch_freedoom.sh
       - name: Configure + build (Emscripten, SIMD128)
         run: cmake --preset wasm-release && cmake --build --preset wasm-release -j
+      # (the test binaries run under Node: the toolchain's CMAKE_CROSSCOMPILING_EMULATOR)
       - name: Test under Node
-        run: node build/wasm-release/tests/svx_tests.js
+        run: ctest --test-dir build/wasm-release --output-on-failure
+      # The same world hashes as natively: bit-identical on every platform.
+      - name: Golden hashes under Node (short scenarios)
+        run: |
+          for t in svx_engine_demo svx_env_bench; do
+            printf '#!/bin/sh\nexec node %s/build/wasm-release/tools/%s.js "$@"\n' "$PWD" "$t" > build/wasm-release/tools/$t
+            chmod +x build/wasm-release/tools/$t
+          done
+          tools/baseline/golden.sh build/wasm-release/tools --threads 1 --filter 'side|rooms|slab|chimney'
+
+  web:
+    runs-on: ubuntu-24.04
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+
+  # The front end in a browser (software WebGPU): the people, the drive, the fire. Nightly and on
+  # demand - a GPU-less runner's timings vary too much to hold every push to them.
+  browser:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mymindstorm/setup-emsdk@v14
+        with:
+          version: 5.0.7
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Build the engine module
+        run: cmake --preset wasm-release && cmake --build --preset wasm-release -j --target svx_web
+      - name: Front end
+        working-directory: web
+        run: npm ci && npm i --no-save puppeteer-core
+      - name: Browser checks
+        working-directory: web
+        env:
+          CHROME_PATH: /usr/bin/google-chrome
+        run: |
+          npx vite --port 5190 --strictPort &
+          npx --yes wait-on http://localhost:5190/
+          node scripts/smoke-wasm.mjs http://localhost:5190/
+          node scripts/people-wasm.mjs http://localhost:5190/
+          node scripts/drive-wasm.mjs http://localhost:5190/

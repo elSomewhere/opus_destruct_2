@@ -1,12 +1,12 @@
-// structvox — wheels (docs/VEHICLES.md): what they hang from, how they follow it, what they load,
+// structvox — wheels (docs/MOTION.md §7): what they hang from, how they follow it, what they load,
 // and what is left when one comes off.
 //
-// A wheel hangs from a voxel of its chassis (a grid's, going with the piece it becomes; a
+// A wheel hangs from a voxel of its carrier (a grid's, going with the piece it becomes; a
 // piece's, going with the part it is in when the piece breaks), like a joint's end (JointRec::End,
-// world_joints.cpp). Each substep its solver mount is filled from that anchor at the chassis'
+// world_joints.cpp). Each substep its solver mount is filled from that anchor at the carrier's
 // pose. When the voxel is gone (crushed in a crash, shot away) or the wheel's force passes its
-// breaking strength, it comes off: a wheel-shaped piece of rubber where it was, moving as it
-// moved (WheelDetached).
+// breaking strength, it comes off: a wheel-shaped piece of its material where it was, moving as
+// it moved (WheelDetached).
 #include <algorithm>
 #include <cmath>
 
@@ -53,7 +53,7 @@ Quat quat_from_basis(const V3& x, const V3& y, const V3& z) {
   return qnormalized(q);
 }
 
-// A wheel's frame in the world at its chassis' pose: its axis down, its axle (steered) and the
+// A wheel's frame in the world at its carrier's pose: its axis down, its axle (steered) and the
 // way it rolls; its mount and centre.
 struct WheelFrame {
   V3 d, a, f, M, C;
@@ -168,6 +168,7 @@ WheelId World::add_wheel_impl(const WheelDesc& d, WheelId want) {
   r.id = w.id;
   r.group = d.group;
   r.tag = d.tag;
+  r.material = static_cast<int>(d.material) < kMaxMaterials ? d.material : MaterialId::Steel;
   const size_t k = insert_wheel(r, w);
   if (!fill_wheel_mount(k)) {
     wrecs_.erase(wrecs_.begin() + static_cast<std::ptrdiff_t>(k));
@@ -210,7 +211,7 @@ bool World::set_wheel_input(WheelId id, f64 drive, f64 brake, f64 steer) {
     w.drive = drive;
     w.brake = brake;
     w.steer = steer;
-    // (a car at rest wakes when it is driven, released or steered)
+    // (a carrier at rest wakes when it is driven, released or steered)
     if (change)
       if (Body* b = rigid_.find(w.body); b && b->asleep && (drive != 0.0 || steer != 0.0 || brake == 0.0)) rigid_.wake(*b);
     return true;
@@ -381,12 +382,12 @@ i64 World::make_wheel_body(const Wheel& w) {
       if (static_cast<f64>(x * x + z * z) > rr) continue;
       for (i32 y = -m; y <= m; ++y) {
         const i32 i = S.index({x, y, z});
-        S.vox[size_t(i)] = make_vox(MaterialId::Tyre, false);
+        S.vox[size_t(i)] = make_vox(r.material, false);
         S.frag[size_t(i)] = 1;
       }
     }
   b->frags.resize(1);
-  b->frags[0].mat = MaterialId::Tyre;
+  b->frags[0].mat = r.material;
   refragment_body(*b);
   if (b->count < cfg_.min_body_voxels) return 0;
   body_refresh(*b, grid_.h, cfg_.rigid.max_points);
@@ -458,9 +459,9 @@ void World::wheel_structure_loads(f64 dt_sub) {
   (void)dt_sub;
   const f64 imp = par_.impact;
   // (a wheel rolling onto a fragment is a load that moves, not a blow: it counts as an impact
-  // - a load case solved at once - only beyond 2.5 x its share of its chassis' weight: a landing,
-  // a kerb struck at speed. Otherwise its load creeps, and is solved again as loads do.)
-  std::vector<std::pair<i64, i32>> on;  // (chassis, its wheels on the ground)
+  // - a load case solved at once - only beyond 2.5 x its share of its carrier's weight: a landing,
+  // a step struck at speed. Otherwise its load creeps, and is solved again as loads do.)
+  std::vector<std::pair<i64, i32>> on;  // (carrier, its wheels on the ground)
   for (const Wheel& w : rigid_.wheels)
     if (!w.broken && w.contact && w.body != 0) {
       auto it = std::lower_bound(on.begin(), on.end(), std::make_pair(w.body, 0));
@@ -517,7 +518,7 @@ void World::wheel_piece_forces(std::vector<std::vector<PointForce>>& per, std::v
   for (size_t k = 0; k < wrecs_.size(); ++k) {
     const Wheel& w = rigid_.wheels[k];
     if (w.broken || !w.contact || w.body == 0 || norm2(w.force) == 0.0) continue;
-    // the chassis: through its mount's voxel
+    // the carrier: through its mount's voxel
     const JointRec::End& E = wrecs_[k].mount;
     const i64 ia = index_of(w.body);
     if (ia >= 0 && size_t(ia) < per.size() && E.shape >= 0) {

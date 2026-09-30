@@ -419,6 +419,10 @@ class Game {
   void far_update();
   ChunkMesh far_mesh(i32 tx, i32 ty) const;
 
+  // (the game's materials are in the process's table before its world is made from it)
+  struct MaterialsFirst {
+    MaterialsFirst();
+  } materials_first_;
   World world_;
   Environment env_;
   GameParams par_;

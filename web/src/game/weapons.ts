@@ -3,7 +3,7 @@
  * - pistol and shotgun are hitscan: a shot's `raycast` (people's bodies are hit too), then a round
  *   into the character hit (`woundCharacter`), or `shoot` a small sphere at the world's hit with
  *   the round's energy (it holes what that gets through: brick, concrete, a car's sheet metal and
- *   glass - not armour; docs/VEHICLES.md);
+ *   glass - not armour; docs/DAMAGE.md);
  * - the flamethrower and the water hose are short-range hitscan streams: `ignite` a sphere at
  *   the hit, or `pour` water there (and `extinguish` it) (the engine's environment, docs/ENV.md);
  * - the rocket launcher fires a visible projectile. It flies straight, so its path is

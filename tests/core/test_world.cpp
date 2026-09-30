@@ -1,10 +1,12 @@
 // The physics core on its own: hand-built worlds, no game harness (links svx_core only).
 #include <cmath>
+#include <unordered_set>
 #include <vector>
 
 #include "doctest.h"
 #include "svx/base/parallel.hpp"
 #include "svx/material/material.hpp"
+#include "svx/world/tunables.hpp"
 #include "svx/world/world.hpp"
 
 using namespace svx;
@@ -1041,4 +1043,20 @@ TEST_CASE("world: every world has its own materials") {
   CHECK(ub == doctest::Approx(10.0 * ua).epsilon(0.02));
   CHECK(uc == ua);
   CHECK(material(MaterialId::Concrete).ft == a.materials()[MaterialId::Concrete].ft);
+}
+
+TEST_CASE("world: every tunable has an id of its own, from its name (command logs replay across builds)") {
+  std::unordered_set<u32> ids;
+  for (i32 i = 0; i < tunable_count(); ++i) {
+    const u32 id = tunable_id(i);
+    CHECK(id != 0);
+    CHECK(ids.insert(id).second);  // (unique)
+    CHECK(tunable_by_id(id) == i);
+  }
+  // (the id is the name's: FNV-1a, 32 bits - whatever the order of the list)
+  u32 h = 2166136261u;
+  for (const char* c = "plastic_hinges"; *c; ++c) h = (h ^ static_cast<u8>(*c)) * 16777619u;
+  CHECK(tunable_id(tunable_index("plastic_hinges")) == h);
+  CHECK(tunable_by_id(0x12345678u) == -1);
+  CHECK(tunable_id(-1) == 0);
 }

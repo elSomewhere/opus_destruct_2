@@ -24,8 +24,8 @@
 #include "svx/game/doom/world.hpp"
 #include "svx/game/game.hpp"
 #include "svx/game/replay.hpp"
-#include "svx/game/procgen.hpp"
-#include "svx/game/city.hpp"
+#include "svx/procgen/city.hpp"
+#include "svx/procgen/levels.hpp"
 
 using namespace svx;
 
@@ -63,7 +63,7 @@ bool load_world(Game& eng, const std::string& world, std::string* err) {
     eng.load_streaming(std::move(src), eng.grid().h);
     return true;
   }
-  ProcWorld pw = make_procedural(world, 1);
+  Level pw = make_procedural(world, 1);
   eng.load(std::move(pw.grid), pw.spawn_pos, pw.spawn_dir);
   add_grids(eng.world(), std::move(pw.grids));
   return true;

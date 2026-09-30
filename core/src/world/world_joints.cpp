@@ -1,4 +1,4 @@
-// structvox — joints (docs/MOTION.md §2): what their ends hold on to, and how they follow it.
+// structvox — joints (docs/MOTION.md §1): what their ends hold on to, and how they follow it.
 //
 // An end holds on to a point of the world, or a voxel (of a grid, or of a piece: kept as its
 // grid's voxel). A voxel's end goes where the voxel goes: into the piece

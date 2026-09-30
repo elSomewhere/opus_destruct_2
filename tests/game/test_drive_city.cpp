@@ -4,8 +4,9 @@
 #include <vector>
 
 #include "doctest.h"
-#include "svx/game/drive_city.hpp"
 #include "svx/game/game.hpp"
+#include "svx/game/materials.hpp"
+#include "svx/procgen/drive_city.hpp"
 
 using namespace svx;
 
@@ -58,7 +59,7 @@ TEST_CASE("drive city: its lanes run on asphalt, marked, between kerbs, and lead
     for (f64 u : {0.1, 0.5, 0.9}) {
       const V3 p = l.a + (l.b - l.a) * u;
       const auto [v, paint] = probe.at(voxel_at(p - V3{0, 0, 0.05}));
-      CHECK(vox_mat(v) == MaterialId::Asphalt);
+      CHECK(vox_mat(v) == mat::Asphalt);
       CHECK_FALSE(vox_solid(probe.at(voxel_at(p + V3{0, 0, 0.1})).first));  // (and air over it)
       (void)paint;
     }
@@ -86,7 +87,7 @@ TEST_CASE("drive city: its lanes run on asphalt, marked, between kerbs, and lead
   for (i32 x = -300; x < 300; ++x)
     for (i32 y = -300; y < 300; ++y) {
       const auto [v, p] = probe.at({x, y, -1});
-      if (vox_mat(v) == MaterialId::Asphalt) ++paints[p];
+      if (vox_mat(v) == mat::Asphalt) ++paints[p];
     }
   CHECK(paints[static_cast<int>(Paint::LineWhite)] > 10);
   CHECK(paints[static_cast<int>(Paint::LineYellow)] > 10);
@@ -94,7 +95,7 @@ TEST_CASE("drive city: its lanes run on asphalt, marked, between kerbs, and lead
   std::vector<ParkingSpot> spots;
   roads->parking_in(V3{-120, -120, 0}, V3{120, 120, 0}, spots);
   CHECK(spots.size() > 10);
-  for (const ParkingSpot& s : spots) CHECK(vox_mat(probe.at(voxel_at(s.pos - V3{0, 0, 0.05})).first) == MaterialId::Asphalt);
+  for (const ParkingSpot& s : spots) CHECK(vox_mat(probe.at(voxel_at(s.pos - V3{0, 0, 0.05})).first) == mat::Asphalt);
   // it goes on: 60 km out, a chunk of it is made like any other
   std::vector<Vox> far;
   CHECK(src->generate(IVec3{15000, -15000, -1}, far));

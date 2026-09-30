@@ -3,32 +3,42 @@
 // the tick cost (mean, 99th percentile, max), the environment's share, and the session hash:
 // an optimization that changes no result keeps every hash.
 //
-// usage: svx_env_bench [--scenario fire|flood|city|all] [--threads T] [--repeat N] [--slow MS]
+// usage: svx_env_bench [--scenario fire|flood|city|all] [--threads T] [--repeat N] [--slow MS] [--tune NAME=VALUE ...]
+//          [--archive-mb MB]  (the streamed city's change archive; 0: keep every change)
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <functional>
 #include <string>
 #include <vector>
 
 #include "svx/base/parallel.hpp"
-#include "svx/game/city.hpp"
 #include "svx/game/game.hpp"
-#include "svx/game/procgen.hpp"
+#include "svx/procgen/city.hpp"
+#include "svx/procgen/levels.hpp"
 
 using namespace svx;
 
 namespace {
 
-f64 g_slow = 0.0;  // --slow MS: the breakdown of ticks slower than this
+f64 g_slow = 0.0;
+f64 g_archive_mb = -1.0;  // (--archive-mb: the streamed city's change archive; < 0: its default)  // --slow MS: the breakdown of ticks slower than this
 
 struct Result {
   std::vector<f64> tick_ms;
   f64 env_ms = 0.0;
-  u64 hash = 0;
+  u64 hash = 0, world_hash = 0;  // (the session's; the world's alone - docs/BASELINE.md)
   std::string note;
 };
+
+// (--tune name=value: the world's tunables, set on every scenario's game before its load)
+std::vector<std::pair<std::string, f64>> g_tunes;
+void tune(Game& g) {
+  for (const auto& [name, value] : g_tunes)
+    if (!g.set_tunable(name.c_str(), value)) std::fprintf(stderr, "unknown tunable %s\n", name.c_str());
+}
 
 void take_all(Game& g) {
   g.take_meshes(MeshOptions{});
@@ -57,19 +67,24 @@ Result run(Game& g, i64 ticks, const std::function<void(Game&, i64)>& script) {
                   static_cast<long long>(t), r.tick_ms.back(), st.tick_ms, st.structural_ms, st.rigid_ms, st.event_ms, st.loads_ms, st.stream_ms, st.systems_ms, st.upkeep_ms, st.solving,
                   static_cast<long long>(st.solve_nodes), static_cast<long long>(st.extractions), st.bodies, st.awake);
     take_all(g);
+    if (std::getenv("SVX_TRACE_HASH"))  // (each tick's world hash: where two builds part)
+      std::printf("[t%lld] world %016llx pieces %d\n", static_cast<long long>(t), static_cast<unsigned long long>(g.world().session_hash()),
+                  g.stats().bodies);
   }
   r.hash = g.session_hash();
+  r.world_hash = g.world().session_hash();
   return r;
 }
 
 void load_yard(Game& g) {
-  ProcWorld w = make_procedural("yard", 1, 0.125);
+  Level w = make_procedural("yard", 1, 0.125);
   g.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
   g.bake();
 }
 
 Result fire() {
   Game g;
+  tune(g);
   load_yard(g);
   const f64 h = 0.125;
   Result r = run(g, 60 * 120, [&](Game& e, i64 t) {
@@ -89,6 +104,7 @@ Result fire() {
 
 Result flood() {
   Game g;
+  tune(g);
   load_yard(g);
   const f64 h = 0.125;
   Result r = run(g, 60 * 30, [&](Game& e, i64 t) {
@@ -104,8 +120,11 @@ Result flood() {
 
 Result city() {
   Game g;
+  tune(g);
   const f64 h = 0.125;
-  g.load_streaming(make_city_source(7, 2000.0, h), h, StreamConfig{});
+  StreamConfig sc;
+  if (g_archive_mb >= 0.0) sc.archive_mb = g_archive_mb;
+  g.load_streaming(make_city_source(7, 2000.0, h), h, sc);
   g.bake();
   const V3 start = g.spawn_pos();
   u64 s = 0x9E3779B97F4A7C15ull;
@@ -148,8 +167,9 @@ void report(const char* name, Result r) {
   for (f64 x : v) sum += x;
   const f64 mean = v.empty() ? 0.0 : sum / static_cast<f64>(v.size());
   const f64 p99 = v.empty() ? 0.0 : v[std::min(v.size() - 1, v.size() * 99 / 100)];
-  std::printf("%-6s ticks %6zu  mean %7.3f ms  p99 %7.2f ms  max %7.1f ms  env %7.3f ms/tick  hash %016llx  %s\n", name, v.size(), mean,
+  std::printf("%-6s ticks %6zu  mean %7.3f ms  p99 %7.2f ms  max %7.1f ms  env %7.3f ms/tick  hash %016llx  world %016llx  %s\n", name, v.size(), mean,
               p99, v.empty() ? 0.0 : v.back(), r.env_ms / std::max<size_t>(1, v.size()), static_cast<unsigned long long>(r.hash),
+              static_cast<unsigned long long>(r.world_hash),
               r.note.c_str());
 }
 
@@ -165,6 +185,12 @@ int main(int argc, char** argv) {
     else if (arg("--threads")) threads = std::atoi(argv[++i]);
     else if (arg("--repeat")) repeat = std::atoi(argv[++i]);
     else if (arg("--slow")) g_slow = std::atof(argv[++i]);
+    else if (arg("--archive-mb")) g_archive_mb = std::atof(argv[++i]);
+    else if (arg("--tune")) {
+      const std::string kv = argv[++i];
+      const size_t eq = kv.find('=');
+      if (eq != std::string::npos) g_tunes.emplace_back(kv.substr(0, eq), std::atof(kv.c_str() + eq + 1));
+    }
   }
   if (threads > 0) set_num_threads(threads);
   for (int k = 0; k < std::max(1, repeat); ++k) {

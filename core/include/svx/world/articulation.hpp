@@ -6,7 +6,7 @@
 // and what they felt. So is a robot, a creature, a rag doll, a chain of anything.
 //
 // They are solved with everything else: their links stand on the structures and load them, are
-// knocked by what hits them (a falling slab, a car), push what they meet (debris, each other);
+// knocked by what hits them (a falling slab, a vehicle), push what they meet (debris, each other);
 // sleeping, they are rubble at rest. One that touches no awake piece is stepped finer on its own
 // (RigidParams::link_substeps). They are saved with sessions and, in a streamed world, archived
 // with their region when they rest out of range, their host data with them.

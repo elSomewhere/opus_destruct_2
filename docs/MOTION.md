@@ -147,8 +147,8 @@ the ends' distance, a rope, its drive off), `svxc_joint_drive`, `svxc_add_joint`
 
 - **Drops.** `Game::add_drop` drops an object in when play starts (after the bake and a saved
   session's changes; a played session's drops are among its pieces, not dropped again).
-- **Procedural worlds** carry grids, joints and drops: `load_procedural(game, make_procedural(kind,
-  seed))`.
+- **Levels** carry grids, joints and drops: `load_level(game, make_procedural(kind, seed))` (the
+  generators are `svx_procgen`'s).
 - **The `machines` world** (`?world=machines`, `svx_engine_demo --world machines`):
   - a lift beside a reinforced concrete tower: a timber car on a slider held by the tower's face,
     rising to its top and down again every 12 s;
@@ -185,7 +185,12 @@ the ends' distance, a rope, its drive off), `svxc_joint_drive`, `svxc_add_joint`
   source's is made again with its grids; one the host made is not).
 - **A chunk source's joint holds on to the grids at home in its chunk** (or the world grid).
 - **An articulation near an awake piece is solved at the world's substep** (1/120 s), with the
-  world's iterations: its muscles and limits are stiffer there than in its own fine steps.
+  world's iterations: its muscles and limits are stiffer there than in its own fine steps. The
+  knobs that scale it on stronger hardware are the world's: `rigid.substeps` (every piece's
+  substep, 2 a tick), `rigid.iterations` and `rigid.position_iterations`; `link_substeps` (4)
+  sets the fine steps of the articulations on their own (1: every articulation with the
+  pieces). A mixed island is not fine-stepped: its pieces' contacts, crumpling and fracture
+  checks are the substep's.
 
 ## 6. Articulations
 
@@ -233,3 +238,68 @@ world.articulation_state(id, &st);           // where the links are, what each f
 - **Hosts.** svx_anim's characters are articulations on the deep path (docs/ANIM.md): a
   `CoreBinding` writes a character's body (links, joints, muscles, assists) as a desc, pushes its
   drives before each tick and pulls the links after it.
+
+## 7. Wheels
+
+A wheel is not voxels: it is a constraint cast from the body it hangs from, its **carrier**
+(`World::add_wheel`, `WheelDesc` in `svx/world/joint_desc.hpp`, the solver in
+`core/src/phys/wheel.cpp`, its bookkeeping in `core/src/world/world_wheels.cpp`). Whatever rolls
+on wheels - a vehicle, a trolley on a crane's rails, a cart, a machine's undercarriage - is a
+carrier on wheels, driven, braked and steered through them.
+
+```cpp
+WheelDesc d;
+d.mount = {JointAnchor::Kind::Grid, body_grid, V3{1.2, 0.8, 0.4}};  // the top of its suspension
+d.down = {0, 0, -1};                  // the suspension's axis
+d.axle = {0, 1, 0};                   // its spin axis at zero steer: it rolls along down x axle
+d.radius = 0.33; d.width = 0.22;      // m
+d.rest = 0.35; d.travel = 0.2;        // full droop; how far to the bump stop (m)
+d.stiffness = 35e3; d.damping = 3.5e3;
+d.break_force = 1e5;                  // N: it comes off beyond (0: never)
+d.material = my_tyre_material;        // what the piece it becomes when it comes off is made of
+d.group = assembly_id; d.tag = slot;  // the host's: saved and archived with it
+const WheelId w = world.add_wheel(d);
+world.set_wheel_input(w, /*drive*/ 400.0, /*brake*/ 0.0, /*steer*/ 0.1);  // N m, N m, rad
+WheelState s;
+world.wheel(w, &s);                   // where it is, its load, contact, slip, the carrier now
+```
+
+- **Mount.** A voxel of the carrier at the top of its suspension: a grid's (a body dropped in as
+  a grid of free voxels: the mount goes with the piece it becomes) or a piece's. The wheel
+  follows its voxel through splits and in-place edits, as a joint's end does (§1).
+- **Cast.** Each substep the wheel is cast along its suspension axis: samples on its lower arc
+  (0, 15, 30, 45 degrees fore and aft) and across its width, against the static grids and the
+  other bodies, find the ground (a step is met by the front of the arc before the axle gets
+  there). What is joined to the carrier (its own parts) is not ground.
+- **Rows**, solved with the contacts and joints (sequential impulses, warm-started):
+  - suspension: a soft row (spring and damper as a constraint's softness: stable at any
+    stiffness), from full droop (`rest`) to the **bump stop** (`travel`): a hard row beyond;
+  - tyre: longitudinal and lateral rows in the contact plane with a slip-dependent grip (peak at
+    8 % slip ratio, 0.1 rad slip angle; 72 % of it when sliding), limited to the **friction
+    ellipse** of the load the suspension carries x the surface's grip (`Material::grip`, 0: 1.35
+    x its friction; x the wheel's `grip`); rigid below 0.6 m/s (a carrier holds on a slope);
+  - drive and brake: the wheel's spin is a degree of freedom of its own (`inertia`); drive
+    torque turns it, the brake row stops it (a locked wheel skids), rolling resistance slows it.
+- **Loads.** What a wheel stands on feels its force: a piece is pushed, a structure is loaded
+  through the fragment under it. A wheel rolling onto a fragment is a load that moves, not a
+  blow: it is an impact load case only beyond 2.5 x its share of the carrier's weight (a
+  landing, a step struck at speed), and a large structure under a creeping load is solved again
+  at most every `load_trigger_gap` ticks (`WorldConfig`; [`API.md`](API.md)).
+- **Sleep.** A driven or spinning wheel keeps its carrier awake; a carrier at rest on its
+  wheels sleeps like rubble (with the parts joined to it: [`DAMAGE.md`](DAMAGE.md) §5), and wakes
+  when it is driven, braked, steered or hit.
+- **It comes off** when its mount voxel is gone (crushed, carved, shot away) or its force passes
+  `break_force`: it becomes a wheel-shaped piece of its `material` (`WheelDetached`: the
+  carrier, where, the piece it became), tumbling away.
+- **Saved and streamed.** Wheels are in sessions (`save_delta`) and archived with their carrier
+  when it streams out of range; their `group` and `tag` (host data) let a host find its
+  assemblies again after a load or when they come back from the archive.
+- **No transcendental functions**: bit-identical on every platform and thread count, like the
+  rest of the core.
+
+The C API has them too: `svxc_wheel_desc` (`svxc_wheel_defaults`), `svxc_add_wheel`,
+`svxc_remove_wheel`, `svxc_set_wheel_input`, `svxc_wheel` (`svxc_wheel_state`), `svxc_wheels`,
+`svxc_set_piece_max_speed`; the event `SVXC_WHEEL_DETACHED`. `tests/core/test_wheels.cpp` and
+`test_capi.cpp`: a body on four wheels settles, drives, steers, brakes, loses a wheel; a jointed
+door sleeps and wakes with its carrier. The game's cars are built on them
+([`VEHICLES.md`](VEHICLES.md)).

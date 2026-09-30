@@ -4,15 +4,15 @@
 #include "doctest.h"
 #include "svx/base/parallel.hpp"
 #include "svx/game/game.hpp"
-#include "svx/game/procgen.hpp"
-#include "svx/game/city.hpp"
+#include "svx/procgen/city.hpp"
+#include "svx/procgen/levels.hpp"
 
 using namespace svx;
 
 namespace {
 
 Game world(const char* kind) {
-  ProcWorld w = make_procedural(kind, 1);
+  Level w = make_procedural(kind, 1);
   Game eng;
   eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
   add_grids(eng.world(), std::move(w.grids));

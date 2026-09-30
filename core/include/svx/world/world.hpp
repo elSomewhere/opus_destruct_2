@@ -96,9 +96,9 @@ struct JointState {
   bool latched = false;          // (hinge) held shut by its latch still
 };
 
-// A wheel now (World::wheel; docs/VEHICLES.md).
+// A wheel now (World::wheel; docs/MOTION.md §7).
 struct WheelState {
-  i64 piece = 0;        // its chassis now (0: not a piece yet - a grid dropped in comes loose at the next tick)
+  i64 piece = 0;        // its carrier now, the piece it hangs from (0: not a piece yet - a grid dropped in comes loose at the next tick)
   V3 mount;             // the top of its suspension (world)
   V3 centre;            // its centre (world)
   Quat rot;             // its orientation (world): x the way it rolls, y its axle (steered), z up; spun by its angle about y
@@ -112,7 +112,7 @@ struct WheelState {
   i64 ground_piece = 0; // the piece it stands on (0: a grid, or nothing)
   int material = -1;    // the surface's material (-1: none)
   f64 load = 0.0;       // N: the suspension's force
-  V3 force;             // N: what the chassis received through it
+  V3 force;             // N: what the carrier received through it
   f64 slip_long = 0.0, slip_lat = 0.0;  // m/s: the tyre sliding over the ground (skids, smoke)
   u32 group = 0, tag = 0;                // the host's (WheelDesc)
 };
@@ -167,9 +167,10 @@ struct WorldConfig {
   i32 idle_drop_ticks = 1800;      // idle structures without loads are dropped after this
   f64 load_trigger = 0.25;         // re-solve when a node's external load changes by this x its weight ...
   f64 load_trigger_abs = 800.0;    // ... plus this (N)
-  // A load that creeps on a large structure (a car driving over a bridge: its wheels cross a
+  // A load that creeps on a large structure (something rolling over a bridge: its wheels cross a
   // fragment every few ticks) is solved again at most every this many ticks; a change of 4 x the
   // trigger, an impact, a structure breaking or one of fewer nodes (cheap to solve) at once.
+  // 0: at once, always (the structural reference's way: docs/BASELINE.md).
   i32 load_trigger_gap = 6;
   i32 load_trigger_gap_nodes = 400;
   f64 dead_load_ema = 0.25;        // smoothing of resting contact loads per tick
@@ -195,6 +196,33 @@ struct WorldConfig {
   f64 hinge_rotation = 0.35;
   f64 hinge_shape = 1.3;
   bool spread_contacts = true;     // stress checks share a piece's contact force over its contacts (least squares)
+  // What changed since the structural reference (docs/BASELINE.md), each a switch - on, the engine
+  // as it is; all off (with plastic_hinges and rigid.piece_ccd, load_trigger_gap 0 and
+  // evict_scan_ticks 1), the reference bit for bit:
+  //   impact_penetration: impacts remove material by energy density against its penetration
+  //     resistance, and a cut (a carve of no energy) cuts steel and bars too; off: carves and
+  //     craters never remove ductile material.
+  //   restart_diverging_solves: a structure solve whose residual diverges (many breaks at once)
+  //     rebuilds its preconditioner at once; off: only after 120 iterations.
+  //   jointed_keep_identity: a piece held by joints keeps its id through a split, on its largest
+  //     part (so do pieces on wheels, and kept ones, always); off: its parts are new pieces.
+  //   spread_per_partner: a piece's stress check spreads each partner's contact forces on their
+  //     own (a block on a beam and its supports keep their places); off: all of them pooled.
+  //   design_in_place: a streamed structure touched for the first time is designed in place
+  //     (its members' new strengths written into it, its solve going on from the design's); off:
+  //     designed, then extracted again (a new structure, solved afresh: a structure's work more).
+  //   patch_cut_structures: a structure cut (voxels carved, burnt, crushed out of it) is patched
+  //     where it was cut - a few chunks' work; off: extracted again whole about the cut.
+  //   evict_scan_ticks (streaming): the scan for what to evict - it walks every resident chunk -
+  //     runs every this many ticks, at once when a focus point moved 8 m since, and every 30
+  //     ticks; 1: every tick.
+  bool impact_penetration = true;
+  bool restart_diverging_solves = true;
+  bool jointed_keep_identity = true;
+  bool spread_per_partner = true;
+  bool design_in_place = true;
+  bool patch_cut_structures = true;
+  i32 evict_scan_ticks = 10;
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
   f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)
   i32 body_check_ticks = 12;       // steady contact: re-check every so many substeps
@@ -243,7 +271,7 @@ struct WorldEvent {
     GridRemoved,   // id: an oriented grid gone (removed, evicted with its home chunk, or by load)
     GridMoved,     // id: an oriented grid placed anew (set_grid_frame, load_delta); pos: its origin, rot (in the world)
     JointBroken,   // id: a joint that gave way (it is gone); pos: where; strength: the force it carried (N; 0: an end lost its hold)
-    WheelDetached, // id: a wheel that came off (it is gone); parent: its chassis; pos, vel: its centre; normal: its axle; voxels: the wheel piece it became (its id; 0: none); strength: its force (N; 0: its mount was lost)
+    WheelDetached, // id: a wheel that came off (it is gone); parent: its carrier (the piece it hung from); pos, vel: its centre; normal: its axle; voxels: the wheel piece it became (its id; 0: none); strength: its force (N; 0: its mount was lost)
     PieceReshaped, // id: a piece whose voxels changed in place (crumpled, dented): same id, same pose; mesh it again
     ArticulationAdded,    // id: an articulation that came (back from the streaming archive, or with a loaded session): pos its first link; voxels its links
     ArticulationRemoved,  // id: an articulation gone; end: Removed (its host, load), Unloaded (archived out of range), OutOfWorld; pos its first link
@@ -495,7 +523,7 @@ class World {
     return add_grid(d, std::move(voxels));
   }
   // A grid of this session (not base) comes loose now, whole: all its free voxels one piece, at
-  // once - no structure is solved for it (a vehicle dropped in: its wheels, and joints, on its
+  // once - no structure is solved for it (an assembly dropped in: the wheels and joints on its
   // voxels go with it). Returns the piece (0: none - not such a grid, nothing free, a tick).
   i64 loosen_grid(GridId id);
   // Removes an oriented grid (its voxels; pieces that broke off it stay). GridRemoved.
@@ -518,23 +546,24 @@ class World {
   bool set_joint_drive(JointId id, const JointDrive& drive);
   bool set_joint_limits(JointId id, bool on, f64 lower, f64 upper);
   bool joint(JointId id, JointState* out) const;  // false: none (broken, removed)
-  // The pieces joined to a piece by joints that hold (ascending): a car's parts still on it.
+  // The pieces joined to a piece by joints that hold (ascending): the parts still on it.
   std::vector<i64> joined_pieces(i64 piece) const;
   std::vector<JointId> joints() const;            // ascending ids (the host's: an articulation's own are in its state)
 
-  // ---- wheels (docs/VEHICLES.md)
-  // A wheel on a sprung suspension with a tyre, hung from a chassis (a piece, or a grid of free
-  // voxels that becomes one), solved with the contacts: a vehicle is a chassis on wheels, driven
-  // through them. Its forces load what it stands on. It comes off (WheelDetached, a wheel piece)
-  // when its mount voxel is gone or its force passes its breaking strength.
+  // ---- wheels (docs/MOTION.md §7)
+  // A wheel on a sprung suspension with a tyre, hung from a body, its carrier (a piece, or a grid
+  // of free voxels that becomes one), solved with the contacts: whatever rolls - a vehicle, a
+  // trolley, a machine's undercarriage - is a carrier on wheels, driven through them. Its forces
+  // load what it stands on. It comes off (WheelDetached, a wheel piece) when its mount voxel is
+  // gone or its force passes its breaking strength.
   WheelId add_wheel(const WheelDesc& d);  // 0: refused (its mount not there, from inside a tick)
   bool remove_wheel(WheelId id);
   // The host's input for it (until changed): drive torque (N m; negative: backwards), brake
-  // torque (N m), steer (rad, the axle turned about the suspension's axis). Wakes its chassis.
+  // torque (N m), steer (rad, the axle turned about the suspension's axis). Wakes its carrier.
   bool set_wheel_input(WheelId id, f64 drive, f64 brake, f64 steer);
   bool wheel(WheelId id, WheelState* out) const;  // false: none (it came off, was removed)
   std::vector<WheelId> wheels() const;           // ascending ids
-  // A piece's speed limit (m/s; 0: rigid.max_speed): a car's is higher than the rubble's. Its
+  // A piece's speed limit (m/s; 0: rigid.max_speed): a vehicle's is higher than the rubble's. Its
   // parts keep it when it breaks.
   bool set_piece_max_speed(i64 piece, f64 max_speed);
 
@@ -757,7 +786,7 @@ class World {
   std::vector<u8> joint_record(size_t k) const;
   bool read_joint_record(world_detail::Rd& in, JointRec* r, Joint* j, u8 version) const;  // (version: its group's)
   std::vector<u8> wheel_record(size_t k) const;
-  bool read_wheel_record(world_detail::Rd& in, WheelRec* r, Wheel* w) const;
+  bool read_wheel_record(world_detail::Rd& in, WheelRec* r, Wheel* w, u8 version) const;
   std::vector<u8> session_entries() const;                          // (the delta's session part)
   bool read_session(world_detail::Rd& in, SessionDelta* s, u32 version) const;  // (checked whole; false: malformed; version: the trailer's)
   void apply_session(SessionDelta&& s);                             // (its pieces and joints for the ones there are)
@@ -873,7 +902,7 @@ class World {
   void step_structures();                    // solves within the work budget, judging
   void judge(Structure& s);
   void break_structure_bond(Structure& s, i32 b);  // (its faces and junction samples, in the grids)
-  // A ductile member's section giving way in bending (docs/VEHICLES.md): the part that comes
+  // A ductile member's section giving way in bending (docs/DAMAGE.md §3): the part that comes
   // loose turns about a plastic hinge there - a hinge that holds the section's plastic moment
   // while it turns (a friction drive at rest) and tears once turned past its rotation capacity -
   // rather than dropping off. At the section's compression edge, about the axis it bends.
@@ -962,7 +991,7 @@ class World {
   };
   // A piece in several parts (its bond graph's components; force_replace: reshaped - carved,
   // crushed - whole or not): its parts are new pieces. A piece that keeps its identity (in_place,
-  // or keeps_identity: a chassis on its wheels, a jointed part, a kept piece) keeps its largest
+  // or keeps_identity: a carrier on its wheels, a jointed part, a kept piece) keeps its largest
   // part - the one most of its wheels are on - edited in place; only the rest are new pieces.
   bool split_body(Body& b, bool use_pre, bool force_replace, const std::vector<Carried>* carried = nullptr, f64 spent = 0.0, bool in_place = false);
   bool keeps_identity(const Body& b) const;
@@ -1098,7 +1127,8 @@ class World {
 
   FragChunk empty_frags_;                    // (frag_chunk of a chunk that is not there)
   // Fragments of session grids' chunks by their content (fragment_chunk reads the chunk alone):
-  // the vehicles of a kind are the same voxels, fragmented once. Checked voxel for voxel.
+  // the assemblies a host drops in of one kind are the same voxels, fragmented once. Checked
+  // voxel for voxel.
   struct FragMemo {
     IVec3 cc{0, 0, 0};
     f64 scale = 1.0;
@@ -1147,7 +1177,6 @@ class World {
   i32 impact_budget_ = 0;
   bool rollback_ = false;  // (fracture hook) a part of some size came apart: the contact step is solved again
   i32 ensuring_ = 0;  // (nesting of first-touch chunk generation)
-  i64 impact_count_tick_ = 0;
 
   RigidWorld rigid_;
   std::vector<StaticGrid> statics_;          // (the rigid bodies' static world of this tick)

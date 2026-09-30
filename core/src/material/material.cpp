@@ -90,51 +90,15 @@ void MaterialTable::reset() {
   m_[10] = preset("rebar",   34e9,  13e9,   2550, 9e6,    10e6,   35e6,  4e6,    0.7,  50000, 8.0, 8.0, 8.0, 0.0, false, true);
   m_[2].ductile = true;  // (structural steel)
   m_[10].reinforcement = true;
-  // Smeared sections (docs/VEHICLES.md): the real section of a thin-walled member baked into its
+  // A smeared section (docs/DAMAGE.md): the real section of a thin-walled member baked into its
   // voxels' material (as rebar bakes its bar into the concrete cell), so members weigh and carry
-  // what they would: steel is 1 mm sheets and 10 mm webs, not solid 12.5 cm cubes.
+  // what they would: steel is 10 mm webs and flanges, not solid 12.5 cm cubes.
   // A rolled section (HEB 200: 61 kg/m, 78 cm^2 of S355) as a member of 2 x 2 voxels (625 cm^2):
   // 980 kg/m^3, 355 MPa x 78 / 625 = 44 MPa, its stiffness smeared likewise.
   m_[11] = preset("steel_section", 26e9, 10e9, 980, 44e6, 44e6, 40e6, 25e6, 0.35, 2e5, 6.0, 6.0, 6.0, 0.15, false, true);
-  // A car's body: pressed 1 mm sheet with its stiffeners, smeared over a voxel (1 / 62.5 of 250
-  // MPa steel: 4 MPa in tension; panels buckle long before). It crumples at 90 kPa of contact
-  // pressure over the patch it is pressed on (the crush strength of a car's front structure over
-  // its frontal area): a 1.2 t car at 50 km/h folds some 0.45 m of its front against a wall, at
-  // about 250 kN (20 g).
-  m_[12] = preset("sheet", 3.4e9, 1.3e9, 260, 4e6, 6e6, 3e6, 2.5e6, 0.4, 2e4, 3.5, 3.5, 3.5, 0.3, false, true);
-  m_[12].crush = 9e4;
-  m_[12].penetration = 2e4;
-  // A car's frame: rails, floor pan and pillars (box sections of 2 mm steel), smeared.
-  m_[13] = preset("car_frame", 10e9, 4e9, 700, 18e6, 20e6, 12e6, 10e6, 0.4, 5e4, 4.0, 4.0, 4.0, 0.25, false, true);
-  m_[13].crush = 1.2e6;
-  m_[13].penetration = 1.5e5;
-  // An engine block and gearbox: cast iron and aluminium with the air in their shape, smeared.
-  // It barely crumples (its mounts give, it is pushed back): a car's front folds easily until its
-  // engine meets what it hit, then hard.
-  m_[14] = preset("engine", 40e9, 16e9, 1200, 30e6, 30e6, 100e6, 20e6, 0.4, 1e5, 6.0, 6.0, 6.0, 0.2, false, true);
-  m_[14].crush = 1.5e6;
-  m_[14].penetration = 4e5;
-  // A car's glazing: 5 mm of glass over a voxel (200 kg/m^3); it shatters in small pieces.
-  m_[15] = preset("window", 5.6e9, 2.3e9, 200, 0.3e6, 0.5e6, 5e6, 0.4e6, 0.4, 2, 1.5, 1.5, 1.5, 0.6);
-  m_[15].crush = 2e4;  // (pressed, it shatters: it barely resists)
-  // A wheel that came off: its tyre on its rim, smeared (20 kg in a 0.66 x 0.22 m disc).
-  m_[16] = preset("tyre", 0.05e9, 0.02e9, 265, 5e6, 5e6, 5e6, 3e6, 0.9, 1e5, 8.0, 8.0, 8.0, 0.0, false, true);
-  m_[16].penetration = 3e4;
-  // Bumpers, trim, lamp housings: plastic on a bumper beam, smeared; it takes a low speed bump.
-  m_[17] = preset("plastic", 2e9, 0.8e9, 300, 2e6, 3e6, 2e6, 1.5e6, 0.5, 1e4, 3.0, 3.0, 3.0, 0.4, false, true);
-  m_[17].crush = 1.5e5;
-  m_[17].penetration = 1e4;
-  // Road surface and its markings (anchored ground): tyres grip them.
-  m_[18] = preset("asphalt", 10e9, 4e9, 2300, 1e6, 1.5e6, 20e6, 1.2e6, 0.8, 300, 4.0, 4.0, 4.0, 0.45);
-  m_[18].grip = 1.0;
-  m_[19] = preset("paint", 10e9, 4e9, 2300, 1e6, 1.5e6, 20e6, 1.2e6, 0.7, 300, 4.0, 4.0, 4.0, 0.45);
-  m_[19].grip = 0.9;
-  // Head and tail lamps' glass.
-  m_[20] = preset("lamp", 5.6e9, 2.3e9, 400, 0.3e6, 0.5e6, 5e6, 0.4e6, 0.4, 2, 1.5, 1.5, 1.5, 0.6);
-  m_[20].crush = 2e4;
   // Penetration resistance of the presets (J/m^3; brittle materials: 0, any impact removes them):
   // steel plate is armour (nothing but a cut goes through it); reinforcing bars bend under
-  // bullets and blasts, they are cut; a steel section is holed by a rocket; sheet by a bullet.
+  // bullets and blasts, they are cut; a steel section is holed by a rocket.
   m_[2].penetration = 1e9;
   m_[10].penetration = 5e6;
   m_[11].penetration = 1.5e5;

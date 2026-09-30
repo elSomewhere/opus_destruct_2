@@ -8,7 +8,7 @@
 // usage: svx_engine_demo [--world rooms|city|tower|yard|slab|chimney|bridge|angles|machines] [--seed N] [--wad F --map M] [--threads T]
 //          [--seconds S] [--scenario pillars|side|rockets|core|none] [--fragility F] [--impact I]
 //          [--dif D] [--frames DIR] [--fps F] [--res WxH] [--cam x,y,z] [--look x,y,z]
-//          [--report S] [--debug-view N] [--turn DEG] [--turned-city]
+//          [--report S] [--debug-view N] [--turn DEG] [--turned-city] [--tune NAME=VALUE ...]
 //
 // --turned-city: the streamed city with some of its buildings turned in grids of their own.
 // --turn DEG: a procedural world's structure (everything above the ground) stands in a grid of
@@ -25,14 +25,14 @@
 #include <string>
 #include <vector>
 
+#include "svx/anim/system.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/game/doom/movers.hpp"
 #include "svx/game/doom/world.hpp"
 #include "svx/game/game.hpp"
-#include "svx/game/procgen.hpp"
-#include "svx/game/city.hpp"
-#include "svx/game/drive_city.hpp"
-#include "svx/anim/system.hpp"
+#include "svx/procgen/city.hpp"
+#include "svx/procgen/drive_city.hpp"
+#include "svx/procgen/levels.hpp"
 
 using namespace svx;
 
@@ -123,6 +123,7 @@ int main(int argc, char** argv) {
   V3 cam, look;
   f64 turn = 0.0;
   bool turned = false, turned_city = false;
+  std::vector<std::pair<std::string, f64>> tunes;  // (--tune name=value: the world's tunables, before its load)
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -144,6 +145,11 @@ int main(int argc, char** argv) {
     else if (a == "--work") work = std::atoll(next());
     else if (a == "--res") std::sscanf(next(), "%dx%d", &W, &H);
     else if (a == "--turned-city") turned_city = true;
+    else if (a == "--tune") {
+      const std::string kv = next();
+      const size_t eq = kv.find('=');
+      if (eq != std::string::npos) tunes.emplace_back(kv.substr(0, eq), std::atof(kv.c_str() + eq + 1));
+    }
     else if (a == "--turn") {
       turn = std::atof(next());
       turned = true;
@@ -161,6 +167,8 @@ int main(int argc, char** argv) {
   }
   par.debug_view = debug_view;
   Game eng;
+  for (const auto& [name, value] : tunes)
+    if (!eng.set_tunable(name.c_str(), value)) std::fprintf(stderr, "unknown tunable %s\n", name.c_str());
   if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC") || std::getenv("SVX_MIN_BODY") || std::getenv("SVX_RIGID") || std::getenv("SVX_ROUNDS") || std::getenv("SVX_REST") ||
       std::getenv("SVX_NO_CCD")) {
     WorldConfig c = eng.config();
@@ -229,7 +237,7 @@ int main(int argc, char** argv) {
     eng.load(std::move(g), sp, sd);
     eng.load_streaming(std::move(src), eng.grid().h);
   } else {
-    ProcWorld w = make_procedural(world, seed, h);
+    Level w = make_procedural(world, seed, h);
     if (turned) {
       // the structure (z >= 0) into a grid of its own, turned about the vertical through its
       // centre; the ground (z < 0) stays, grown to reach under it
@@ -278,7 +286,7 @@ int main(int argc, char** argv) {
       std::printf("turned %.1f degrees: %zu voxels in grid %u about (%d %d)\n", turn, moved.size(), id, turn_pivot[0], turn_pivot[1]);
       add_grids(eng.world(), std::move(w.grids));
     } else {
-      load_procedural(eng, std::move(w));
+      load_level(eng, std::move(w));
     }
   }
   eng.set_params(par);
@@ -439,7 +447,20 @@ int main(int argc, char** argv) {
     }
     if (world == "city") eng.set_viewer(look);
     eng.tick();
-    (void)eng.take_events();
+    {
+      const std::vector<GameEvent> evs = eng.take_events();
+      if (const char* te = std::getenv("SVX_TRACE_EVENTS"))  // (the cracks and pieces from tick te on)
+        if (t >= std::atoll(te))
+          for (const GameEvent& e : evs)
+            if (e.kind == GameEvent::Kind::Crack || e.kind == GameEvent::Kind::Detached)
+              std::printf("[t%lld] %s id %lld pos (%.4f %.4f %.4f) n (%.3f %.3f %.3f) strength %.6f voxels %d\n", static_cast<long long>(t),
+                          e.kind == GameEvent::Kind::Crack ? "crack" : "piece", static_cast<long long>(e.id), e.pos.x, e.pos.y, e.pos.z,
+                          e.normal.x, e.normal.y, e.normal.z, e.strength, e.voxels);
+    }
+    if (std::getenv("SVX_TRACE_HASH"))  // (each tick's world hash: where two builds part)
+      std::printf("[t%lld] world %016llx pieces %d broken %lld\n", static_cast<long long>(t),
+                  static_cast<unsigned long long>(eng.world().session_hash()), eng.stats().bodies,
+                  static_cast<long long>(eng.stats().bonds_broken));
     if (const char* wv = std::getenv("SVX_WATCH")) {
       int wx, wy, wz;
       if (std::sscanf(wv, "%d,%d,%d", &wx, &wy, &wz) == 3) {
@@ -562,9 +583,11 @@ int main(int argc, char** argv) {
                 hist[0], vox[0], hist[1], vox[1], hist[2], vox[2], hist[3], vox[3], hist[4], vox[4], hist[5], vox[5], hist[6], vox[6], hist[7], vox[7]);
   }
   const GameStats s = eng.stats();
-  std::printf("done: %lld ticks in %.1f s wall; voxels %lld, pieces %d, broken %lld, detached %lld voxels, hash %016llx\n",
+  // (hash: the session's - the world's and the game's own state; world: the world's alone, what a
+  // reference build's hash is compared with - docs/BASELINE.md)
+  std::printf("done: %lld ticks in %.1f s wall; voxels %lld, pieces %d, broken %lld, detached %lld voxels, hash %016llx, world %016llx\n",
               static_cast<long long>(ticks), wall, static_cast<long long>(s.voxels), s.bodies,
               static_cast<long long>(s.bonds_broken), static_cast<long long>(s.detached_voxels),
-              static_cast<unsigned long long>(eng.session_hash()));
+              static_cast<unsigned long long>(eng.session_hash()), static_cast<unsigned long long>(eng.world().session_hash()));
   return 0;
 }

@@ -12,7 +12,7 @@
 
 #include "svx/base/parallel.hpp"
 #include "svx/game/game.hpp"
-#include "svx/game/city.hpp"
+#include "svx/procgen/city.hpp"
 
 using namespace svx;
 

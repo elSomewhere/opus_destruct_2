@@ -131,11 +131,12 @@ open "http://localhost:5190/?world=tower"   # the WASM engine by default (?engin
 
 | Tool | Purpose |
 |---|---|
-| `svx_engine_demo --world tower\|rooms\|slab\|chimney\|bridge\|yard\|angles\|machines\|city [--scenario S] [--seconds T] [--threads N] [--turn DEG] [--turned-city] [--frames DIR --fps F --res WxH --cam x,y,z --look x,y,z]` | Headless scenario run with a CPU renderer for frames. Tower scenarios: `pillars` (both west rows of ground columns), `side`, `core`, `all`, `rockets`. `--turn DEG` stands a procedural world's structure in a grid turned about the vertical; `--turned-city` streams the city with turned buildings. Reports pieces, breaks, per-phase rigid costs, awake speeds, piece sizes and the session hash. |
+| `svx_engine_demo --world tower\|rooms\|slab\|chimney\|bridge\|yard\|angles\|machines\|city\|drive [--scenario S] [--seconds T] [--threads N] [--turn DEG] [--turned-city] [--tune NAME=VALUE ...] [--frames DIR --fps F --res WxH --cam x,y,z --look x,y,z]` | Headless scenario run with a CPU renderer for frames. Tower scenarios: `pillars` (both west rows of ground columns), `side`, `core`, `all`, `rockets`. `--turn DEG` stands a procedural world's structure in a grid turned about the vertical; `--turned-city` streams the city with turned buildings; `drive` is the drive city with its traffic and people. `--tune` sets a world tunable before the load. Reports pieces, breaks, per-phase rigid costs, awake speeds, piece sizes and the session and world hashes (`SVX_TRACE_HASH=1`: each tick's; `SVX_TRACE_EVENTS=T`: the cracks and pieces from tick T). |
 | `svx_replay record\|play --world W --seconds S [--out F \| --log F] [--threads T]` | Records and replays sessions from command logs; checkpoint hashes are the determinism check. |
 | `svx_map_check [--threads T] [--movers] WAD...` | Imports, bakes and design-checks every map, then runs it idle. |
-| `svx_soak [--world city\|tower\|rooms\|yard] [--wad F --map M] [--minutes M] [--archive-mb MB] [--forget-s S] [--no-shoot] [--no-env]` | Long sessions and their memory: a streamed city crossed for minutes with continuous destruction, fires and water (or a bounded level shot at), printing the world's memory by kind (the environment systems included), the change archive, forgotten regions and the process's physical footprint. |
-| `svx_env_bench [--scenario fire\|flood\|city\|all] [--threads T] [--repeat N] [--slow MS]` | Deterministic environment scenarios, timed: the yard's timber house burning, the reservoir breached, the streamed city crossed with fires and water. Prints the tick cost (mean, 99th percentile, max), the environment's share and the session hash (an optimization that changes no result keeps every hash); `--slow` breaks down the slow ticks by phase. |
+| `svx_soak [--world city\|drive\|tower\|rooms\|yard] [--wad F --map M] [--minutes M] [--archive-mb MB] [--forget-s S] [--no-shoot] [--no-env] [--people N] [--check]` | Long sessions and their memory: a streamed city crossed for minutes with continuous destruction, fires and water, the drive city with its traffic and people shot at (or a bounded level shot at), printing the world's memory by kind (the environment systems and characters included), the change archive, forgotten regions and the process's physical footprint. `--check`: exit status 1 if the second half of the session held more than the first half's peak allows. |
+| `svx_env_bench [--scenario fire\|flood\|city\|all] [--threads T] [--repeat N] [--slow MS] [--tune NAME=VALUE ...]` | Deterministic environment scenarios, timed: the yard's timber house burning, the reservoir breached, the streamed city crossed with fires and water. Prints the tick cost (mean, 99th percentile, max), the environment's share and the session and world hashes (an optimization that changes no result keeps every hash); `--slow` breaks down the slow ticks by phase. |
+| `tools/baseline/golden.sh DIR`, `tools/baseline/compare.sh REF NEW [--parity]` | The behavioural baseline ([`docs/BASELINE.md`](docs/BASELINE.md)): pinned world hashes (the engine's, and the structural reference's reproduced with its switches); two builds compared scenario by scenario. |
 | `svx_people_bench [--seconds S] [--speed M/S] [--counts 24,48,96] [--policies deep,shallow,hybrid] [--threads T]` | The drive city's people: the viewer drives through the city with its traffic; per way of simulating the bodies and crowd size, the tick and the characters' part (mean, 95th percentile, worst), the bodies' split, the people made and gone, the memory. |
 | `svx_stream_bench`, `svx_wad_textures` | Streaming cost of the city; WAD graphics. |
 
@@ -167,11 +168,15 @@ anim/      svx_anim: characters (docs/ANIM.md) - voxel models, the motion plan, 
 game/      svx_game: the prototype game harness
   game.hpp   svx::Game: viewer, movers, triggers, command log, piece meshes and poses, far tier,
              vehicles and traffic, pedestrians
-  procgen, city, columns, replay; doom/ (WAD reader, voxelizer, textures, specials,
-  movers); api/ (the web worker's flat C ABI)
+  level.hpp  a level as the game loads it; materials (the game's smeared sections), paint,
+             columns, replay; doom/ (WAD reader, voxelizer, textures, specials, movers)
+  api/       svx_api: the web worker's flat C ABI (it picks the levels)
+procgen/   svx_procgen: procedural generation, to be replaced - the test levels, the streamed
+           city and the endless drive city (levels.hpp, city.hpp, drive_city.hpp)
 examples/  minimal hosts of the core (C++, C)
 tools/     command-line tools (game level runs, replays, map checks, benches), WASM modules
 tests/     core/ (links svx_core only), env/ (svx_env), anim/ (svx_anim) and game/ doctest suites
 web/       TypeScript + Vite front end: worker host, WebGPU renderer, FPS sandbox
-docs/      the core guide, design, grids, motion, environment, game API, v1 history
+docs/      the core guide, design, grids, motion and wheels, damage, environment, characters,
+           vehicles, game API, the behavioural baseline, v1 history
 ```

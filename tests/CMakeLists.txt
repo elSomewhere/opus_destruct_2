@@ -43,7 +43,7 @@ if(SVX_BUILD_ANIM)
   add_test(NAME svx_anim_tests COMMAND svx_anim_tests)
 endif()
 
-# Game harness tests: levels (procedural, city, Doom), movers, replays, meshing.
+# Game harness tests: levels (procedural, city, Doom), movers, replays, meshing, the C ABI.
 if(NOT SVX_BUILD_GAME)
   return()
 endif()
@@ -61,7 +61,12 @@ add_executable(svx_game_tests
   game/test_pedestrians.cpp
   game/test_api_people.cpp)
 target_include_directories(svx_game_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
-target_link_libraries(svx_game_tests PRIVATE svx_game)
+target_link_libraries(svx_game_tests PRIVATE svx_game svx_procgen svx_api)
+if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")
+  # (GCC 13 takes a pair's copy of a one-element vector in a nested initializer list - the
+  # synthetic WAD builders' patches - for an out-of-bounds write: a known false positive)
+  set_source_files_properties(game/test_doom_textures.cpp PROPERTIES COMPILE_OPTIONS "-Wno-array-bounds;-Wno-stringop-overflow")
+endif()
 target_compile_definitions(svx_game_tests PRIVATE SVX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
 svx_wasm_exe_options(svx_game_tests)
 add_test(NAME svx_game_tests COMMAND svx_game_tests)

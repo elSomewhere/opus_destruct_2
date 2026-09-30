@@ -1,4 +1,4 @@
-// structvox game — a procedural streamed city.
+// structvox procgen — a procedural streamed city.
 #pragma once
 
 #include <memory>

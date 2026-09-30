@@ -1,4 +1,4 @@
-// structvox game — reinforcement for generated concrete members: bars (MaterialId::Rebar
+// structvox procgen — reinforcement for generated concrete members: bars (MaterialId::Rebar
 // voxels) embedded in columns, walls, slabs and beams.
 #pragma once
 

@@ -1,14 +1,17 @@
-// Crumpling (docs/VEHICLES.md): a car-like shell of sheet metal on a frame driven into walls and
-// into another - its front folds, the collision's energy goes out over the distance it folds, what
-// it hits feels the crush force (not a rigid spike), it keeps its id, and walls break when that
-// force breaks them.
+// Damage (docs/DAMAGE.md). Crumpling: a car-like shell of sheet metal on a frame driven into walls
+// and into another - its front folds, the collision's energy goes out over the distance it folds,
+// what it hits feels the crush force (not a rigid spike), it keeps its id, and walls break when
+// that force breaks them. Penetration: impacts hole what their energy density gets through.
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <memory>
 #include <vector>
 
 #include "doctest.h"
 #include "svx/base/parallel.hpp"
 #include "svx/world/world.hpp"
+#include "vehicle_materials.hpp"
 
 using namespace svx;
 
@@ -27,7 +30,7 @@ void box(VoxelGrid& g, const IVec3& lo, const IVec3& hi, Vox v) {
 VoxelGrid road_and_wall(i32 wall_x, MaterialId wall) {
   VoxelGrid g;
   g.h = h;
-  box(g, {-160, -64, -4}, {160, 64, 0}, make_vox(MaterialId::Asphalt, true));
+  box(g, {-160, -64, -4}, {160, 64, 0}, make_vox(testmat::Asphalt, true));
   box(g, {wall_x - 1, -23, -4}, {wall_x + 3, 23, 0}, make_vox(MaterialId::Rc, true));
   box(g, {wall_x, -20, 0}, {wall_x + 2, 20, 24}, make_vox(wall, false));
   for (i32 y : {-22, 20}) box(g, {wall_x, y, 0}, {wall_x + 2, y + 2, 26}, make_vox(MaterialId::Rc, false));
@@ -50,8 +53,8 @@ struct Crate {
 Crate crate(World& w, const V3& at, f64 yaw = 0.0) {
   VoxelGrid g;
   g.h = hc;
-  const Vox sheet = make_vox(MaterialId::Sheet, false), frame = make_vox(MaterialId::CarFrame, false),
-            engine = make_vox(MaterialId::Engine, false), plastic = make_vox(MaterialId::Plastic, false);
+  const Vox sheet = make_vox(testmat::Sheet, false), frame = make_vox(testmat::CarFrame, false),
+            engine = make_vox(testmat::Engine, false), plastic = make_vox(testmat::Plastic, false);
   box(g, {-36, -14, 0}, {36, 14, 20}, sheet);
   box(g, {-35, -13, 1}, {35, 13, 19}, kAir);           // (hollow)
   box(g, {-35, -13, 1}, {35, 13, 2}, sheet);           // floor pan
@@ -71,6 +74,7 @@ Crate crate(World& w, const V3& at, f64 yaw = 0.0) {
   for (int k = 0; k < 4; ++k) {
     const f64 lx = k < 2 ? 1.45 : -1.45, ly = (k % 2 == 0) ? 0.8 : -0.8;
     WheelDesc wd;
+    wd.material = testmat::Tyre;  // (what comes off is a tyre)
     wd.mount.kind = JointAnchor::Kind::Grid;
     wd.mount.id = c.grid;
     wd.mount.point = at + V3{lx * cy - ly * sy, lx * sy + ly * cy, 0.0};
@@ -118,6 +122,7 @@ struct Crash {
 
 // The car rolls at `speed` into a wall 1 m ahead of its front.
 Crash crash(MaterialId wall, f64 speed) {
+  testmat::ensure();
   World w;
   const i32 wall_x = 40;  // (5 m)
   w.load(road_and_wall(wall_x, wall));
@@ -196,10 +201,11 @@ TEST_CASE("crumple: faster, it folds further; at speed it goes through a brick w
 TEST_CASE("crumple: two cars head on both fold, and a crash is bit-identical on any thread count") {
   auto run = [](int threads, f64* crush_a, f64* crush_b, bool* ids) {
     set_num_threads(threads);
+    testmat::ensure();
     World w;
     VoxelGrid g;
     g.h = h;
-    box(g, {-160, -64, -4}, {160, 64, 0}, make_vox(MaterialId::Asphalt, true));
+    box(g, {-160, -64, -4}, {160, 64, 0}, make_vox(testmat::Asphalt, true));
     g.lo = {-160, -64, -4};
     g.hi = {160, 64, 64};
     g.compact();
@@ -228,4 +234,75 @@ TEST_CASE("crumple: two cars head on both fold, and a crash is bit-identical on 
   CHECK(a1 > 0.08);
   CHECK(b1 > 0.08);
   CHECK(h1 == h4);
+}
+
+TEST_CASE("damage: a round holes sheet metal, a rocket's energy density a steel section, nothing solid steel; a cut takes all") {
+  // three walls on anchored rock, 3 voxels thick: the game's sheet metal (2e4 J/m^3 to hole), a
+  // steel section (1.5e5), solid steel (1e9)
+  testmat::ensure();
+  const MaterialId mats[3] = {testmat::Sheet, MaterialId::SteelSection, MaterialId::Steel};
+  auto make = [&](bool penetration) {
+    VoxelGrid g;
+    g.h = h;
+    box(g, {-8, -8, -4}, {72, 24, 0}, make_vox(MaterialId::Rock, true));
+    for (int k = 0; k < 3; ++k) box(g, {24 * k, 8, 0}, {24 * k + 16, 11, 16}, make_vox(mats[k], false));
+    g.lo = {-8, -8, -4};
+    g.hi = {72, 24, 20};
+    g.compact();
+    auto w = std::make_unique<World>();
+    WorldConfig c = w->config();
+    c.impact_penetration = penetration;
+    w->configure(c);
+    w->load(std::move(g));
+    w->bake();
+    return w;
+  };
+  // (a wall's voxels, where they are: its grid's and the pieces')
+  auto count = [](const World& w, int k) {
+    i64 n = 0;
+    for (i32 x = 24 * k; x < 24 * k + 16; ++x)
+      for (i32 y = 8; y < 11; ++y)
+        for (i32 z = 0; z < 16; ++z) n += vox_solid(w.grid().get(x, y, z));
+    for (const PieceState& p : w.pieces())
+      for (const BodyShape& S : w.piece(p.id)->shapes)
+        for (Vox v : S.vox) n += vox_solid(v);
+    return n;
+  };
+  auto face = [](int k) { return V3{h * (24 * k + 8), h * 8, h * 8}; };  // (the middle of its face)
+  auto hit = [&](bool penetration, f64 radius, f64 energy) {
+    auto w = make(penetration);
+    std::array<i64, 3> before{}, lost{};
+    for (int k = 0; k < 3; ++k) before[size_t(k)] = count(*w, k);
+    for (int k = 0; k < 3; ++k) {
+      if (energy < 0.0)
+        w->carve(face(k), radius);
+      else
+        w->shoot(face(k), radius, energy);
+    }
+    for (int t = 0; t < 3; ++t) w->tick();
+    for (int k = 0; k < 3; ++k) lost[size_t(k)] = before[size_t(k)] - count(*w, k);
+    return lost;
+  };
+  // a pistol's round (0.15 m, 500 J): the sheet is holed, the sections are not
+  const auto round = hit(true, 0.15, 500.0);
+  MESSAGE("a round takes " << round[0] << " voxels of sheet, " << round[1] << " of steel section, " << round[2] << " of steel");
+  CHECK(round[0] > 0);
+  CHECK(round[1] == 0);
+  CHECK(round[2] == 0);
+  // a rocket's energy density (1 MJ over a 1 m sphere) on half the radius: the section is holed too
+  const auto rocket = hit(true, 0.5, 1e6 / 8.0);
+  MESSAGE("at a rocket's density: " << rocket[0] << " sheet, " << rocket[1] << " steel section, " << rocket[2] << " steel");
+  CHECK(rocket[0] > round[0]);
+  CHECK(rocket[1] > 0);
+  CHECK(rocket[2] == 0);
+  // a cut (no energy) takes whatever is not indestructible
+  const auto cut = hit(true, 0.15, -1.0);
+  CHECK(cut[0] > 0);
+  CHECK(cut[1] > 0);
+  CHECK(cut[2] > 0);
+  // impact_penetration off (the structural reference): impacts never remove ductile material
+  const auto reference = hit(false, 0.5, 1e6 / 8.0);
+  CHECK(reference[0] == 0);
+  CHECK(reference[1] == 0);
+  CHECK(reference[2] == 0);
 }

@@ -702,13 +702,14 @@ struct World::JointRec {
   } a, b;
 };
 
-// A wheel's mount (docs/VEHICLES.md): the voxel it hangs from (a JointRec::End held as a Grid
+// A wheel's mount (docs/MOTION.md §7): the voxel it hangs from (a JointRec::End held as a Grid
 // anchor: axis = its suspension's axis down, ref = its axle, in that lattice), and the host's data.
 // (Its solver state is rigid_.wheels, in the same order.)
 struct World::WheelRec {
   WheelId id = 0;
   JointRec::End mount;
   u32 group = 0, tag = 0;
+  MaterialId material = MaterialId::Steel;  // (what it becomes when it comes off)
   // where it was last (its centre, orientation, motion): what comes off becomes a piece there
   bool placed = false;
   V3 centre, vel, ang;

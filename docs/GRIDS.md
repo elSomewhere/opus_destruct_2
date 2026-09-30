@@ -309,8 +309,8 @@ Fire, smoke and water ([`ENV.md`](ENV.md)) act on the grids too.
     lattices and the pieces' voxels (`web/src/engine/pieces.ts`, placed as they are drawn), and
     sweeps the player against them as turned cubes, exactly as the engine's `collide`
     (separating axes). The player rides what it stands on: a lift's car, a turntable.
-- **Procedural worlds** carry grids, joints and drops: `ProcWorld`, loaded with
-  `load_procedural(game, std::move(w))`.
+- **Levels** carry grids, joints and drops: a `Level` (`svx/game/level.hpp`; the procedural
+  generators of `svx_procgen` make them), loaded with `load_level(game, std::move(level))`.
 - **The `angles` world** (`?world=angles`, `svx_engine_demo --world angles`) has:
   - a frame building turned 30°;
   - a 17 m bridge deck at 35° cast into two world-grid piers;

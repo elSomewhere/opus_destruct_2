@@ -3,6 +3,7 @@
 #pragma once
 
 #include "svx/base/vec.hpp"
+#include "svx/material/material.hpp"
 #include "svx/phys/joint.hpp"
 
 namespace svx {
@@ -47,26 +48,26 @@ struct JointDesc {
   // target that may follow a program of the world's clock (a machine)
   JointDrive drive;
   f64 break_force = 0.0, break_torque = 0.0;  // it gives way beyond (N, N m; 0: never)
-  // Whether its two ends' pieces collide with each other (a car's door welded into its frame:
-  // they do not, until the weld gives way).
+  // Whether its two ends' pieces collide with each other (a door welded into its frame: they do
+  // not, until the weld gives way).
   bool collide = true;
   // (hinge) It gives way once turned this far from where it was made, either way (rad; 0: never):
   // a plastic hinge's rotation capacity, a door torn off its hinge.
   f64 break_angle = 0.0;
   // (hinge) A latch holds it shut - it does not turn at all - until the torque about its axis
-  // passes this (N m; 0: none); then it swings within its limits (a car's door, its bonnet). What
+  // passes this (N m; 0: none); then it swings within its limits (a door, a hatch, a lid). What
   // the latch holds is not its hinge's to break on.
   f64 latch = 0.0;
 };
 
-// Wheels (docs/VEHICLES.md): ids from 1.
+// Wheels (docs/MOTION.md §7): ids from 1.
 using WheelId = u32;
 
 // A wheel as a host describes it (World::add_wheel): a cast wheel on a sprung suspension with a
-// tyre, hung from a chassis (phys/wheel.hpp).
+// tyre, hung from a body, its carrier (phys/wheel.hpp).
 struct WheelDesc {
   // What it hangs from, and where: the top of its suspension. A Grid anchor holds a voxel of a
-  // grid (the chassis, dropped in as a grid of free voxels) and goes with the piece it becomes; a
+  // grid (the carrier, dropped in as a grid of free voxels) and goes with the piece it becomes; a
   // Piece anchor a voxel of a piece. The wheel comes off when that voxel is gone (crushed, carved)
   // or its force passes break_force: it turns into a wheel-shaped piece (WheelDetached).
   JointAnchor mount;
@@ -78,11 +79,14 @@ struct WheelDesc {
   f64 stiffness = 35e3;  // N/m
   f64 damping = 3.5e3;   // N s/m
   f64 inertia = 1.2;     // kg m^2: the wheel's (and its driveline's) spin inertia
-  f64 grip = 1.0;        // x the surface's tyre friction
+  f64 grip = 1.0;        // x the surface's grip (Material::grip)
   f64 break_force = 0.0; // N: it comes off beyond (0: never)
-  // Host data, saved with it: which vehicle it belongs to (its group) and what it is to the host
-  // (its tag: front left, driven, ...). A host finds its vehicles again from them after a
-  // session is loaded or a vehicle comes back from the streaming archive.
+  // What it is made of when it comes off (the wheel-shaped piece it becomes): a steel wheel by
+  // default; a host's tyres are a material of its own.
+  MaterialId material = MaterialId::Steel;
+  // Host data, saved with it: what it belongs to (its group: a vehicle, a trolley, a machine) and
+  // what it is to the host (its tag: front left, driven, ...). A host finds its assemblies again
+  // from them after a session is loaded or one comes back from the streaming archive.
   u32 group = 0, tag = 0;
 };
 
