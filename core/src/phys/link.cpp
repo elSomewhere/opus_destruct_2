@@ -499,9 +499,10 @@ bool RigidWorld::collide_fine(f64 dt, const std::vector<StaticGrid>& statics, bo
         if (Q.box_lo.x > P.box_hi.x) break;
         if (!fine_[size_t(cand[x])] && !fine_[size_t(cand[y])]) continue;  // (two sleepers)
         if (!boxes_meet(P.box_lo, P.box_hi, Q.box_lo, Q.box_hi) || !may_collide(P, Q)) continue;
-        // (the link is a: a fine body is always a link)
-        const bool pl = P.link != nullptr;
-        const i32 ia = pl ? cand[x] : cand[y], ib = pl ? cand[y] : cand[x];
+        // (a is one stepped finely - a link, the one that moves; b the other, fine too or asleep and
+        // static to it: a sleeping link, a body at rest, is never a - whichever comes first)
+        const bool pf = fine_[size_t(cand[x])] != 0;
+        const i32 ia = pf ? cand[x] : cand[y], ib = pf ? cand[y] : cand[x];
         const Body& A = *bodies[size_t(ia)];
         const Body& B = *bodies[size_t(ib)];
         const f64 m = std::min(0.6, link_margin(A, dt) + (norm(B.v) + B.radius * norm(B.w)) * dt);

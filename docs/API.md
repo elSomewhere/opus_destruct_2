@@ -27,7 +27,7 @@ Conventions:
 | `viewer` | `pos:[x,y,z], dir:[x,y,z]` | Streaming, bake and LOD focus. Sent every frame or two, including while the player is not in control. |
 | `blast` | `pos:[x,y,z], radius, energy` | Rocket or explosion. `energy` is in J. |
 | `carve` | `pos:[x,y,z], radius` | Bullet impact. Removes the voxels inside the sphere. |
-| `raycast` | `id, origin, dir (unit), maxDist` | Hitscan and picking. Never changes state. |
+| `raycast` | `id, origin, dir (unit), maxDist, characters?` | Hitscan and picking. Never changes state. `characters` (**ext**): the people's bodies are seen too (the hit's `character` and `bone`). |
 | `collide` | `id, min:[3], max:[3], move:[3]` | Player AABB sweep. The worker returns the move clipped against solid voxels (axis by axis in x, y, z order; an oriented grid's voxels as the turned cubes they are). `onGround` is set when a downward move was stopped. Never changes state. |
 | `setParams` | `params: {fragility, impact, dif, debugView, paused}` | Tunables. Always the complete set. |
 | `use` (**ext**) | `pos:[3], dir:[3]` | The player's use key (E). Operates a door in reach (2 m), or the lifts tagged by a switch line. Recorded in replays. |
@@ -38,6 +38,8 @@ Conventions:
 | `heat` (**ext**) | `pos:[3], radius, celsius` | Brings the solids in the sphere to (at least) that temperature. Recorded in replays. |
 | `setEnv` (**ext**) | `name, value` | An environment setting by name (`fire.flame_reach`, `fire.wood.burn_s`, `smoke.wind_x`, `water.loads`, ...: the engine's `svx_env_param_*` list). Kept across loads; recorded in replays; unknown names are ignored. |
 | `setTunable` (**ext**) | `name, value` | A world tunable by name (`rigid.gravity`, `max_bodies`, ...: `svx_tunable_*`). As `setEnv`. |
+| `setPedestrians` (**ext**) | `pedestrians: {enabled, count, nearRadius, radius, bodies: 0 deep\|1 shallow\|2 hybrid, maxDeep}` | The people of a streamed world with walkways (the drive city; [`ANIM.md`](ANIM.md)). Kept across loads; recorded in replays. |
+| `woundCharacter` (**ext**) | `id, pos:[3], radius, energy` | A round into a character, where a `raycast` with `characters` found it (a body that moved since is found along the same line); radius and energy as for the world's shot. Recorded in replays. |
 
 `params` fields:
 
@@ -63,7 +65,10 @@ Conventions:
 | `occupancy` (**ext**) | `voxelSize, chunks: [{chunk:[3], state: 0\|1\|2, bits?: ArrayBuffer, grid?}]` | Solid occupancy of every chunk whose voxels changed, sent after the tick's meshes; an oriented grid's (`grid` set) in its lattice. See [Client-side collision](#client-side-collision). |
 | `env` (**ext**) | `flames: Float32Array (x, y, z, °C per flame), smoke: Float32Array (x, y, z, density per cell)` | About 10 Hz while anything burns or smokes, plus one empty set when all is clear. At most 4096 of each: an even sample of the burning voxels, the densest smoke cells (4 voxels each). See [Environment](#environment). |
 | `water` (**ext**) | `meshes: [...as chunkMeshes], removed: string[]` | Water surface meshes of chunks whose water changed (at most 10 Hz per chunk), and chunks whose water is gone. Drawn translucent after the opaque world. |
-| `raycastResult` | `id, hit: null \| {pos:[3], normal:[3], distance, material}` | |
+| `raycastResult` | `id, hit: null \| {pos:[3], normal:[3], distance, material, character?, bone?}` | `character` (**ext**): the character hit (its id; material -1). |
+| `characterMeshes` (**ext**) | `meshes: [{id, vertices: ArrayBuffer, vertexCount, indices: ArrayBuffer, indexCount}], removed: number[], palettes: [{id, rgb: Float32Array(48)}]` | See [Characters](#characters-ext). |
+| `characters` (**ext**) | `characters: Float64Array (12 each), skin: Float32Array (23 x 16 each), props?, seq` | See [Characters](#characters-ext). |
+| `blood` (**ext**) | `drops: Float32Array (7 each), stains: Float32Array (8 each)` | See [Characters](#characters-ext). |
 | `collideResult` | `id, move:[3], onGround:boolean, ground?, groundPiece?, groundVelocity?:[3]` | `ground`, `groundPiece` (**ext**): the grid (0 the world grid) or the piece stood on, and its velocity under the box (a lift's car, a turntable: the player rides it). |
 | `stats` | `stats: {tickMs, structuralMs, rigidMs, voxels, chunks, memoryMB, events, pieces, awakePieces, contacts, bondsBroken, ...}` | About 4 Hz. `events` counts events since the previous stats message. The full set is `EngineStats` in `protocol.ts`; extra keys are shown generically by the HUD. |
 | `error` (**ext**) | `message, fatal:boolean, command?` | `fatal`: the engine cannot continue. `command`: the command type that failed. |
@@ -241,6 +246,26 @@ must not wait for it, so the WASM worker streams **occupancy**:
   frame as their model matrix. A grid in `removed` is gone with its chunks.
 - **Joints.** `joints` lists the joints' ends every tick while any exist; the front end draws
   the distance joints (ropes, rods) as thin tubes between their ends.
+
+### Characters (**ext**)
+
+The drive city's people ([`ANIM.md`](ANIM.md)) are voxel characters drawn by rigid skinning:
+
+- `characterMeshes`: meshes new since the last one, in the svx_anim character vertex format (20
+  bytes: position float32x3 in rest model space; normal snorm8x3 and ambient occlusion snorm8;
+  uint32 bone | palette slot << 8 | shade << 12, 128 = 1.0), the meshes no character draws any
+  more (apply those first), and palettes (16 slots' linear rgb). A wounded character gets a mesh of
+  its own. A palette is sent once for the session: keep them across loads.
+- `characters`: after every tick while any exist (and once empty after), a pose message like
+  `debris` (`seq`, acknowledged with `frameAck`): 12 doubles each - id, mesh, palette, flags (1
+  alive, 2 deep: its body an articulation of the world, 4 physical, 8 asleep, 16 down, 32 a gib),
+  bounding sphere centre xyz and radius, hit flash 0..1, its prop's mesh (0: none), health 0..1, 1
+  reserved - and its 23 skin matrices (column-major, rest model space to world; a gib's first
+  alone counts). A vertex is drawn at skin[its bone] x its position. The root's matrix rides with
+  the pelvis of a body the physics moves: the feet's and toes' (bones 16, 17, 20, 21) put a
+  shadow on the ground under it.
+- `blood`: the drops in flight (x, y, z, radius, linear rgb) and the stains they left on the
+  world (x, y, z, the surface's normal xyz, radius, age in s), with the pose messages.
 
 ## Persistence (**ext**)
 

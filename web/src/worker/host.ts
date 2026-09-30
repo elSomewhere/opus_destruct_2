@@ -14,7 +14,8 @@ export function postToMain(msg: WorkerMessage): void {
 
 export function reportError(err: unknown, command?: EngineCommandType, fatal = false): void {
   const message = err instanceof Error ? err.message : String(err);
-  console.error(`[engine] ${command ?? 'worker'} failed:`, err);
+  // (the stack: a WASM trap's frames name the engine's functions when the module keeps their names)
+  console.error(`[engine] ${command ?? 'worker'} failed:`, err instanceof Error && err.stack ? err.stack : err);
   postToMain(command === undefined ? { type: 'error', message, fatal } : { type: 'error', message, fatal, command });
 }
 

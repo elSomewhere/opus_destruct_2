@@ -3,6 +3,7 @@
 // structures and loading them, knocked by pieces and knocking them, stepped finely on their own.
 #include <algorithm>
 #include <cmath>
+#include <string>
 #include <vector>
 
 #include "doctest.h"
@@ -228,6 +229,52 @@ TEST_CASE("articulations: a link lands on the ground, rests there, feels it, and
   REQUIRE(w.add_link_velocity(id, 0, V3{1.0, 0, 0}, V3{}));
   REQUIRE(w.articulation_state(id, &s));
   CHECK(!s.asleep);
+}
+
+TEST_CASE("articulations: one comes down on another asleep - it lands on it; a hard enough blow wakes it") {
+  // (the sleeper first along x: its box before the other's in the fine collision's sweep - the
+  // pair's link stepped finely is the one that moves, whichever comes first)
+  for (const bool hard : {false, true}) {
+    CAPTURE(hard);
+    World w;
+    w.load(ground());
+    w.bake();
+    // (a heavy sleeper: set down on it, the other's weight is less than half its own - it stays
+    // asleep, a support)
+    ArticulationDesc d;
+    d.links.push_back(ball(V3{0, 0, kTop + 0.1}, 0.1, 50.0));
+    const ArticulationId a = w.add_articulation(d);
+    REQUIRE(a != 0);
+    w.articulation_control(a)->can_sleep = true;
+    for (int t = 0; t < 120; ++t) w.tick();
+    REQUIRE(w.articulation_asleep(a));
+    ArticulationState sa, sb;
+    REQUIRE(w.articulation_state(a, &sa));
+    const V3 rest = sa.links[0].pos;
+    ArticulationDesc e;
+    e.links.push_back(ball(V3{0.05, 0, kTop + 0.3 + (hard ? 1.0 : 0.002)}, 0.1, 5.0));
+    const ArticulationId b = w.add_articulation(e);
+    REQUIRE(b != 0);
+    bool woke = false;
+    f64 closest = 1e9;
+    for (int t = 0; t < 90; ++t) {
+      w.tick();
+      woke = woke || !w.articulation_asleep(a);
+      REQUIRE(w.articulation_state(a, &sa));
+      REQUIRE(w.articulation_state(b, &sb));
+      closest = std::min(closest, norm(sa.links[0].pos - sb.links[0].pos));
+    }
+    const std::string how = hard ? "dropped from 1 m" : "set down", then = woke ? "woke" : "slept on";
+    MESSAGE(how << ": the sleeper " << then << ", moved " << norm(sa.links[0].pos - rest) << " m; the centres at least " << closest << " m apart");
+    CHECK(std::isfinite(sb.links[0].pos.x));
+    CHECK(std::isfinite(sb.links[0].pos.z));
+    // (never through it: two 0.1 m balls)
+    CHECK(closest > 0.18);
+    CHECK(sb.links[0].pos.z > kTop + 0.08);
+    // (set down on it, a sleeper is a support: it stays put; a body dropped on it wakes it)
+    CHECK(woke == hard);
+    if (!hard) CHECK(norm(sa.links[0].pos - rest) < 1e-9);
+  }
 }
 
 TEST_CASE("articulations: a ball's cone and twist and a hinge's range hold") {
