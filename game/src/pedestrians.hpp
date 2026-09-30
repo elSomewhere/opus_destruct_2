@@ -25,7 +25,7 @@ namespace svx {
 
 class Pedestrians {
  public:
-  enum class Mind : u8 { Walk, Wait, Cross, Flee, Cower, Dodge };
+  enum class Mind : u8 { Walk, Wait, Cross, Flee, Cower, Dodge, Talk };
   // (what people hear)
   enum NoiseKind : int { kShot = 0, kImpact = 1, kExplosion = 2, kDeath = 3, kScream = 4, kCrash = 5 };
 
@@ -45,6 +45,9 @@ class Pedestrians {
     int toward = 1;      // ... and the end it heads for (0: a, 1: b)
     std::vector<V3> path;  // the way left along it
     V3 dodge;            // (Dodge) the way it jumps
+    u32 partner = 0;     // (Talk) who with; the one who stopped to talk walks up to the other
+    bool lead = false, speaking = false;
+    f64 turn = 0.0;      // (Talk) s until the other speaks
     f64 screamed = -99.0;
     bool touched = false;  // (hurt, knocked about: it stays while in range)
     bool alive = true;
@@ -122,6 +125,8 @@ class Pedestrians {
   void watch_traffic(Walker& w, anim::Character& c);
   void choose(Walker& w);
   void flee(Walker& w);
+  void meet(Walker& w);                 // (a calm walker passing another: now and then they stop and talk)
+  void part(Walker& w, bool afraid);    // (a talk over, for both)
   void on_walk(Walker& w, u64 walk, int toward, bool from_start);
   void at_corner(Walker& w, bool fleeing);
   // the body

@@ -100,7 +100,8 @@ policy and `max_deep`.
 - **Walkways**: the drive city's sidewalks from street corner to street corner (their walking
   lines clear of the lamps and trees) and its zebra crossings, which open with the signals.
 - **Walkers** are the original's civilians, as much as a street asks: walking corner to corner,
-  waiting at the kerb for the lights and crossing, stopping a while, jogging; afraid of shots,
+  waiting at the kerb for the lights and crossing, stopping a while, jogging, stopping to talk
+  with someone they pass (facing each other, speaking and listening in turn); afraid of shots,
   blasts, crashes, screams and the dead - running away along the walkways, cowering near blasts;
   jumping out of the way of a car coming at them. They move as the original's actor world moved
   people: steering with weight, keeping apart, a box swept against the world with a step up
@@ -135,9 +136,25 @@ The middle paths:
 - **the plan alone**: `physics = false` (the level of detail) for the calm; anything that needs
   the body wakes it at once.
 
-`svx_people_bench` drives the viewer through the drive city (8 m/s, traffic on) and reports,
-per policy and crowd, the whole tick and the characters' part, the bodies' split and the memory
-(each character some 45 KB; meshes are shared by look until a wound).
+`svx_people_bench` drives the viewer through the drive city (8 m/s, traffic on, streaming) and
+reports, per policy and crowd, the whole tick and the characters' own part (the deep bodies'
+solve is in the world's), the bodies' split on average and the memory. On a 4-core container
+(other work running; ms a tick):
+
+| bodies | people | tick | 95th pct | characters | deep / shallow / plan | characters' memory |
+|---|---|---|---|---|---|---|
+| hybrid | 24 | 9.9 | 19.8 | 0.8 | 2.5 / 8.3 / 13.0 | 1.0 MB |
+| hybrid | 48 | 11.2 | 22.6 | 1.2 | 4.8 / 15.1 / 26.1 | 1.8 MB |
+| hybrid | 96 | 14.5 | 27.6 | 1.9 | 9.7 / 25.7 / 50.1 | 3.5 MB |
+| shallow | 24 | 8.7 | 18.3 | 0.8 | 0 / 9.7 / 14.1 | 1.0 MB |
+| shallow | 96 | 11.2 | 24.6 | 1.9 | 0 / 30.6 / 54.9 | 3.5 MB |
+| deep | 24 | 15.9 | 37.0 | 0.8 | 9.7 / 0 / 14.2 | 0.9 MB |
+| deep | 96 | 31.2 | 47.9 | 2.0 | 30.4 / 0 / 55.1 | 3.2 MB |
+
+The hybrid costs little over all-shallow and keeps the bodies near the player and near moving
+pieces bodies of the world; all-deep costs some 0.65 ms a deep body in the city (its fine steps
+and its collision with the streets' voxels). Each character is some 40 KB; meshes are shared by
+look until a wound.
 
 ## 7. Tests
 

@@ -295,6 +295,39 @@ void Pedestrians::flee(Walker& w) {
   }
 }
 
+// Two calm people passing each other close: now and then they stop and talk (the original's
+// civilians' conversations): the one who stopped walks up to the other, they face each other and
+// take turns to speak, for a while.
+void Pedestrians::meet(Walker& w) {
+  if (w.fear > 0.2 || w.speed > 2.0 || !chance(w, 0.005)) return;
+  for (auto& [oid, o] : walkers_) {
+    if (oid == w.id || !o.alive || o.mind != Mind::Walk || o.fear > 0.2 || o.speed > 2.0) continue;
+    if (flat_dist(o.pos, w.pos) > 3.0) continue;
+    const f64 length = rnd(w, 12.0, 32.0);
+    for (Walker* x : {&w, &o}) {
+      x->mind = Mind::Talk;
+      x->timer = length;
+      x->partner = x == &w ? o.id : w.id;
+      x->lead = x == &w;
+      x->speaking = x == &w;
+      x->turn = rnd(w, 2.5, 5.0);
+      x->speed = x->pace;
+    }
+    return;
+  }
+}
+
+void Pedestrians::part(Walker& w, bool afraid) {
+  const auto it = walkers_.find(w.partner);
+  for (Walker* x : {&w, it != walkers_.end() ? &it->second : nullptr}) {
+    if (!x || x->mind != Mind::Talk) continue;
+    x->partner = 0;
+    x->mind = Mind::Walk;
+    if (afraid && x->fear > 0.45) flee(*x);
+    else choose(*x);
+  }
+}
+
 void Pedestrians::hear(Walker& w, const Noise& n) {
   if (n.source == w.id) return;
   const f64 d = flat_dist(w.pos, n.pos);
@@ -308,6 +341,8 @@ void Pedestrians::hear(Walker& w, const Noise& n) {
     w.mind = Mind::Cower;
     w.timer = rnd(w, 2.5, 5.0);
     w.speed = 0.0;
+  } else if (w.mind == Mind::Talk && w.fear > 0.45) {
+    part(w, true);
   } else if ((w.mind == Mind::Walk || w.mind == Mind::Wait || w.mind == Mind::Cross) && w.fear > 0.45) {
     flee(w);
   }
@@ -354,6 +389,8 @@ void Pedestrians::think(Walker& w, anim::Character& c, f64 dt) {
   switch (w.mind) {
     case Mind::Walk:
       if (w.fear > 0.45) return flee(w);
+      meet(w);
+      if (w.mind == Mind::Talk) break;
       if (w.timer <= 0.0 && chance(w, 0.3)) {
         w.mind = Mind::Wait;
         w.timer = rnd(w, 4.0, 12.0);
@@ -394,6 +431,20 @@ void Pedestrians::think(Walker& w, anim::Character& c, f64 dt) {
         else choose(w);
       }
       break;
+    case Mind::Talk: {
+      const auto it = walkers_.find(w.partner);
+      if (it == walkers_.end() || !it->second.alive || it->second.mind != Mind::Talk || w.fear > 0.45) return part(w, true);
+      Walker& o = it->second;
+      w.turn -= dt;
+      if (w.lead && w.turn <= 0.0) {
+        // (turns: the one speaking now listens)
+        w.turn = o.turn = rnd(w, 2.5, 6.0);
+        w.speaking = !w.speaking;
+        o.speaking = !w.speaking;
+      }
+      if (w.lead && w.timer <= 0.0) part(w, false);
+      break;
+    }
   }
 }
 
@@ -414,6 +465,17 @@ void Pedestrians::move(Walker& w, anim::Character& c, f64 dt) {
       want_dir = w.dodge;
       want_speed = 3.8;
       has_dir = true;
+    } else if (w.mind == Mind::Talk) {
+      const auto it = walkers_.find(w.partner);
+      if (w.lead && it != walkers_.end()) {
+        const V3 d = flat(it->second.pos - w.pos);
+        const f64 l = norm(d);
+        if (l > 1.35) {
+          want_dir = d * (1.0 / l);
+          want_speed = std::min(1.1, 0.8 * (l - 1.0) + 0.3);
+          has_dir = true;
+        }
+      }
     } else if ((w.mind == Mind::Walk || w.mind == Mind::Flee) && !w.path.empty()) {
       while (w.path.size() > 1 && flat_dist(w.path[0], w.pos) < 0.45) w.path.erase(w.path.begin());
       f64 remaining = 0.0;
@@ -534,6 +596,10 @@ void Pedestrians::move(Walker& w, anim::Character& c, f64 dt) {
   } else {
     std::optional<f64> want_yaw;
     if (w.mind == Mind::Cross && !w.path.empty()) want_yaw = dm::atan2(w.path.back().y - w.pos.y, w.path.back().x - w.pos.x);
+    else if (w.mind == Mind::Talk && walkers_.count(w.partner)) {
+      const V3 o = walkers_.at(w.partner).pos;
+      want_yaw = dm::atan2(o.y - w.pos.y, o.x - w.pos.x);
+    }
     else if (has_dir && !locked) want_yaw = dm::atan2(want_dir.y, want_dir.x);
     else if (hypot2(w.vel.x, w.vel.y) > 0.3 && !locked) want_yaw = dm::atan2(w.vel.y, w.vel.x);
     if (want_yaw) turn(w.yaw, w.yaw_rate, *want_yaw, dt, 3.2, 9.0);
@@ -671,6 +737,15 @@ void Pedestrians::before_tick() {
     in.mood = w.mind == Mind::Cower ? anim::Mood::Cower : w.mind == Mind::Flee && w.fear > 0.8 ? anim::Mood::Panic : anim::Mood::Normal;
     in.crouch = 0.0;
     in.look_at = w.fear > 0.3 && flat_dist(w.threat, w.pos) < 25.0 ? std::optional<V3>(w.threat + V3{0.0, 0.0, 1.0}) : std::nullopt;
+    in.talk = anim::Talk::None;
+    if (w.mind == Mind::Talk) {
+      const auto it = walkers_.find(w.partner);
+      if (it != walkers_.end()) {
+        const bool close = flat_dist(it->second.pos, w.pos) < 1.7;
+        in.talk = close ? (w.speaking ? anim::Talk::Speak : anim::Talk::Listen) : anim::Talk::None;
+        if (const anim::Character* pc = cs.get(it->first)) in.look_at = pc->eyes();
+      }
+    }
     c->set_root(w.pos, w.yaw);
     if (w.pos.z < -60.0) c->die();
   }
