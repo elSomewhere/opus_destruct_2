@@ -24,7 +24,7 @@ struct TargetDrive {
   V3 up{0, 0, 1};
   f64 stiffness = 0.0;  // N/m, N m/rad (<= 0: none; a very large one is rigid)
   f64 damping = 0.0;    // N s/m, N m s/rad
-  f64 max = 0.0;        // N, N m: the most it gives (0: unlimited)
+  f64 max = 0.0;        // N, N m: the most its spring gives, and its damper (0: unlimited)
 };
 
 struct Target {
@@ -37,9 +37,9 @@ struct Target {
   Kind kind = Kind::Point;
   V3 local;           // (Point) the point in the body frame, relative to its centre of mass
   TargetDrive drive;
-  // the solver's state: the accumulated impulse (world: N s, N m s; warm start), and what it gave
-  // the body in the last substep (N, N m)
-  V3 imp;
+  // the solver's state: the accumulated impulses of its spring and its damper (world: N s, N m s;
+  // warm start), and what its spring gave the body in the last substep (N, N m)
+  V3 imp, imp_d;
   V3 applied;
 };
 

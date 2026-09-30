@@ -369,9 +369,15 @@ TEST_CASE("articulations: a target pulls a link's point to a world point, as str
                              << " N up (its weight " << 10.0 * 9.81 << ")");
   CHECK(norm(s.links[0].pos - (D.pos - V3{0, 0, sag})) < 0.02);
   CHECK(s.target_applied[0].z == doctest::Approx(10.0 * 9.81).epsilon(0.05));
-  // too weak to hold the weight: it sinks to the ground
+  // too weak to hold the weight: it sinks - its spring gives half of it, its damper slows the
+  // fall (each within the most) - down to the ground
   w.articulation_control(id)->targets[0].max = 10.0 * 9.81 * 0.5;
   for (int t = 0; t < 180; ++t) w.tick();
+  REQUIRE(w.articulation_state(id, &s));
+  const f64 z3 = s.links[0].pos.z;
+  CHECK(z3 < D.pos.z - sag - 0.15);
+  CHECK(s.target_applied[0].z == doctest::Approx(10.0 * 9.81 * 0.5).epsilon(0.05));
+  for (int t = 0; t < 1200; ++t) w.tick();
   REQUIRE(w.articulation_state(id, &s));
   CHECK(s.links[0].pos.z < kTop + 0.1 + 0.02);
 }

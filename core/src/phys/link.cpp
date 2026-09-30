@@ -43,7 +43,18 @@ struct Touch {
 template <class Solid>
 bool touch_voxel(const V3& L, f64 r, f64 reach, const IVec3& p, f64 h, Solid&& solid, Touch* t) {
   const V3 lo{h * (p[0] - 0.5), h * (p[1] - 0.5), h * (p[2] - 0.5)};
-  const V3 q{std::clamp(L.x, lo.x, lo.x + h), std::clamp(L.y, lo.y, lo.y + h), std::clamp(L.z, lo.z, lo.z + h)};
+  V3 q{std::clamp(L.x, lo.x, lo.x + h), std::clamp(L.y, lo.y, lo.y + h), std::clamp(L.z, lo.z, lo.z + h)};
+  // (past a face whose neighbour is solid the surface goes on: a flat floor's voxels have no edges
+  // between them, a wall's no corners along it - only its outer ones touch)
+  bool outside = false;
+  for (int a = 0; a < 3; ++a) {
+    if (q[a] == L[a]) continue;
+    IVec3 nb = p;
+    nb[a] += L[a] > q[a] ? 1 : -1;
+    if (solid(nb)) q[a] = L[a];
+    else outside = true;
+  }
+  if (!outside && !(L.x >= lo.x && L.x <= lo.x + h && L.y >= lo.y && L.y <= lo.y + h && L.z >= lo.z && L.z <= lo.z + h)) return false;  // (the neighbours' to touch)
   const V3 d = L - q;
   const f64 dist = norm(d);
   if (dist > 1e-9) {
@@ -281,7 +292,10 @@ void RigidWorld::link_link_contacts(const Body& A, i32 ia, const Body& B, i32 ib
   const LinkData& Lb = *B.link;
   if (La.gone || Lb.gone) return;
   const M3 RA = to_matrix(A.q), RB = to_matrix(B.q);
-  const f64 mu = 0.5 * (La.friction + Lb.friction);
+  // (an articulation's own links slide over each other: a leg brushing the other is kept out of
+  // it, not held by it)
+  const bool own = La.articulation != 0 && La.articulation == Lb.articulation;
+  const f64 mu = own ? 0.0 : 0.5 * (La.friction + Lb.friction);
   for (size_t ka = 0; ka < La.spheres.size(); ++ka) {
     const V3 ca = A.x + RA * La.spheres[ka].c;
     const f64 ra = La.spheres[ka].r;
@@ -309,9 +323,13 @@ void RigidWorld::link_link_contacts(const Body& A, i32 ia, const Body& B, i32 ib
 
 size_t RigidWorld::piece_contacts() const {
   if (articulations.empty()) return contacts_.size();  // (no links)
+  // (the last substep's: bodies removed since leave some that point past the end)
+  const size_t nb = bodies.size();
   size_t n = 0;
-  for (const Contact& c : contacts_)
+  for (const Contact& c : contacts_) {
+    if (c.a < 0 || size_t(c.a) >= nb || (c.b >= 0 && size_t(c.b) >= nb)) continue;
     if (!bodies[size_t(c.a)]->link && (c.b < 0 || !bodies[size_t(c.b)]->link)) ++n;
+  }
   return n;
 }
 
@@ -338,6 +356,11 @@ void RigidWorld::sense_links() {
       if (!B.link) continue;
       if (!(c.depth >= 0.0) && !(c.ln > 0.0)) continue;  // (a gap that did not close: not touching)
       LinkData& L = *B.link;
+      // (what it meets - the world, other bodies - not its own links: a foot brushing the other
+      // leg has not touched anything)
+      const i32 o = side ? c.a : c.b;
+      const Body* O = o >= 0 ? bodies[size_t(o)].get() : nullptr;
+      if (O && O->link && L.articulation != 0 && O->link->articulation == L.articulation) continue;
       const V3 n = side ? c.n * -1.0 : c.n;
       L.contact = true;
       if (c.ln >= L.load) {
@@ -346,11 +369,8 @@ void RigidWorld::sense_links() {
         L.contact_point = c.p;
       }
       L.impact = std::max(L.impact, c.ln);
-      // (pushed by another body - not its own links, not resting on it: the sideways part)
-      const i32 o = side ? c.a : c.b;
-      if (o < 0) continue;
-      const Body& O = *bodies[size_t(o)];
-      if (O.link && L.articulation != 0 && O.link->articulation == L.articulation) continue;
+      // (pushed by another body - not resting on it: the sideways part)
+      if (!O) continue;
       L.bumped += c.ln * std::sqrt(n.x * n.x + n.y * n.y);
     }
   }
@@ -683,7 +703,14 @@ void RigidWorld::step_fine(f64 dt, std::vector<Contact>& report) {
         tprep_[k] = TargetPrep{};
         prepare_target(k, h, Iw, &fine_);
       }
+      // (joints, targets, then contacts - the order of the XPBD bodies the behaviours were made
+      // with: what the ground holds up last is held up)
       for (int it = 0; it < std::max(1, par.link_iterations); ++it) {
+        // (the joints swept both ways in turn: along a chain and back, an impulse reaches its end)
+        const size_t nj = I.joints.size();
+        const bool reverse = (it & 1) != 0;
+        for (size_t q = 0; q < nj; ++q) solve_joint(I.joints[reverse ? nj - 1 - q : q]);
+        for (u32 k : I.targets) solve_target(k);
         for (u32 k : I.contacts) {
           Contact& c = cs[k];
           V3 dv = vel(c.a, c.ra) - vel(c.b, c.rb);
@@ -698,11 +725,6 @@ void RigidWorld::step_fine(f64 dt, std::vector<Contact>& report) {
           c.l1 = l1;
           c.l2 = l2;
         }
-        // (the joints swept both ways in turn: along a chain and back, an impulse reaches its end)
-        const size_t nj = I.joints.size();
-        const bool reverse = (it & 1) != 0;
-        for (size_t q = 0; q < nj; ++q) solve_joint(I.joints[reverse ? nj - 1 - q : q]);
-        for (u32 k : I.targets) solve_target(k);
       }
       // (a limp link spins no faster than its limit: an impact does not set it whirling)
       for (i32 i : I.bodies) {
@@ -716,6 +738,7 @@ void RigidWorld::step_fine(f64 dt, std::vector<Contact>& report) {
         pw[size_t(i)] = V3{};
       }
       for (int it = 0; it < std::max(0, par.link_position_iterations); ++it) {
+        for (u32 k : I.joints) solve_joint_position(k, pv, pw);
         for (u32 k : I.contacts) {
           Contact& c = cs[k];
           if (c.bias <= 0.0) continue;
@@ -730,7 +753,6 @@ void RigidWorld::step_fine(f64 dt, std::vector<Contact>& report) {
             pw[size_t(c.b)] -= Iw[size_t(c.b)] * cross(c.rb, J);
           }
         }
-        for (u32 k : I.joints) solve_joint_position(k, pv, pw);
       }
       for (u32 k : I.joints) finish_joint(k, h);
       for (u32 k : I.targets) finish_target(k, h);

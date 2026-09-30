@@ -41,18 +41,26 @@ void RigidWorld::prepare_target(size_t k, f64 dt, const std::vector<M3>& Iw, con
   if (ib < 0 || (only && !(*only)[size_t(ib)])) return;
   const Body& B = *bodies[size_t(ib)];
   const f64 ks = std::max(0.0, D.stiffness), c = std::max(0.0, D.damping);
-  const f64 denom = c + dt * ks;
-  if (!D.on || B.asleep || !(B.inv_mass > 0.0) || !(denom > 0.0)) {
-    t.imp = V3{};
+  if (!D.on || B.asleep || !(B.inv_mass > 0.0) || !(ks > 0.0 || c > 0.0)) {
+    t.imp = t.imp_d = V3{};
     t.applied = V3{};
     return;
   }
   P.ib = ib;
   P.mb = B.inv_mass;
   P.Ib = Iw[size_t(ib)];
-  P.gamma = 1.0 / (dt * denom);
-  const f64 pull = ks / denom;  // (a rate per unit of error)
+  // the spring (implicit: soft, stable at any stiffness) and the damper, as rows of their own
+  P.spring = ks > 0.0;
+  P.damper = c > 0.0;
+  P.gs = P.spring ? 1.0 / (dt * dt * ks) : 0.0;
+  P.gd = P.damper ? 1.0 / (dt * c) : 0.0;
   P.cap = D.max > 0.0 ? D.max * dt : 0.0;
+  auto row = [&](f64 K, f64 err) {
+    P.ks[P.rows] = P.spring && K + P.gs > 0.0 ? 1.0 / (K + P.gs) : 0.0;
+    P.kd[P.rows] = P.damper && K + P.gd > 0.0 ? 1.0 / (K + P.gd) : 0.0;
+    P.bias[P.rows] = P.spring ? err / dt : 0.0;
+    ++P.rows;
+  };
   if (t.kind == Target::Kind::Point) {
     P.r = rotate(B.q, t.local);
     const V3 C = B.x + P.r - D.pos;
@@ -62,48 +70,53 @@ void RigidWorld::prepare_target(size_t k, f64 dt, const std::vector<M3>& Iw, con
       V3 e;
       e[a] = 1.0;
       const V3 re = cross(P.r, e);
-      const f64 K = P.mb + dot(re, P.Ib * re);
       P.axis[P.rows] = e;
-      P.k[P.rows] = 1.0 / (K + P.gamma);
-      P.bias[P.rows] = pull * C[a];
-      ++P.rows;
+      row(P.mb + dot(re, P.Ib * re), C[a]);
     }
   } else {
     // how far the body is turned past its target (world); tilting only: its up axis onto the
     // target's, about the two directions square to it
     V3 e;
+    V3 ax[3];
+    i32 n = 3;
     if (D.tilt_only) {
       const V3 u = normalized(rotate(B.q, D.up)), tu = normalized(rotate(D.rot, D.up));
       const V3 cr = cross(tu, u);
       const f64 sn = norm(cr);
       if (sn > 1e-12) e = cr * (dm::atan2(sn, dot(tu, u)) / sn);
-      squares(u, P.axis[0], P.axis[1]);
-      P.rows = 2;
+      squares(u, ax[0], ax[1]);
+      n = 2;
     } else {
       e = rotation_vector(B.q * conj(D.rot));
-      P.axis[0] = V3{1, 0, 0};
-      P.axis[1] = V3{0, 1, 0};
-      P.axis[2] = V3{0, 0, 1};
-      P.rows = 3;
+      ax[0] = V3{1, 0, 0};
+      ax[1] = V3{0, 1, 0};
+      ax[2] = V3{0, 0, 1};
     }
-    for (i32 r = 0; r < P.rows; ++r) {
-      const f64 K = dot(P.axis[r], P.Ib * P.axis[r]);
-      P.k[r] = K > 0.0 ? 1.0 / (K + P.gamma) : 0.0;
-      P.bias[r] = pull * dot(e, P.axis[r]);
+    for (i32 r = 0; r < n; ++r) {
+      P.axis[P.rows] = ax[r];
+      row(dot(ax[r], P.Ib * ax[r]), dot(e, ax[r]));
     }
   }
   P.on = P.rows > 0;
-  // warm start: last substep's impulse along the rows it has now
-  V3 imp;
-  for (i32 r = 0; r < P.rows; ++r) imp += P.axis[r] * (dot(t.imp, P.axis[r]) * warm);
-  if (P.cap > 0.0) imp = capped(imp, P.cap);
+  // warm start: last substep's impulses along the rows it has now
+  V3 imp, imp_d;
+  for (i32 r = 0; r < P.rows; ++r) {
+    if (P.spring) imp += P.axis[r] * (dot(t.imp, P.axis[r]) * warm);
+    if (P.damper) imp_d += P.axis[r] * (dot(t.imp_d, P.axis[r]) * warm);
+  }
+  if (P.cap > 0.0) {
+    imp = capped(imp, P.cap);
+    imp_d = capped(imp_d, P.cap);
+  }
   t.imp = imp;
+  t.imp_d = imp_d;
+  const V3 J = imp + imp_d;
   Body& Bm = *bodies[size_t(ib)];
   if (t.kind == Target::Kind::Point) {
-    Bm.v += imp * P.mb;
-    Bm.w += P.Ib * cross(P.r, imp);
+    Bm.v += J * P.mb;
+    Bm.w += P.Ib * cross(P.r, J);
   } else {
-    Bm.w += P.Ib * imp;
+    Bm.w += P.Ib * J;
   }
 }
 
@@ -125,21 +138,28 @@ void RigidWorld::solve_target(size_t k) {
       B.w += P.Ib * J;
     }
   };
-  V3 imp = t.imp;
-  for (i32 r = 0; r < P.rows; ++r) {
-    const V3& n = P.axis[r];
-    const f64 jv = point ? dot(n, B.v + cross(B.w, P.r) - P.vel) : dot(n, B.w);
-    const f64 lam = dot(imp, n);
-    const f64 d = -P.k[r] * (jv + P.bias[r] + P.gamma * lam);
-    push(n * d);
-    imp += n * d;
+  // (the point's velocity relative to the target's; the body's spin)
+  auto rate = [&](const V3& n) { return point ? dot(n, B.v + cross(B.w, P.r) - P.vel) : dot(n, B.w); };
+  // the spring, then the damper, each within its most
+  for (int which = 0; which < 2; ++which) {
+    if (which == 0 ? !P.spring : !P.damper) continue;
+    V3& acc = which == 0 ? t.imp : t.imp_d;
+    const f64 g = which == 0 ? P.gs : P.gd;
+    V3 imp = acc;
+    for (i32 r = 0; r < P.rows; ++r) {
+      const V3& n = P.axis[r];
+      const f64 lam = dot(imp, n);
+      const f64 d = -(which == 0 ? P.ks[r] : P.kd[r]) * (rate(n) + (which == 0 ? P.bias[r] : 0.0) + g * lam);
+      push(n * d);
+      imp += n * d;
+    }
+    if (P.cap > 0.0) {
+      const V3 c = capped(imp, P.cap);
+      push(c - imp);
+      imp = c;
+    }
+    acc = imp;
   }
-  if (P.cap > 0.0) {
-    const V3 c = capped(imp, P.cap);
-    push(c - imp);
-    imp = c;
-  }
-  t.imp = imp;
 }
 
 void RigidWorld::finish_targets(f64 dt) {

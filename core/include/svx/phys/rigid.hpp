@@ -278,12 +278,14 @@ struct RigidParams {
   // Links (articulations: docs/MOTION.md §6). An articulation that touches no awake piece is
   // stepped on its own, in link_substeps steps of each substep (4: 1/480 s at the default
   // substeps), with link_iterations velocity and link_position_iterations position iterations
-  // each: many short steps keep a chain of light and heavy links (a hand on an arm on a chest)
-  // stiff. One that touches an awake piece is solved with the pieces, in their substep. 1: every
+  // each (joints, targets, then contacts: what the ground holds up last is held up): many short
+  // steps of few iterations keep a chain of light and heavy links (a hand on an arm on a chest)
+  // stiff, as supple as the bodies of extended position-based dynamics its characters were made
+  // with. One that touches an awake piece is solved with the pieces, in their substep. 1: every
   // articulation is solved with the pieces.
   int link_substeps = 4;
-  int link_iterations = 4;
-  int link_position_iterations = 2;
+  int link_iterations = 2;
+  int link_position_iterations = 1;
   f64 link_margin = 0.02;            // m: a link's contacts are found this far out (and a substep's motion)
   f64 link_max_speed = 60.0;         // m/s
 };
@@ -526,11 +528,14 @@ void joint_stillness();  // joined bodies count towards sleep together (sleep_up
     V3 r;                 // (point) the arm from the centre of mass to the point (world)
     V3 axis[3];           // the rows' directions (world): the point's axes, or the rotation's
     i32 rows = 0;
-    f64 k[3] = {0, 0, 0}; // the rows' inverted masses, softened
-    f64 gamma = 0.0;      // softness
-    f64 bias[3] = {0, 0, 0};
+    // a spring's rows and a damper's (in parallel: at their solution, the implicit spring-damper;
+    // apart, each gives no more than the drive's most)
+    bool spring = false, damper = false;
+    f64 ks[3] = {0, 0, 0}, kd[3] = {0, 0, 0};  // the rows' inverted masses, softened
+    f64 gs = 0.0, gd = 0.0;                    // their softness
+    f64 bias[3] = {0, 0, 0};                   // (spring) the error's rate
     V3 vel;               // (point) the target's velocity
-    f64 cap = 0.0;        // the most impulse in a substep (N s, N m s; 0: none)
+    f64 cap = 0.0;        // the most impulse of each in a substep (N s, N m s; 0: none)
   };
   std::vector<TargetPrep> tprep_;
   void prepare_targets(f64 dt, const std::vector<M3>& Iw, const std::vector<u8>* only);
