@@ -169,7 +169,8 @@ struct PedestrianConfig {
 
 // A character for the front end (docs/ANIM.md): its mesh (take_character_meshes) drawn with its
 // palette (take_character_palettes) and skin matrices - rigid skinning: a vertex at
-// skin[bone] x its rest position - and its held prop's mesh with the prop's matrix.
+// skin[bone] x its rest position - and its held prop's mesh with the prop's matrix. A gib (a piece
+// of one - a limb shot off, what a blast tore apart: kGib) is drawn the same way with one matrix.
 constexpr i32 kCharacterBones = 23;
 struct CharacterView {
   u32 id = 0;
@@ -180,9 +181,10 @@ struct CharacterView {
   f64 radius = 1.0;
   f64 flash = 0.0;              // 0..1: a hit's flash (a tint)
   f64 health = 1.0;             // 0..1 of its full health
-  const f32* skin = nullptr;    // kCharacterBones x 16 floats (column-major 4x4), until the next tick
+  const f32* skin = nullptr;    // `bones` x 16 floats (column-major 4x4), until the next tick
+  i32 bones = kCharacterBones;  // (a gib: 1)
   std::array<f32, 16> prop{};   // the prop's matrix
-  static constexpr u8 kAlive = 1, kDeep = 2, kPhysical = 4, kAsleep = 8, kDown = 16;
+  static constexpr u8 kAlive = 1, kDeep = 2, kPhysical = 4, kAsleep = 8, kDown = 16, kGib = 32;
 };
 
 // A character mesh (the svx_anim character vertex format: 20 bytes a vertex, svx/anim/voxel/mesh.hpp).
@@ -318,6 +320,9 @@ class Game {
   std::vector<CharacterMeshData> take_character_meshes();
   std::vector<u32> take_removed_character_meshes();
   std::vector<CharacterPalette> take_character_palettes();
+  // Blood now: drops (x, y, z, radius, r, g, b each) and stains on the surfaces (x, y, z, normal
+  // xyz, radius, age each), floats.
+  void blood(std::vector<f32>* drops, std::vector<f32>* stains) const;
 
   // Movers (game/src/movers.cpp).
   i32 add_mover(const MoverDef& d);

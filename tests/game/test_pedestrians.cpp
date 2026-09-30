@@ -275,3 +275,49 @@ TEST_CASE("pedestrians: a car driven into someone knocks them down and hurts the
   CHECK(health < 0.8);
   CHECK(moved > 1.5);
 }
+
+TEST_CASE("pedestrians: a rocket among people tears them apart - gibs and blood the front end draws") {
+  Game game;
+  city(game, 7, 80.0, 6, false);
+  const V3 spawn = make_drive_city(7)->spawn_pos();
+  V3 at;
+  u32 who = 0;
+  for (int t = 0; t < 60 * 30 && !who; ++t) {
+    game.tick();
+    if (t % 30 != 29) continue;
+    for (const CharacterView& v : game.character_views())
+      if ((v.flags & CharacterView::kAlive) && std::hypot(v.centre.x - spawn.x, v.centre.y - spawn.y) < 40.0) {
+        who = v.id;
+        at = v.centre;
+        break;
+      }
+  }
+  REQUIRE(who != 0);
+  (void)game.take_character_meshes();
+  game.blast(V3{at.x + 0.6, at.y, at.z - 0.4}, 1.0, 1.0e6);  // (a rocket at their feet)
+  i32 gibs = 0, gib_meshes = 0, drops = 0, stains = 0;
+  bool dead = false;
+  std::set<u32> meshes_had;
+  for (int t = 0; t < 60 * 3; ++t) {
+    game.tick();
+    for (const CharacterMeshData& m : game.take_character_meshes()) meshes_had.insert(m.id);
+    std::vector<f32> d, s;
+    game.blood(&d, &s);
+    drops = std::max(drops, static_cast<i32>(d.size() / 7));
+    stains = static_cast<i32>(s.size() / 8);
+  }
+  for (const CharacterView& v : game.character_views()) {
+    if (v.flags & CharacterView::kGib) {
+      ++gibs;
+      if (meshes_had.count(v.mesh)) ++gib_meshes;
+      CHECK(v.bones == 1);
+    }
+    if (v.id == who) dead = !(v.flags & CharacterView::kAlive);
+  }
+  MESSAGE("a rocket at someone's feet: " << gibs << " gibs (" << gib_meshes << " with their meshes), " << drops << " blood drops at most, " << stains << " stains");
+  CHECK(dead);
+  CHECK(gibs >= 4);
+  CHECK(gib_meshes == gibs);
+  CHECK(drops > 20);
+  CHECK(stains > 10);
+}

@@ -13,6 +13,7 @@
 #include <cmath>
 #include <cstring>
 
+#include "svx/anim/voxel/mesh.hpp"
 #include "svx/base/diag.hpp"
 #include "svx/base/dmath.hpp"
 #include "svx/game/replay.hpp"
@@ -132,6 +133,32 @@ V3 Pedestrians::focus() const {
   return car ? car->x : g_->viewer_;
 }
 
+anim::GibSystem* Pedestrians::gibs() {
+  if (!gibs_ && g_->chars_) gibs_ = std::make_unique<anim::GibSystem>(chars().collision());
+  return gibs_.get();
+}
+
+// A palette's id for the front end (a new one is sent with the next palettes).
+u64 Pedestrians::palette_id(const anim::Palette& pal) {
+  u64 digest = 0x9A1E77E5ull;
+  for (const auto& slot : pal)
+    for (f32 v : slot) {
+      u32 b;
+      std::memcpy(&b, &v, sizeof b);
+      digest = mix(digest ^ b);
+    }
+  auto pit = palettes_.find(digest);
+  if (pit == palettes_.end()) {
+    CharacterPalette p;
+    p.id = next_palette_++;
+    for (size_t s = 0; s < pal.size() && s < 16; ++s)
+      for (int ch = 0; ch < 3; ++ch) p.rgb[s * 3 + size_t(ch)] = pal[s][size_t(ch)];
+    palettes_out_.push_back(p);
+    pit = palettes_.emplace(digest, p.id).first;
+  }
+  return pit->second;
+}
+
 f64 Pedestrians::rnd(Walker& w, f64 a, f64 b) {
   w.rng += 0x9E3779B97F4A7C15ull;
   u64 z = w.rng;
@@ -151,6 +178,10 @@ void Pedestrians::clear() {
     if (e.sent) removed_out_.push_back(e.id);
   meshes_.clear();
   mesher_->clear();
+  for (const auto& [id, e] : gib_meshes_)
+    if (e.sent) removed_out_.push_back(e.mesh);
+  gib_meshes_.clear();
+  gibs_.reset();
   clock_ = 0.0;
 }
 
@@ -569,12 +600,15 @@ void Pedestrians::blast(const V3& pos, f64 radius, f64 energy) {
     }
     const bool was = c->alive();
     const anim::BlastResult r = c->blast(pos, radius, strength);
+    if (anim::GibSystem* gs = gibs()) anim::blast_gibs(*gs, *c, r, pos, palette_id(c->palette));
     w.touched = true;
     if (was && r.killed) {
       w.alive = false;
       noise(c->bounds_center(), 18.0, kDeath);
     }
   }
+  // (what it reached of the gibs and the blood: pushed away)
+  if (gibs_) gibs_->impulse(pos, 4.0 * radius, 11.0 * strength);
 }
 
 // A round into a body (from `from`): its voxels carved, the body hit (a flinch, a stagger, a fall;
@@ -591,6 +625,7 @@ bool Pedestrians::wound(u32 id, const V3& from, const V3& pos, f64 radius, f64 e
   const bool was = c->alive();
   // (a pistol round's 500 J: 35; a pellet's 150 J: about 10)
   const anim::WoundResult r = c->wound(*hit, dir, 0.07 * energy, std::clamp(radius, 0.02, 0.12), std::min(4.0, 1.0 + energy / 400.0));
+  if (anim::GibSystem* gs = gibs()) anim::wound_gibs(*gs, *c, r, hit->point, dir, palette_id(c->palette));
   noise(pos, 12.0, kImpact);
   const auto it = walkers_.find(id);
   if (it == walkers_.end()) return true;
@@ -655,6 +690,7 @@ void Pedestrians::after_tick() {
       }
     }
   }
+  if (gibs_) gibs_->update(dt);
   clock_ += dt;
   if (clock_ >= 0.5) {
     clock_ = 0.0;
@@ -834,24 +870,7 @@ void Pedestrians::output() {
       }
       it->second.unused = 0.0;
       mesh_of_[id] = it->second.id;
-      // (a palette by its colours)
-      u64 digest = 0x9A1E77E5ull;
-      for (const auto& slot : c->palette)
-        for (f32 v : slot) {
-          u32 b;
-          std::memcpy(&b, &v, sizeof b);
-          digest = mix(digest ^ b);
-        }
-      auto pit = palettes_.find(digest);
-      if (pit == palettes_.end()) {
-        CharacterPalette p;
-        p.id = next_palette_++;
-        for (size_t s = 0; s < c->palette.size() && s < 16; ++s)
-          for (int ch = 0; ch < 3; ++ch) p.rgb[s * 3 + size_t(ch)] = c->palette[s][size_t(ch)];
-        palettes_out_.push_back(p);
-        pit = palettes_.emplace(digest, p.id).first;
-      }
-      palette_of_[id] = pit->second;
+      palette_of_[id] = static_cast<u32>(palette_id(c->palette));
     }
   }
   // (meshes nothing drew for a while go; the mesher's part cache with them - it knows parts by
@@ -867,6 +886,20 @@ void Pedestrians::output() {
     }
   }
   if (dropped) mesher_->clear();
+  // the gibs: a mesh each, and its matrix now; the gone ones' meshes go
+  if (gibs_) {
+    std::map<u32, GibEntry> now;
+    for (const auto& gp : gibs_->gibs) {
+      const anim::Gib& g = *gp;
+      auto it = gib_meshes_.find(g.id);
+      GibEntry e = it != gib_meshes_.end() ? it->second : GibEntry{next_mesh_++, false, {}};
+      gibs_->write_skin(g, e.skin.data());
+      now[g.id] = e;
+    }
+    for (const auto& [id, e] : gib_meshes_)
+      if (!now.count(id) && e.sent) removed_out_.push_back(e.mesh);
+    gib_meshes_.swap(now);
+  }
 }
 
 std::vector<CharacterView> Pedestrians::views() const {
@@ -891,7 +924,35 @@ std::vector<CharacterView> Pedestrians::views() const {
     v.skin = c->skin.data();
     out.push_back(v);
   }
+  if (gibs_)
+    for (const auto& gp : gibs_->gibs) {
+      const auto it = gib_meshes_.find(gp->id);
+      if (it == gib_meshes_.end()) continue;
+      CharacterView v;
+      v.id = 0x80000000u | gp->id;
+      v.mesh = it->second.mesh;
+      v.palette = static_cast<u32>(gp->user);
+      v.flags = static_cast<u8>(CharacterView::kGib | CharacterView::kPhysical | (gp->asleep ? CharacterView::kAsleep : 0));
+      v.centre = gp->pos;
+      v.radius = gp->radius;
+      v.health = 0.0;
+      v.skin = it->second.skin.data();
+      v.bones = 1;
+      out.push_back(v);
+    }
   return out;
+}
+
+void Pedestrians::blood(std::vector<f32>* drops, std::vector<f32>* stains) const {
+  drops->clear();
+  stains->clear();
+  if (!gibs_) return;
+  gibs_->for_each_drop([&](const V3& p, f64 size, const anim::Rgb& c) {
+    for (f64 v : {p.x, p.y, p.z, size, c[0], c[1], c[2]}) drops->push_back(static_cast<f32>(v));
+  });
+  gibs_->for_each_stain([&](const V3& p, const V3& n, f64 size, f64 age, const anim::Rgb&) {
+    for (f64 v : {p.x, p.y, p.z, n.x, n.y, n.z, size, age}) stains->push_back(static_cast<f32>(v));
+  });
 }
 
 // (meshed when the front end asks: a host that draws nothing pays nothing)
@@ -908,6 +969,19 @@ std::vector<CharacterMeshData> Pedestrians::take_meshes() {
     d.indices = std::move(m.indices);
     out.push_back(std::move(d));
   }
+  if (gibs_)
+    for (const auto& gp : gibs_->gibs) {
+      auto it = gib_meshes_.find(gp->id);
+      if (it == gib_meshes_.end() || it->second.sent) continue;
+      it->second.sent = true;
+      anim::CharacterMesh m = anim::mesh_part(gp->part, gp->voxel_size, 0);
+      CharacterMeshData d;
+      d.id = it->second.mesh;
+      d.vertex_count = m.vertex_count;
+      d.vertices = std::move(m.vertices);
+      d.indices = std::move(m.indices);
+      out.push_back(std::move(d));
+    }
   return out;
 }
 
@@ -929,7 +1003,8 @@ i64 Pedestrians::memory_bytes() const {
   for (const anim::HumanVariant& l : looks_)
     if (l.model)
       for (const anim::VoxelPart& part : l.model->parts) b += static_cast<i64>(part.cells.capacity() + sizeof(part));
-  b += static_cast<i64>(meshes_.size() * 96 + palettes_.size() * 48 + (mesh_of_.size() + palette_of_.size()) * 48);
+  b += static_cast<i64>(meshes_.size() * 96 + palettes_.size() * 48 + (mesh_of_.size() + palette_of_.size()) * 48 + gib_meshes_.size() * 112);
+  if (gibs_) b += gibs_->memory_bytes();
   return b;
 }
 
@@ -1002,6 +1077,12 @@ bool Game::wound_character(u32 id, const V3& pos, f64 radius, f64 energy) {
   if (log_) log_->push({world_.ticks(), Command::Type::Wound, {static_cast<f64>(id), pos.x, pos.y, pos.z, radius, energy}});
   Pedestrians* p = people();
   return p && p->wound(id, viewer_, pos, radius, energy);
+}
+
+void Game::blood(std::vector<f32>* drops, std::vector<f32>* stains) const {
+  const Pedestrians* p = people();
+  if (p) p->blood(drops, stains);
+  else drops->clear(), stains->clear();
 }
 
 std::vector<CharacterView> Game::character_views() const {

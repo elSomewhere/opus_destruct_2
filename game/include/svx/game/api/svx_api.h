@@ -242,8 +242,8 @@ int svx_poll_character_palettes(svx_engine* e);
 unsigned svx_character_palette(svx_engine* e, int i, float* out48);
 /* The characters now (after a tick): count, then svx_characters_data holds 12 doubles each: id,
  * mesh, palette, flags (1 alive, 2 deep: a body of the world, 4 physical, 8 asleep: a body at
- * rest, 16 down), bounding sphere centre xyz and radius, hit flash 0..1, its prop's mesh (0: none),
- * health 0..1, 1 reserved; svx_characters_skin holds 23 x 16 floats each (column-major 4x4 skin matrices, bone
+ * rest, 16 down, 32 a gib: a piece of one, drawn with its first matrix), bounding sphere centre xyz
+ * and radius, hit flash 0..1, its prop's mesh (0: none), health 0..1, 1 reserved; svx_characters_skin holds 23 x 16 floats each (column-major 4x4 skin matrices, bone
  * by bone), svx_characters_prop 16 floats each (its prop's matrix). */
 int svx_characters(svx_engine* e);
 const double* svx_characters_data(svx_engine* e);
@@ -253,6 +253,13 @@ const float* svx_characters_prop(svx_engine* e);
  * material (-1: a character), character id (0: the world), bone; returns 0 (nothing), 1 (the
  * world) or 2 (a character). A round into a character (logged; where the ray found it, fired from
  * the viewer; energy and radius as svx_shoot's): returns 1 if it hit. */
+/* Blood (after a tick): the drops' count, then svx_blood_drops holds 7 floats each (x, y, z,
+ * radius, linear rgb); the stains' count (svx_blood_stain_count), then svx_blood_stains holds 8
+ * floats each (x, y, z, the surface's normal xyz, radius, age in s). */
+int svx_blood(svx_engine* e);
+const float* svx_blood_drops(svx_engine* e);
+int svx_blood_stain_count(svx_engine* e);
+const float* svx_blood_stains(svx_engine* e);
 int svx_raycast_shot(svx_engine* e, double ox, double oy, double oz, double dx, double dy, double dz, double max_dist, double* out10);
 int svx_wound_character(svx_engine* e, unsigned id, double x, double y, double z, double radius, double energy);
 

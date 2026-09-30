@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "svx/anim/characters/humans.hpp"
+#include "svx/anim/physics/debris.hpp"
 #include "svx/anim/system.hpp"
 #include "svx/anim/voxel/mesh.hpp"
 #include "svx/game/game.hpp"
@@ -71,6 +72,7 @@ class Pedestrians {
   std::vector<CharacterMeshData> take_meshes();
   std::vector<u32> take_removed_meshes();
   std::vector<CharacterPalette> take_palettes();
+  void blood(std::vector<f32>* drops, std::vector<f32>* stains) const;
   i64 memory_bytes() const;
   i32 walkers() const { return static_cast<i32>(walkers_.size()); }
 
@@ -97,6 +99,16 @@ class Pedestrians {
   std::vector<u32> removed_out_;
   std::vector<CharacterPalette> palettes_out_;
   std::unique_ptr<anim::ModelMesher> mesher_;
+  // gibs and blood (over the characters' collision), and the gibs' meshes and matrices
+  std::unique_ptr<anim::GibSystem> gibs_;
+  struct GibEntry {
+    u32 mesh = 0;
+    bool sent = false;
+    std::array<f32, 16> skin{};
+  };
+  std::map<u32, GibEntry> gib_meshes_;  // gib id -> its mesh
+  anim::GibSystem* gibs();
+  u64 palette_id(const anim::Palette& p);
 
   anim::CharacterSystem& chars();
   const RoadNetwork* roads() const;

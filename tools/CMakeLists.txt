@@ -53,6 +53,7 @@ if(SVX_WASM)
     _svx_character_mesh_indices _svx_poll_character_meshes_removed _svx_character_mesh_removed
     _svx_poll_character_palettes _svx_character_palette _svx_characters _svx_characters_data
     _svx_characters_skin _svx_characters_prop _svx_raycast_shot _svx_wound_character
+    _svx_blood _svx_blood_drops _svx_blood_stain_count _svx_blood_stains
     _malloc _free)
   string(REPLACE ";" "," _svx_exports_csv "${_svx_exports}")
   target_link_options(svx_web PRIVATE

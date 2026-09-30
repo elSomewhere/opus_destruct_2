@@ -43,6 +43,7 @@ struct svx_engine {
   std::vector<CharacterPalette> char_palettes;
   std::vector<f64> characters;
   std::vector<float> char_skin, char_prop;
+  std::vector<float> blood_drops, blood_stains;
   MeshOptions mesh_base() const {
     MeshOptions mo;
     if (doom) {
@@ -763,7 +764,7 @@ int svx_characters(svx_engine* e) {
     o[8] = v.flash;
     o[9] = static_cast<double>(v.prop_mesh);
     o[10] = v.health;
-    if (v.skin) std::copy(v.skin, v.skin + kSkin, e->char_skin.data() + kSkin * k);
+    if (v.skin) std::copy(v.skin, v.skin + size_t(std::clamp(v.bones, 0, kCharacterBones)) * 16, e->char_skin.data() + kSkin * k);
     std::copy(v.prop.begin(), v.prop.end(), e->char_prop.data() + 16 * k);
   }
   return static_cast<int>(cs.size());
@@ -793,6 +794,17 @@ int svx_raycast_shot(svx_engine* e, double ox, double oy, double oz, double dx, 
 int svx_wound_character(svx_engine* e, unsigned id, double x, double y, double z, double radius, double energy) {
   return e->eng.wound_character(id, V3{x, y, z}, radius, energy) ? 1 : 0;
 }
+
+int svx_blood(svx_engine* e) {
+  e->eng.blood(&e->blood_drops, &e->blood_stains);
+  return static_cast<int>(e->blood_drops.size() / 7);
+}
+
+const float* svx_blood_drops(svx_engine* e) { return e->blood_drops.data(); }
+
+int svx_blood_stain_count(svx_engine* e) { return static_cast<int>(e->blood_stains.size() / 8); }
+
+const float* svx_blood_stains(svx_engine* e) { return e->blood_stains.data(); }
 
 int svx_stats_count(void) { return 57; }
 
