@@ -721,3 +721,84 @@ TEST_CASE("plastic hinges: a steel arm bent past its strength folds down at its 
     if (d.w.joint(j, &s)) CHECK(s.type != JointType::Hinge);
   }
 }
+
+namespace {
+
+// A loose steel plate (6 m x 1 m x 12.5 cm of steel section) on two rock pillars 5 m apart, and
+// a steel block of `tonnes` set down on its middle. Returns the plate's and the block's ids.
+std::pair<i64, i64> plate_under_block(World& w, f64 tonnes, bool hinges) {
+  set_tunable(w, "plastic_hinges", hinges ? 1.0 : 0.0);
+  VoxelGrid g = ground();
+  box(g, {-22, -4, 0}, {-18, 4, 16}, make_vox(MaterialId::Rock, true));
+  box(g, {18, -4, 0}, {22, 4, 16}, make_vox(MaterialId::Rock, true));
+  g.compact();
+  w.load(std::move(g));
+  w.bake();
+  VoxelGrid pg;
+  pg.h = h;
+  box(pg, {-24, -4, 0}, {24, 4, 1}, make_vox(MaterialId::SteelSection, false));
+  pg.compact();
+  const i64 plate = w.loosen_grid(w.add_grid(GridFrame{V3{0, 0, 16 * h + 0.01}, kId}, std::move(pg), false));
+  for (int t = 0; t < 30; ++t) w.tick();
+  const i32 side = static_cast<i32>(std::lround(std::cbrt(tonnes / 7.85) / h));
+  VoxelGrid kg;
+  kg.h = h;
+  box(kg, {-side / 2, -side / 2, 0}, {side - side / 2, side - side / 2, side}, make_vox(MaterialId::Steel, false));
+  kg.compact();
+  const i64 block = w.loosen_grid(w.add_grid(GridFrame{V3{0, 0, 17 * h + 0.05}, kId}, std::move(kg), false));
+  return {plate, block};
+}
+
+}  // namespace
+
+TEST_CASE("plastic hinges: a loose steel plate loaded past its strength between its supports yields on a hinge, and folds and tears under much more") {
+  struct Out {
+    i64 hinges = 0;
+    f64 turned = 0.0;  // (the most any hinge turned)
+    bool torn = false;
+    f64 block_z = 0.0;
+  };
+  auto run = [](f64 tonnes, bool hinges) {
+    World w;
+    const auto [plate, block] = plate_under_block(w, tonnes, hinges);
+    REQUIRE(plate != 0);
+    REQUIRE(block != 0);
+    Out o;
+    std::vector<JointId> seen;
+    for (int t = 0; t < 300; ++t) {
+      w.tick();
+      for (JointId j : w.joints()) {
+        JointState s;
+        if (!w.joint(j, &s) || s.type != JointType::Hinge) continue;
+        if (std::find(seen.begin(), seen.end(), j) == seen.end()) seen.push_back(j);
+        o.turned = std::max(o.turned, std::abs(s.value));
+      }
+    }
+    for (JointId j : seen) {
+      JointState s;
+      o.torn = o.torn || !w.joint(j, &s);
+    }
+    o.hinges = w.stats().plastic_hinges;
+    if (const Body* b = w.piece(block)) o.block_z = b->x.z;
+    return o;
+  };
+  // (the plate's section fails at some 10 t on its middle; its plastic moment is 1.3 x that)
+  const Out held = run(15.0, true), folded = run(30.0, true), snapped = run(15.0, false);
+  MESSAGE("15 t: " << held.hinges << " hinges, turned " << held.turned << " rad, torn " << held.torn << ", the block at " << held.block_z << " m");
+  MESSAGE("30 t: " << folded.hinges << " hinges, turned " << folded.turned << " rad, torn " << folded.torn << ", the block at " << folded.block_z
+                   << " m");
+  MESSAGE("15 t without hinges: the block at " << snapped.block_z << " m");
+  // a little over its strength: it yields and holds, bent
+  CHECK(held.hinges >= 1);
+  CHECK_FALSE(held.torn);
+  CHECK(held.turned < 0.1);
+  CHECK(held.block_z > 2.0);
+  // far over it: it folds on its hinge, tears at its rotation capacity, and lets the block through
+  CHECK(folded.hinges >= 1);
+  CHECK(folded.turned > 0.25);
+  CHECK(folded.torn);
+  CHECK(folded.block_z < 1.5);
+  // brittle (no hinges): it snaps at once
+  CHECK(snapped.block_z < 1.5);
+}
+

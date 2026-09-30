@@ -850,6 +850,12 @@ class World {
     f64 pull = 0.0;      // N: what tears it apart
   };
   bool plastic_hinge(const Structure& s, i32 b, HingeCut* out) const;
+  // (the hinge of a bond that failed under this load, its sides turned so: in the bond's frame -
+  // a structure's world, a piece's shape frame; false: not a ductile section failing in bending)
+  bool hinge_of(const SBond& B, const BondLoad& L, const V3& rot_a, const V3& rot_b, HingeCut* out) const;
+  // A loose piece's ductile sections that failed in bending (hinges: its shape frame): a plastic
+  // hinge between the parts it comes apart in, anchored on the voxels either side before it splits.
+  void piece_hinges(Body& b, const std::vector<HingeCut>& hinges);
   void detach_unsupported(Structure& s, const std::vector<HingeCut>* hinges = nullptr);
   void drop_structure(i64 id);
   // Updates a structure whose chunks were re-fragmented: nodes there retire, the new fragments
@@ -880,6 +886,9 @@ class World {
   struct PointForce {
     i32 frag;                                // body fragment
     V3 F, p;                                 // world force and point
+    // what pushes there: a body (its id), a static grid (-1 - its slot); 0: a joint's or a
+    // wheel's pull (it acts where it is: not spread over the contacts)
+    i64 with = 0;
   };
   // the joints' pulls on pieces (fracture_hook): per body index of rigid_.bodies, into per and fsum
   void joint_piece_forces(std::vector<std::vector<PointForce>>& per, std::vector<f64>& fsum) const;
@@ -892,6 +901,7 @@ class World {
   // the stats and the events is applied afterwards, in body order.
   struct StressOut {
     std::vector<i32> broken, crushed;
+    std::vector<HingeCut> hinges;           // (ductile sections failed in bending: plastic hinges)
     std::vector<std::pair<V3, V3>> cracks;  // world position, normal
     i64 checks = 0, pcg_iters = 0, impact_breaks = 0, steady_breaks = 0;
     i64 modes[4] = {0, 0, 0, 0};

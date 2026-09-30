@@ -114,10 +114,16 @@ TEST_CASE("grids: a turned wall stands on the world grid through its junctions, 
   CHECK(qdot(b->q, rot) > 0.9999);  // (its frame: the grid's)
   const f64 z0 = b->x.z;
   for (int t = 0; t < 240; ++t) w.tick();
-  f64 zmax = 0.0;
-  for (const PieceState& p : w.pieces()) zmax = std::max(zmax, p.pos.z);
-  MESSAGE("turned wall: piece centre from " << z0 << " m to at most " << zmax << " m, " << w.pieces().size() << " pieces");
-  CHECK(zmax < z0);
+  // (it came down: its centre of mass, whatever it broke into - an upper part may stand on the
+  // rubble of the lower)
+  f64 mz = 0.0, m = 0.0;
+  for (const PieceState& p : w.pieces()) {
+    mz += p.mass * p.pos.z;
+    m += p.mass;
+  }
+  REQUIRE(m > 0.0);
+  MESSAGE("turned wall: its centre of mass from " << z0 << " m to " << mz / m << " m, " << w.pieces().size() << " pieces");
+  CHECK(mz / m < z0 - 0.1);
 }
 
 TEST_CASE("grids: a turned beam on two world columns hangs by its junctions and falls when they go") {

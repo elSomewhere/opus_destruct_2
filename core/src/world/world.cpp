@@ -1147,9 +1147,15 @@ void World::judge(Structure& s) {
 
 bool World::plastic_hinge(const Structure& s, i32 bi, HingeCut* out) const {
   const SBond& B = s.P.bonds[size_t(bi)];
+  const auto rot = [&](i32 i) { return i < 0 ? V3{} : V3{s.u[6 * size_t(i) + 3], s.u[6 * size_t(i) + 4], s.u[6 * size_t(i) + 5]}; };
+  if (!hinge_of(B, s.P.bond_load(bi, s.u), rot(B.a), rot(B.b), out)) return false;
+  out->grid = s.vox0[size_t(B.a)].grid;
+  return true;
+}
+
+bool World::hinge_of(const SBond& B, const BondLoad& L, const V3& rot_a, const V3& rot_b, HingeCut* out) const {
   const MaterialTable& M = mats();
   if (!M[B.ma].ductile || !M[B.mb].ductile) return false;
-  const BondLoad L = s.P.bond_load(bi, s.u);
   const BondStrength S = bond_strength(B, par_.fragility, M);
   const f64 A = std::max(B.area, 1e-12);
   const f64 sN = L.N / A;
@@ -1166,15 +1172,13 @@ bool World::plastic_hinge(const Structure& s, i32 bi, HingeCut* out) const {
   if (!(phi_b > 0.0) || phi_b < 1.5 * phi_n || phi_b < 1.5 * phi_s) return false;
   // the way it turns: the part beyond turned on from where the solve has it (b's rotation less
   // a's; a support does not turn), square to the bond
-  const auto rot = [&](i32 i) { return i < 0 ? V3{} : V3{s.u[6 * size_t(i) + 3], s.u[6 * size_t(i) + 4], s.u[6 * size_t(i) + 5]}; };
-  V3 w = rot(B.b) - rot(B.a);
+  V3 w = (B.b < 0 ? V3{} : rot_b) - rot_a;
   w -= B.n * dot(w, B.n);
   const V3 m = B.t1 * L.M1 + B.t2 * L.M2;
   HingeCut h;
   h.a = B.a;
   h.b = B.b;
   h.n = B.n;
-  h.grid = s.vox0[size_t(B.a)].grid;
   h.p = B.p;
   if (norm2(w) > 1e-30) {
     h.axis = normalized(w);

@@ -178,7 +178,10 @@ A piece is checked when something happens to it, after its contact solve in the 
   - The rigid solver's contact forces are one of many statically admissible answers and may put
     a piece's whole weight on a few points. The check uses the elastic answer instead: the same
     net force and moment shared over the contact points as by a rigid body on equal springs
-    (least squares, f_c = u + θ × r_c).
+    (least squares, f_c = u + θ × r_c) - each partner's contacts on their own (the ground's,
+    another piece's): what presses on a piece and what holds it keep their places, and a beam
+    loaded between its supports is bent, not relieved (pooled, they would cancel). Joints' and
+    wheels' pulls act where they are.
 - **Break rounds: a progressive failure within the substep** (steps of a sequentially linear
   analysis).
   1. Solve, then break the worst bonds: those within 0.85 of φ_max and at least the worst

@@ -1,6 +1,7 @@
 // structvox — rigid pieces: creation from the world, stress under contact and inertia, fracture
 // and splitting, carving, blasts, lifecycle events (docs/V2_DESIGN.md §4).
 #include <algorithm>
+#include <map>
 #include <tuple>
 #include <chrono>
 #include <climits>
@@ -678,6 +679,13 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
     }
     for (size_t q = before; q < out.size(); ++q) {
       const i32 k = out[q];
+      // (a ductile section bent past its strength: a plastic hinge, if the piece comes apart there)
+      if (cfg_.plastic_hinges && G.P.bonds[size_t(k)].b >= 0) {
+        const SBond& B = G.P.bonds[size_t(k)];
+        const auto rot = [&](i32 i) { return V3{G.u[6 * size_t(i) + 3], G.u[6 * size_t(i) + 4], G.u[6 * size_t(i) + 5]}; };
+        HingeCut h;
+        if (hinge_of(B, G.P.bond_load(k, G.u), rot(B.a), rot(B.b), &h)) o.hinges.push_back(h);
+      }
       G.P.remove_bond(k);
       const SBond& B = G.P.bonds[size_t(k)];
       BodyShape& Sk = b.shapes[G.face_shape[size_t(k)]];
@@ -791,6 +799,66 @@ void World::body_stress_run(Body& b, const std::vector<PointForce>& forces, bool
     for (i32 k : inner) G.P.bonds[size_t(k)].broken = false;
     for (i32 i : chip_nodes)
       for (int q = 0; q < 6; ++q) G.u[6 * size_t(i) + size_t(q)] = 0.0;
+  }
+}
+
+void World::piece_hinges(Body& b, const std::vector<HingeCut>& hinges) {
+  // the parts it comes apart in (its bond graph as the breaks left it)
+  if (!b.graph || b.shapes.empty()) return;
+  const BodyGraph& G = *b.graph;
+  const i32 n = static_cast<i32>(G.P.nodes.size());
+  std::vector<i32> comp;
+  graph_components(n, G.P.bonds, std::vector<u8>(size_t(n), 0), &comp);
+  // one hinge per pair of parts, its sections' moments summed, at their moment-weighted pivot
+  // (as a structure's: World::detach_unsupported)
+  struct Pair {
+    f64 mp = 0.0, pull = 0.0;
+    V3 p, axis, n;
+  };
+  std::map<std::pair<i32, i32>, Pair> pairs;
+  for (const HingeCut& h : hinges) {
+    if (h.a < 0 || h.b < 0 || h.a >= n || h.b >= n) continue;
+    const i32 ca = comp[size_t(h.a)], cb = comp[size_t(h.b)];
+    if (ca == cb) continue;  // (still one part there: nothing turns)
+    const bool flip = ca > cb;
+    Pair& P = pairs[{std::min(ca, cb), std::max(ca, cb)}];
+    const V3 ax = P.mp > 0.0 && dot(P.axis, h.axis) < 0.0 ? h.axis * -1.0 : h.axis;
+    P.p += h.p * h.mp;
+    P.axis += ax * h.mp;
+    P.n += (flip ? h.n * -1.0 : h.n) * h.mp;
+    P.mp += h.mp;
+    P.pull += h.pull;
+  }
+  f64 hh = b.shapes.front().h;
+  for (const BodyShape& S : b.shapes) hh = std::min(hh, S.h);
+  for (auto& [key, P] : pairs) {
+    if (!(P.mp > 0.0) || norm2(P.axis) < 1e-24) continue;
+    const V3 at = b.to_world(P.p * (1.0 / P.mp));
+    const V3 nn = rotate(b.q, norm2(P.n) > 1e-24 ? normalized(P.n) : V3{0, 0, 1});
+    JointDesc d;
+    d.type = JointType::Hinge;
+    d.axis = rotate(b.q, normalized(P.axis));
+    d.a.kind = d.b.kind = JointAnchor::Kind::Piece;
+    d.a.id = d.b.id = static_cast<u64>(b.id);
+    d.a.point = at - nn * (0.5 * hh);  // (a voxel of the lower part's side, and of the higher's)
+    d.b.point = at + nn * (0.5 * hh);
+    d.drive.kind = JointDrive::Kind::Speed;
+    d.drive.speed = 0.0;
+    d.drive.max = P.mp;
+    d.break_force = P.pull;
+    d.break_angle = std::max(0.0, cfg_.hinge_rotation);
+    d.collide = false;
+    const JointId id = add_joint_impl(d, 0);
+    if (id == 0) continue;
+    ++st_.plastic_hinges;
+    // (both ends at the pivot, each held by its side's voxel: the parts turn about it)
+    for (size_t k = 0; k < jrecs_.size(); ++k) {
+      if (jrecs_[k].id != id) continue;
+      for (JointRec::End* E : {&jrecs_[k].a, &jrecs_[k].b})
+        if (E->shape >= 0 && E->shape < static_cast<i32>(b.shapes.size())) E->point = b.world_to_lattice(size_t(E->shape), at);
+      fill_joint_end(jrecs_[k], false);
+      fill_joint_end(jrecs_[k], true);
+    }
   }
 }
 
@@ -1173,22 +1241,23 @@ namespace {
 // crushing point loads. The stress check takes the elastic answer instead: the same net force and
 // moment shared over the contact points as by a rigid body on equal springs (the least-squares
 // distribution), f_c = u + theta x r_c.
+// (the rigid-body share of one partner's contacts: the same net force and moment over its points)
 template <class PF>
-void spread_contact_forces(std::vector<PF>& fs) {
-  const size_t n = fs.size();
+void spread_group(std::vector<PF>& fs, const std::vector<size_t>& idx) {
+  const size_t n = idx.size();
   if (n < 2) return;
   V3 F, c0;
-  for (const auto& pf : fs) {
-    F += pf.F;
-    c0 += pf.p;
+  for (size_t k : idx) {
+    F += fs[k].F;
+    c0 += fs[k].p;
   }
   c0 *= 1.0 / static_cast<f64>(n);
   V3 M;
   M3 A;
   f64 r2sum = 0.0;
-  for (const auto& pf : fs) {
-    const V3 r = pf.p - c0;
-    M += cross(r, pf.F);
+  for (size_t k : idx) {
+    const V3 r = fs[k].p - c0;
+    M += cross(r, fs[k].F);
     const f64 r2 = dot(r, r);
     r2sum += r2;
     const f64 rv[3] = {r.x, r.y, r.z};
@@ -1203,7 +1272,27 @@ void spread_contact_forces(std::vector<PF>& fs) {
   V3 theta;
   if (inverse(A, Ai)) theta = Ai * M;
   const V3 u = F * (1.0 / static_cast<f64>(n));
-  for (auto& pf : fs) pf.F = u + cross(theta, pf.p - c0);
+  for (size_t k : idx) fs[k].F = u + cross(theta, fs[k].p - c0);
+}
+
+// Each partner's contacts are spread on their own: what presses on a piece from above (a block on
+// a beam) and what holds it from below (its supports) keep their places - pooled, they would
+// cancel, and a beam loaded between its supports would feel no bending.
+template <class PF>
+void spread_contact_forces(std::vector<PF>& fs) {
+  if (fs.size() < 2) return;
+  std::vector<size_t> order;
+  for (size_t k = 0; k < fs.size(); ++k)
+    if (fs[k].with != 0) order.push_back(k);
+  std::stable_sort(order.begin(), order.end(), [&](size_t x, size_t y) { return fs[x].with < fs[y].with; });
+  std::vector<size_t> idx;
+  for (size_t s = 0; s < order.size();) {
+    size_t e = s;
+    idx.clear();
+    while (e < order.size() && fs[order[e]].with == fs[order[s]].with) idx.push_back(order[e++]);
+    spread_group(fs, idx);
+    s = e;
+  }
 }
 
 }  // namespace
@@ -1245,14 +1334,14 @@ int World::fracture_hook(f64 dt) {
     Body& A = *rigid_.bodies[size_t(c.a)];
     const V3 Fa = J * (resting ? 1.0 / dt : kf[size_t(c.a)]);
     const i32 fa = static_cast<i32>(A.shapes[size_t(c.shape_a)].frag[size_t(c.vox_a)]) - 1;
-    per[size_t(c.a)].push_back({fa, Fa, c.p});
+    per[size_t(c.a)].push_back({fa, Fa, c.p, c.b >= 0 ? rigid_.bodies[size_t(c.b)]->id : -1 - static_cast<i64>(c.grid)});
     carried[size_t(c.a)].push_back({fa, J, c.p, c.b >= 0 ? 0.5 * e : e});
     fsum[size_t(c.a)] += norm(Fa);
     if (c.b >= 0) {
       Body& B = *rigid_.bodies[size_t(c.b)];
       const V3 Fb = J * -(resting ? 1.0 / dt : kf[size_t(c.b)]);
       const i32 fb = static_cast<i32>(B.shapes[size_t(c.shape_b)].frag[size_t(c.vox_b)]) - 1;
-      per[size_t(c.b)].push_back({fb, Fb, c.p});
+      per[size_t(c.b)].push_back({fb, Fb, c.p, A.id});
       carried[size_t(c.b)].push_back({fb, J * -1.0, c.p, 0.5 * e});
       fsum[size_t(c.b)] += norm(Fb);
     }
@@ -1373,6 +1462,8 @@ int World::fracture_hook(f64 dt) {
       changed = true;
       continue;
     }
+    // (its plastic hinges, on its voxels either side of their sections: they go with the parts)
+    if (!reshaped && !c.out.hinges.empty()) piece_hinges(b, c.out.hinges);
     // (reshaped: its fragments are new, what carried the contacts is dust or unknown)
     if (split_body(b, true, reshaped, reshaped ? nullptr : &carried[c.i], c.out.spent)) changed = true;
   }

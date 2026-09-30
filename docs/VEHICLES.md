@@ -75,6 +75,16 @@ A steel arm overloaded at its root folds down on its hinge, hangs bent if the lo
 weight that comes to rest on the ground), or tears off once turned too far. `plastic_hinges`
 (tunable) turns it off; `WorldStats::plastic_hinges` counts them.
 
+**Loose pieces** yield the same way (`World::piece_hinges`): a piece's stress check that breaks a
+ductile section in bending records its hinge (in the piece's frame), and when the piece comes
+apart there, a hinge of the same kind joins the parts - anchored on the piece's voxels either
+side of the section before it splits (the joint follows them into the parts), both ends at the
+pivot. A loose steel plate (6 m of 12.5 cm steel section) on two supports with 15 t set on its
+middle - half as much again as its section holds - yields and holds, bent a hundredth of a
+radian; with 30 t it folds on its hinge and tears at its rotation capacity, letting the block
+through; without hinges it snaps at once. (For a piece to feel that bending at all, its stress
+check spreads each partner's contacts on its own: see [`V2_DESIGN.md`](V2_DESIGN.md) §5.)
+
 ## Wheels
 
 A wheel is not voxels: it is a constraint cast from the chassis (`World::add_wheel`,
@@ -333,6 +343,8 @@ Measured natively on 4 threads in the drive city: a building's first touch is ~0
 - `tests/core/test_capi.cpp`: a chassis on four wheels settles, drives, loses a wheel.
 - `tests/core/test_joints.cpp`: a steel arm bent past its strength folds down on a plastic
   hinge and tears off only once turned past its capacity; without hinges it snaps at once; a
+  loose steel plate loaded past its strength between its supports yields on a hinge and holds,
+  and under twice the load folds and tears; a
   latched door holds against a nudge, a hard knock opens its latch and it swings to its stop,
   and a session keeps its latch shut or open.
 - `tests/core/test_wheels.cpp`: a car's door sleeps and wakes with it - woken still, the car
@@ -354,8 +366,9 @@ Measured natively on 4 threads in the drive city: a building's first touch is ~0
 
 ## Limits
 
-- Plastic hinges form in static structures; a steel piece (already loose) that is overloaded
-  in bending breaks at its bonds.
+- A plastic hinge forms where one breaks off: an impact must still pay for the cracks from
+  the energy it takes out of the collision (steel's is large), so a blow bends a steel piece
+  only when it has the energy to; a load resting on it is not limited.
 - A part is held at one point of its seam (a door's two hinges are one hinge joint): a part
   crushed at that voxel comes off; one crushed elsewhere stays on, crumpled. Parts do not
   collide with their car while they hold: a door pushed in by a crash transfers the push
