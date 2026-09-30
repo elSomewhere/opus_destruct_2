@@ -6,7 +6,8 @@
  * spawn, one close up, a group from above), shoots one with the pistol through the debug handle (a
  * shot's raycast finds its body; a round into it) until the `characters` message says it is dead,
  * and looks at the body; with an engine that has gibs and blood, a rocket into the body then
- * tears it apart (fired from above it: the rocket flies through people to the world behind). Screenshots of each (without the HUD and panels); fails on console / page /
+ * tears it apart (fired from above it: the rocket goes off on the body in its way). Screenshots of
+ * each (without the HUD and panels); fails on console / page /
  * WebGPU errors, or when no one comes, no one is drawn, the shot one does not die (or bleed, or
  * the blast make no gibs). Usage (dev server running, e.g. `npm run dev -- --port 5190`):
  *   node scripts/people-wasm.mjs [baseUrl] [outDir]
@@ -234,7 +235,25 @@ try {
   const target = alive[0];
   if (!target) throw new Error('no one alive to shoot');
   console.log(`  target ${target.id}: moved ${moved(target).toFixed(2)} m in a second, ${flat(target.root, pl).toFixed(1)} m away`);
+  // 5 m from it with a clear line from the eye to its head: ahead of it, or behind, or to a side
+  // (someone standing facing a wall has the wall ahead)
   spot = ahead(target, 5);
+  for (const [fx, fy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+    const l = Math.hypot(target.forward[0], target.forward[1]) || 1;
+    const f = [target.forward[0] / l, target.forward[1] / l];
+    const at = [target.root[0] + (f[0] * fx - f[1] * fy) * 5, target.root[1] + (f[1] * fx + f[0] * fy) * 5, target.root[2] + 0.05];
+    const clear = await page.evaluate(async ({ at, id, head }) => {
+      const eye = [at[0], at[1], at[2] + 1.6];
+      const d = [head[0] - eye[0], head[1] - eye[1], head[2] - eye[2]];
+      const n = Math.hypot(d[0], d[1], d[2]) || 1;
+      const hit = await window.__structvox.raycast(eye, [d[0] / n, d[1] / n, d[2] / n], n + 1, true);
+      return hit?.character === id;
+    }, { at, id: target.id, head: target.head });
+    if (clear) {
+      spot = at;
+      break;
+    }
+  }
   await page.evaluate((a) => window.__structvox.teleport(a[0], a[1], a[2]), spot);
   await page.evaluate(() => window.__structvox.select('pistol'));
   await sleep(1500);
@@ -293,8 +312,8 @@ try {
   if (!bloody) console.log('  (no health from this engine: a module from before the gibs and blood)');
   else check(s.render.bloodDrops + s.render.bloodStains > 0, `the rounds drew blood (${s.render.bloodDrops} drops, ${s.render.bloodStains} stains)`);
 
-  // a rocket into the body (it lies still; the living walk on while a rocket flies), from 3 m above
-  // it - the rocket meets the ground under it: the blast tears it apart (gibs, blood)
+  // a rocket into the body (it lies still; the living walk on while a rocket flies), from above it
+  // - the rocket goes off on it: the blast tears it apart (gibs, blood)
   if (bloody) {
     const old = new Set((await people()).filter((c) => c.flags & GIB).map((c) => c.id));
     const b0 = (await people()).find((c) => c.id === target.id);

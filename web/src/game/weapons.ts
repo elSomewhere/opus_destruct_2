@@ -7,8 +7,9 @@
  * - the flamethrower and the water hose are short-range hitscan streams: `ignite` a sphere at
  *   the hit, or `pour` water there (and `extinguish` it) (the engine's environment, docs/ENV.md);
  * - the rocket launcher fires a visible projectile. It flies straight, so its path is
- *   verified with look-ahead `raycast`s along its line; when it reaches the first hit it
- *   explodes locally at once (effects within a frame) and sends `blast`.
+ *   verified with look-ahead `raycast`s along its line (people's bodies too: one in its way is
+ *   where it goes off, as in euphoria_3); when it reaches the first hit it explodes locally at
+ *   once (effects within a frame) and sends `blast`.
  */
 import type { EngineClient } from '../engine/client.ts';
 import type { RaycastHit, Vec3 } from '../engine/protocol.ts';
@@ -215,7 +216,7 @@ export class Weapons {
         const from = r.checked;
         r.pending = true;
         this.engine
-          .raycast(along(r, from), r.dir, ROCKET_SEGMENT)
+          .raycast(along(r, from), r.dir, ROCKET_SEGMENT, true)
           .then((hit) => {
             r.pending = false;
             if (hit) r.impact = from + hit.distance;

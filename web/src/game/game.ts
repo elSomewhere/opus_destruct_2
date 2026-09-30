@@ -5,7 +5,7 @@
  */
 import type { EngineClient } from '../engine/client.ts';
 import { GridFrames } from '../engine/gridframes.ts';
-import type { DebugView, EngineEvent, EngineParams, EngineStats, PedestrianSettings, ProceduralKind, TrafficSettings, Vec3, WorldInfo } from '../engine/protocol.ts';
+import type { DebugView, EngineEvent, EngineParams, EngineStats, PedestrianSettings, ProceduralKind, RaycastHit, TrafficSettings, Vec3, WorldInfo } from '../engine/protocol.ts';
 import { CAR_PAINTS, DEFAULT_PEDESTRIANS, DEFAULT_TRAFFIC, VEHICLE_KINDS } from '../engine/protocol.ts';
 import type { Camera, Renderer, RenderStats } from '../render/renderer.ts';
 import type { WheelDraw } from '../render/wheels.ts';
@@ -628,6 +628,7 @@ export class Game {
         this.pedestrians = { ...this.pedestrians, ...p };
         this.engine.setPedestrians(this.pedestrians);
       },
+      raycast: (origin, dir, maxDist, characters = false) => this.engine.raycast(origin, dir, maxDist, characters),
       state: () => ({
         ready: this.info !== null,
         player: [...this.player.pos],
@@ -710,6 +711,8 @@ export interface StructvoxDebugApi {
     shadow: number[] | null;
   }[];
   setPedestrians(p: Partial<PedestrianSettings>): void;
+  /** A shot's line (the engine's `raycast`; `characters`: people's bodies are seen too). */
+  raycast(origin: Vec3, dir: Vec3, maxDist: number, characters?: boolean): Promise<RaycastHit | null>;
   state(): {
     ready: boolean;
     player: number[];
