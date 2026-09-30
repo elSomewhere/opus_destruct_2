@@ -474,3 +474,7 @@ Things a harness should not do:
 - Structures larger than `structure_max_nodes` (60,000 fragments or clusters) or
   `structure_max_radius` (60 m) around the event are solved in part, with their frontier held
   fixed.
+- The memory budgets (`MemoryBudget`, `StreamConfig::archive_mb`) cull pieces and forget regions
+  by bytes: which ones go, and when, follows from how much each weighs - which changes with the
+  engine's own data (a piece's crumpling areas, a record's new fields: [`BASELINE.md`](BASELINE.md)).
+  They are the lossy knobs of a long session; raise them where the memory is there.

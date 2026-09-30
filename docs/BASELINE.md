@@ -19,9 +19,15 @@ what makes the clang build the reference.)
 
 ```sh
 git worktree add ../o1 e5026c0
+git -C ../o1 apply "$PWD/tools/baseline/oriented_1-tools.patch"   # (its tools report as ours do)
 cmake -S ../o1 -B ../o1/build-clang -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_COMPILER=clang++
 cmake --build ../o1/build-clang --target svx_engine_demo svx_env_bench -j
 ```
+
+`oriented_1-tools.patch` touches the reference's two tools only, never what they run: they print
+the world's hash, take `--tune NAME=VALUE` and (the env bench) `--archive-mb MB`, and trace every
+tick's hash with `SVX_TRACE_HASH=1` (the demo also its cracks and pieces with
+`SVX_TRACE_EVENTS=T`).
 
 What is compared is `World::session_hash()`: the world's whole state - its grids' voxels and
 bonds, every piece's voxels, pose and velocity, the joints, the clock. (`Game::session_hash`
@@ -83,17 +89,58 @@ every tick's hash is the same too, where it was traced):
 | city (streamed), 6 s | `085ae436d28344f8` | yes | 2568 | 22622 | 281824 |
 | `svx_env_bench`: fire (the yard's house burning, 2 min; solid steel) | `12a6324086fdf6a5` | yes | | | |
 | `svx_env_bench`: flood (a reservoir breached, 30 s) | `c1db95d89a6fb355` | yes | | | |
-| `svx_env_bench`: city (the streamed city crossed for 90 s, blasts, fires and water) | `b3ba4eb6c8eb7bdd` | its first 970 ticks (traced); not its end: see below | | | |
+| `svx_env_bench`: city (the streamed city crossed for 90 s, blasts, fires and water), memory budgets unbound | `c723934e3081cc9d` | yes: all 5400 ticks (traced) | | | |
 
 Every one of them reproduced on 4 threads natively; the short ones (side, rooms, slab,
 chimney) under Node from the WASM build on one thread as well.
 
-**The streamed city crossed with fire and water** agrees tick for tick for (at least) the first
-970 of its 5400 ticks, and its end differs. The crossing fills the change archive's 64 MB
-budget, and what the archive keeps is larger now (a piece's record has its speed limit, a
-group's its wheels): which regions are forgotten when the budget is reached can differ. This
-is being checked with an unbounded archive (`svx_env_bench --archive-mb 0`) on both builds.
+**The streamed city crossed with fire and water** runs into the memory budgets: the change
+archive's (`StreamConfig::archive_mb`, 64 MB) and the pieces' (`memory.piece_mb`, 256 MB, at the
+cap of 3000 pieces). What the engine keeps weighs more now - a piece in memory has the area each
+of its contact samples stands for (crumpling's), the archive's records a piece's speed limit and
+a group's wheels - so with the same budgets the two builds cull other pieces, and forget other
+regions, at other ticks. Traced: with the default budgets the crossing agrees for (at least) its
+first 970 ticks and its end differs (the reference ends at `b3ba4eb6c8eb7bdd`); with the archive
+unbound it agrees for its first 2269 ticks, where the pieces' budget first culls at the cap -
+68 pieces more, the rest of the tick the same. With every budget out of the way
+(`svx_env_bench --scenario city --archive-mb 0 --tune memory.piece_mb=8192 --tune
+memory.structure_mb=8192 --tune memory.cache_mb=8192 --tune memory.fragment_cache_mb=8192`, on
+both builds) the whole crossing is the same, tick for tick. The budgets are the lossy knobs of a
+long session ([`CORE.md`](CORE.md) §8).
 
+### The engine as it is
+
+With the switches on - the engine's defaults, and the levels' steel sections - the same
+scenarios, reference first (`compare.sh` without `--parity`; 3 threads, one of the machine's
+four cores busy elsewhere, so the wall times compare with each other, not with a quiet machine):
+
+| Scenario | Pieces | Bonds broken | Voxels detached | Wall (s) |
+| --- | --- | --- | --- | --- |
+| tower, side, 5 s | 9 / 9 | 32 / 32 | 502 / 502 | 0.4 / 0.4 |
+| tower, core, 5 s | 1401 / 1407 | 9053 / 8696 | 202347 / 202347 | 10.3 / 5.9 |
+| tower, pillars, turned 30 degrees, 5 s | 210 / 2028 | 1020 / 11664 | 201261 / 201582 | 4.2 / 10.7 |
+| tower, all, 5 s | 1537 / 2048 | 9506 / 11893 | 201046 / 201051 | 16.6 / 14.1 |
+| tower, rockets, 5 s | 1417 / 2123 | 8779 / 12219 | 202448 / 202449 | 11.6 / 11.4 |
+| tower, pillars, 8 s | 1481 / 2213 | 8834 / 12800 | 201558 / 201559 | 18.0 / 20.9 |
+| rooms, 5 s | 74 / 72 | 87 / 83 | 4002 / 3827 | 0.7 / 0.3 |
+| slab, 5 s | 80 / 71 | 289 / 299 | 6136 / 6662 | 0.6 / 0.4 |
+| bridge, 5 s | 197 / 148 | 1272 / 1116 | 27091 / 29201 | 2.4 / 2.0 |
+| chimney, 5 s | 279 / 273 | 4865 / 4676 | 15009 / 15009 | 3.3 / 2.3 |
+| yard, 8 s | 829 / 898 | 6972 / 7173 | 61724 / 61658 | 14.4 / 13.8 |
+| machines, 12 s | 50 / 50 | 719 / 665 | 12221 / 12221 | 1.6 / 0.9 |
+| angles, 6 s | 745 / 909 | 6421 / 7560 | 89115 / 89864 | 12.8 / 9.4 |
+| city (streamed), 6 s | 2568 / 3000 | 22622 / 27387 | 281824 / 281824 | 33.1 / 31.2 |
+
+What comes down is the same (the voxels detached are within a few per cent everywhere); how it
+breaks as it comes down is not. A collapsing tower breaks into some half as many pieces again:
+a piece's stress check feels the bending its supports put in it, each partner's contacts spread
+on their own (`spread_per_partner`: pooled, they cancel out), and its ductile sections yield on
+hinges. The turned tower is the telling case: in 8 s the reference breaks a tower turned 30
+degrees into 210 pieces where the same tower upright breaks into 1481; the engine breaks them
+into 2120 and 2213 - a structure behaves the same whichever way its grid is turned. The cost
+follows the pieces: faster where the scenario is the structure's work (patched structures, the
+fragmenter's seed table, in-place design: the tower's core 10.3 to 5.9 s, the machines 1.6 to
+0.9 s), slower where there are many more pieces to simulate (the turned tower).
 
 ## 4. Gates
 
