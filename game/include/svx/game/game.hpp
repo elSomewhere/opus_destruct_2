@@ -179,6 +179,7 @@ struct CharacterView {
   V3 centre;                    // its bounding sphere (world)
   f64 radius = 1.0;
   f64 flash = 0.0;              // 0..1: a hit's flash (a tint)
+  f64 health = 1.0;             // 0..1 of its full health
   const f32* skin = nullptr;    // kCharacterBones x 16 floats (column-major 4x4), until the next tick
   std::array<f32, 16> prop{};   // the prop's matrix
   static constexpr u8 kAlive = 1, kDeep = 2, kPhysical = 4, kAsleep = 8, kDown = 16;

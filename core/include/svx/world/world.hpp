@@ -663,6 +663,9 @@ class World {
   // A point commands and queries accept: finite, and within the voxel key range (kVoxelLimit).
   bool in_range(const V3& p) const;
   RayHit raycast(const V3& origin, const V3& dir, f64 max_dist) const;  // the grids' voxels and the pieces
+  // Whether there are oriented grids. (Without them the queries - grid_solid, raycast, collide -
+  // only read: a host may run them from many threads at once while the world does not tick.)
+  bool has_oriented_grids() const { return oriented_ > 0; }
   // Moves the box [min, max] by `move` (per axis, x then y then z) as far as the grids' and the
   // pieces' voxels let it: a character controller's sweep; stepping up ledges is the host's
   // business. Boxes and moves beyond 16 m are refused / clamped.

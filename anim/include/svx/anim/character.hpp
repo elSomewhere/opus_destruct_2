@@ -143,8 +143,19 @@ class Character {
     begin(dt);
     end();
   }
-  void begin(f64 dt);
+  void begin(f64 dt) {
+    if (!begin_start(dt)) return;
+    begin_body();
+    begin_push();
+  }
   void end();
+  // begin in three: its start (the timers, the physics on or off - which may add or remove its
+  // articulation: characters one at a time; false: nothing more this frame), its body (the plan,
+  // the body's own step or the drives: characters side by side, reading the world only), the
+  // push (the drives to the world: one at a time).
+  bool begin_start(f64 dt);
+  void begin_body();
+  void begin_push();
 
   // ---- senses and blows
   void perceive(const Perception& p);

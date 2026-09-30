@@ -762,6 +762,7 @@ int svx_characters(svx_engine* e) {
     o[7] = v.radius;
     o[8] = v.flash;
     o[9] = static_cast<double>(v.prop_mesh);
+    o[10] = v.health;
     if (v.skin) std::copy(v.skin, v.skin + kSkin, e->char_skin.data() + kSkin * k);
     std::copy(v.prop.begin(), v.prop.end(), e->char_prop.data() + 16 * k);
   }

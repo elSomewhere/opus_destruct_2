@@ -166,7 +166,7 @@ void Character::fire() {
 
 // ---- the frame ------------------------------------------------------------------------------------
 
-void Character::begin(f64 dt_in) {
+bool Character::begin_start(f64 dt_in) {
   const f64 dt = std::min(0.05, std::max(0.0, dt_in));
   Behaviours& b = behaviours;
   pending_post_ = false;
@@ -181,7 +181,7 @@ void Character::begin(f64 dt_in) {
     // (deep: unless the world woke it - something ran into the body)
     if (!(binding_.bound() && world_ && !world_->articulation_asleep(binding_.id()))) {
       pose.write_skin(skin.data());
-      return;
+      return false;
     }
     body.system.asleep = false;
   }
@@ -190,13 +190,19 @@ void Character::begin(f64 dt_in) {
   calm_for_ = need ? 0.0 : calm_for_ + dt;
   if (!b.physical && (need || physics)) wake();
   else if (b.physical && !need && !physics && calm_for_ > 0.6) rest();
+  return true;
+}
+
+void Character::begin_body() {
+  const f64 dt = frame_dt_;
+  Behaviours& b = behaviours;
   b.prepare(dt, pose);
   motion.update(dt);
   prev_pose.copy_from(pose);
   if (b.physical && backend_ == BodyBackend::Deep && binding_.bound() && world_) {
-    // (the drives for the world's tick, and what the host did to the body; end takes the rest)
+    // (the drives for the world's tick; begin_push takes them, and what the host did to the
+    // body, to the core; end takes the rest)
     b.drive_pre(dt);
-    binding_.push(*world_);
     pending_post_ = true;
     return;
   }
@@ -207,6 +213,10 @@ void Character::begin(f64 dt_in) {
     pose.copy_from(motion.world);
   }
   finish_frame();
+}
+
+void Character::begin_push() {
+  if (pending_post_ && binding_.bound() && world_) binding_.push(*world_);
 }
 
 void Character::end() {

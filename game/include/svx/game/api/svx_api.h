@@ -243,7 +243,7 @@ unsigned svx_character_palette(svx_engine* e, int i, float* out48);
 /* The characters now (after a tick): count, then svx_characters_data holds 12 doubles each: id,
  * mesh, palette, flags (1 alive, 2 deep: a body of the world, 4 physical, 8 asleep: a body at
  * rest, 16 down), bounding sphere centre xyz and radius, hit flash 0..1, its prop's mesh (0: none),
- * 2 reserved; svx_characters_skin holds 23 x 16 floats each (column-major 4x4 skin matrices, bone
+ * health 0..1, 1 reserved; svx_characters_skin holds 23 x 16 floats each (column-major 4x4 skin matrices, bone
  * by bone), svx_characters_prop 16 floats each (its prop's matrix). */
 int svx_characters(svx_engine* e);
 const double* svx_characters_data(svx_engine* e);

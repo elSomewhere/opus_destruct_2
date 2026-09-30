@@ -872,6 +872,7 @@ std::vector<CharacterView> Pedestrians::views() const {
     v.centre = c->bounds_center();
     v.radius = c->bounds_radius();
     v.flash = c->flash;
+    v.health = c->max_health > 0.0 ? std::clamp(c->health / c->max_health, 0.0, 1.0) : 0.0;
     v.skin = c->skin.data();
     out.push_back(v);
   }

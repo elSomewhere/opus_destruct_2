@@ -183,3 +183,52 @@ the ends' distance, a rope, its drive off), `svxc_joint_drive`, `svxc_add_joint`
 - **A joint on a static voxel of a chunk that goes out of range is dropped** with its chunk (a
   source's is made again with its grids; one the host made is not).
 - **A chunk source's joint holds on to the grids at home in its chunk** (or the world grid).
+- **An articulation near an awake piece is solved at the world's substep** (1/120 s), with the
+  world's iterations: its muscles and limits are stiffer there than in its own fine steps.
+
+## 6. Articulations
+
+A body made of parts that move on their own - a person, a creature, a robot, a rag doll - is an
+**articulation** (`svx/world/articulation.hpp`): **links** (rigid bodies of no voxels that
+collide as spheres: `BodySphere`s in their frames) held together by **joints** with the limits
+of anatomy - a ball's elliptical cone and twist, a hinge's range - and moved by **muscles** (a
+joint's drive to a relative rotation: stiffness, damping towards a target rate, a torque limit,
+a feed-forward torque, the limb's inertia the damper works on) and **targets** (soft pulls of a
+link to a point or a rotation of the world, each axis on or off, capped: `TargetDrive`).
+
+```cpp
+ArticulationDesc d;                          // links, joints, targets, the link pairs that collide
+d.links = ...;                               // mass, inertia, pose, spheres, friction, tissue
+d.joints = ...;                              // Ball / Hinge / Fixed between parent and child links
+d.group = kMyGroup; d.tag = my_id; d.data = who_it_is;   // the host's: saved and archived with it
+const ArticulationId id = world.add_articulation(d);
+ArticulationControl* c = world.articulation_control(id);  // before each tick: muscles, targets,
+c->muscles[k].target = ...;                  // forces, ghosts, anchors, spin cap, drag, sleep
+world.tick();
+ArticulationState st;
+world.articulation_state(id, &st);           // where the links are, what each felt (contact, the
+                                             // hardest touch's normal and point, impact, bumped)
+```
+
+- **One world.** Its links are bodies of the world's rigid world: they stand on the structures
+  and load them, are knocked by what hits them (a car, a falling slab), push what they meet
+  (debris, other bodies). The link pairs of its desc (`collide`) collide with each other
+  (frictionless: a leg brushes past the other), the rest not at all.
+- **Stepped finer on its own.** An articulation that touches no awake piece is an island of its
+  own, stepped `link_substeps` times a substep (4: 1/480 s) with `link_iterations` velocity and
+  `link_position_iterations` position passes: joints, targets, then contacts (what the ground
+  holds up last is held up). Islands are stepped in parallel, the same on any thread count. Near
+  an awake piece it is solved with it at the world's substep.
+- **Supple limits.** Past a limit a joint turns back at most 0.025 rad a step, in its velocity and
+  position passes alike: a body folded far past its range (a corpse landing on its back) comes out
+  of it over a few steps instead of being flung.
+- **Senses.** A link's senses are what the world did to it over the tick: the contacts of its own
+  links with each other are not senses (a foot brushing the other leg has touched nothing).
+- **Sleep, save, stream.** It sleeps when still if its host lets it (`can_sleep`: a corpse); a
+  sleeping one is rubble at rest (it costs nothing). It is saved with sessions (`save_delta`);
+  in a streamed world it is archived with its region when it rests out of range - or when it is
+  wholly beyond the evict radius - host data and all, and comes back with the region
+  (`ArticulationAdded` events; its host finds it by its group, tag and data).
+- **Hosts.** svx_anim's characters are articulations on the deep path (docs/ANIM.md): a
+  `CoreBinding` writes a character's body (links, joints, muscles, assists) as a desc, pushes its
+  drives before each tick and pulls the links after it.

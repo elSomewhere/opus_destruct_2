@@ -4,6 +4,11 @@ add_executable(svx_stream_bench bench/stream_bench.cpp)
 target_link_libraries(svx_stream_bench PRIVATE svx_game)
 svx_wasm_exe_options(svx_stream_bench)
 
+# The drive city's people: their cost by how the bodies are simulated and the crowd's size.
+add_executable(svx_people_bench bench/people_bench.cpp)
+target_link_libraries(svx_people_bench PRIVATE svx_game)
+svx_wasm_exe_options(svx_people_bench)
+
 # Doom WAD graphics: palette, TEXTURE1/2 composites and flats -> counts + PNG dump.
 add_executable(svx_wad_textures wad_textures/main.cpp)
 target_link_libraries(svx_wad_textures PRIVATE svx_game)

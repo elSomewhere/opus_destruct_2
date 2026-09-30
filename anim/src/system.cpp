@@ -260,7 +260,22 @@ void CharacterSystem::pre_step(World& w, f64 dt) {
   all.reserve(chars_.size());
   for (Entry& e : chars_) all.push_back(e.c.get());
   gather_obstacles(all);
-  for (Entry& e : chars_) e.c->begin(dt);
+  // the characters' frames begin: their starts one at a time (bodies woken, put to rest: the
+  // world's articulations change), their bodies side by side (each reads the world and steps its
+  // own), their drives to the world one at a time
+  std::vector<Character*> go;
+  go.reserve(all.size());
+  for (Character* c : all)
+    if (c->begin_start(dt)) go.push_back(c);
+  // (the world's oriented grids cache their solids as they are asked: then one at a time)
+  if (config.parallel && go.size() > 1 && !w.has_oriented_grids()) {
+    parallel_for(static_cast<i64>(go.size()), 1, [&](i64 i0, i64 i1) {
+      for (i64 i = i0; i < i1; ++i) go[size_t(i)]->begin_body();
+    });
+  } else {
+    for (Character* c : go) c->begin_body();
+  }
+  for (Character* c : go) c->begin_push();
   stats_.pre_ms = ms_since(t0);
 }
 

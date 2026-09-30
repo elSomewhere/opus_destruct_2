@@ -220,3 +220,58 @@ TEST_CASE("pedestrians: the dead stay where they fell - the world keeps a body w
   CHECK(off < 0.3);
   CHECK(dead);
 }
+
+TEST_CASE("pedestrians: a car driven into someone knocks them down and hurts them - their body is the world's") {
+  Game game;
+  city(game, 7, 80.0, 6, false);
+  const V3 spawn = make_drive_city(7)->spawn_pos();
+  // someone walking near the viewer, and the way they go (two looks half a second apart)
+  u32 who = 0;
+  V3 p0, p1;
+  for (int t = 0; t < 60 * 30 && !who; ++t) {
+    game.tick();
+    if (t % 30 != 29) continue;
+    for (const CharacterView& v : game.character_views()) {
+      if (!(v.flags & CharacterView::kAlive) || std::hypot(v.centre.x - spawn.x, v.centre.y - spawn.y) > 35.0) continue;
+      p0 = v.centre;
+      for (int k = 0; k < 30; ++k) game.tick();
+      for (const CharacterView& w : game.character_views())
+        if (w.id == v.id) p1 = w.centre;
+      if (std::hypot(p1.x - p0.x, p1.y - p0.y) > 0.4) who = v.id;
+      break;
+    }
+  }
+  REQUIRE(who != 0);
+  const f64 l = std::hypot(p1.x - p0.x, p1.y - p0.y);
+  const V3 dir{(p1.x - p0.x) / l, (p1.y - p0.y) / l, 0.0};
+  // a car 3.5 m behind them, coming their way at 11 m/s
+  const V3 at{p1.x - dir.x * 3.5, p1.y - dir.y * 3.5, spawn.z + 0.3};
+  const u32 car = game.spawn_vehicle({VehicleKind::Sedan, Paint::Red}, at, std::atan2(dir.y, dir.x));
+  REQUIRE(car != 0);
+  game.tick();
+  VehicleView vv;
+  REQUIRE(game.vehicle(car, &vv));
+  REQUIRE(vv.chassis != 0);
+  const Body* chassis = game.world().piece(vv.chassis);
+  REQUIRE(chassis);
+  REQUIRE(game.world().apply_impulse(vv.chassis, chassis->x, V3{dir.x * chassis->mass * 11.0, dir.y * chassis->mass * 11.0, 0.0}));
+  bool deep = false, down = false, alive = true;
+  f64 health = 1.0, moved = 0.0;
+  for (int t = 0; t < 60 * 4; ++t) {
+    game.tick();
+    for (const CharacterView& v : game.character_views())
+      if (v.id == who) {
+        deep = deep || (v.flags & CharacterView::kDeep);
+        down = down || (v.flags & CharacterView::kDown);
+        alive = v.flags & CharacterView::kAlive;
+        health = std::min(health, v.health);
+        moved = std::max(moved, std::hypot(v.centre.x - p1.x, v.centre.y - p1.y));
+      }
+  }
+  const std::string state = alive ? "alive" : "dead", body = deep ? "a body of the world" : "its own body", fell = down ? "down" : "on its feet";
+  MESSAGE("hit by a car at 11 m/s: " << body << ", knocked " << moved << " m, " << fell << ", health " << health << ", " << state);
+  CHECK(deep);
+  CHECK(down);
+  CHECK(health < 0.8);
+  CHECK(moved > 1.5);
+}
