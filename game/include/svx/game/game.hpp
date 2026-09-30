@@ -314,8 +314,10 @@ class Game {
     u8 slot = 0;  // (a character) the palette slot of the voxel hit
   };
   ShotHit raycast_shot(const V3& origin, const V3& dir, f64 max_dist) const;
-  // A round into a character (logged): where raycast_shot found its body, fired from the viewer;
-  // `energy` (J) and `radius` as shoot's. False: no such character, or no body there now.
+  // A round into a character (logged): where raycast_shot found its body, fired from the viewer
+  // (a host's round comes a tick or more after its ray: a body that moved since is found along
+  // the same line at the bone nearest that point); `energy` (J) and `radius` as shoot's (the
+  // wound's hole some 0.3 of it). False: no such character, or no body there now.
   bool wound_character(u32 id, const V3& pos, f64 radius, f64 energy);
   // Character meshes and palettes the front end has not had, and meshes no character draws any more.
   std::vector<CharacterMeshData> take_character_meshes();

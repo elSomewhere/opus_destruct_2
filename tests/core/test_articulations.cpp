@@ -466,6 +466,25 @@ TEST_CASE("articulations: a piece knocks a body, and a body pushes a piece") {
   CHECK(v.piece(cp)->x.x - x0 > 0.05);  // (inelastic, then sliding on the ground: about 0.1 - 0.2 m)
 }
 
+TEST_CASE("articulations: its own joints are in its state, not the host's joints; a host's joint to a link is the host's") {
+  World w;
+  w.load(ground());
+  w.bake();
+  const Chain c = chain(w, V3{0, 0, 3.0}, 4, 0.3, 2.0);
+  REQUIRE(c.id != 0);
+  REQUIRE(c.hold != 0);
+  // (the three between its links are its own: a front end that draws the host's joints does not
+  // draw a body's)
+  CHECK(w.joints() == std::vector<JointId>{c.hold});
+  for (int t = 0; t < 30; ++t) w.tick();
+  CHECK(w.joints() == std::vector<JointId>{c.hold});
+  JointState js;
+  CHECK(w.joint(c.hold, &js));
+  REQUIRE(w.remove_articulation(c.id));
+  for (int t = 0; t < 2; ++t) w.tick();
+  CHECK(w.joints().empty());  // (the host's joint lost its end with it)
+}
+
 TEST_CASE("articulations: removed, it is gone; a lost link touches nothing; no piece events") {
   World w;
   w.load(ground());

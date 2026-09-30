@@ -520,7 +520,7 @@ class World {
   bool joint(JointId id, JointState* out) const;  // false: none (broken, removed)
   // The pieces joined to a piece by joints that hold (ascending): a car's parts still on it.
   std::vector<i64> joined_pieces(i64 piece) const;
-  std::vector<JointId> joints() const;            // ascending ids
+  std::vector<JointId> joints() const;            // ascending ids (the host's: an articulation's own are in its state)
 
   // ---- wheels (docs/VEHICLES.md)
   // A wheel on a sprung suspension with a tyre, hung from a chassis (a piece, or a grid of free

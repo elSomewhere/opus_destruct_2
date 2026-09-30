@@ -202,7 +202,7 @@ TEST_CASE("pedestrians: the dead stay where they fell - the world keeps a body w
     const V3 c = body->pose.p[anim::H::chest];
     const V3 from{c.x, c.y, c.z + 2.0};
     const Game::ShotHit h = game.raycast_shot(from, V3{0, 0, -1}, 5.0);
-    if (h.character == victim) game.wound_character(victim, h.pos, 0.05, 50.0);
+    if (h.character == victim) game.wound_character(victim, h.pos, 0.15, 50.0);
     game.tick();
   }
   REQUIRE(game.characters()->get(victim));
@@ -320,7 +320,7 @@ TEST_CASE("pedestrians: a rocket among people tears them apart - gibs and blood 
   (void)game.take_character_meshes();
   game.blast(V3{at.x + 0.6, at.y, at.z - 0.4}, 1.0, 1.0e6);  // (a rocket at their feet)
   i32 gibs = 0, gib_meshes = 0, drops = 0, stains = 0;
-  bool dead = false;
+  bool body = false;
   std::set<u32> meshes_had;
   for (int t = 0; t < 60 * 3; ++t) {
     game.tick();
@@ -336,10 +336,12 @@ TEST_CASE("pedestrians: a rocket among people tears them apart - gibs and blood 
       if (meshes_had.count(v.mesh)) ++gib_meshes;
       CHECK(v.bones == 1);
     }
-    if (v.id == who) dead = !(v.flags & CharacterView::kAlive);
+    body = body || v.id == who;
   }
   MESSAGE("a rocket at someone's feet: " << gibs << " gibs (" << gib_meshes << " with their meshes), " << drops << " blood drops at most, " << stains << " stains");
-  CHECK(dead);
+  // (torn apart: the body goes - all of it is gibs now - with its articulation)
+  CHECK(!body);
+  CHECK(game.characters()->get(who) == nullptr);
   CHECK(gibs >= 4);
   CHECK(gib_meshes == gibs);
   CHECK(drops > 20);

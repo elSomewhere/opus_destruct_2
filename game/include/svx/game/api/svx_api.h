@@ -244,7 +244,10 @@ unsigned svx_character_palette(svx_engine* e, int i, float* out48);
  * mesh, palette, flags (1 alive, 2 deep: a body of the world, 4 physical, 8 asleep: a body at
  * rest, 16 down, 32 a gib: a piece of one, drawn with its first matrix), bounding sphere centre xyz
  * and radius, hit flash 0..1, its prop's mesh (0: none), health 0..1, 1 reserved; svx_characters_skin holds 23 x 16 floats each (column-major 4x4 skin matrices, bone
- * by bone), svx_characters_prop 16 floats each (its prop's matrix). */
+ * by bone: a gib's first alone counts; the root's rides with the pelvis of a body the physics
+ * moves - the feet's and toes' (bones 16, 17, 20, 21) put things on the ground under it),
+ * svx_characters_prop 16 floats each (its prop's matrix). Palettes are few (a look each) and
+ * stay: an id once sent is valid for the session. */
 int svx_characters(svx_engine* e);
 const double* svx_characters_data(svx_engine* e);
 const float* svx_characters_skin(svx_engine* e);
@@ -252,7 +255,8 @@ const float* svx_characters_prop(svx_engine* e);
 /* A shot's line against the world and the characters: out[10] = pos xyz, normal xyz, distance,
  * material (-1: a character), character id (0: the world), bone; returns 0 (nothing), 1 (the
  * world) or 2 (a character). A round into a character (logged; where the ray found it, fired from
- * the viewer; energy and radius as svx_shoot's): returns 1 if it hit. */
+ * the viewer - a body that moved since is found along the same line at the bone nearest that
+ * point; energy and radius as svx_shoot's, its hole some 0.3 of the radius): returns 1 if it hit. */
 /* Blood (after a tick): the drops' count, then svx_blood_drops holds 7 floats each (x, y, z,
  * radius, linear rgb); the stains' count (svx_blood_stain_count), then svx_blood_stains holds 8
  * floats each (x, y, z, the surface's normal xyz, radius, age in s). */

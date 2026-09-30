@@ -650,7 +650,9 @@ void Pedestrians::blast(const V3& pos, f64 radius, f64 energy) {
   noise(pos, 30.0 + 40.0 * std::min(2.0, strength), kExplosion);
   if (!g_->chars_) return;
   anim::CharacterSystem& cs = chars();
-  for (auto& [id, w] : walkers_) {
+  // (everyone: the walkers, and the dead the world gave back)
+  std::vector<u32> torn;
+  for (anim::CharacterId id : cs.ids()) {
     anim::Character* c = cs.get(id);
     if (!c) continue;
     const f64 d = flat_dist(c->bounds_center(), pos);
@@ -667,11 +669,17 @@ void Pedestrians::blast(const V3& pos, f64 radius, f64 energy) {
     const bool was = c->alive();
     const anim::BlastResult r = c->blast(pos, radius, strength);
     if (anim::GibSystem* gs = gibs()) anim::blast_gibs(*gs, *c, r, pos, palette_id(c->palette));
-    w.touched = true;
-    if (was && r.killed) {
-      w.alive = false;
-      noise(c->bounds_center(), 18.0, kDeath);
-    }
+    if (was && r.killed) noise(c->bounds_center(), 18.0, kDeath);
+    if (r.gibbed) torn.push_back(id);
+    const auto it = walkers_.find(id);
+    if (it == walkers_.end()) continue;
+    it->second.touched = true;
+    if (was && r.killed) it->second.alive = false;
+  }
+  // (torn apart: all of it is gibs now - the body goes, as the original's actor did)
+  for (u32 id : torn) {
+    walkers_.erase(id);
+    cs.despawn(id);
   }
   // (what it reached of the gibs and the blood: pushed away)
   if (gibs_) gibs_->impulse(pos, 4.0 * radius, 11.0 * strength);
@@ -682,15 +690,27 @@ void Pedestrians::blast(const V3& pos, f64 radius, f64 energy) {
 bool Pedestrians::wound(u32 id, const V3& from, const V3& pos, f64 radius, f64 energy) {
   if (!g_->chars_) return false;
   anim::Character* c = chars().get(id);
-  if (!c || !std::isfinite(energy) || !(energy > 0.0)) return false;
+  if (!c || !std::isfinite(energy) || !(energy > 0.0) || !std::isfinite(pos.x) || !std::isfinite(pos.y) || !std::isfinite(pos.z)) return false;
   V3 dir = pos - from;
   const f64 l = norm(dir);
   dir = l > 1e-9 ? dir * (1.0 / l) : V3{1.0, 0.0, 0.0};
-  const std::optional<anim::CharacterHit> hit = c->raycast(pos - dir * 0.6, dir, 1.2);
+  // Where the shot's ray found the body - a host asks a tick or more after its ray (a page's
+  // answer), and the body has moved on since: then along the same line through the bone nearest
+  // that point, where the bone is now (the round finds the limb it was fired at).
+  std::optional<anim::CharacterHit> hit = c->raycast(pos - dir * 0.6, dir, 1.2);
+  if (!hit) {
+    const i32 b = c->nearest_bone(pos);
+    const V3 a = c->pose.p[size_t(b)], t = c->pose.tail(b);
+    const V3 ab = t - a;
+    const f64 l2 = dot(ab, ab);
+    const V3 q = a + ab * (l2 > 0.0 ? std::clamp(dot(pos - a, ab) / l2, 0.0, 1.0) : 0.0);
+    hit = c->raycast(q - dir * 0.8, dir, 1.6);
+  }
   if (!hit) return false;
   const bool was = c->alive();
-  // (a pistol round's 500 J: 35; a pellet's 150 J: about 10)
-  const anim::WoundResult r = c->wound(*hit, dir, 0.07 * energy, std::clamp(radius, 0.02, 0.12), std::min(4.0, 1.0 + energy / 400.0));
+  // (a pistol round's 500 J: 35; a pellet's 150 J: about 10; its hole some 0.3 of the world's, as
+  // svx_shoot's radius: a pistol's 0.15 m, the original's 0.045 m)
+  const anim::WoundResult r = c->wound(*hit, dir, 0.07 * energy, std::clamp(0.3 * radius, 0.02, 0.06), std::min(4.0, 1.0 + energy / 400.0));
   if (anim::GibSystem* gs = gibs()) anim::wound_gibs(*gs, *c, r, hit->point, dir, palette_id(c->palette));
   noise(pos, 12.0, kImpact);
   const auto it = walkers_.find(id);

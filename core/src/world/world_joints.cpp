@@ -252,8 +252,8 @@ std::vector<i64> World::joined_pieces(i64 piece) const {
 
 std::vector<JointId> World::joints() const {
   std::vector<JointId> out;
-  for (const Joint& j : rigid_.joints)
-    if (!j.broken) out.push_back(j.id);
+  for (size_t k = 0; k < rigid_.joints.size(); ++k)
+    if (!rigid_.joints[k].broken && jrecs_[k].articulation == 0) out.push_back(rigid_.joints[k].id);
   return out;
 }
 

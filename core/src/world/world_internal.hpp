@@ -689,6 +689,7 @@ struct World::Structure {
 // rigid_.joints, in the same order.)
 struct World::JointRec {
   JointId id = 0;
+  ArticulationId articulation = 0;  // (an articulation's own joint: its, not the host's - World::joints leaves it out)
   struct End {
     JointAnchor::Kind kind = JointAnchor::Kind::World;  // (a Piece anchor is held as a Grid one: its voxel)
     GridId grid = 0;                   // (Grid) the grid of its voxel

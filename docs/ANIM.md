@@ -111,9 +111,10 @@ policy and `max_deep`.
 - **Blows**: a deep body knows what hit it (its links' `bumped`): the change of speed it took
   hurts it - a car at 40 km/h kills - and the physics knocks it down. Drivers brake for people in
   their path. A shot's ray sees the characters (`raycast_shot`); a round into one is a logged
-  command (`wound_character`); a blast throws, hurts, kills, tears apart. What comes off - limbs,
-  pieces, blood - is the game's `GibSystem`'s: gibs are drawn as characters of one matrix, the
-  blood as drops and stains (`Game::blood`).
+  command (`wound_character`: a round the host asks for a tick or more after its ray finds a body
+  that moved on along the same line); a blast throws, hurts, kills, tears apart (the body goes:
+  all of it is gibs). What comes off - limbs, pieces, blood - is the game's `GibSystem`'s: gibs
+  are drawn as characters of one matrix, the blood as drops and stains (`Game::blood`).
 - **Population**: every half second, as the traffic: the living out of range go, new people come
   on resident sidewalks out of sight; the dead in range stay (the longest dead beyond ten go),
   and out of range are the world's.

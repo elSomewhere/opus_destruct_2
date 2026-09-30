@@ -156,6 +156,7 @@ ArticulationId World::add_articulation_now(const ArticulationDesc& d, Articulati
     }
     j.rel = conj(rot0[J.parent]) * rot0[J.child];
     r.id = j.id;
+    r.articulation = rec->id;
     const size_t k = insert_joint(r, j);
     fill_joint_end(jrecs_[k], false);
     fill_joint_end(jrecs_[k], true);

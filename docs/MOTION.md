@@ -74,8 +74,9 @@ const JointId hinge = world.add_joint(d);
   together, and wake together: a piece woken wakes the pieces joined to it, and theirs, before
   it is solved (asleep, a piece is a static support: a car woken still would hang on its
   sleeping door).
-- **Queries.** `joints()`, `joint(id, &state)`, `joined_pieces(piece)`: the pieces joined to a
-  piece by joints that hold (a car's parts still on it).
+- **Queries.** `joints()` (the host's: an articulation's own joints are in its state, §6),
+  `joint(id, &state)`, `joined_pieces(piece)`: the pieces joined to a piece by joints that hold
+  (a car's parts still on it).
 - **State.** `joint(id, &state)`: its ends in the world, the force and torque it carried in the
   last substep, its hinge angle, slider offset or rope length, the pieces its ends are on.
 
