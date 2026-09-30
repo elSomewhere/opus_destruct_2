@@ -142,6 +142,7 @@ ArticulationId World::add_articulation_now(const ArticulationDesc& d, Articulati
       E.ref = rotate(frame[e], rf);
     }
     j.collide = false;  // (the articulation's rules say which of its links collide)
+    j.supple = true;
     if (hinge) {
       j.limited = J.hinge_limited;
       j.lower = J.hinge_lower;
@@ -381,6 +382,14 @@ bool World::wake_articulation(ArticulationId id) {
   if (!a) return false;
   for (u16 i = 0; i < a->links.size(); ++i)
     if (Body* b = art_link(*a, i)) rigid_.wake(*b);
+  return true;
+}
+
+bool World::articulation_asleep(ArticulationId id) const {
+  const ArticulationRec* a = art(id);
+  if (!a) return false;
+  for (u16 i = 0; i < a->links.size(); ++i)
+    if (const Body* b = art_link(*a, i); b && !b->asleep) return false;
   return true;
 }
 

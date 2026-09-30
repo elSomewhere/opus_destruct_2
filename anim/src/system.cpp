@@ -122,9 +122,21 @@ void CharacterSystem::on_evicted(World& w, const std::vector<u64>& chunks) {
   for (CharacterId id : gone) despawn(id);
 }
 
-void CharacterSystem::pre_step(World& /*w*/, f64 /*dt*/) {
+// A frame's first half, before the mechanics: which bodies are deep (level of detail), what the
+// shallow ones meet, the plans and the drives (pushed to the deep bodies' articulations).
+void CharacterSystem::pre_step(World& w, f64 dt) {
   const auto t0 = std::chrono::steady_clock::now();
-  for (Entry& e : chars_) e.c->push();
+  if (chars_.empty()) {
+    stats_.pre_ms = 0.0;
+    return;
+  }
+  level_of_detail(w);
+  // the shallow bodies meet the others through obstacles (the deep ones collide in the core)
+  std::vector<Character*> all;
+  all.reserve(chars_.size());
+  for (Entry& e : chars_) all.push_back(e.c.get());
+  gather_obstacles(all);
+  for (Entry& e : chars_) e.c->begin(dt);
   stats_.pre_ms = ms_since(t0);
 }
 
@@ -186,19 +198,14 @@ void CharacterSystem::level_of_detail(World& w) {
     chars_[deep_candidates[k].i].c->set_backend(static_cast<i32>(k) < config.max_deep ? BodyBackend::Deep : BodyBackend::Shallow, &w);
 }
 
-void CharacterSystem::step(World& w, f64 dt) {
+void CharacterSystem::step(World& /*w*/, f64 /*dt*/) {
   const auto t0 = std::chrono::steady_clock::now();
   if (chars_.empty()) {
     stats_ = CharacterStats{};
     return;
   }
-  level_of_detail(w);
-  // the shallow bodies meet the others through obstacles (the deep ones collide in the core)
-  std::vector<Character*> all;
-  all.reserve(chars_.size());
-  for (Entry& e : chars_) all.push_back(e.c.get());
-  gather_obstacles(all);
-  for (Entry& e : chars_) e.c->update(dt);
+  // the second half: what the tick made of the deep bodies
+  for (Entry& e : chars_) e.c->end();
   // stats
   CharacterStats s;
   s.pre_ms = stats_.pre_ms;

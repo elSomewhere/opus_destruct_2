@@ -18,8 +18,9 @@
 //    the CollisionWorld and other bodies through obstacles (set_obstacles, gather_obstacles).
 //  - Deep: as an articulation of a core World, stepped with everything else in the world's tick
 //    (standing on its structures and loading them, hit by what hits it, pushing what it meets).
-//    The host (a CharacterSystem) pushes the body's drives before each tick (push) and updates
-//    the character after it (update pulls what the tick made of the body).
+//    Its frame comes in two halves about the world's tick (a CharacterSystem calls them): begin
+//    before it (the plan, the drives, pushed to the core), end after it (what the tick made of the
+//    body) - the order the shallow path keeps within update.
 // The physics costs time, so a calm character may run on its plan alone (`physics = false`, the
 // host's level of detail); anything that needs the body (a hit, a push, a fall, death) wakes it.
 // A body can move between the two paths at any frame (set_backend): its state goes with it.
@@ -120,8 +121,6 @@ class Character {
   ArticulationId articulation() const { return binding_.id(); }
   // Moves the body to the other path (its state goes with it). Deep needs a world.
   bool set_backend(BodyBackend b, World* world = nullptr);
-  // (deep) Before the world's tick: the body's drives and what the host did to it, to the core.
-  void push();
   // (deep) The articulation came back (a session loaded, the streaming archive): adopt it.
   bool adopt(ArticulationId id);
   // (deep) Its articulation is gone from the world (removed, archived, out of the world): the body
@@ -134,9 +133,16 @@ class Character {
   std::vector<AnimEvent> take_events();         // the motion's events since the last call, the limb positions from the body
   V3 take_root_motion();                        // how far the body moved the root since the last call
   void fire();                                  // a shot fired (recoil)
-  // The frame. Shallow or plan-only: as it says. Deep: what the world's last tick made of the body
-  // (it must have been pushed before it), then the drives for the next one.
-  void update(f64 dt);
+  // The frame: the plan, the body carrying it out, the pose. A body bound to a world moves with its
+  // ticks: begin(dt) before one (the plan and the drives, to the core), end() after it (what the
+  // tick made of the body); update(dt) is both - a frame the world stood still for. Shallow or
+  // plan-only, begin does it all (end: nothing).
+  void update(f64 dt) {
+    begin(dt);
+    end();
+  }
+  void begin(f64 dt);
+  void end();
 
   // ---- senses and blows
   void perceive(const Perception& p);
@@ -198,7 +204,8 @@ class Character {
   f64 switch_blend_ = 1.0;  // blend from the last shown pose after a switch between physics and plan (1: done)
   WorldPose switch_from_;
   bool placed_ = false;
-  bool pending_post_ = false;  // (deep: a step was pushed; update takes what it made)
+  bool pending_post_ = false;  // (deep: begin pushed the drives; end takes what the tick made of them)
+  f64 frame_dt_ = 0.0;         // (the frame begun)
   Rng rng_;                    // (what the original left to Math.random: a character's own)
 
   void wake();

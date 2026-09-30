@@ -1,9 +1,11 @@
 // svx_anim — characters in a core World: a WorldSystem that owns them and steps them with the
 // world's ticks (docs/ANIM.md).
 //
-// Every tick: before the mechanics (pre_step) the deep bodies' drives - and whatever the host did
-// to them since - go to their articulations; after the mechanics (step) each character is updated:
-// what the tick made of its body, its behaviours and plan for the next one.
+// Every tick, a frame of every character in two halves about the mechanics: before them (pre_step)
+// the level of detail, the plans and the drives (the deep bodies' - and whatever the host did to
+// them since - to their articulations; the shallow bodies step on their own there); after them
+// (step) what the tick made of the deep bodies. The host sets the characters' roots and inputs
+// between ticks.
 //
 // Where each body is simulated is the system's level of detail, by the distance to the focus
 // points (the player, the camera) and what is near it:

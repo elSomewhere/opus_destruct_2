@@ -102,10 +102,6 @@ bool Character::set_backend(BodyBackend b, World* world) {
   return true;
 }
 
-void Character::push() {
-  if (backend_ == BodyBackend::Deep && binding_.bound() && world_) binding_.push(*world_);
-}
-
 bool Character::adopt(ArticulationId id) {
   if (!world_) return false;
   if (!binding_.adopt(*world_, body.system, id)) return false;
@@ -170,24 +166,11 @@ void Character::fire() {
 
 // ---- the frame ------------------------------------------------------------------------------------
 
-void Character::update(f64 dt_in) {
+void Character::begin(f64 dt_in) {
   const f64 dt = std::min(0.05, std::max(0.0, dt_in));
   Behaviours& b = behaviours;
-  // (deep) what the world's last tick made of the body
-  if (pending_post_) {
-    pending_post_ = false;
-    if (binding_.bound() && world_ && binding_.pull(*world_, dt)) {
-      prev_pose.copy_from(pose);
-      b.drive_post(dt, pose);
-      // a body thrown about is shown turning no bone more than about 35 degrees a frame (a limb
-      // spinning about its length reads as a flip)
-      if (b.mode == BodyMode::Dying || b.mode == BodyMode::Dead || b.mode == BodyMode::Falling) limit_turns(0.6);
-      finish_frame();
-    } else {
-      // (its articulation is gone - out of the world, removed: the body is its own again)
-      unbound();
-    }
-  }
+  pending_post_ = false;
+  frame_dt_ = dt;
   if (dt > 0.0) last_dt_ = dt;
   flash = std::max(0.0, flash - dt * 6.0);
   pain_ = std::max(0.0, pain_ - dt);
@@ -195,8 +178,12 @@ void Character::update(f64 dt_in) {
   if (!placed_) place(motion.root_pos, motion.root_yaw);
   if (!alive()) dead_time += dt;
   if (b.mode == BodyMode::Dead && body.system.asleep) {
-    pose.write_skin(skin.data());
-    return;
+    // (deep: unless the world woke it - something ran into the body)
+    if (!(binding_.bound() && world_ && !world_->articulation_asleep(binding_.id()))) {
+      pose.write_skin(skin.data());
+      return;
+    }
+    body.system.asleep = false;
   }
   // physics on or off (level of detail)
   const bool need = b.needs_physics() || !alive();
@@ -205,19 +192,40 @@ void Character::update(f64 dt_in) {
   else if (b.physical && !need && !physics && calm_for_ > 0.6) rest();
   b.prepare(dt, pose);
   motion.update(dt);
-  if (b.physical && backend_ == BodyBackend::Deep && binding_.bound()) {
-    // (the drives for the world's next tick; what it makes of them comes with the next update)
+  prev_pose.copy_from(pose);
+  if (b.physical && backend_ == BodyBackend::Deep && binding_.bound() && world_) {
+    // (the drives for the world's tick, and what the host did to the body; end takes the rest)
     b.drive_pre(dt);
+    binding_.push(*world_);
     pending_post_ = true;
     return;
   }
-  prev_pose.copy_from(pose);
   if (b.physical) {
     b.drive(dt, pose);
     if (b.mode == BodyMode::Dying || b.mode == BodyMode::Dead || b.mode == BodyMode::Falling) limit_turns(0.6);
   } else {
     pose.copy_from(motion.world);
   }
+  finish_frame();
+}
+
+void Character::end() {
+  if (!pending_post_) return;
+  pending_post_ = false;
+  const f64 dt = frame_dt_;
+  Behaviours& b = behaviours;
+  if (binding_.bound() && world_ && binding_.pull(*world_, dt)) {
+    b.drive_post(dt, pose);
+  } else {
+    // (its articulation is gone - out of the world, removed: the body is its own again, and its
+    // own step carries out the drives)
+    unbound();
+    body.system.step(dt);
+    b.drive_post(dt, pose);
+  }
+  // a body thrown about is shown turning no bone more than about 35 degrees a frame (a limb
+  // spinning about its length reads as a flip)
+  if (b.mode == BodyMode::Dying || b.mode == BodyMode::Dead || b.mode == BodyMode::Falling) limit_turns(0.6);
   finish_frame();
 }
 

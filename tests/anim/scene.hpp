@@ -29,12 +29,12 @@ inline const char* path_name(Path p) { return p == Path::Shallow ? "shallow" : "
 
 // The ground: voxels solid where `solid` says (voxel (i, j, k) centred at kH (i, j, k)), within
 // [lo, hi); or flat (null solid: the plane z = 0 on the shallow path, voxels k <= 0 - their top at
-// kH / 2 - on the deep one).
+// kH / 2 - on the deep one: -16..16 m across, -16..32 m along y, the way the characters face).
 using Solid = std::function<bool(i32, i32, i32)>;
 
 class Scene {
  public:
-  explicit Scene(Path p, Solid solid = nullptr, IVec3 lo = {-96, -96, -4}, IVec3 hi = {96, 96, 40}) : path(p) {
+  explicit Scene(Path p, Solid solid = nullptr, IVec3 lo = {-128, -128, -4}, IVec3 hi = {128, 256, 40}) : path(p) {
     if (path == Path::Shallow) {
       if (solid) col = std::make_unique<VoxelCollision>(kH, solid);
       else col = std::make_unique<FlatGround>(0.0);
@@ -95,17 +95,15 @@ class Scene {
   }
   Character& soldier() { return add(make_soldier(4), 4.0, 1.5707963267948966, V3{0, 0, ground}, make_rifle()); }
 
-  // One frame: `host` does what a game does before the characters' update (their roots, their
-  // obstacles), then the bodies are stepped - their own steps, or the world's tick between their
-  // drives and their update.
+  // One frame: `host` does what a game does before the characters' frame (their roots, their
+  // obstacles), then the characters' frames - on the deep path in two halves about the world's
+  // tick (the plans and drives, then what the tick made of the bodies).
   void frame(const std::vector<Character*>& cs, const std::function<void()>& host = nullptr) {
     if (host) host();
-    if (path == Path::Deep) {
-      for (Character* c : cs) c->push();
-      world->tick();
-    }
+    for (Character* c : cs) c->begin(DT);
+    if (path == Path::Deep) world->tick();
     for (Character* c : cs) {
-      c->update(DT);
+      c->end();
       for (const V3& p : c->pose.p) REQUIRE((std::isfinite(p.x) && std::isfinite(p.y) && std::isfinite(p.z)));
     }
   }

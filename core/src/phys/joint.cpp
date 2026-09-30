@@ -105,6 +105,9 @@ Quat frame_of(const V3& axis, const V3& ref) {
 // A cone and a twist limit bear (their rows act) within this of their bounds (rad): a joint
 // swinging fast towards its bound is met there, not past it.
 constexpr f64 kLimitNear = 0.25;
+// A supple joint (an articulation's) past a limit is put back this far a step at most (rad): as
+// the XPBD bodies its characters were made with are.
+constexpr f64 kSuppleStep = 0.025;
 constexpr f64 kPi = 3.141592653589793;
 
 }  // namespace
@@ -139,6 +142,19 @@ void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, cons
   auto pull = [&](f64 e, f64 s) -> f64 {
     const f64 m = std::max(0.0, std::abs(e) - s);
     return std::clamp(-beta * (e < 0.0 ? -m : m) / dt, -cap, cap);
+  };
+  // (a supple joint's limit: all of it, up to kSuppleStep a step)
+  auto pull_limit = [&](const Joint& jt, f64 e, f64 s) -> f64 {
+    if (!jt.supple) return pull(e, s);
+    const f64 m = std::min(kSuppleStep, std::max(0.0, std::abs(e) - s));
+    return -(e < 0.0 ? -m : m) / dt;
+  };
+
+  // (the room a limit's speculative row leaves: past a supple joint's bound, it turns back at most
+  // kSuppleStep a step)
+  auto room_of = [&](const Joint& jt, f64 r, int side) -> f64 {
+    if (!jt.supple) return r;
+    return side > 0 ? std::max(r, -kSuppleStep) : std::min(r, kSuppleStep);
   };
 
   Joint& j = joints[k];
@@ -254,8 +270,8 @@ void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, cons
       P.eax = pull(P.value - j.lower, t == JointType::Slider ? slop : 0.0);
     } else {
       P.lim = P.value - j.lower < j.upper - P.value ? -1 : 1;
-      if (P.value < j.lower) P.eax = pull(P.value - j.lower, t == JointType::Slider ? slop : 0.0);
-      if (P.value > j.upper) P.eax = pull(P.value - j.upper, t == JointType::Slider ? slop : 0.0);
+      if (P.value < j.lower) P.eax = pull_limit(j, P.value - j.lower, t == JointType::Slider ? slop : 0.0);
+      if (P.value > j.upper) P.eax = pull_limit(j, P.value - j.upper, t == JointType::Slider ? slop : 0.0);
     }
   }
   // (ball) the cone and the twist limit, near their bounds
@@ -277,8 +293,8 @@ void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, cons
           P.swing_ax = c * (1.0 / sn);  // (turning b about it swings b further out)
           const f64 k = dot(P.swing_ax, Isum * P.swing_ax);
           P.swing_k = k > 0.0 ? 1.0 / k : 0.0;
-          P.swing_room = bound - angle;
-          if (angle > bound) P.swing_e = pull(angle - bound, 0.0);
+          P.swing_room = room_of(j, bound - angle, 1);
+          if (angle > bound) P.swing_e = pull_limit(j, angle - bound, 0.0);
         }
       }
     }
@@ -293,12 +309,12 @@ void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, cons
       const f64 mid = 0.5 * (j.twist_lower + j.twist_upper);
       if (tw > j.twist_upper - kLimitNear && tw >= mid) {
         P.twist_side = 1;
-        P.twist_room = j.twist_upper - tw;
-        if (tw > j.twist_upper) P.twist_e = pull(tw - j.twist_upper, 0.0);
+        P.twist_room = room_of(j, j.twist_upper - tw, 1);
+        if (tw > j.twist_upper) P.twist_e = pull_limit(j, tw - j.twist_upper, 0.0);
       } else if (tw < j.twist_lower + kLimitNear && tw < mid) {
         P.twist_side = -1;
-        P.twist_room = j.twist_lower - tw;
-        if (tw < j.twist_lower) P.twist_e = pull(tw - j.twist_lower, 0.0);
+        P.twist_room = room_of(j, j.twist_lower - tw, -1);
+        if (tw < j.twist_lower) P.twist_e = pull_limit(j, tw - j.twist_lower, 0.0);
       }
       if (P.twist_side != 0) {
         P.twist_on = true;
@@ -491,7 +507,8 @@ void RigidWorld::solve_joint(size_t k) {
     } else if (P.lim != 0) {
       // (speculative: it may close on the bound within this substep, not pass it)
       const f64 bound = P.lim < 0 ? j.lower : j.upper;
-      const f64 target = (bound - P.value) / joint_dt_;
+      f64 target = (bound - P.value) / joint_dt_;
+      if (j.supple) target = P.lim < 0 ? std::min(target, kSuppleStep / joint_dt_) : std::max(target, -kSuppleStep / joint_dt_);
       const f64 l = P.kax * (target - rate());
       const f64 nl = P.lim < 0 ? std::max(0.0, j.limit + l) : std::min(0.0, j.limit + l);
       push(nl - j.limit);

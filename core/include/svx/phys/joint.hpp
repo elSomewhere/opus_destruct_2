@@ -103,6 +103,10 @@ struct Joint {
   bool twist_limited = false;
   f64 twist_lower = 0.0, twist_upper = 0.0;
   JointMuscle muscle;  // (ball, hinge) a drive of its relative rotation
+  // (an articulation's) Past a limit it turns back at most kSuppleStep (0.025 rad) a step - its
+  // velocity and position passes alike, the XPBD bodies' LIMIT_STEP: a body folded far past its
+  // range comes out of it over a few steps, it is not flung back within one.
+  bool supple = false;
 
   // the solver's state
   V3 lin, ang;                  // accumulated impulses on b (warm start): point / square rows, angular rows

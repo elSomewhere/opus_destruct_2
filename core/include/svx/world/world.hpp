@@ -559,6 +559,7 @@ class World {
   // A link lost (a limb shot off): it touches nothing any more and keeps mass_scale of its mass.
   bool lose_link(ArticulationId id, u16 link, f64 mass_scale);
   bool wake_articulation(ArticulationId id);
+  bool articulation_asleep(ArticulationId id) const;  // all its links asleep (false: awake, or none)
   // A link's body id (0: none): its joints to pieces (JointAnchor::Kind::Link), queries.
   i64 link_body(ArticulationId id, u16 link) const;
   std::vector<GridId> grids() const;                  // the oriented grids, ascending ids
