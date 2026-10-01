@@ -132,6 +132,7 @@ export function warmBasesIn(w, rect) {
  * The worlds of the city stages (cell networks, streets, town plans): allWorlds(), then the other
  * angled presets - the angled infinite city (diagonal boulevards through the grid) and the angled
  * island towns (crooked old-town lanes, diagonals through a small town). [key, config overrides].
+ * (tests/city/city_records.hpp city_worlds is the C++ twin.)
  */
 export const CITY_EXTRA_WORLDS = [
   ["angledInfiniteCity", "angledInfiniteCity", null],

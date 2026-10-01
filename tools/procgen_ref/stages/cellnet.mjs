@@ -6,8 +6,7 @@
 // anywhere; the island's sea tests (createWorld.js). Every base height a cell's planning can
 // read is made first (lib/worlds.mjs warmBasesIn, warmIsland; docs/CITY.md §6), so the records
 // are what they are in any order.
-import { line, samples } from "../lib/rec.mjs";
-import { REF } from "../lib/rec.mjs";
+import { REF, line, samples } from "../lib/rec.mjs";
 import { cityWorlds, warmBasesIn, warmIsland, withSeaTests } from "../lib/worlds.mjs";
 import { edgeLine, netLines } from "../lib/city.mjs";
 
