@@ -117,7 +117,7 @@ struct Chunk {
 
 class VoxelGrid {
  public:
-  f64 h = 0.125;
+  f64 h = 0.125;  // voxel size (m; a world holds its own within 1 mm .. 100 m, World::load)
   IVec3 lo{0, 0, 0}, hi{0, 0, 0};  // loaded voxel bounds [lo, hi)
 
   Vox get(i32 x, i32 y, i32 z) const;

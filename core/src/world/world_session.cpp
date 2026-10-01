@@ -774,7 +774,7 @@ void World::Impl::archive_group(const std::vector<i64>& ids, const std::function
   write_group(rec, bodies, js, ws);
   // (the chunks that must be resident for it to come back: its pieces' and its joints' anchors')
   std::vector<u64> chunks;
-  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
+  const IVec3 lo = strm_.lo, hi = strm_.hi;
   auto add = [&](u64 k) {
     const IVec3 c = unkey3(k);
     for (int a = 0; a < 3; ++a)

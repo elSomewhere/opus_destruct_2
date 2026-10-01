@@ -558,6 +558,7 @@ struct World::Impl {
   struct Streaming {
     std::shared_ptr<const ChunkSource> source;
     StreamConfig config{};
+    IVec3 lo{}, hi{};  // the source's extent in chunks, held within range (enable_streaming)
     std::unordered_set<u64> generated;
     std::unordered_map<u64, i32> column_count;
     // (the eviction scan: every few ticks, or at once when the focus moved far - it walks every

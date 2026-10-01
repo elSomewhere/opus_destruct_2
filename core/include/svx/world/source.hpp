@@ -30,6 +30,11 @@ struct SourceJoint {
   JointDesc desc;
 };
 
+// The tallest extent a streamed world keeps (chunks): its columns are resident whole.
+constexpr i32 kMaxColumnChunks = 1024;
+
+// (Its calls must not throw: the core is built without exceptions, so one escaping into it is
+// not contained - a host catching it finds the world mid-tick.)
 class ChunkSource {
  public:
   virtual ~ChunkSource() = default;
@@ -38,7 +43,8 @@ class ChunkSource {
   // Generated structures should stand under their own weight; the world designs (strengthens)
   // the members that do not when it first touches them.
   virtual bool generate(const IVec3& chunk, std::vector<Vox>& out) const = 0;
-  // World extent in chunks: [lo, hi). Outside it the world is air.
+  // World extent in chunks: [lo, hi). Outside it the world is air. (The world holds it within
+  // the voxel key range - kVoxelLimit - and at most kMaxColumnChunks tall: beyond, it is cut.)
   virtual IVec3 chunk_lo() const = 0;
   virtual IVec3 chunk_hi() const = 0;
   // The region a chunk's changes are remembered and forgotten with (StreamConfig::archive_mb):
@@ -76,9 +82,9 @@ class ChunkSource {
 };
 
 struct StreamConfig {
-  f64 load_radius = 96.0;    // m (horizontal): chunks within are resident
+  f64 load_radius = 96.0;    // m (horizontal): chunks within are resident (at most 256 chunks)
   f64 evict_radius = 128.0;  // m: chunks beyond are evicted (hysteresis)
-  int chunks_per_tick = 6;   // generation budget per tick
+  int chunks_per_tick = 6;   // generation budget per tick (1 .. 4096)
   // byte budget: above this much resident grid memory, chunks beyond load_radius are evicted
   // farthest first (checked every 30 ticks; 0 = the radii alone)
   f64 max_resident_mb = 0.0;
@@ -86,7 +92,7 @@ struct StreamConfig {
   // many MB, allocated once. When it is full, the region seen least recently (and not resident
   // now) is forgotten: its chunks come back from the source as they were generated, and are
   // designed again when first touched. 0 = keep every change (a bounded level streamed from a
-  // file: its changes are bounded by its size).
+  // file: its changes are bounded by its size). At most 4096 (1024 on a 32-bit build).
   f64 archive_mb = 64.0;
   // Regions out of range for this long are forgotten even with room left: the world heals out
   // of sight (0 = only when the archive is full).

@@ -14,7 +14,7 @@
 namespace svx {
 
 int num_threads();
-void set_num_threads(int n);  // 1 = serial; takes effect for subsequent calls
+void set_num_threads(int n);  // 1 = serial (at most 256); takes effect for subsequent calls
 
 // Calls f(begin, end) for consecutive chunks of [0, n) of size `grain`. A parallel_for inside a
 // chunk runs inline (in order). Callers on several threads take turns on the pool.

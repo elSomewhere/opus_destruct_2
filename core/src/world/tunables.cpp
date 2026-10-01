@@ -13,22 +13,23 @@ namespace {
 constexpr TunableInfo kParams[] = {{"fragility", false}, {"impact", false}, {"dif", false}, {"paused", false}, {"debug_fields", false}};
 constexpr i32 kNumParams = static_cast<i32>(sizeof(kParams) / sizeof(kParams[0]));
 
+// (constant-initialized - its info in each entry - so the tunables answer from the first instant,
+// a host's static constructors too)
 struct Field {
-  const char* name;
-  bool setup;
+  TunableInfo info;
   f64* (*cfg_f64)(WorldConfig&);
   i32* (*cfg_i32)(WorldConfig&);
   i64* (*cfg_i64)(WorldConfig&);
   bool* (*cfg_bool)(WorldConfig&);
 };
-#define SVX_T_F64(n, m) {n, false, [](WorldConfig& c) -> f64* { return &c.m; }, nullptr, nullptr, nullptr}
-#define SVX_T_I32(n, m) {n, false, nullptr, [](WorldConfig& c) -> i32* { return &c.m; }, nullptr, nullptr}
-#define SVX_T_INT(n, m) {n, false, nullptr, [](WorldConfig& c) -> i32* { return reinterpret_cast<i32*>(&c.m); }, nullptr, nullptr}
-#define SVX_T_I64(n, m) {n, false, nullptr, nullptr, [](WorldConfig& c) -> i64* { return &c.m; }, nullptr}
-#define SVX_T_BOOL(n, m) {n, false, nullptr, nullptr, nullptr, [](WorldConfig& c) -> bool* { return &c.m; }}
+#define SVX_T_F64(n, m) {{n, false}, [](WorldConfig& c) -> f64* { return &c.m; }, nullptr, nullptr, nullptr}
+#define SVX_T_I32(n, m) {{n, false}, nullptr, [](WorldConfig& c) -> i32* { return &c.m; }, nullptr, nullptr}
+#define SVX_T_INT(n, m) {{n, false}, nullptr, [](WorldConfig& c) -> i32* { return reinterpret_cast<i32*>(&c.m); }, nullptr, nullptr}
+#define SVX_T_I64(n, m) {{n, false}, nullptr, nullptr, [](WorldConfig& c) -> i64* { return &c.m; }, nullptr}
+#define SVX_T_BOOL(n, m) {{n, false}, nullptr, nullptr, nullptr, [](WorldConfig& c) -> bool* { return &c.m; }}
 static_assert(sizeof(int) == sizeof(i32), "int fields");
-const Field kFields[] = {
-    {"dt", true, [](WorldConfig& c) -> f64* { return &c.dt; }, nullptr, nullptr, nullptr},
+constexpr Field kFields[] = {
+    {{"dt", true}, [](WorldConfig& c) -> f64* { return &c.dt; }, nullptr, nullptr, nullptr},
     SVX_T_F64("stress_rtol", stress_rtol),
     SVX_T_I64("stress_work", stress_work),
     SVX_T_I32("structure_max_nodes", structure_max_nodes),
@@ -82,13 +83,13 @@ const Field kFields[] = {
     SVX_T_F64("blast_max_speed", blast_max_speed),
     SVX_T_F64("max_event_radius", max_event_radius),
     SVX_T_F64("design_utilization", design_utilization),
-    {"junction_samples", true, nullptr, [](WorldConfig& c) -> i32* { return &c.junction_samples; }, nullptr, nullptr},
-    {"junction_reach", true, [](WorldConfig& c) -> f64* { return &c.junction_reach; }, nullptr, nullptr, nullptr},
+    {{"junction_samples", true}, nullptr, [](WorldConfig& c) -> i32* { return &c.junction_samples; }, nullptr, nullptr},
+    {{"junction_reach", true}, [](WorldConfig& c) -> f64* { return &c.junction_reach; }, nullptr, nullptr, nullptr},
     SVX_T_I32("crack_events_per_tick", crack_events_per_tick),
     SVX_T_I32("impact_events_per_tick", impact_events_per_tick),
     SVX_T_F64("impact_event_energy", impact_event_energy),
-    {"frag.min_voxels", true, nullptr, [](WorldConfig& c) -> i32* { return &c.frag.min_voxels; }, nullptr, nullptr},
-    {"frag.noise_scale", true, [](WorldConfig& c) -> f64* { return &c.frag.noise_scale; }, nullptr, nullptr, nullptr},
+    {{"frag.min_voxels", true}, nullptr, [](WorldConfig& c) -> i32* { return &c.frag.min_voxels; }, nullptr, nullptr},
+    {{"frag.noise_scale", true}, [](WorldConfig& c) -> f64* { return &c.frag.noise_scale; }, nullptr, nullptr, nullptr},
     SVX_T_F64("rigid.gravity", rigid.gravity),
     SVX_T_INT("rigid.substeps", rigid.substeps),
     SVX_T_BOOL("rigid.piece_ccd", rigid.piece_ccd),
@@ -151,14 +152,7 @@ const Field kFields[] = {
 #undef SVX_T_I64
 #undef SVX_T_BOOL
 
-
-
 constexpr i32 kNumFields = static_cast<i32>(sizeof(kFields) / sizeof(kFields[0]));
-TunableInfo g_info[kNumFields];
-bool g_info_ready = [] {
-  for (i32 i = 0; i < kNumFields; ++i) g_info[i] = {kFields[i].name, kFields[i].setup};
-  return true;
-}();
 
 }  // namespace
 
@@ -166,7 +160,7 @@ i32 tunable_count() { return kNumParams + kNumFields; }
 
 const TunableInfo* tunable(i32 i) {
   if (i < 0 || i >= tunable_count()) return nullptr;
-  return i < kNumParams ? &kParams[i] : &g_info[i - kNumParams];
+  return i < kNumParams ? &kParams[i] : &kFields[i - kNumParams].info;
 }
 
 i32 tunable_index(const char* name) {
@@ -212,6 +206,12 @@ bool set_tunable(World& w, i32 i, f64 value) {
   if (f.cfg_bool) *f.cfg_bool(c) = value != 0.0;
   w.configure(c);
   return true;
+}
+
+void default_nan_tunables(WorldConfig& c) {
+  WorldConfig d;
+  for (const Field& f : kFields)
+    if (f.cfg_f64 && std::isnan(*f.cfg_f64(c))) *f.cfg_f64(c) = *f.cfg_f64(d);
 }
 
 f64 get_tunable(const World& w, i32 i) {

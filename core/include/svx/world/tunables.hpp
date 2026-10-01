@@ -24,6 +24,9 @@ u32 tunable_id(i32 index);              // (FNV-1a of its name; 0: out of range)
 i32 tunable_by_id(u32 id);              // -1: unknown
 bool set_tunable(World& w, i32 index, f64 value);  // false: unknown, or not finite
 f64 get_tunable(const World& w, i32 index);        // NaN: unknown
+// Every NaN knob takes its default (World::configure applies it: a comparison with NaN is
+// always false, so a NaN would quietly disable what the knob decides).
+void default_nan_tunables(WorldConfig& c);
 inline bool set_tunable(World& w, const char* name, f64 value) { return set_tunable(w, tunable_index(name), value); }
 inline f64 get_tunable(const World& w, const char* name) { return get_tunable(w, tunable_index(name)); }
 

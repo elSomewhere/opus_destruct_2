@@ -303,6 +303,14 @@ Things that break it:
 - Inputs are validated. Non-finite or out-of-range positions (beyond about ±2²⁰ voxels), radii,
   energies, rays, sweeps, edits and parameters are refused or clamped. Carves and blasts are
   clamped to `max_event_radius`.
+- So is the configuration (`configure`, `enable_streaming`, `load`). A NaN knob takes its
+  default. Counts that drive loops are held where a tick stays bounded: at most 64 substeps and
+  256 solver iterations, 4096 chunks generated a tick, 256 threads. Memory budgets of any value
+  are byte counts, and an infinite one is no bound. A source's extent is held within the key
+  range, never inverted, and at most `kMaxColumnChunks` (1024) chunks tall; the load radius is
+  at most 256 chunks, the change archive at most 4096 MB (1024 on a 32-bit build), and the
+  world's voxel size 1 mm to 100 m. Callbacks (`ChunkSource`, `WorldSystem`) must not throw:
+  the core is built without exceptions and does not contain one.
 - Work per tick is bounded by `stress_work` (structures: solver iterations, and assemblies at
   the cost of the products and the factorization that build their multigrids) and the busy mode
   of the rigid solver (violent collapses step once per tick with fewer iterations). A solve

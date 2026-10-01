@@ -753,7 +753,7 @@ void World::Impl::archive_articulation(ArticulationId id, const std::function<vo
   const std::vector<u8> rec = articulation_record(*a);
   // (the chunks that must be resident for it to come back: its links')
   std::vector<u64> chunks;
-  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
+  const IVec3 lo = strm_.lo, hi = strm_.hi;
   auto add = [&](u64 k) {
     const IVec3 c = unkey3(k);
     for (int q = 0; q < 3; ++q)

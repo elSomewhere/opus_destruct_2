@@ -493,22 +493,36 @@ void World::Impl::reset_archive(size_t bytes) {
 
 void World::Impl::enable_streaming(std::shared_ptr<const ChunkSource> src, const StreamConfig& sc) {
   strm_.source = std::move(src);
-  strm_.config = sc;
-  strm_.config.load_radius = std::isfinite(strm_.config.load_radius) ? std::clamp(strm_.config.load_radius, 0.0, 1e5) : 96.0;
-  strm_.config.evict_radius = std::isfinite(strm_.config.evict_radius) ? std::clamp(strm_.config.evict_radius, strm_.config.load_radius, 1e5)
-                                                             : strm_.config.load_radius + 32.0;
-  strm_.config.chunks_per_tick = std::max(1, strm_.config.chunks_per_tick);
-  strm_.config.archive_mb = std::isfinite(strm_.config.archive_mb) ? std::clamp(strm_.config.archive_mb, 0.0, 1e6) : 64.0;
-  strm_.config.forget_after_s = std::isfinite(strm_.config.forget_after_s) ? std::max(0.0, strm_.config.forget_after_s) : 0.0;
+  // (guards: what a host asks for, held where it means something - beyond, a tick would walk
+  // more columns than a world holds, or a count overflow)
+  StreamConfig& C = strm_.config;
+  C = sc;
+  const f64 max_radius = 256.0 * kChunk * grid_.h;  // (256 chunks)
+  C.load_radius = std::isfinite(C.load_radius) ? std::clamp(C.load_radius, 0.0, max_radius) : std::min(96.0, max_radius);
+  C.evict_radius = std::isfinite(C.evict_radius) ? std::clamp(C.evict_radius, C.load_radius, 1e5) : C.load_radius + 32.0;
+  C.chunks_per_tick = std::clamp(C.chunks_per_tick, 1, 4096);
+  constexpr f64 kMaxArchiveMb = sizeof(size_t) >= 8 ? 4096.0 : 1024.0;  // (its page lists are allocated with it)
+  C.archive_mb = std::isfinite(C.archive_mb) ? std::clamp(C.archive_mb, 0.0, kMaxArchiveMb) : 64.0;
+  C.forget_after_s = std::isfinite(C.forget_after_s) ? std::clamp(C.forget_after_s, 0.0, 1e9) : 0.0;
   strm_.generated.clear();
   strm_.column_count.clear();
   strm_.region_resident.clear();
   strm_.evict_scan_tick = -1000000;
   strm_.evict_scan_focus.clear();
   // (a bounded archive: its arena, once; an unbounded one grows)
-  reset_archive(strm_.source ? static_cast<size_t>(strm_.config.archive_mb * 1048576.0) : 0);
+  reset_archive(strm_.source ? static_cast<size_t>(C.archive_mb * 1048576.0) : 0);
   if (!strm_.source) return;
-  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
+  // the source's extent, held within the voxel key range, never inverted, and at most
+  // kMaxColumnChunks tall (its columns are resident whole)
+  constexpr i32 kLim = kVoxelLimit / kChunk - 1;
+  IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
+  for (int q = 0; q < 3; ++q) {
+    lo[q] = std::clamp(lo[q], -kLim, kLim);
+    hi[q] = std::clamp(hi[q], lo[q], kLim);
+  }
+  hi[2] = std::min(hi[2], lo[2] + kMaxColumnChunks);
+  strm_.lo = lo;
+  strm_.hi = hi;
   grid_.lo = {lo[0] * kChunk, lo[1] * kChunk, lo[2] * kChunk};
   grid_.hi = {hi[0] * kChunk, hi[1] * kChunk, hi[2] * kChunk};
 }
@@ -542,7 +556,7 @@ void World::Impl::ensure_resident(const IVec3& lo, const IVec3& hi) {
 bool World::Impl::generate_chunk(u64 key) {
   if (!strm_.source || strm_.generated.count(key)) return false;
   const IVec3 cc = unkey3(key);
-  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
+  const IVec3 lo = strm_.lo, hi = strm_.hi;
   if (cc[0] < lo[0] || cc[1] < lo[1] || cc[2] < lo[2] || cc[0] >= hi[0] || cc[1] >= hi[1] || cc[2] >= hi[2]) return false;
   std::vector<Vox> v;
   const bool any = strm_.source->generate(cc, v);
@@ -965,7 +979,7 @@ f64 World::Impl::focus_distance(const IVec3& cc) const {
 
 bool World::Impl::chunk_resident(const IVec3& cc) const {
   if (!strm_.source) return true;
-  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
+  const IVec3 lo = strm_.lo, hi = strm_.hi;
   for (int q = 0; q < 3; ++q)
     if (cc[q] < lo[q] || cc[q] >= hi[q]) return true;  // outside the world: air
   return strm_.generated.count(key3(cc[0], cc[1], cc[2])) > 0;
@@ -978,10 +992,13 @@ int World::Impl::stream_update() {
   int generated = 0;
   const auto t0 = Clock::now();
   const f64 cs = grid_.h * kChunk;
-  const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
+  const IVec3 lo = strm_.lo, hi = strm_.hi;
   auto hdist = [&](const IVec3& cc) { return focus_distance(cc); };
   const i32 rl = static_cast<i32>(std::ceil(strm_.config.load_radius / cs)) + 1;
-  std::vector<std::pair<f64, u64>> want;
+  // the columns in range not yet whole, nearest first (then by key); their missing chunks are
+  // taken from there bottom up, as the budget allows - a tick walks the columns, never every
+  // chunk they miss (a teleport, a tall world)
+  std::vector<std::pair<f64, u64>> cols;
   std::unordered_set<u64> columns;
   for (const V3& f : strm_.focus) {
     const i32 cx = static_cast<i32>(std::floor((f.x / grid_.h + 0.5) / kChunk));
@@ -993,35 +1010,48 @@ int World::Impl::stream_update() {
         if (d > strm_.config.load_radius) continue;
         const auto cit = strm_.column_count.find(key3(x, y, 0));
         if (cit != strm_.column_count.end() && cit->second >= hi[2] - lo[2]) continue;
-        for (i32 z = lo[2]; z < hi[2]; ++z) {
-          const u64 k = key3(x, y, z);
-          if (!strm_.generated.count(k)) want.push_back({d, k});
-        }
+        cols.push_back({d, key3(x, y, 0)});
       }
   }
-  std::sort(want.begin(), want.end());
+  std::sort(cols.begin(), cols.end());
+  size_t ci = 0;
+  i32 cz = lo[2];
+  std::vector<u64> want;
+  auto take = [&](size_t n) {  // (the next n missing chunks, in (distance, key) order)
+    want.clear();
+    while (want.size() < n && ci < cols.size()) {
+      const IVec3 c = unkey3(cols[ci].second);
+      for (; cz < hi[2] && want.size() < n; ++cz)
+        if (const u64 k = key3(c[0], c[1], cz); !strm_.generated.count(k)) want.push_back(k);
+      if (cz >= hi[2]) {
+        ++ci;
+        cz = lo[2];
+      }
+    }
+  };
   int budget = strm_.config.chunks_per_tick, empty_budget = 16 * strm_.config.chunks_per_tick;
   std::vector<std::vector<Vox>> vox;
   std::vector<u8> any;
-  for (size_t i = 0; i < want.size() && budget > 0 && empty_budget > 0;) {
-    const size_t n = std::min(want.size() - i, size_t(2 * budget + 8));
+  while (budget > 0 && empty_budget > 0) {
+    take(size_t(2 * budget + 8));
+    if (want.empty()) break;
+    const size_t n = want.size();
     vox.resize(n);
     for (auto& v : vox)
       if (v.capacity() < size_t(kChunkVox)) v = grid_.acquire_buffer(kAir);  // (recycled arrays)
     any.assign(n, 0);
     const ChunkSource* src = strm_.source.get();
     parallel_for(static_cast<i64>(n), 1, [&](i64 b0, i64 e0) {
-      for (i64 j = b0; j < e0; ++j) any[size_t(j)] = src->generate(unkey3(want[i + size_t(j)].second), vox[size_t(j)]) ? 1 : 0;
+      for (i64 j = b0; j < e0; ++j) any[size_t(j)] = src->generate(unkey3(want[size_t(j)]), vox[size_t(j)]) ? 1 : 0;
     });
     for (size_t j = 0; j < n && budget > 0 && empty_budget > 0; ++j) {
-      const u64 k = want[i + j].second;
+      const u64 k = want[j];
       insert_generated(k, any[j] != 0, std::move(vox[j]));
       vox[j] = {};
       ++generated;
       if (grid_.chunk(unkey3(k))) --budget;
       else --empty_budget;
     }
-    i += n;
   }
   for (auto& v : vox)
     if (v.capacity() > 0) grid_.release_buffer(std::move(v));  // (generated beyond the budget: dropped)
@@ -1108,7 +1138,7 @@ int World::Impl::stream_update() {
   for (u64 k : out) evict_chunk(k);
   if (!out.empty()) unload_joints();
   if (strm_.config.max_resident_mb > 0.0 && st_.ticks % 30 == 0) {
-    const i64 budget_b = static_cast<i64>(strm_.config.max_resident_mb * 1048576.0);
+    const i64 budget_b = budget_bytes(strm_.config.max_resident_mb);
     i64 bytes = grid_.memory_bytes(Bytes::Used);  // (by what is used: the same on every platform)
     if (bytes > budget_b) {
       std::vector<std::pair<f64, u64>> far;

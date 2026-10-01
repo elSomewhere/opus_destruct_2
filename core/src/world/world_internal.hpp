@@ -3,6 +3,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 
@@ -36,6 +37,12 @@ constexpr int kStrengthClasses = 21;
 constexpr i32 kExisting = 1 << 30;  // (patch accumulators: endpoints >= this are existing nodes)
 // (a streamed world's grids made in play - add_grid - take ids from here up; a source's are below)
 constexpr GridId kSessionGrids = 0x40000000u;
+// A budget in MB as bytes: none below 0, and an infinite one (or one beyond what a byte count
+// holds) is no bound - the same on every platform, which a cast out of its range is not.
+inline i64 budget_bytes(f64 mb) {
+  if (!(mb > 0.0)) return 0;
+  return mb < 8.0e12 ? static_cast<i64>(mb * 1048576.0) : std::numeric_limits<i64>::max();
+}
 inline f64 class_mult(u8 c) {
   if (c == 0) return 1.0;
   const int k = std::min<int>(c, kStrengthClasses - 1);

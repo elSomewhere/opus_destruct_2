@@ -16,6 +16,10 @@ constexpr bool kThreadsAvailable = false;
 constexpr bool kThreadsAvailable = true;
 #endif
 
+// (more than any machine has cores: a host's count is held to it - a thread it cannot create
+// would end the process)
+constexpr int kMaxThreads = 256;
+
 inline void cpu_relax() {
 #if defined(__aarch64__) || defined(__arm__)
   asm volatile("yield" ::: "memory");
@@ -34,7 +38,7 @@ class Pool {
     return p;
   }
 
-  explicit Pool(int threads) : nthreads_(kThreadsAvailable ? std::max(1, threads) : 1) {}
+  explicit Pool(int threads) : nthreads_(kThreadsAvailable ? std::clamp(threads, 1, kMaxThreads) : 1) {}
 
   int threads() const { return nthreads_.load(std::memory_order_relaxed); }
 
@@ -42,7 +46,7 @@ class Pool {
     // (never under a job: a host stepping a world on another thread finishes its job first)
     std::lock_guard<std::mutex> one(run_mu_);
     stop_workers();
-    nthreads_.store(std::max(1, n), std::memory_order_relaxed);
+    nthreads_.store(std::clamp(n, 1, kMaxThreads), std::memory_order_relaxed);
   }
 
   void run(i64 nchunks, const std::function<void(i64)>& chunk_fn) {

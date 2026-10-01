@@ -1698,7 +1698,7 @@ void World::Impl::limit_bodies() {
   //     ones (the finest debris of a collapse). Kept pieces are not: the host's, a joint's (a
   //     machine's parts, what hangs on it), a carrier on wheels.
   // (By what the pieces use - Bytes::Used: the same decisions on every platform.)
-  const i64 budget = static_cast<i64>(cfg_.memory.piece_mb * 1048576.0);
+  const i64 budget = budget_bytes(cfg_.memory.piece_mb);
   i64 bytes = 0;
   for (const auto& bp : rigid_.bodies) bytes += body_bytes(*bp, Bytes::Used);
   i32 excess = static_cast<i32>(rigid_.bodies.size()) - cfg_.max_bodies;

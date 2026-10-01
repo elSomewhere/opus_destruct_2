@@ -442,7 +442,8 @@ class World;
 // A system stepped with the world: fire, fluids, weather, ... (svx_env, or a host's own). It
 // reads and changes the world through World's public API; the world tells it what it could not
 // see coming (loads, streaming, voxel changes). The core knows no system; systems may know each
-// other (through their host).
+// other (through their host). Its calls must not throw: the core is built without exceptions,
+// so one escaping into it is not contained (a host catching it finds the world mid-tick).
 class WorldSystem {
  public:
   virtual ~WorldSystem() = default;

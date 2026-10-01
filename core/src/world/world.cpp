@@ -14,6 +14,7 @@
 #include "svx/base/diag.hpp"
 #include "svx/base/mem.hpp"
 #include "svx/base/parallel.hpp"
+#include "svx/world/tunables.hpp"
 #include "archive.hpp"
 #include "world_internal.hpp"
 
@@ -35,14 +36,33 @@ World::Impl::~Impl() = default;
 
 void World::Impl::configure(const WorldConfig& c) {
   cfg_ = c;
-  // (guards: a zero or negative knob would stall or divide by zero)
-  if (!(cfg_.dt > 0.0)) cfg_.dt = 1.0 / 60.0;
-  cfg_.rigid.substeps = std::max(1, cfg_.rigid.substeps);
-  cfg_.rigid.mixed_substeps = std::clamp(cfg_.rigid.mixed_substeps, 0, 64);
+  // Guards (a host's knobs held where they mean something): a NaN knob takes its default - a
+  // comparison with it is always false; a count where beyond, a loop would stall the tick or a
+  // product overflow; a fraction or a ratio where it stays one.
+  default_nan_tunables(cfg_);
+  const FragParams fd;
+  FragParams& fr = cfg_.frag;
+  if (!std::isfinite(fr.jitter_lo)) fr.jitter_lo = fd.jitter_lo;
+  if (!std::isfinite(fr.jitter_span)) fr.jitter_span = fd.jitter_span;
+  fr.scale = std::isfinite(fr.scale) ? std::clamp(fr.scale, 1.0 / 64.0, 64.0) : 1.0;  // (as a grid's: GridDesc::voxel_size)
+  fr.min_voxels = std::clamp(fr.min_voxels, 0, kChunkVox);
+  cfg_.dt = cfg_.dt > 0.0 ? std::clamp(cfg_.dt, 1e-6, 1.0) : 1.0 / 60.0;
+  RigidParams& r = cfg_.rigid;
+  r.substeps = std::clamp(r.substeps, 1, 64);
+  r.mixed_substeps = std::clamp(r.mixed_substeps, 0, 64);
+  r.link_substeps = std::clamp(r.link_substeps, 1, 64);
+  for (int* n : {&r.iterations, &r.position_iterations, &r.busy_iterations, &r.link_iterations, &r.link_position_iterations})
+    *n = std::clamp(*n, 0, 256);
+  r.manifold = std::clamp(r.manifold, 0, 4096);
+  r.manifold_per_m = std::clamp(r.manifold_per_m, 0.0, 1e3);
   cfg_.max_bodies = std::max(0, cfg_.max_bodies);
   cfg_.cluster_nodes = std::max(64, cfg_.cluster_nodes);
   cfg_.body_cluster_nodes = std::max(16, cfg_.body_cluster_nodes);
   cfg_.max_breaks_per_round = std::max(1, cfg_.max_breaks_per_round);
+  cfg_.body_stress_maxit = std::clamp(cfg_.body_stress_maxit, 1, 10000);
+  cfg_.body_check_ticks = std::clamp(cfg_.body_check_ticks, 0, 1 << 20);
+  cfg_.crumple_check_gap = std::clamp(cfg_.crumple_check_gap, 0, 1 << 20);
+  cfg_.impact_round_fraction = std::clamp(cfg_.impact_round_fraction, 0.0, 1.0);
   rigid_.par = cfg_.rigid;
 }
 
@@ -118,6 +138,8 @@ void World::Impl::load(VoxelGrid&& g) {
       ext_.layers.push_back(spec);
   g.adopt_layers(ext_.layers);
   g.sanitize();
+  // (a voxel size the world can work with: a NaN, zero or negative one is the default's)
+  g.h = g.h > 0.0 && std::isfinite(g.h) ? std::clamp(g.h, 1e-3, 1e2) : VoxelGrid{}.h;
   grid_ = std::move(g);
   for (u64 k : old_keys) grid_.mark_dirty(unkey3(k));
   grid_.mark_all_dirty();
@@ -251,7 +273,8 @@ void World::Impl::prefragment(u16 g, const IVec3& seed, f64 max_radius) {
   // grid): the walk then finds them cached. The fragments are the ones the walk would make
   // chunk by chunk.
   constexpr size_t kMaxFlood = 4096, kMin = 4;
-  const i32 R = static_cast<i32>(std::ceil(max_radius / (h_of(g) * kChunk))) + 1;
+  const f64 reach = std::ceil(max_radius / (h_of(g) * kChunk)) + 1.0;
+  const i32 R = reach < 1e6 ? static_cast<i32>(reach) : 1000000;  // (an unbounded reach: the flood's bound alone)
   std::vector<IVec3> queue{seed}, todo;
   std::unordered_set<u64> seen{key3(seed[0], seed[1], seed[2])};
   const VoxelGrid& G = vg(g);
@@ -1081,7 +1104,7 @@ void World::Impl::prune_caches() {
     for (auto it = warm_u_.begin(); it != warm_u_.end();)
       it = resident_key(it->second.chunk) ? std::next(it) : warm_u_.erase(it);
   }
-  const i64 budget = static_cast<i64>(cfg_.memory.cache_mb * 1048576.0);
+  const i64 budget = budget_bytes(cfg_.memory.cache_mb);
   if (hash_bytes(judged_, Bytes::Used) + hash_bytes(warm_u_, Bytes::Used) <= budget) return;
   std::unordered_map<u64, Judged> keep_j;
   std::unordered_map<u64, WarmStart> keep_w;
@@ -2412,7 +2435,7 @@ void World::Impl::trim_fragment_caches() {
   // Fragment caches are derived from the grid: those of chunks no structure holds are dropped,
   // least recently used first, beyond the budget (rebuilt, identical, when needed again).
   // (The budgets decide by what is used - Bytes::Used: the same on every platform.)
-  const i64 budget = static_cast<i64>(cfg_.memory.fragment_cache_mb * 1048576.0);
+  const i64 budget = budget_bytes(cfg_.memory.fragment_cache_mb);
   i64 bytes = 0;
   for (const auto& gp : grids_)
     if (gp)
@@ -2457,7 +2480,7 @@ i64 World::Impl::structure_bytes(const Structure& s, Bytes k) const {
 void World::Impl::trim_structures() {
   // Registered structures are extracted again when something happens to them: beyond the
   // budget the idle ones go, the longest idle first (never one being solved).
-  const i64 budget = static_cast<i64>(cfg_.memory.structure_mb * 1048576.0);
+  const i64 budget = budget_bytes(cfg_.memory.structure_mb);
   i64 bytes = 0;
   std::vector<std::tuple<i32, i64, i64>> cand;  // (-idle, id, bytes)
   for (const auto& sp : structures_) {
