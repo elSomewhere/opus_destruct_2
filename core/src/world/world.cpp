@@ -524,12 +524,14 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
     const Chunk* ch = G.chunk(cc);
     if (!fcp || !ch || F.idx < 0 || F.idx >= static_cast<i32>(fcp->frags.size())) continue;
     const IVec3 base{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
+    // (its broken faces in the voxels' order: the voxel's own, and its -x, -y, -z neighbours')
+    BrokenCursor bc_p(*ch), bc_n[3] = {BrokenCursor(*ch), BrokenCursor(*ch), BrokenCursor(*ch)};
     for (i32 k = fcp->vox_start[size_t(F.idx)]; k < fcp->vox_start[size_t(F.idx) + 1]; ++k) {
       const i32 li = fcp->vox[size_t(k)];
       if (fcp->id[size_t(li)] != static_cast<u16>(F.idx + 1)) continue;
       const IVec3 l = local_of(li);
       const IVec3 p{base[0] + l[0], base[1] + l[1], base[2] + l[2]};
-      const u8 brk_p = ch->broken_at(li);
+      const u8 brk_p = bc_p.at(li);
       for (int a = 0; a < 3; ++a)
         for (int sg = -1; sg <= 1; sg += 2) {
           const bool inside = l[a] + sg >= 0 && l[a] + sg < kChunk;
@@ -546,7 +548,7 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
             if (!vox_solid(vq)) continue;
             // (the face is the lower voxel's: in this chunk, its broken flags are at hand)
             const bool face_broken = sg > 0      ? ((brk_p >> a) & 1) != 0
-                                     : inside ? ((ch->broken_at(qi2) >> a) & 1) != 0
+                                     : inside ? ((bc_n[a].at(qi2) >> a) & 1) != 0
                                               : G.broken(q, a);
             if (face_broken) continue;
           }
@@ -761,12 +763,13 @@ bool World::Impl::free_component(const GVox& v, i64 max_voxels, std::vector<Frag
     voxels += fcp->frags[size_t(F.idx)].count;
     if (voxels > max_voxels) return false;
     const IVec3 base{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
+    BrokenCursor bc_p(*ch), bc_n[3] = {BrokenCursor(*ch), BrokenCursor(*ch), BrokenCursor(*ch)};
     for (i32 k = fcp->vox_start[size_t(F.idx)]; k < fcp->vox_start[size_t(F.idx) + 1]; ++k) {
       const i32 li = fcp->vox[size_t(k)];
       if (fcp->id[size_t(li)] != static_cast<u16>(F.idx + 1)) continue;
       const IVec3 l = local_of(li);
       const IVec3 p{base[0] + l[0], base[1] + l[1], base[2] + l[2]};
-      const u8 brk_p = ch->broken_at(li);
+      const u8 brk_p = bc_p.at(li);
       for (int a = 0; a < 3; ++a)
         for (int sg = -1; sg <= 1; sg += 2) {
           const bool inside = l[a] + sg >= 0 && l[a] + sg < kChunk;
@@ -778,7 +781,7 @@ bool World::Impl::free_component(const GVox& v, i64 max_voxels, std::vector<Frag
           const Vox vq = inside ? (ch->uniform ? ch->value : ch->v[size_t(qi2)]) : G.get(q);
           if (!vox_solid(vq)) continue;
           const bool face_broken = sg > 0      ? ((brk_p >> a) & 1) != 0
-                                   : inside ? ((ch->broken_at(qi2) >> a) & 1) != 0
+                                   : inside ? ((bc_n[a].at(qi2) >> a) & 1) != 0
                                             : G.broken(q, a);
           if (face_broken) continue;
           if (vox_anchored(vq)) return false;

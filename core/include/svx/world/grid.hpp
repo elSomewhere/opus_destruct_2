@@ -155,6 +155,23 @@ struct Chunk {
   }
 };
 
+// A chunk's broken faces read in ascending voxel order (a fragment's voxels, a scan): its array,
+// or a cursor through its sorted list - no search per voxel.
+struct BrokenCursor {
+  const u8* dense = nullptr;
+  const u32* few = nullptr;
+  size_t n = 0, e = 0;
+  explicit BrokenCursor(const Chunk& c)
+      : dense(c.broken.empty() ? nullptr : c.broken.data()), few(c.broken_few.data()), n(c.broken_few.size()) {}
+  // (i: not below the last call's)
+  u8 at(i32 i) {
+    if (dense) return dense[size_t(i)];
+    const u32 key = static_cast<u32>(i) << 3;
+    while (e < n && few[e] < key) ++e;
+    return e < n && (few[e] >> 3) == static_cast<u32>(i) ? static_cast<u8>(few[e] & 7) : 0;
+  }
+};
+
 class VoxelGrid {
  public:
   f64 h = 0.125;  // voxel size (m; a world holds its own within 1 mm .. 100 m, World::load)
