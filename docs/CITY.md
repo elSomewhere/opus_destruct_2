@@ -48,6 +48,7 @@ exports, natively and in WASM, on any thread count.
 | rivers, lakes, port lakes | `nature/rivers.js`, `nature/lakes.js` | `nature/rivers.*`, `nature/lakes.*` | stage `water` (§6: port lakes) |
 | createWorld (so far), harbour grading, water predicates | `world/createWorld.js` | `world/createWorld.cpp`: land cover, rivers, lakes, the terrain's `port_grade`, caves; `sea_at` ... `water_hits_rect`; marked places for the rest | stage `water`; `test_nature_threads.cpp` |
 | caves, their feature source | `nature/caves.js` | `nature/caves.*`: `cave_z_range` and `cave_rasterize` over a view of the ground tile's columns (`CaveColumns`), for compose to wrap as a `FeatureSource` | stage `caves` (synthetic tiles) |
+| trees (species, models, rasterization) | `nature/trees.js` | `nature/trees.*` | stages `trees`, `treemodels` (models part by part), `treevox` (chunks at LODs 0, 2, 5, 8) |
 | road views, road surface | `network/roadView.js`, `network/roadSurface.js`; `World.roadView` | `network/roadView.*` (`World::road_view`: the 3 x 3 cell networks' roads, or a test's through `World::cell_roads`), `network/roadSurface.*` | stages `roadview`, `roadsurface` (scripted roads, and recorded ones: §6) |
 | road levels | `network/roadLevel.js`; createWorld's `streetLevel` | `network/roadLevel.*` (`World::street_level`) | stage `roadlevel` (recorded roads: §6); tests (any order, views dropped and remade, 4 threads) |
 | pitched road pieces | `network/roadParts.js` | `network/roadParts.*` | stage `roadparts` (recorded roads and waters) |
