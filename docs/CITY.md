@@ -239,11 +239,14 @@ so that it stays the oracle.
   order (`tools/procgen_ref/lib/worlds.mjs` `warmBasesAt` / `warmBasesIn`); the reference's
   samples are then the same in any order, and the port's. A stage that samples the terrain near
   settlements, directly or through any plan, must do the same, and plan the port lakes first once
-  lakes are ported (`lakes.portLakeOf`). (The stages `sites` and `sitelinks` warm every base over
-  the lattice cells they probe and the sites and links those reach, `warmBasesIn`; a stage of the
-  real site kinds must reach as far as their placement samples: a stronghold's service road runs
-  up to 5 km from its apron.) The reference's golden digests (`test/golden/*.json`)
+  lakes are ported (`lakes.portLakeOf`). The reference's golden digests (`test/golden/*.json`)
   were recorded with the shared context: a golden sample that was such a first touch may differ
   (to be measured when the golden stage is ported).
 - **The gullies' kernel cache** (`terrain/landforms.js`) is keyed `i * 1000003 + j` in the
   reference, which collides only for cells 40,000 km apart; the port keys it by the exact cell.
+- **Sites and site links sample the terrain near settlements too** (the first entry): a site's
+  placement (the default pad's five samples, a kind's own placement) and a link's floor profile (a
+  sample every 16 m of its route). The stages `sites` and `sitelinks` make every base height first
+  over the lattice cells they probe and the sites and links those reach (`warmBasesIn`); a stage of
+  the reference's own site kinds must reach as far as their placement samples (a stronghold's
+  service road runs up to 5 km from its apron).

@@ -45,9 +45,10 @@ bool local(const LinkSeg& g, double x, double y, double band, double* along, dou
 }  // namespace
 
 size_t SiteLinks::KeyHash::operator()(const Key& k) const {
-  const uint64_t a = static_cast<uint64_t>(static_cast<int64_t>(k.a));
-  const uint64_t b = static_cast<uint64_t>(static_cast<int64_t>(k.b));
-  const uint64_t d = static_cast<uint64_t>(static_cast<int64_t>(k.dir));
+  // (lattice cells are integers; ToUint32 is defined for any number)
+  const uint64_t a = js::to_uint32(k.a);
+  const uint64_t b = js::to_uint32(k.b);
+  const uint64_t d = js::to_uint32(k.dir);
   return static_cast<size_t>((a * 0x9E3779B97F4A7C15ull) ^ (b * 0xC2B2AE3D27D4EB4Full) ^ (d * 0x165667B19E3779F9ull));
 }
 
