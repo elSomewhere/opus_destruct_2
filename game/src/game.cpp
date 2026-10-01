@@ -298,7 +298,15 @@ void Game::tick() {
   if (!par_.paused) vehicles_after_tick();
   if (!par_.paused) pedestrians_after_tick();
   const auto p3 = PClock::now();
-  for (Fading& f : fading_) f.t += world_.config().dt;
+  for (Fading& f : fading_) {
+    f.t += world_.config().dt;
+    if (f.t < fade_time) continue;
+    GameEvent g;  // (faded out: gone from pieces())
+    g.kind = GameEvent::Kind::Removed;
+    g.id = f.id;
+    g.pos = f.pos;
+    events_.push_back(std::move(g));
+  }
   fading_.erase(std::remove_if(fading_.begin(), fading_.end(), [&](const Fading& f) { return f.t >= fade_time; }), fading_.end());
   drain_world_events();
   const auto p4 = PClock::now();
@@ -425,9 +433,12 @@ void Game::drain_world_events() {
       case WorldEvent::Kind::PieceRemoved: {
         const auto it = views_.find(e.id);
         if (it == views_.end()) continue;
-        if (e.end == PieceEnd::Culled) fading_.push_back({e.id, 0.0, e.pos, e.rot * conj(it->second.q0)});
+        const bool culled = e.end == PieceEnd::Culled;
+        if (culled) fading_.push_back({e.id, 0.0, e.pos, e.rot * conj(it->second.q0)});
         views_.erase(it);
-        continue;  // (the front end drops pieces missing from the poses)
+        if (culled) continue;  // (it fades out first: Removed at the end of its fade)
+        g.kind = GameEvent::Kind::Removed;
+        break;
       }
       case WorldEvent::Kind::Crack:
         g.kind = GameEvent::Kind::Crack;
@@ -479,9 +490,26 @@ void Game::drain_world_events() {
     }
     events_.push_back(std::move(g));
   }
-  // (a front end that stops taking events does not make the harness grow)
+  // (a front end that stops taking events does not make the harness grow: the oldest effects go
+  // first - what is drawn, Detached, Remesh and Removed, only when they alone are beyond it)
   const size_t cap = static_cast<size_t>(std::max(16, max_events));
-  if (events_.size() > cap) events_.erase(events_.begin(), events_.begin() + static_cast<long>(events_.size() - cap));
+  if (events_.size() > cap) {
+    const auto lifecycle = [](const GameEvent& v) {
+      return v.kind == GameEvent::Kind::Detached || v.kind == GameEvent::Kind::Remesh || v.kind == GameEvent::Kind::Removed;
+    };
+    size_t drop = events_.size() - cap;
+    std::vector<GameEvent> kept;
+    kept.reserve(cap);
+    for (GameEvent& v : events_) {
+      if (drop > 0 && !lifecycle(v)) {
+        --drop;
+        continue;
+      }
+      kept.push_back(std::move(v));
+    }
+    if (kept.size() > cap) kept.erase(kept.begin(), kept.begin() + static_cast<long>(kept.size() - cap));
+    events_.swap(kept);
+  }
   if (removed_chunks_.size() > 4 * cap) {
     std::sort(removed_chunks_.begin(), removed_chunks_.end());
     removed_chunks_.erase(std::unique(removed_chunks_.begin(), removed_chunks_.end()), removed_chunks_.end());

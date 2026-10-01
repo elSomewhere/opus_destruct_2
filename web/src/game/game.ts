@@ -16,6 +16,7 @@ import { SettingsPanel } from '../ui/settings.ts';
 import { Effects } from './effects.ts';
 import { Input } from './input.ts';
 import { PieceBodies } from '../engine/pieces.ts';
+import { PoseClock } from '../engine/poseclock.ts';
 import { OccupancyStore } from './occupancy.ts';
 import { Driving, padPressed, type CameraMode } from './driving.ts';
 import { CharacterTracker } from './people.ts';
@@ -52,21 +53,26 @@ export class Game {
   private readonly occupancy = new OccupancyStore();
   /** The oriented grids' places: drawn and felt where they are (interpolated when they move). */
   private readonly gridFrames = new GridFrames();
+  /**
+   * When the engine's poses are drawn and felt: one batch interval behind, as measured - shared by
+   * the pieces, the vehicles and the characters (a car's body, its wheels and the camera on it).
+   */
+  private readonly poseClock = new PoseClock();
   /** The rigid pieces as the player's collision feels them (a lift's car, a turntable, rubble). */
-  private readonly pieces = new PieceBodies();
+  private readonly pieces = new PieceBodies(this.poseClock);
   private readonly effects: Effects;
   private readonly weapons: Weapons;
   private readonly hud: Hud;
   private readonly driveHud: DriveHud;
   /** The vehicles (`vehicles` messages): their bodies are pieces, their wheels drawn from this. */
-  private readonly tracker = new VehicleTracker();
+  private readonly tracker = new VehicleTracker(this.poseClock);
   private readonly driving = new Driving();
   private readonly vehicleFx = new VehicleEffects();
   /** The next kind of car B drops in front of the player. */
   private spawnKind = 1;
   private traffic: TrafficSettings = { ...DEFAULT_TRAFFIC };
   /** The people (`characters` messages): their meshes and palettes go to the renderer as they come. */
-  private readonly people = new CharacterTracker();
+  private readonly people = new CharacterTracker(this.poseClock);
   private pedestrians: PedestrianSettings;
   private readonly pedestriansAtStart: boolean;
   /** The last pose message (debris, vehicles, characters) handled, acknowledged to the worker every frame. */
@@ -94,6 +100,7 @@ export class Game {
 
   constructor(opts: GameOptions) {
     this.renderer = opts.renderer;
+    this.renderer.islands.clock = this.poseClock;
     this.engine = opts.engine;
     this.overlay = opts.overlay;
     this.voxelSize = opts.voxelSize;
@@ -234,6 +241,7 @@ export class Game {
     e.on('joints', (msg) => this.renderer.ropes.set(msg.joints));
     e.on('vehicles', (msg) => {
       const now = performance.now() / 1000;
+      this.poseClock.batch(msg.seq, now);
       this.tracker.apply(msg.vehicles, msg.wheels, msg.player, now);
       // (the car the player drives is gone - all its wheels torn off - or no longer theirs)
       if (!this.driving.confirm(this.tracker)) this.leaveVehicle(false);
@@ -246,7 +254,9 @@ export class Game {
       for (const p of msg.palettes) c.setPalette(p.id, p.rgb);
     });
     e.on('characters', (msg) => {
-      this.people.apply(msg.characters, msg.skin, msg.props, performance.now() / 1000);
+      const now = performance.now() / 1000;
+      this.poseClock.batch(msg.seq, now);
+      this.people.apply(msg.characters, msg.skin, msg.props, now);
       this.poseSeq = msg.seq ?? this.poseSeq;
     });
     e.on('blood', (msg) => this.renderer.characters.setBlood(msg.drops, msg.stains));
@@ -254,6 +264,7 @@ export class Game {
     e.on('occupancy', (msg) => this.occupancy.apply(msg));
     e.on('debris', (msg) => {
       const now = performance.now() / 1000;
+      this.poseClock.batch(msg.seq, now);
       this.renderer.islands.applyDebris(msg.poses, now);
       this.pieces.applyDebris(msg.poses, now);
       this.poseSeq = msg.seq ?? this.poseSeq;
@@ -308,6 +319,10 @@ export class Game {
           break;
         case 'splash':
           this.effects.splash(ev);
+          break;
+        case 'removed':
+          this.renderer.islands.remove(ev.id);
+          this.pieces.remove(ev.id);
           break;
       }
     }

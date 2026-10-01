@@ -49,8 +49,11 @@ struct GameParams {
 // An event for the front end (the web worker protocol, docs/API.md).
 struct GameEvent {
   // Remesh: a piece's new mesh (its charring or glow changed), in world coordinates at its pose
-  // now: drawn from then on at the poses that follow (as a Detached event's).
-  enum class Kind : u8 { Detached, Crack, Impact, Dust, Splash, Remesh };
+  // now: drawn from then on at the poses that follow (as a Detached event's). Removed: a piece
+  // the front end has (Detached) is gone - the engine removed it, or a culled one has faded out
+  // of pieces() - its mesh and its collision go with it (a front end that misses one sees it
+  // missing from the poses).
+  enum class Kind : u8 { Detached, Crack, Impact, Dust, Splash, Remesh, Removed };
   Kind kind = Kind::Crack;
   i64 id = 0;
   V3 pos, vel, ang, normal{0, 0, 1};
@@ -238,7 +241,7 @@ class Game {
   void set_params(const GameParams& p);
   const GameParams& params() const { return par_; }
   f64 fade_time = 1.0;  // s: culled pieces fade out
-  i32 max_events = 4096;  // events (with piece meshes) not taken: beyond, the oldest go
+  i32 max_events = 4096;  // events (with piece meshes) not taken: beyond, the oldest effects go (then the oldest of any kind)
 
   // Levels. load() replaces everything (movers too); load_streaming() then streams a level
   // from src around the viewer (the grid: empty, of the source's voxel size).

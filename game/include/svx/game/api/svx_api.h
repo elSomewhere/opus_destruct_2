@@ -147,7 +147,8 @@ void svx_far_removed(svx_engine* e, int i, int* out2);
 int svx_chunk_occupancy(svx_engine* e, int cx, int cy, int cz, uint8_t* out4096);
 
 /* Events: count, then per event info[21] = kind (0 detached, 1 crack, 2 impact, 3 bubble (v1), 4 splash,
- * 5 remesh: a piece's new mesh, as detached but without its effects), id,
+ * 5 remesh: a piece's new mesh, as detached but without its effects, 6 removed: a detached piece
+ * is gone - its mesh and collision go; one missed shows as the piece missing from svx_debris), id,
  * pos xyz, velocity xyz, angular xyz, normal xyz, radius, strength, voxels, material (dust: what
  * was crushed or shattered - a car's glass, a wall's brick; -1 unknown), vertex count,
  * index count, rigid; detached events carry a world-space mesh (pos = its centre of mass). A

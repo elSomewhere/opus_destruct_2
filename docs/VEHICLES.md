@@ -181,8 +181,9 @@ A gamepad drives too (RT/LT, left stick, A handbrake, Y in/out, right stick look
 - A car's body is its chassis piece (a detached event, debris poses; remeshed when it
   crumples), its doors, bonnet and bumpers pieces of their own (painted, drawn like any piece);
   its **wheels** are drawn from the `vehicles` message - a tyre on a five-spoke
-  rim, turned and spun, the spokes blurred when fast - interpolated one engine tick behind
-  like the pieces.
+  rim, turned and spun, the spokes blurred when fast - interpolated one pose batch behind by
+  the pieces' own clock (`engine/poseclock.ts`: the interval measured), so the body, the
+  wheels and the camera riding them are drawn at one moment, whatever the engine's pace.
 - **Cameras** (`driving.ts`): the chase camera lags the car's heading and shows part of a
   slide, widens its field of view with speed, is kept out of walls (a ray through the
   occupancy) - where the way back is short (a wall, a parked car behind) it rises over it

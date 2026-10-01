@@ -728,7 +728,17 @@ export interface SplashEvent {
   strength: number;
 }
 
-export type EngineEvent = DetachedEvent | CrackEvent | ImpactEvent | SplashEvent;
+/**
+ * (front-end extension) A detached piece is gone (removed by the engine, or a culled one at the
+ * end of its fade): its mesh and its collision go. An engine without it leaves the piece out of
+ * the next `debris` poses instead.
+ */
+export interface RemovedEvent {
+  kind: 'removed';
+  id: number;
+}
+
+export type EngineEvent = DetachedEvent | CrackEvent | ImpactEvent | SplashEvent | RemovedEvent;
 
 export interface EventsMessage {
   type: 'events';

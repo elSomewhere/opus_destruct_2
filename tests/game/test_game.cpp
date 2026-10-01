@@ -559,3 +559,44 @@ TEST_CASE("game: a burning turned grid is meshed again as it glows and chars") {
   CHECK(remeshed > 0);
   CHECK(glowing > 0);
 }
+
+TEST_CASE("game: a front end that applies the events alone has the pieces pieces() has - culled ones until they fade") {
+  const f64 h = 0.125;
+  Game g;
+  VoxelGrid w;
+  w.h = h;
+  for (i32 x = -24; x < 40; ++x)
+    for (i32 y = -24; y < 40; ++y) w.fill_column(x, y, -4, 0, make_vox(MaterialId::Rock, true));
+  // a brick tower (1.5 m square, 6 m high) on the rock
+  for (i32 x = 0; x < 12; ++x)
+    for (i32 y = 0; y < 12; ++y) w.fill_column(x, y, 0, 48, make_vox(MaterialId::Masonry, false));
+  w.compact();
+  g.load(std::move(w), V3{-2.0, -2.0, 0.0}, V3{1, 0, 0});
+  g.bake();
+  REQUIRE(g.set_tunable("max_bodies", 3));  // (most of what comes down is culled)
+  g.blast({0.75, 0.75, 0.6}, 1.0, 2e6);
+  std::unordered_set<i64> shown;  // (Detached, less Removed)
+  i32 removed = 0, culled_late = 0;
+  std::unordered_set<i64> fading_seen;
+  for (int t = 0; t < 60 * 6; ++t) {
+    g.tick();
+    for (const GameEvent& e : g.take_events()) {
+      if (e.kind == GameEvent::Kind::Detached) {
+        CHECK(shown.insert(e.id).second);
+      } else if (e.kind == GameEvent::Kind::Removed) {
+        CHECK(shown.erase(e.id) == 1);
+        ++removed;
+        culled_late += fading_seen.count(e.id) ? 1 : 0;
+      }
+    }
+    std::unordered_set<i64> posed;
+    for (const PiecePose& p : g.pieces()) {
+      posed.insert(p.id);
+      if (p.opacity < 1.0) fading_seen.insert(p.id);
+    }
+    CHECK(posed == shown);
+  }
+  MESSAGE(removed << " removed, " << culled_late << " of them after fading out");
+  CHECK(removed > 0);
+  CHECK(culled_late > 0);
+}

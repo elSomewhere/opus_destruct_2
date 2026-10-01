@@ -76,6 +76,7 @@ src/
     vertex.ts           28-byte vertex writer/reader, bounds (shared)
     client.ts           EngineClient: owns the Worker, typed send/on, promise raycast/collide by id
     select.ts           ?engine=mock|wasm -> worker; discovers src/worker/*-worker.ts by glob
+    poseclock.ts        when poses are drawn: one measured batch interval behind, one clock for all
   worker/
     host.ts             typed postToMain (with transfer lists) + serveCommands (errors -> 'error')
     mock-worker.ts      mock engine entry: command loop + fixed 60 Hz tick
@@ -112,7 +113,7 @@ src/
                         (look-ahead raycasts -> blast)
     driving.ts          the player's car: controls (keys, gamepad), chase/far/roof cameras, getting out
     vehicles.ts         the vehicles and wheels of `vehicles` messages, interpolated; the car to take
-    people.ts           the characters of `characters` messages, posed a tick behind; their shadows
+    people.ts           the characters of `characters` messages, posed a batch behind; their shadows
     vehicle-effects.ts  skid marks, tyre smoke, wheel dust, crash sparks
     effects.ts          particles for hits/cracks/impacts/detachments, flash light, camera shake
     input.ts            keyboard/mouse, pointer lock
@@ -158,9 +159,10 @@ budgets).
   (the v2 engine, and the mock) the piece follows the `debris` poses (packed `Float64Array`,
   15 doubles per piece: id, centre xyz, quaternion xyzw since detachment, opacity, velocity xyz,
   angular velocity xyz), interpolated
-  one tick behind; pieces at rest stay as rubble until the engine drops them from the poses
-  (split: the children arrive as new detached events; over the ~3000-piece budget: faded by
-  opacity first). Without poses the island rotates about `centroid` with `angular` and falls
+  one pose batch behind (`engine/poseclock.ts`: by the interval measured, one clock for the
+  pieces, the vehicles and the characters); pieces at rest stay as rubble until the engine drops
+  them - a `removed` event, or missing from the poses (split: the children arrive as new
+  detached events; over the ~3000-piece budget: faded by opacity first). Without poses the island rotates about `centroid` with `angular` and falls
   with `velocity` and g = 9.81 m/s² (no collision), fading out over 1.5 s with dust.
 * **Stats:** `EngineStats` mirrors `svx_stats` (57 values: tick / structural / event / rigid /
   mesh / stream ms, structures and solver counters, bonds broken, detached voxels and pieces,

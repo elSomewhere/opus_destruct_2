@@ -40,8 +40,11 @@ const PALETTE_SIZE = 64;
 /** Floats in the Frame uniform (see shaders/frame.wgsl). */
 const FRAME_FLOATS = 16 + 8 * 4 + PALETTE_SIZE * 4;
 const OBJECT_BYTES = 80; // mat4 + vec4
-/** Detached pieces drawn at once (the engine keeps up to ~3000 rigid pieces plus fading ones). */
-const MAX_ISLANDS = 4096;
+/**
+ * Detached pieces drawn at once: the engine keeps up to max_bodies rigid pieces (the settings
+ * allow 6000) plus the culled ones fading out.
+ */
+const MAX_ISLANDS = 8192;
 /** Oriented grids drawn at once (docs/GRIDS.md): each has a slot of its own. */
 const MAX_GRIDS = 1024;
 /** Vehicles' wheels drawn at once. */

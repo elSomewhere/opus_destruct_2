@@ -1,16 +1,15 @@
 /**
  * The characters as the front end sees them (protocol `characters` messages): the drive city's
- * people, and the gibs that come off them, posed by their skin matrices one engine tick behind,
- * between the last two samples, like the rigid pieces (render/islands.ts) and the vehicles
- * (vehicles.ts) - a car that runs someone over is drawn where it hits them. They fade in as they
+ * people, and the gibs that come off them, posed by their skin matrices one batch behind, between
+ * the last two samples, like the rigid pieces (render/islands.ts) and the vehicles (vehicles.ts),
+ * by the same clock (engine/poseclock.ts) - a car that runs someone over is drawn where it hits them. They fade in as they
  * come and out as they go (the engine brings people in beyond the near radius and takes them away
  * out of range, and the longest dead when there are too many).
  */
+import { PoseClock } from '../engine/poseclock.ts';
 import type { Vec3 } from '../engine/protocol.ts';
 import { CHARACTER_BONES, CHARACTER_SKIN_FLOATS, CHARACTER_STRIDE, CharacterFlag } from '../engine/protocol.ts';
 
-/** Engine tick: poses are drawn this far in the past, between the last two samples. */
-const TICK_S = 1 / 60;
 const FADE_IN_S = 0.6;
 const FADE_OUT_S = 0.6;
 /**
@@ -83,6 +82,13 @@ export class CharacterTracker {
   private readonly list: CharacterPose[] = [];
   private stamp = 0;
 
+  /** clock: when poses are drawn (the page's, shared with the pieces and the vehicles). */
+  private readonly clock: PoseClock;
+
+  constructor(clock = new PoseClock()) {
+    this.clock = clock;
+  }
+
   clear(): void {
     this.characters.clear();
     this.list.length = 0;
@@ -142,7 +148,7 @@ export class CharacterTracker {
         this.characters.set(id, c);
       } else {
         // (after a gap: from the new sample on)
-        c.prev = nowS - c.cur.t > 4 * TICK_S ? { ...cur, t: nowS - TICK_S } : c.cur;
+        c.prev = nowS - c.cur.t > 4 * this.clock.interval ? { ...cur, t: nowS - this.clock.interval } : c.cur;
         c.cur = cur;
         c.gone = -1;
       }
@@ -160,7 +166,7 @@ export class CharacterTracker {
   }
 
   /**
-   * The characters to draw at `nowS`: posed a tick behind (interpolated), fading as they come and
+   * The characters to draw at `nowS`: posed a batch behind (interpolated), fading as they come and
    * go (the gone keep their last pose while they fade).
    */
   frame(nowS: number): readonly CharacterPose[] {
@@ -182,7 +188,7 @@ export class CharacterTracker {
       const n = d.bones * 16;
       const a = c.prev;
       const b = c.cur;
-      const s = a ? Math.min(1, Math.max(0, (nowS - TICK_S - a.t) / Math.max(1e-6, b.t - a.t))) : 1;
+      const s = a ? this.clock.weight(a.t, b.t, nowS) : 1;
       if (a && s < 1) lerpInto(d.skin, a.skin, b.skin, s, n);
       else d.skin.set(b.skin.subarray(0, n));
       if (b.prop) {

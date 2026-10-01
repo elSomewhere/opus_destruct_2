@@ -679,6 +679,8 @@ function flushEvents(): void {
         },
         ...eventOccupancy(i),
       });
+    } else if (kind === 6) {
+      list.push({ kind: 'removed', id: f64(1) });
     }
     // (kind 3, the v1 bubble debug event, is not emitted by v2 engines)
   }

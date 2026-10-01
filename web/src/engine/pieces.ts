@@ -2,17 +2,15 @@
  * The rigid pieces as the client's collision feels them: their voxels (a detached or remeshed
  * piece's occupancy: engine/protocol.ts DetachedEvent.occupancy, per shape its lattice at the
  * event's pose and a bit per cell of its box) and their poses (protocol `debris` messages),
- * placed one engine tick in the past and interpolated between the last two poses, as the
- * renderer draws them (render/islands.ts): the player stands on a lift's car, rides a
+ * placed one batch interval in the past and interpolated between the last two poses, as the
+ * renderer draws them (render/islands.ts, engine/poseclock.ts): the player stands on a lift's car, rides a
  * turntable, climbs rubble, where the eye sees it.
  */
 import { gridToWorld, rotMatrix, type Lattice } from './gridframes.ts';
+import { PoseClock } from './poseclock.ts';
 import { DEBRIS_STRIDE, type DetachedEvent, type Vec3 } from './protocol.ts';
 
 type Quat = [number, number, number, number];
-
-/** Engine tick (s): pieces are placed this far in the past. */
-const TICK_S = 1 / 60;
 
 /** Pose batches a piece may go without its first pose before it is taken for gone. */
 const POSE_GRACE = 3;
@@ -109,6 +107,13 @@ export class PieceBodies {
   private readonly bodies = new Map<number, PieceBody>();
   private stamp = 0;
 
+  /** clock: when poses are placed (the page's, shared with what draws them). */
+  private readonly clock: PoseClock;
+
+  constructor(clock = new PoseClock()) {
+    this.clock = clock;
+  }
+
   get size(): number {
     return this.bodies.size;
   }
@@ -153,6 +158,11 @@ export class PieceBodies {
     });
   }
 
+  /** A piece the engine removed (a `removed` event). */
+  remove(id: number): void {
+    this.bodies.delete(id);
+  }
+
   /**
    * The engine's poses (DEBRIS_STRIDE doubles each). Pieces that had a pose before and are
    * missing now were removed by the engine; a piece whose first pose is on the way is kept,
@@ -173,25 +183,20 @@ export class PieceBodies {
       };
       const last = b.cur;
       // (resting pieces are not re-sent every tick: after a gap, from the old pose)
-      b.prev =
-        last === null
-          ? { t: nowS - TICK_S, pos: [...b.centroid], rot: [0, 0, 0, 1], vel: s.vel, ang: s.ang }
-          : nowS - last.t > 2 * TICK_S
-            ? { ...last, t: nowS - TICK_S }
-            : last;
+      b.prev = last === null ? { t: nowS - this.clock.interval, pos: [...b.centroid], rot: [0, 0, 0, 1], vel: s.vel, ang: s.ang } : this.clock.from(last, nowS);
       b.cur = s;
       b.seen = stamp;
     }
     for (const [id, b] of this.bodies) if (b.cur !== null ? b.seen !== stamp : stamp - b.born >= POSE_GRACE) this.bodies.delete(id);
   }
 
-  /** Places the pieces where they were one tick before nowS (as drawn). */
+  /** Places the pieces where they were one batch interval before nowS (as drawn). */
   advance(nowS: number): void {
     for (const b of this.bodies.values()) {
       const a = b.prev;
       const c = b.cur;
       if (!a || !c) continue;
-      const s = Math.min(1, Math.max(0, (nowS - TICK_S - a.t) / Math.max(1e-6, c.t - a.t)));
+      const s = this.clock.weight(a.t, c.t, nowS);
       b.pos = [a.pos[0] + (c.pos[0] - a.pos[0]) * s, a.pos[1] + (c.pos[1] - a.pos[1]) * s, a.pos[2] + (c.pos[2] - a.pos[2]) * s];
       const sign = a.rot[0] * c.rot[0] + a.rot[1] * c.rot[1] + a.rot[2] * c.rot[2] + a.rot[3] * c.rot[3] < 0 ? -1 : 1;
       const q: Quat = [0, 0, 0, 0];

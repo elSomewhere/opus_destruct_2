@@ -145,6 +145,9 @@ A v1 extension, kept in the protocol and the renderer; v2 engines send no fields
 - A `detached` event with `remesh: true` (**ext**): a new mesh for a piece already shown (its
   charring or glow changed), in world coordinates at its pose now; it replaces the old one,
   without the effects of a detachment, and the `debris` poses that follow are relative to it.
+- `{kind:'removed', id}` (**ext**): a `detached` piece is gone - the engine removed it (it broke,
+  left the world, or a culled one finished fading out) - and its mesh and collision go at once,
+  whether or not the page is receiving `debris` lists (they are held back while it is behind).
 - (v1 engines also sent `{kind:'bubble', ...}` debug events; v2 engines do not.)
 
 ### Environment
@@ -179,7 +182,8 @@ come to rest as rubble (docs/V2_DESIGN.md §4–5).
 - A mesh vertex `p` is drawn at `pos + R(rot)·(p − centroid)`.
 - A `detached` event carries the piece's voxels too (`occupancy`, **ext**: per shape its lattice
   at the event's pose and a bit per cell of its box), for the client's collision.
-- A rigid piece missing from a `debris` list has been removed. A piece that breaks is removed,
+- A rigid piece missing from a `debris` list has been removed (engines that send `removed`
+  events say so at once as well). A piece that breaks is removed,
   and its parts arrive as new `detached` events (meshes in world coordinates at that moment).
   A piece whose first pose has not come yet is the exception, and only for a few lists: every
   list holds every piece the engine has, so one absent from that many is gone (without that, a
@@ -189,8 +193,12 @@ come to rest as rubble (docs/V2_DESIGN.md §4–5).
   list brings it fully up to date, so it never works through a backlog. The window starts over
   at `loading`: a load sends no poses while it bakes, and a window carried across it would leave
   the acknowledgement behind for good, holding the new world's poses with nothing left to ack.
-- The web front end interpolates between the last two poses, one tick behind, so motion is
-  smooth at any display rate.
+- The web front end interpolates between the last two poses, one list interval behind - the
+  interval measured, so an engine slowed down (ticks further apart) still moves things smoothly -
+  by one clock for the pieces, the vehicles and the characters (a car's body, its wheels and the
+  camera riding it are drawn at the same moment). It draws as many pieces as the engine keeps
+  (`max_bodies`, plus the culled ones fading out); were it ever full, it gives up a fading or the
+  smallest piece first, never one for its age (the oldest are parked cars' bodies).
 
 Pieces load what they touch: contact impulses on a standing structure become impact load cases
 (landings) or dead loads (resting rubble) of the fragments they touch, so rubble piling on a

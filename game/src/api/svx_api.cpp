@@ -507,6 +507,7 @@ void svx_event_info(svx_engine* e, int i, double* out) {
     case GameEvent::Kind::Dust: kind = 1; strength = v.strength > 0.5 ? 2.0 : 1.5; break;
     case GameEvent::Kind::Splash: kind = 4; break;
     case GameEvent::Kind::Remesh: kind = 5; break;
+    case GameEvent::Kind::Removed: kind = 6; break;
   }
   out[0] = kind;
   out[1] = static_cast<double>(v.id);

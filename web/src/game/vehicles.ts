@@ -1,16 +1,15 @@
 /**
  * The vehicles as the front end sees them (protocol `vehicles` messages, docs/VEHICLES.md): their
- * state, and their poses and their wheels' interpolated one engine tick behind like the rigid
- * pieces (render/islands.ts) - a car's body is its chassis piece, drawn from the piece's poses;
- * its wheels, the chase camera and the driver's seat follow these, sampled on the same ticks.
+ * state, and their poses and their wheels' interpolated one batch behind like the rigid pieces
+ * (render/islands.ts, by the same clock: engine/poseclock.ts) - a car's body is its chassis piece,
+ * drawn from the piece's poses; its wheels, the chase camera and the driver's seat follow these,
+ * sampled on the same ticks.
  */
+import { PoseClock } from '../engine/poseclock.ts';
 import type { Vec3 } from '../engine/protocol.ts';
 import { VEHICLE_KINDS, VEHICLE_STRIDE, VehicleFlag, WHEEL_STRIDE } from '../engine/protocol.ts';
 
 export type Quat = [number, number, number, number];
-
-/** Engine tick: poses are drawn this far in the past, between the last two samples. */
-const TICK_S = 1 / 60;
 
 interface Sample {
   t: number;
@@ -107,12 +106,6 @@ function lerp3(a: Vec3, b: Vec3, s: number): Vec3 {
   return [a[0] + (b[0] - a[0]) * s, a[1] + (b[1] - a[1]) * s, a[2] + (b[2] - a[2]) * s];
 }
 
-/** The interpolation weight of `b` at `nowS - TICK_S`. */
-function weight(at: number, bt: number, nowS: number): number {
-  const span = Math.max(1e-6, bt - at);
-  return Math.min(1, Math.max(0, (nowS - TICK_S - at) / span));
-}
-
 export function kindName(kind: number): string {
   return VEHICLE_KINDS[kind] ?? 'vehicle';
 }
@@ -130,6 +123,13 @@ export class VehicleTracker {
   /** The player's vehicle as the engine last said (0: on foot). */
   player = 0;
   private stamp = 0;
+
+  /** clock: when poses are drawn (the page's, shared with the pieces: a car's body is one). */
+  private readonly clock: PoseClock;
+
+  constructor(clock = new PoseClock()) {
+    this.clock = clock;
+  }
 
   clear(): void {
     this.vehicles.clear();
@@ -182,9 +182,9 @@ export class VehicleTracker {
         };
         this.vehicles.set(id, v);
       } else {
-        // (after a gap, or a new chassis: from the new sample on)
+        // (a new chassis: from the new sample on; after a gap, from the old one as the pieces)
         const chassis = f(1);
-        v.prev = v.chassis !== chassis || nowS - v.cur.t > 4 * TICK_S ? { ...cur, t: nowS - TICK_S } : v.cur;
+        v.prev = v.chassis !== chassis ? { ...cur, t: nowS - this.clock.interval } : this.clock.from(v.cur, nowS);
         v.cur = cur;
       }
       v.chassis = f(1);
@@ -226,7 +226,7 @@ export class VehicleTracker {
         w = { id, vehicle: f(0), radius: f(9), width: f(10), contact: false, slip: 0, material: -1, compression: 0, side, prev: null, cur, seen: stamp };
         this.wheels.set(id, w);
       } else {
-        w.prev = nowS - w.cur.t > 4 * TICK_S ? { ...cur, t: nowS - TICK_S } : w.cur;
+        w.prev = this.clock.from(w.cur, nowS);
         w.cur = cur;
       }
       w.vehicle = f(0);
@@ -242,12 +242,12 @@ export class VehicleTracker {
     for (const [id, w] of this.wheels) if (w.seen !== stamp) this.wheels.delete(id);
   }
 
-  /** A vehicle's pose at `nowS` (one tick behind, interpolated). */
+  /** A vehicle's pose at `nowS` (one batch behind, interpolated). */
   pose(v: VehicleState, nowS: number): Pose {
     const a = v.prev;
     const b = v.cur;
     if (!a) return { pos: [...b.pos], rot: [...b.rot], origin: [...b.origin] };
-    const s = weight(a.t, b.t, nowS);
+    const s = this.clock.weight(a.t, b.t, nowS);
     return { pos: lerp3(a.pos, b.pos, s), rot: nlerp(a.rot, b.rot, s), origin: lerp3(a.origin, b.origin, s) };
   }
 
@@ -256,7 +256,7 @@ export class VehicleTracker {
     const a = w.prev;
     const b = w.cur;
     if (!a) return { centre: [...b.centre], rot: [...b.rot] };
-    const s = weight(a.t, b.t, nowS);
+    const s = this.clock.weight(a.t, b.t, nowS);
     return { centre: lerp3(a.centre, b.centre, s), rot: nlerp(a.rot, b.rot, s) };
   }
 
