@@ -113,6 +113,7 @@ void Game::load(VoxelGrid&& g, const V3& spawn_pos, const V3& spawn_dir) {
   player_vehicle_ = 0;
   player_input_ = VehicleInput{};
   parked_spots_.clear();
+  spawned_records_.clear();
   traffic_clock_ = 0.0;
   if (Pedestrians* p = people()) p->clear();
   views_.clear();

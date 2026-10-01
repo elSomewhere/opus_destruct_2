@@ -496,6 +496,7 @@ class Game {
     V3 home;                        // (a parked car's place)
     i32 reshapes = 0;               // (its chassis crumpled: PieceReshaped)
     u64 spot = 0;                   // (a parked car's kerbside place)
+    u64 record = 0;                 // (an entity's: its spawn record - GameSource::spawns_in)
     // (its damage, measured when its chassis last changed: the piece, its voxels, its folds)
     mutable f64 damage = 0.0;
     mutable i64 damage_chassis = 0;
@@ -521,6 +522,7 @@ class Game {
   TrafficConfig traffic_;
   f64 traffic_clock_ = 0.0;
   std::set<u64> parked_spots_;      // (kerbside places with a parked car now, or one that is out of range)
+  std::set<u64> spawned_records_;   // (spawn records with their vehicle now)
 
   // pedestrians (game/src/pedestrians.cpp)
   friend class Pedestrians;

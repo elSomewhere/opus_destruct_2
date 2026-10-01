@@ -130,6 +130,11 @@ junctions onto the lane they take), at the limit (less in turns), stop at red li
 their distance (raycasts ahead: cars, rubble, walls), and become wrecks after a hard hit, a
 lost wheel or a roll. Parked cars wait at the kerbs. Cars out of range that nobody touched go
 (and come again); wrecks stay (archived with their region). The player can take any car.
+A source's entities (`GameSource::spawns_in`: a fire engine in its station's bay, an ambulance
+at a hospital's porch, a police car, a lorry in a yard, a stronghold's trucks) come the same way
+- out of sight, a few at a time, where they stand, and back there when the viewer returns - as
+the nearest kind the game has a model of (a fire engine, a lorry or a tank as a truck, an
+ambulance as a van) in their colours (`tests/game/test_spawns.cpp`).
 
 **The drive city** (`procgen/src/drive_city.cpp`, `make_drive_city`). Endless in every direction
 (some 130 km each way): a grid of 56 m cells; streets (a lane each way, parking at the kerbs)
