@@ -117,6 +117,35 @@ inline RoadList scripted_roads(rec::Samples& r, int k, double ox = 0, double oy 
   return RoadList(roads.begin(), roads.end());
 }
 
+// A star of n roads crossing at (cx, cy) (lib/roads.mjs starRoads).
+inline RoadList star_roads(int k, int n, double cx, double cy, bool home) {
+  constexpr double kPi = 3.141592653589793;
+  RoadList roads;
+  for (int q = 0; q < n; ++q) {
+    const double a = (q * kPi) / n;
+    const double dx = js::cos(a) * 160;
+    const double dy = js::sin(a) * 160;
+    const double hc = q % 5 == 0 ? 0 : 8 + (q % 7);
+    auto road = std::make_shared<Road>();
+    road->id = js::cat("T", k, "/r", q);
+    road->cell = js::cat("T", k);
+    road->cls = q % 3 ? "local" : "arterial";
+    road->pts = {{cx - dx, cy - dy}, {cx + dx, cy + dy}};
+    road->hc = hc;
+    road->hr = hc + 12 + (q % 7);
+    road->corner = 6 + (q % 11);
+    road->median = 0;
+    road->parking = 0;
+    road->lanes = 2;
+    road->lane = 24;
+    road->sidewalk = 12 + (q % 7);
+    road->shoulder = 0;
+    if (home) road->home = std::array<double, 2>{0, 0};
+    roads.push_back(road);
+  }
+  return roads;
+}
+
 // ---- records (lib/roads.mjs segRef, segFields, junctionFields)
 
 inline std::string seg_ref(const RoadSeg* s) { return s ? js::cat(s->road->id, "#", s->idx) : std::string("-"); }

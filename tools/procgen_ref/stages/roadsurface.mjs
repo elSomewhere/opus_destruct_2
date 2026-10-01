@@ -4,12 +4,13 @@
 // of the reference's own views (town centres, old towns of cobbles, the angled world's roads that
 // fold in id order, rural roads, a torus whose texture cells wrap). Points: along random segments
 // out to their right-of-way and corners, and dense over the approaches of junctions (crosswalks,
-// stop lines, lane arrows, fillets, tactile curbs, painted medians); candidates from near() rects
+// stop lines, lane arrows, fillets, tactile curbs, painted medians), and round stars of 70 roads
+// (more at a column than the reference's per-road scratch holds); candidates from near() rects
 // of several sizes, with and without a reach. One sample object serves every call, as the
 // reference's callers keep one (what a call does not set stays). The port reads the views' roads
 // from stage "roadview"'s recording (data/roadview.json: every view sampled here is one of its).
 import { REF, line, samples } from "../lib/rec.mjs";
-import { scriptedRoads, segRef, recordingWorld, warmView } from "../lib/roads.mjs";
+import { scriptedRoads, starRoads, segRef, recordingWorld, warmView } from "../lib/roads.mjs";
 
 const { RoadView } = await import(REF + "network/roadView.js");
 const { sampleRoadSurface, makeRoadSample } = await import(REF + "network/roadSurface.js");
@@ -75,6 +76,13 @@ export default function* roadsurface() {
     const seed = Math.floor((r() - 0.5) * 2e9);
     yield line("set", `S${k}`, out.period, seed);
     yield* surfaceRecords(view, r, out, seed, 300, 2);
+  }
+  // (stars of 70 roads: columns where more roads meet than the reference's scratch of 64 holds)
+  for (const [k, home] of [[0, false], [1, true]]) {
+    const view = new RoadView(starRoads(k, 70, 3000 * k, -2000, home));
+    out.period = 0;
+    yield line("set", `T${k}`, out.period, 5);
+    yield* surfaceRecords(view, r, out, 5, 600, 2);
   }
   for (const [key, id, size, cells] of VIEWS) {
     const rw = recordingWorld(presetConfig(id, { size }));

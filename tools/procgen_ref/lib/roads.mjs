@@ -100,6 +100,26 @@ export function scriptedRoads(r, k, ox = 0, oy = 0) {
   return roads;
 }
 
+/**
+ * A star of n roads crossing at (cx, cy) (set k): more roads at a column than the reference's
+ * per-road scratch holds (64), every one a line through the centre; with `home`, the angled world's
+ * (folded in id order).
+ */
+export function starRoads(k, n, cx, cy, home) {
+  const roads = [];
+  for (let q = 0; q < n; q += 1) {
+    const a = (q * Math.PI) / n;
+    const dx = Math.cos(a) * 160;
+    const dy = Math.sin(a) * 160;
+    const hc = q % 5 === 0 ? 0 : 8 + (q % 7);
+    const road = { id: `T${k}/r${q}`, cell: `T${k}`, cls: q % 3 ? "local" : "arterial", pts: [{ x: cx - dx, y: cy - dy }, { x: cx + dx, y: cy + dy }] };
+    Object.assign(road, { hc, hr: hc + 12 + (q % 7), corner: 6 + (q % 11), median: 0, parking: 0, lanes: 2, lane: 24, sidewalk: 12 + (q % 7), shoulder: 0 });
+    if (home) road.home = [0, 0];
+    roads.push(road);
+  }
+  return roads;
+}
+
 /** A segment's reference in records: its road's id and its index. */
 export const segRef = (s) => (s ? `${s.road.id}#${s.idx}` : "-");
 

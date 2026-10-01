@@ -91,6 +91,13 @@ TEST_CASE("city roadsurface: the road surface conforms to the reference (stage r
     out << (Line() << "set" << js::cat("S", k) << rs.period << seed);
     surface_records(out, view, r, rs, seed, 300, 2);
   }
+  // (stars of 70 roads: more at a column than the reference's scratch of 64 holds)
+  for (const int k : {0, 1}) {
+    const RoadView view(test::star_roads(k, 70, 3000.0 * k, -2000, k == 1));
+    rs.period = 0;
+    out << (Line() << "set" << js::cat("T", k) << rs.period << 5);
+    surface_records(out, view, r, rs, 5, 600, 2);
+  }
   // (the views' roads: stage roadview's recording)
   const auto recorded = test::load_recorded("roadview");
   for (const SurfaceView& sv : views()) {

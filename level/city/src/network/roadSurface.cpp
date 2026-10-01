@@ -15,6 +15,22 @@ namespace {
 // keeps them per call, so threads share nothing.
 constexpr int kPerRoad = 64;
 
+// Per-call scratch of up to 64 entries on the stack, more on the heap (no allocation per column).
+template <class T>
+struct Scratch {
+  T small[kPerRoad];
+  std::vector<T> big;
+  int n = 0;
+  void push(T v) {
+    if (n < kPerRoad)
+      small[n] = v;
+    else
+      big.push_back(v);
+    n += 1;
+  }
+  T& operator[](int i) { return i < kPerRoad ? small[i] : big[static_cast<size_t>(i - kPerRoad)]; }
+};
+
 struct NearestJunction {
   const RoadJunction* j = nullptr;
   double rel = js::kInf;
@@ -247,7 +263,7 @@ RoadSample& sample_road_surface(const std::vector<const RoadSeg*>& cands, double
   if (cands.empty()) return out;
 
   // per road (JS: module scratch perRoadRef / perRoadD / perRoadR / perRoadCorner)
-  std::vector<const Road*> ref;
+  Scratch<const Road*> ref;
   double per_d[kPerRoad], per_r[kPerRoad], per_corner[kPerRoad];
   auto read = [](const double* a, size_t r) { return r < kPerRoad ? a[r] : js::kNaN; };
   int n_roads = 0;
@@ -273,14 +289,14 @@ RoadSample& sample_road_surface(const std::vector<const RoadSeg*>& cands, double
     // aggregate per road with plain min
     int slot = -1;
     for (int r = 0; r < n_roads; ++r) {
-      if (ref[static_cast<size_t>(r)] == s.road.get()) {
+      if (ref[r] == s.road.get()) {
         slot = r;
         break;
       }
     }
     if (slot < 0) {
       slot = n_roads++;
-      ref.push_back(s.road.get());
+      ref.push(s.road.get());
       if (slot < kPerRoad) {
         per_d[slot] = dc;
         per_r[slot] = dr;
@@ -308,26 +324,25 @@ RoadSample& sample_road_surface(const std::vector<const RoadSeg*>& cands, double
   // same for any candidate list, so neighbouring tiles agree on every column)
   // (and a fillet takes the smaller corner of the roads it joins: a lane without a sidewalk never
   // gets a big street's fillet bulging into a lot)
-  std::vector<int> order;
+  Scratch<int> order;
   const bool ordered = n_roads > 1 && ref[0]->home.has_value();
   if (ordered) {
     // slots 0..n-1 by the id of their road (insertion sort: a handful of roads)
-    order.resize(static_cast<size_t>(n_roads));
-    for (int r = 0; r < n_roads; ++r) order[static_cast<size_t>(r)] = r;
-    auto by_id = [&](int a, int b) { return js::compare(ref[static_cast<size_t>(a)]->id, ref[static_cast<size_t>(b)]->id); };
+    for (int r = 0; r < n_roads; ++r) order.push(r);
+    auto by_id = [&](int a, int b) { return js::compare(ref[a]->id, ref[b]->id); };
     for (int i = 1; i < n_roads; ++i) {
-      const int v = order[static_cast<size_t>(i)];
+      const int v = order[i];
       int j = i - 1;
-      while (j >= 0 && by_id(order[static_cast<size_t>(j)], v) > 0) {
-        order[static_cast<size_t>(j + 1)] = order[static_cast<size_t>(j)];
+      while (j >= 0 && by_id(order[j], v) > 0) {
+        order[j + 1] = order[j];
         j -= 1;
       }
-      order[static_cast<size_t>(j + 1)] = v;
+      order[j + 1] = v;
     }
   }
   double k_min = js::kInf;
   for (int q = 0; q < n_roads; ++q) {
-    const size_t r = static_cast<size_t>(ordered ? order[static_cast<size_t>(q)] : q);
+    const size_t r = static_cast<size_t>(ordered ? order[q] : q);
     const double d = read(per_d, r);
     if (d != js::kInf) {
       if (sdf_c == js::kInf)

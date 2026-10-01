@@ -27,7 +27,7 @@ struct NetCase {
 // (stages/highways.mjs NETS)
 const std::vector<NetCase>& nets() {
   static const std::vector<NetCase> v = {
-      {"seed99", R"({"seed":99})", "", -2, -2, 6, 2, {{0, -1, 0}, {0, 4, 0}}},
+      {"seed99", R"({"seed":99})", "", -2, -3, 6, 2, {{0, -1, 0}, {0, 2, -3}, {0, -5, -5}}},
       {"cities", "cities", "", -4, -4, 4, 4, {}},
       {"infiniteCity1337", R"({"seed":1337,"world":{"mode":"infiniteCity"}})", "", -3, -3, 3, 3, {}},
       {"wrapWorld:small", "wrapWorld", "small", 11, -2, 16, 2, {}},
@@ -170,9 +170,22 @@ void edge_records(rec::Out& out, const World& w, const HighwayEdge& e, rec::Samp
   }
   const std::vector<HighwayPier>& piers = hw.piers(e);
   for (size_t k = 0; k < piers.size() && k < 4; ++k) spots.push_back({piers[k].x, piers[k].y, piers[k].z - 24});
+  // (the first stretch of the deck in a tunnel: its bore and vault)
+  for (const PPoint& p : e.pts)
+    if (w.terrain->sample(p.x, p.y).h > p.z + 60) {
+      spots.push_back({p.x, p.y, p.z});
+      spots.push_back({p.x, p.y, p.z + 40});
+      break;
+    }
   for (const HighwayJunction& j : e.junctions) {
+    // (and the deck's edges 40 voxels from the plateau's node: its rim)
+    const double s = j.node[0] == e.nodes[0][0] && j.node[1] == e.nodes[0][1] ? 40 : e.total - 40;
+    const HighwayPoint p = offset_at(e, s, hw.hw - 1);
+    const HighwayPoint q = offset_at(e, s, 1 - hw.hw);
     spots.push_back({j.x, j.y, j.z});
     spots.push_back({j.x + j.r * 0.7, j.y - j.r * 0.7, j.z});
+    spots.push_back({p.x, p.y, j.z});
+    spots.push_back({q.x, q.y, j.z});
   }
   int nspot = 0;
   for (const auto& spot : spots) {

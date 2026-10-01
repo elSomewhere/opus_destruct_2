@@ -2,10 +2,10 @@
 // of several worlds (nodes and their levels, edge existence after every pruning pass, intercity
 // routes, chance edges, grades, degrees; a torus across its seam), and edges built in full: their
 // decks (profile over crossing roads and waters, plateaus), ramps at urban arterials (landings,
-// blocked ramps, their piers), piers and portals, the junction plateau of four highways in open
-// country; queries round them (nearest, rampAt, covers, underside, onRoad, corridors, mapData,
+// blocked ramps, their piers), piers and portals, the plateau where three highways meet on a town's
+// edge, a terminus; queries round them (nearest, rampAt, covers, underside, onRoad, corridors, mapData,
 // pointAt past the ends) and the feature source (zRange, rasterize at LOD 0, 2 and 5 over decks,
-// tunnels, cuttings, embankments, ramps, piers and the plateau, with and without a ground tile).
+// tunnels, cuttings, embankments, ramps, piers, the plateau and its rim, with and without a ground tile).
 // The roads and waters read are recorded in data/highways.json for the port.
 import { REF, line, samples } from "../lib/rec.mjs";
 import { recordingWorld, recorded, writeInputs, warmAround } from "../lib/roads.mjs";
@@ -17,7 +17,7 @@ const { presetConfig } = await import(REF + "config/presets.js");
 
 /** [world key, preset or JSON overrides, size, lattice window [a0, b0, a1, b1], edges built in full [axis, a, b]] */
 export const NETS = [
-  ["seed99", '{"seed":99}', null, [-2, -2, 6, 2], [[0, -1, 0], [0, 4, 0]]],
+  ["seed99", '{"seed":99}', null, [-2, -3, 6, 2], [[0, -1, 0], [0, 2, -3], [0, -5, -5]]],
   ["cities", "cities", null, [-4, -4, 4, 4], []],
   ["infiniteCity1337", '{"seed":1337,"world":{"mode":"infiniteCity"}}', null, [-3, -3, 3, 3], []],
   ["wrapWorld:small", "wrapWorld", "small", [11, -2, 16, 2], []],
@@ -86,7 +86,16 @@ function* edgeRecords(w, e, r) {
     spots.push([p.x, p.y, rampZ(e, rp, sm)], [rp.x, rp.y, rp.zGround]);
   }
   for (const pr of hw.piers(e).slice(0, 4)) spots.push([pr.x, pr.y, pr.z - 24]);
-  for (const j of e.junctions) spots.push([j.x, j.y, j.z], [j.x + j.r * 0.7, j.y - j.r * 0.7, j.z]);
+  // (the first stretch of the deck in a tunnel: its bore and vault)
+  const tun = e.pts.find((p) => w.terrain.sample(p.x, p.y).h > p.z + 60);
+  if (tun) spots.push([tun.x, tun.y, tun.z], [tun.x, tun.y, tun.z + 40]);
+  for (const j of e.junctions) {
+    // (and the deck's edges 40 voxels from the plateau's node: its rim)
+    const s = j.node[0] === e.nodes[0][0] && j.node[1] === e.nodes[0][1] ? 40 : e.total - 40;
+    const p = offsetAt(e, s, hw.hw - 1);
+    const q = offsetAt(e, s, 1 - hw.hw);
+    spots.push([j.x, j.y, j.z], [j.x + j.r * 0.7, j.y - j.r * 0.7, j.z], [p.x, p.y, j.z], [q.x, q.y, j.z]);
+  }
   let n = 0;
   for (const [x, y, z] of spots) {
     for (const lod of [0, 2, 5]) {
