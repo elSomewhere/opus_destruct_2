@@ -42,7 +42,8 @@ struct Run {
   double ns = 0;
   int written = 0;
 };
-Run best_of(int lod, double cx, double cy, double cz, const std::vector<const Tree*>& trees) {
+// (h: FNV-1a over the chunk's data, chained from chunk to chunk)
+Run best_of(int lod, double cx, double cy, double cz, const std::vector<const Tree*>& trees, uint32_t* h = nullptr) {
   Run best;
   best.ns = 1e300;
   for (int rep = 0; rep < kReps; ++rep) {
@@ -52,13 +53,18 @@ Run best_of(int lod, double cx, double cy, double cz, const std::vector<const Tr
     const auto t1 = std::chrono::steady_clock::now();
     best.ns = std::min(best.ns, std::chrono::duration<double, std::nano>(t1 - t0).count());
     best.written = ch.count_non_air();
+    if (h && rep == 0)
+      for (const uint16_t v : ch.data) *h = (*h ^ v) * 16777619u;
   }
   return best;
 }
 
+// Does a box reach into a chunk's padded buffer (ChunkBuffer::touches, without making one)?
 bool touches(const Box3& b, int lod, double cx, double cy, double cz) {
-  const ChunkBuffer probe(lod, cx, cy, cz);
-  return probe.touches(b.x0, b.y0, b.z0, b.x1, b.y1, b.z1);
+  const double s = 1 << lod;
+  const double e = kP * s - 1;
+  const double bx = (cx * kChunk - 1) * s, by = (cy * kChunk - 1) * s, bz = (cz * kChunk - 1) * s;
+  return b.x1 >= bx && b.x0 <= bx + e && b.y1 >= by && b.y0 <= by + e && b.z1 >= bz && b.z0 <= bz + e;
 }
 
 // A wood of 16 x 16 lattice cells (40 voxels) of a temperate (0) or boreal (1) mix of kinds, in
@@ -132,13 +138,15 @@ TEST_CASE("city trees: bench rasterizing trees" * doctest::skip()) {
   const std::vector<Season> seasons = trec::seasons();
   const char* mix_names[2] = {"temperate", "boreal"};
   const char* season_names[3] = {"summer", "autumn", "winter"};
+  // (the LOD 0 chunks' data, chained: the reference's are the same - checked once with Node)
+  uint32_t digest = 2166136261u;
   for (int mix = 0; mix < 2; ++mix)
     for (int season = 0; season < 3; ++season) {
       const std::vector<Tree> trees = wood(mix, season, seasons);
       for (const int lod : {0, 1, 2}) {
         double ns = 0, written = 0, chunks = 0, pairs = 0;
         wood_chunks(trees, lod, [&](double cx, double cy, double cz, const std::vector<const Tree*>& in) {
-          const Run run = best_of(lod, cx, cy, cz, in);
+          const Run run = best_of(lod, cx, cy, cz, in, lod == 0 ? &digest : nullptr);
           ns += run.ns;
           written += run.written;
           chunks += 1;
@@ -148,6 +156,7 @@ TEST_CASE("city trees: bench rasterizing trees" * doctest::skip()) {
                     season_names[season], lod, chunks, pairs / chunks, written / chunks, ns / chunks / 1000, ns / written);
       }
     }
+  std::printf("forest chunks at LOD 0: digest %u\n", digest);
   // per kind, alone
   for (const int lod : {0, 1, 2}) {
     double all_ns = 0, all_written = 0;

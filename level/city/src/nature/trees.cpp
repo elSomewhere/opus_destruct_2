@@ -935,6 +935,11 @@ struct Grid {
   uint32_t x0[kP], x1[kP], x2[kP], xc[kP], xm[kP];
   uint32_t y0[kP], y1[kP], y2[kP], yc[kP], ym[kP];
   uint32_t z0[kP], z1[kP], z2[kP], zc[kP], zm[kP];
+  // (up close) the 2-voxel blocks: each index's block w >> 1, counted from index 0's on its axis, and
+  // whether every block of the chunk has a place of its own (not where coordinates wrap past 2^31)
+  uint8_t bk[3][kP];
+  uint32_t hz[kP];
+  bool blocky = false;
   void make(const ChunkBuffer& ch) {
     s = ch.s;
     bx = ch.bx;
@@ -960,6 +965,16 @@ struct Grid {
       z2[i] = static_cast<uint32_t>(js::sar(z, 2)) * kHashC;
       zc[i] = static_cast<uint32_t>(js::to_int32(z + 0.5)) * kHashC;
       zm[i] = first(js::to_int32(z + 0.5 - 0.5));
+      hz[i] = static_cast<uint32_t>(js::sar(z, 1));
+    }
+    blocky = true;
+    for (int a = 0; a < 3; ++a) {
+      const uint32_t b0 = static_cast<uint32_t>(js::sar(w[a][0], 1));
+      for (int i = 0; i < kP; ++i) {
+        const uint32_t b = static_cast<uint32_t>(js::sar(w[a][i], 1)) - b0;
+        blocky = blocky && b < 18;
+        bk[a][i] = static_cast<uint8_t>(b < 18 ? b : 0);
+      }
     }
   }
 };
@@ -979,9 +994,17 @@ const Grid& grid_of(const ChunkBuffer& ch) {
 // [a, b] on an axis whose index 0 lies at `base` (s apart). A bound that is no number narrows
 // nothing.
 inline void clip(double base, double s, double a, double b, int& lo, int& hi) {
-  const double l = std::ceil((a - base) / s);
-  const double h = std::floor((b - base) / s);
-  if (l > lo) lo = l > hi ? hi + 1 : static_cast<int>(l);
+  // (lo = max(lo, ceil(l)), hi = min(hi, floor(h)); within [lo, hi], both non-negative)
+  const double l = (a - base) / s;
+  const double h = (b - base) / s;
+  if (l > lo) {
+    if (l > hi) {
+      lo = hi + 1;
+    } else {
+      const int c = static_cast<int>(l);
+      lo = c < l ? c + 1 : c;
+    }
+  }
   if (h < hi) hi = h < lo ? lo - 1 : static_cast<int>(h);
 }
 
@@ -999,6 +1022,32 @@ struct Ctx {
 
 // The palette of one cluster: the season's on `mix` of them, else summer's.
 const LeafPalette& palette_of(double mix, const Ctx& ctx) { return ctx.season && mix < ctx.mix ? *ctx.season : *ctx.pal; }
+
+// Up close, a cluster's noise and its shading's hash are those of the voxel's 2-voxel block
+// (x >> 1, y >> 1, z >> 1): made once per block for its eight voxels, kept for a layer of blocks
+// (a chunk spans 18 blocks a side) while it is the layer being drawn. (Per thread; a layer is
+// valid while its generation is the current one.)
+struct BlockCache {
+  struct Entry {
+    uint32_t stamp;
+    double n, vh;
+  };
+  uint32_t gen = 0;
+  Entry e[18][18] = {};
+  // a new layer: every block made afresh
+  void next() {
+    if (++gen == 0) {
+      for (auto& row : e)
+        for (Entry& v : row) v.stamp = 0;
+      gen = 1;
+    }
+  }
+};
+
+BlockCache& block_cache() {
+  thread_local BlockCache blocks;
+  return blocks;
+}
 
 void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const Grid& g) {
   const TreeBlob& p = part.blob;
@@ -1023,6 +1072,10 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
   // at q >= thr a voxel lies outside the cluster whatever its noise (|n| < 0.3 up close, 0 further out)
   const double thr = fine ? 1.3 : 1;
   const double base_x = chunk.bx + chunk.half;
+  BlockCache& blocks = block_cache();
+  const bool blocky = fine && g.blocky;
+  uint32_t layer = 0;
+  bool layered = false;
   for (int k = rk.lo; k <= rk.hi; ++k) {
     const double z = g.w[2][k];
     const double dz = z + 0.5 - p.z;
@@ -1035,6 +1088,11 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
     const double v0 = 0.5 + 0.42 * dz * sirz;
     const uint32_t zh = g.z1[k];
     const uint32_t zi = g.z0[k];
+    if (blocky && (!layered || g.hz[k] != layer)) {
+      blocks.next();
+      layer = g.hz[k];
+      layered = true;
+    }
     for (int j = rj.lo; j <= rj.hi; ++j) {
       const double y = g.w[1][j];
       const double dy = y + 0.5 - p.y;
@@ -1058,10 +1116,8 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
       }
       const uint32_t yh = g.y1[j];
       const uint32_t yi = g.y0[j];
-      // (the hash of x >> 1, y >> 1, z >> 1: the noise's and the shading's; pairs of voxels share it up close)
-      uint32_t last = 0;
-      bool have = false;
-      uint32_t ph = 0;
+      BlockCache::Entry* brow = blocks.e[g.bk[1][j]];
+      const uint32_t gen = blocks.gen;
       for (int i = i0; i <= i1; ++i) {
         if (i == h0 && h0 <= h1) {
           i = h1;
@@ -1073,16 +1129,20 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
         const double dx = x + 0.5 - p.x;
         const double q = (dx * dx + dy2) * irx + qz;
         if (q >= thr) continue;
-        const uint32_t xh = g.x1[i];
-        double n = 0;
+        // (the hash of x >> 1, y >> 1, z >> 1: the noise's, and the shading's)
+        double n = 0, vh = 0;
         if (fine) {
-          if (!have || xh != last) {
-            ph = in(in(xh, yh), zh);
-            last = xh;
-            have = true;
+          BlockCache::Entry& e = brow[g.bk[0][i]];
+          if (blocky && e.stamp == gen) {
+            n = e.n;
+            vh = e.vh;
+          } else {
+            const uint32_t ph = in(in(g.x1[i], yh), zh);
+            // a lumpy surface of leaf tufts (2-voxel noise) up close
+            n = (fin(ph, salt.s0) - 0.5) * 0.6;
+            vh = fin(ph, salt.s9);
+            if (blocky) e = {gen, n, vh};
           }
-          // a lumpy surface of leaf tufts (2-voxel noise) up close
-          n = (fin(ph, salt.s0) - 0.5) * 0.6;
         }
         if (q >= 1 + n) continue;
         const bool shell = q > 0.68 + n;
@@ -1120,9 +1180,9 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
             continue;
           }
         }
-        if (!fine) ph = in(in(xh, yh), zh);
+        if (!fine) vh = fin(in(in(g.x1[i], yh), zh), salt.s9);
         // sunlit tops, shaded undersides and interior
-        const double v = v0 + (fin(ph, salt.s9) - 0.5) * 0.45 - (shell ? 0 : 0.2);
+        const double v = v0 + (vh - 0.5) * 0.45 - (shell ? 0 : 0.2);
         d[idx] = v < 0.34 ? pal[0] : v < 0.74 ? pal[1] : pal[2];
       }
     }
@@ -1145,13 +1205,16 @@ void raster_limb(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
   const Salts& salt = ctx.salt;
   const double foot = part.has_foot ? p.foot : p.az;
   const bool snowy = ctx.snow > 0.2 && !part.trunk;
-  // A row's voxels within reach of the limb's line (rm: its radius and a voxel to spare), where
-  // a vx^2 + bq vx + cq <= 0 (vx = x - ax): the limb's own voxels among them. (A limb nearly along x
-  // is taken row by row whole.)
-  const double rm = js::max(p.r0, p.r1) + grow + 1;
+  // A row's voxels within reach of the limb's line (rm: its radius and a hundredth of a voxel to
+  // spare), where a vx^2 + bq vx + cq <= 0 (vx = x - ax): the limb's own voxels among them. A row
+  // whose own line passes the limb's further than rm (|vy dz - vz dy| / |(dy, dz)|) holds none. (A
+  // limb nearly along x is taken row by row whole.)
+  const double rm = js::max(p.r0, p.r1) + grow + 0.01;
   const double rm2 = rm * rm;
   const double a = 1 - p.dx * p.dx / p.L2;
   const bool lined = a > 1e-3 && a <= 1 && rm < 1e6;
+  const double reach = rm * std::sqrt(p.dy * p.dy + p.dz * p.dz) * (1 + 1e-9);
+  const double spare = 0.01 + 1e-9 * js::abs(p.ax);
   const double base_x = chunk.bx + chunk.half;
   for (int k = rk.lo; k <= rk.hi; ++k) {
     const double z = g.w[2][k] + 0.5;
@@ -1162,6 +1225,7 @@ void raster_limb(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
     for (int j = rj.lo; j <= rj.hi; ++j) {
       const double y = g.w[1][j] + 0.5;
       const double vy = y - p.ay;
+      if (js::abs(vy * p.dz - vz * p.dy) > reach) continue;
       int i0 = ri.lo;
       int i1 = ri.hi;
       if (lined) {
@@ -1171,7 +1235,7 @@ void raster_limb(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
         const double disc = bq * bq - 4 * a * cq;
         if (disc < 0) continue;
         const double sq = std::sqrt(disc);
-        clip(base_x, s, p.ax - 0.5 + (-bq - sq) / (2 * a) - 1, p.ax - 0.5 + (-bq + sq) / (2 * a) + 1, i0, i1);
+        clip(base_x, s, p.ax - 0.5 + (-bq - sq) / (2 * a) - spare, p.ax - 0.5 + (-bq + sq) / (2 * a) + spare, i0, i1);
       }
       const uint32_t yc = g.yc[j];
       const uint32_t ym = g.ym[j];
@@ -1232,7 +1296,10 @@ Whorl whorl_at(const TreeCone& p, double H, double s, bool fine, double zz) {
 
 // The lobes of whorl ti at angle a (irregular branch lobes round the stem).
 double lobe_of(const TreeCone& p, double ti, double a, uint32_t s0) {
-  return 0.8 + 0.2 * js::sin(p.lobes * a + p.phase + ti * 2.3) + (fin(in(in(first(js::to_int32(ti)), static_cast<uint32_t>(js::to_int32(std::floor((a + 3.2) * 1.6))) * kHashB), 3 * kHashC), s0) - 0.5) * 0.3;
+  // (floor((a + 3.2) * 1.6): a lies within -pi and pi, the floor of a small positive number)
+  const double v = (a + 3.2) * 1.6;
+  const int32_t sector = v >= 0 && v < 1e9 ? static_cast<int32_t>(v) : js::to_int32(std::floor(v));
+  return 0.8 + 0.2 * js::sin(p.lobes * a + p.phase + ti * 2.3) + (fin(in(in(first(js::to_int32(ti)), static_cast<uint32_t>(sector) * kHashB), 3 * kHashC), s0) - 0.5) * 0.3;
 }
 
 // A column's lobes, kept per whorl (two: the snow looks one whorl up).
@@ -1303,6 +1370,13 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
     else if (bound[k] > bmax)
       bmax = bound[k];
   }
+  // (the widest bound from each height up: past it, no voxel of the column higher up is the cone's)
+  double above[kP];
+  double widest = -js::kInf;
+  for (int k = rk.hi; k >= rk.lo; --k) {
+    if (row[k]) widest = bound[k] != bound[k] ? js::kInf : js::max(widest, bound[k]);
+    above[k] = widest;
+  }
   // a voxel of the cone: what JS computes once the voxel is air, with its angle and its lobes given
   // (c1, c0: the column's hashes of (x >> 1, y >> 1) and (x, y), their first two stages)
   auto voxel = [&](int idx, uint32_t c1, uint32_t c0, int k, double dx, double dy, double hr, double lob, double lob2) {
@@ -1311,6 +1385,8 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
     const double R = part.lean ? rad * lop : rad;
     // the leader: a thin spike over the top whorl
     if (R < 0) return;
+    // (up close the edge lies within 0.55 of R)
+    if (fine && hr > R + 0.55) return;
     const uint32_t ph = in(c1, g.z1[k]);
     const double edge = fine ? R + (fin(ph, salt.s0) - 0.5) * 1.1 : R;
     if (hr > edge) return;
@@ -1360,6 +1436,7 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
         bool has_a = false;
         LobeCache lc;
         for (int k = rk.lo; k <= rk.hi; ++k) {
+          if (hr > above[k]) break;
           if (!row[k] || hr > bound[k]) continue;
           const int idx = i + j * kP + k * kP2;
           if (d[idx] != 0) continue;
