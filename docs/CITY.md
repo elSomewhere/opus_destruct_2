@@ -313,6 +313,7 @@ so that it stays the oracle.
   `World::wet_source` (`World::is_wet` asks it first) (`tests/city/road_inputs.hpp`). The
   reference's world is `createWorld`'s with its terrain's port grading off (`terrain.portGrade =
   null`, as the port's World of `World.js` has none) and the base heights a stage reads made first
-  (`warmAround`). The stages could run on the port's own cell networks and waters instead, with
-  the port grading on (`pureTerrain`): the recorded roads are the reference's networks on that
-  terrain.
+  (`warmAround`). Once the port's cell networks ask the lakes (`port_near`), the stages can run on
+  a `create_world` World's own cell networks and waters instead, the port grading on (the
+  reference's terrain made pure with `pureTerrain`); the recorded roads are those of a createWorld
+  world whose terrain has no port grading, so a harbour town's may differ from them.
