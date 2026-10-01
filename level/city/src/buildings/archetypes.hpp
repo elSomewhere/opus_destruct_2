@@ -48,6 +48,16 @@ struct EnvelopeAnnex : EnvAnnex {
   std::optional<Rect> canon{};
 };
 
+// A door where a skybridge meets a building (city/skybridges.js: env.skyDoors[k] = { floor, span,
+// bridge }): its floor, the clear width on the facade (world coordinates: x0..x1 when the two
+// buildings face each other across y - JS alongX, span {x0, x1} - else y0..y1) and the bridge.
+struct SkyDoor {
+  double floor = 0;
+  bool span_x = true;  // the span is {x0, x1} (else {y0, y1})
+  double s0 = 0, s1 = 0;
+  std::string bridge{};
+};
+
 // A building's envelope (finalizeEnvelope's record): what the cell plan keeps per building and
 // every later stage (massing, interiors, parts) reads. Canonical coordinates are the building
 // frame's (envelope_frame): u along the front, v from it.
@@ -85,7 +95,7 @@ struct Envelope {
   std::string part{};            // the part it is cast into ("": none)
   std::optional<Chamfer> chamfer{};  // a chamfered front corner (wings.js)
   std::vector<Wing> wings{};         // its wings (wings.js planWings; empty: none - JS undefined)
-  // (skyDoors comes with the port of city/skybridges.js)
+  std::vector<SkyDoor> sky_doors{};  // where skybridges meet it (city/skybridges.js; empty: none)
 
   // frameOf(env) and buildingLook(env, seed), made on first use (envelope_frame, building_look).
   Lazy<Frame> frame_cache{};
