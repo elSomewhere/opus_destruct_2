@@ -51,6 +51,38 @@ void ids(Line& l, const std::vector<std::shared_ptr<const Lake>>& lakes) {
 
 }  // namespace
 
+TEST_CASE("city world: create_world installs the nature and the harbour grading hook") {
+  const std::shared_ptr<World> w = create_world(Value::object({{"seed", 7}}));
+  CHECK(w->land_cover != nullptr);
+  CHECK(w->rivers != nullptr);
+  CHECK(w->lakes != nullptr);
+  CHECK(w->caves != nullptr);
+  CHECK(static_cast<bool>(w->terrain->port_grade));
+  CHECK(w->lakes->cell == 3500 * 8);
+  CHECK(w->lakes->n == 0);
+  // the spawn town of seed 7 lies on a big lake (stage water): its waterfront is graded down to it
+  const Settlement* s = w->fields->settlement(0, 0);
+  REQUIRE(s != nullptr);
+  const std::shared_ptr<const Lake> L = w->lakes->port_lake_of(*s);
+  REQUIRE(L != nullptr);
+  CHECK(L->port == s->id);
+  CHECK(L->big);
+  CHECK(w->lakes->port_lake_of(*s) == L);  // (cached on the town)
+  const World plain(Value::object({{"seed", 7}}));
+  int graded = 0;
+  for (int k = 0; k <= 20; ++k) {
+    const double x = s->x + (L->x - s->x) * k / 20;
+    const double y = s->y + (L->y - s->y) * k / 20;
+    graded += w->terrain->sample(x, y).h != plain.terrain->sample(x, y).h ? 1 : 0;
+    CHECK(w->terrain->sample(x, y, nullptr, true).h == plain.terrain->sample(x, y).h);
+  }
+  CHECK(graded > 0);
+  // no island: no sea
+  CHECK_FALSE(w->sea_at(0, 0, 1e9));
+  CHECK(w->sea_share({0, 0, 1000, 1000}) == 0);
+  CHECK_FALSE(w->sea_hits_seg(-1e5, 0, 1e5, 0));
+}
+
 TEST_CASE("city water: rivers, lakes, harbour grading and the water predicates conform to the reference (stage water)") {
   rec::Samples r(53);
   rec::Out out;
