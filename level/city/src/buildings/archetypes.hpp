@@ -100,6 +100,11 @@ struct Envelope {
   // frameOf(env) and buildingLook(env, seed), made on first use (envelope_frame, building_look).
   Lazy<Frame> frame_cache{};
   Lazy<BuildingLook> look_cache{};
+  // roofSnowCover(world, env) (buildings/massing: JS env._snow), made on first use unless `snow`
+  // is given (a turned building's envelope in its part's lattice carries the cover where the
+  // building stands: world/partRaster).
+  std::optional<double> snow{};
+  Lazy<double> snow_cache{};
 };
 
 // buildings/archetypes.js's registrations (register_all calls it after register_civic).

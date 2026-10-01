@@ -16,6 +16,8 @@ facade d372d84089697f25
 fields 26ac01c10ebca0ab
 floorgrid 529d0f7292c4e613
 frames b7256c507fcb4722
+garageramps 2fd698e83dc9a28f
+grading ae0e28c61701f447
 highways a501cce38796defe
 houses 5de0f5d6561b491b
 ids 4edd32b9f8a56a72
@@ -24,8 +26,10 @@ interiors 5bed6a43ce84e401
 interiorstreets 6d2e22ad47b664b9
 island 6de5e618c06b37ce
 landcover 3e4d29cf9f4d0a6b
+landmarks e02e289d23b38fa3
 landscape c932aa03eb06c789
 lots 5cfa69f8a61506df
+massing 5a28684725608e9a
 materials 1548a45e43d835c7
 parks 4e23169fce97a59e
 parts e6c577354df3c3aa
@@ -41,6 +45,7 @@ season 8b71362d13e49396
 sewers 9c3de707a838f8d7
 sitelinks 14a24155aab729b6
 sites 50afc8f86ab7f9e4
+skybridges 24c015be065972ab
 stairs 721acd61aa53f91b
 streets 178f2000a7efc043
 subway 836e3587735589cb
@@ -55,3 +60,4 @@ treevox af582d867110f715
 underworld 45bf46e6c0bc63dc
 units 84535102ced7d220
 water 85e6c4a02754c63a
+wings 91355e6105540fad

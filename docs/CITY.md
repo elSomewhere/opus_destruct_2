@@ -58,6 +58,13 @@ exports, natively and in WASM, on any thread count.
 | interior planners, building plans | `buildings/interior/{plan,apartments,offices,industrial,garage,school,civic,civicPrograms}.js`; createWorld's `buildingPlan` | `buildings/interior/{plan,apartments,offices,industrial,garage,school,civic,civicPrograms}.*` (`plan_building`: the dispatch to every planner, `validate_plan`, the street doors' levels; `World::building_plan`, the World's cache of plans) | stages `interiors`, `interiorstreets`; tests (any order, the cache dropped, 4 threads) |
 | facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
 | sample buildings | `buildings/sample.js` | `buildings/sample.*` (`stage_archetype` reads a world through `StageWorld`, `StagedEnvelopes`, until the cell plan is ported) | stage `sample` |
+| building shells (the coarse voxelizer), roof snow | `buildings/massing.js` | `buildings/massing.*` (`voxelize_massing`, `pitched_roof_only`, `roof_snow_cover`: `Envelope::snow`, `snow_cache`; `snow_at`) | stage `massing` (every archetype, season and snow cover, LOD 0 to 5); tests (4 threads) |
+| wings, corner and canted bays, chamfers | `buildings/wings.js` | `buildings/wings.*` (`plan_wings`, `wing_placement`, `rasterize_wing`, `rasterize_wing_part`, `kEmbed`), `buildings/wing.hpp` (the record; `nearWing` is the interior planners') | stage `wings` (scripted sites: lots on scripted streets served as a World's cell roads, slanted streets, turned lots) |
+| the buildings' feature source | `buildings/source.js` | `buildings/source.*` (`building_z_range`, `rasterize_buildings` over the envelopes asked for: `World::envelopes_in` is the cell plan's) | stage `wings` (grid and parts mode) |
+| garage ramps as pitched parts | `buildings/garageRamps.js` | `buildings/garageRamps.*` (`ramp_part`, `rasterize_ramp_part`) | stage `garageramps` |
+| site grading | `city/grading.js` | `city/grading.*` (`SiteGrading`, `level_lot`, `kApron`; `Lot::underground`, `under_highway`) | stage `grading` |
+| skybridges, their feature source | `city/skybridges.js` | `city/skybridges.*` (`plan_skybridges` sets `Envelope::sky_doors`; the source over the bridges near a chunk: `skybridges_in` per cell plan) | stage `skybridges` |
+| island landmarks, their feature source | `world/landmarks.js`; createWorld's `landmarks` | `world/landmarks.*` (`Landmarks`, installed by `create_world` on an island; `landmark_z_range`, `rasterize_landmarks`) | stage `landmarks` (every island world, its open-ground answers recorded: §6; `free()` on scripted roads and plans); tests (4 threads) |
 | lots, parks, landscape (city stage 2 parts); the lot and open space records | `city/lots.js`, `city/parks.js`, `city/landscape.js`; the lots and spaces of `city/cellPlan.js` | `city/lots.*` (`Lot`: every field a lot gets anywhere), `city/parks.*`, `city/landscape.*` (`LotEnv`: what `lot_surface` reads of an envelope), `city/space.hpp` (`OpenSpace`, the park layout and frame lazy on it) | stages `lots` (the blocks of every city world's cell networks, synthetic blocks), `parks`, `landscape` (synthetic spaces and envelopes); every block of the three modules runs; tests (4 threads) |
 | site complexes | `sites/complex.js`, `sites/kit.js` (`box`, `finishStructure`) | `sites/complex.*`, `sites/kit.*` (the kit's surface structures and `planGate` come with the site kinds) | stage `complex` |
 | site layer | `world/sites.js` | `world/sites.*` (SITES, the layer, pads, the ground override, the site source's z range and rasterizer; the kinds, and the highway and water tests of a site's placement, come later) | stage `sites` (stand-in kinds: `tools/procgen_ref/lib/sitekinds.mjs`, `tests/city/site_kinds.hpp`) |
@@ -340,7 +347,11 @@ so that it stays the oracle.
   result before the next call: a port of one that keeps it across another call copies what
   JavaScript would read then). The reference's `hash32` / `hashFloat` read four arguments and
   ignore any more (`farmland.js`, `caves.js`, `sites/links.js`): the port's take four, so such a
-  call is ported without its extra ones (a farm field's key is its strip's cut hash).
+  call is ported without its extra ones (a farm field's key is its strip's cut hash). A lot's
+  `whole` is lots.js's `true` on a lot taking its block whole and cellPlan.js's rect (the lot as
+  planned) on a lot fitLots trimmed to its block's slanted edges; planWings reads
+  `lot.whole ?? lot.rect` as a rect, so on `whole: true` (no x0) its in-lot test fails everywhere:
+  the port keeps both (`Lot::whole`, `whole_rect`), and `plan_wings` that failure.
 - **The road network's stages run on recorded inputs.** The road network reads the cell networks
   (city stage 1) and the waters (`createWorld`'s `isWet`: rivers, lakes, the island's sea). Its
   stages were made while those were not ported, and check it on the reference's own inputs: they
@@ -385,6 +396,17 @@ so that it stays the oracle.
   keyed by its id, which every lap shares: lanes and walks are those of the canonical lap, in the
   reference and in the port. Where the reference would throw on a record it reads unguarded (a
   turn's lane that every link has), the port skips it.
+- **The landmarks' stage runs on recorded open-ground answers.** An island's landmarks
+  (`world/landmarks.js`) keep to open natural ground (`free`: no road, lot, urban space or water),
+  which asks the road views and the cell plans (`plan.lotAt`, `plan.spaceAt`), a later stage of the
+  port. The stage `landmarks` records the reference's answers on every island world
+  (`tools/procgen_ref/data/landmarks.json`; createWorld's world, its terrain made pure:
+  `pureTerrain`) and the port replays them (`Landmarks::free_source`); everything else the plan reads
+  (the island's coast, cliffs, harbour and places, the terrain, the props) is the port's own
+  `create_world`'s. `free()` itself is checked on scripted roads and plans: its cell-plan half is
+  `Landmarks::plan_occupied`, which the cell plan's port installs (until it does, `free()` fails:
+  nothing in the port plans landmarks yet). Once it does, the stage can run on the port's own
+  answers.
 - **A building's look asked with two seeds** (`buildings/facade.js` `buildingLook`): the reference
   keeps the look per envelope (a WeakMap) whatever seed asks, so a second seed would get the first
   one's look; the port keeps it on the envelope too (`Envelope::look_cache`) and fails
