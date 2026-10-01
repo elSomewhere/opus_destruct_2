@@ -18,6 +18,7 @@ import type {
   EngineParams,
   EngineStats,
   InitConfig,
+  PresetInfo,
   ProceduralKind,
   RaycastHit,
   TextureInfo,
@@ -62,6 +63,10 @@ interface SvxModule {
   _svx_set_threads(n: number): void;
   _svx_set_params(e: number, fragility: number, impact: number, dif: number, reserved: number, dbg: number, paused: number): void;
   _svx_load_procedural(e: number, kind: number, seed: number): number;
+  _svx_load_preset(e: number, id: number, seed: number): number;
+  _svx_presets(e: number): number;
+  _svx_default_preset(): number;
+  _svx_preset_atmosphere(e: number): number;
   _svx_load_wad(e: number, data: number, size: number, map: number, mode: number, shell: number): number;
   _svx_last_error(e: number): number;
   _svx_save_delta(e: number, outSize: number): number;
@@ -896,6 +901,33 @@ async function loadProcedural(kind: ProceduralKind, seed: number): Promise<void>
   await finishLoad(false, kind);
 }
 
+async function loadPreset(id: string, seed: number): Promise<void> {
+  const m = await ensureModule();
+  loaded = false;
+  clearChunks();
+  postToMain({ type: 'progress', stage: `generating ${id}`, done: 0, total: 3 });
+  const rc = withString(id, (p) => m._svx_load_preset(eng, p, seed >>> 0));
+  if (rc !== 0) {
+    const msg = m.UTF8ToString(m._svx_last_error(eng));
+    postToMain({ type: 'error', fatal: false, command: 'loadPreset', message: `cannot load ${id}: ${msg}. Loaded the procedural "rooms" world instead.` });
+    await loadProcedural('rooms', 1); // (never leave the view without a world)
+    return;
+  }
+  worldId = `preset-${id}-${seed >>> 0}`;
+  await finishLoad(false, id);
+}
+
+/** The engine's presets, sent once its module is up. */
+function sendPresets(m: SvxModule): void {
+  let presets: PresetInfo[] = [];
+  try {
+    presets = JSON.parse(m.UTF8ToString(m._svx_presets(eng))) as PresetInfo[];
+  } catch {
+    presets = [];
+  }
+  postToMain({ type: 'presets', presets, defaultId: m.UTF8ToString(m._svx_default_preset()) });
+}
+
 async function loadWad(buffer: ArrayBuffer, map: string, options: WadOptions): Promise<void> {
   const m = await ensureModule();
   loaded = false;
@@ -952,7 +984,11 @@ async function handle(cmd: EngineCommand): Promise<void> {
     case 'init':
       config = cmd.config;
       params = { ...cmd.config.params };
-      await ensureModule();
+      sendPresets(await ensureModule());
+      break;
+    case 'loadPreset':
+      beginLoad();
+      await loadPreset(cmd.id, cmd.seed);
       break;
     case 'loadProcedural':
       beginLoad();

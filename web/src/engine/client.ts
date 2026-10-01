@@ -106,6 +106,12 @@ export class EngineClient {
     this.send({ type: 'loadProcedural', kind, seed });
   }
 
+  /** A preset by id (docs/PRESETS.md; `seed` 0: the preset's own). */
+  loadPreset(id: string, seed: number): void {
+    this.loadsSent++;
+    this.send({ type: 'loadPreset', id, seed });
+  }
+
   /** Transfers `buffer`: it is detached (unusable) afterwards. */
   loadWad(buffer: ArrayBuffer, map: string, options: WadOptions): void {
     this.loadsSent++;
