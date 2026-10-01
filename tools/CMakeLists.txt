@@ -75,6 +75,12 @@ if(SVX_WASM)
     SUFFIX ".js")
 endif()
 
+# A district of the reference city in the engine (docs/CITY.md): the reference harness's checks
+# and first-touch costs on a dump (tools/procgen_ref/district.mjs).
+add_executable(svx_district_check district_check/main.cpp)
+target_link_libraries(svx_district_check PRIVATE svx_game svx_procgen)
+svx_wasm_exe_options(svx_district_check)
+
 # Long sessions and their memory: streamed city crossings, bounded levels (World::memory).
 add_executable(svx_soak soak/main.cpp)
 target_link_libraries(svx_soak PRIVATE svx_game svx_procgen)
