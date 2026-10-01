@@ -26,6 +26,9 @@ TEST_CASE("city props: every prop, piece of furniture and civic fitting has its 
     ++n;
   }
   CHECK(n == 126);
+  // (the dressing's runs along lot lines: city/dressing.js RUNS)
+  for (const char* run : {"hedge", "wall", "fence", "picket", "chainlink"}) CHECK_MESSAGE(prop_class("props", run) != nullptr, "props.", run);
+  CHECK(prop_class("props", "hedge")->attach == Attachment::Decorative);
   CHECK(prop_class("props", "nope") == nullptr);
   CHECK(prop_class("nope", "bench") == nullptr);
   // (the plan's examples, §10.2)
