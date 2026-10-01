@@ -24,6 +24,7 @@ Conventions:
 |---|---|---|
 | `init` | `config: {voxelSize, threads, memoryMB, params, persist?, gpuDisplacement?}` | First message. `persist` (**ext**): keep gameplay changes per world in OPFS (below). `gpuDisplacement` (**ext**): displacement fields (below; v2 engines send none). |
 | `loadProcedural` | `seed, kind: 'city'\|'rooms'\|'tower'\|'yard'\|'angles'\|'machines'` | Test worlds. `city` is the streamed 1 km² city (some of its buildings turned, in oriented grids). `yard` has one construction of each kind (timber, stone, glass, steel, reinforced concrete, a reservoir, a water tower). `angles` has structures off the lattice, in oriented grids ([`GRIDS.md`](GRIDS.md)). `machines` has machines - pieces on driven joints held by structures - and hanging parts: a lift, a turntable, a drawbridge, a crane with a wrecking ball, a pendulum, a chain, a hinged door ([`MOTION.md`](MOTION.md)). |
+| `loadPreset` (**ext**) | `id: string, seed` | A preset ([`PRESETS.md`](PRESETS.md)): a world as data - `city/angledInfiniteCity`, `legacy/drive`, ... `seed` 0: the preset's own. A preset the engine cannot load reports an `error` and loads `rooms`. |
 | `loadWad` | `buffer: ArrayBuffer (transfer), map: string, options: {mode:'rock'\|'air', shellVoxels, bake:boolean}` | Doom level. |
 | `viewer` | `pos:[x,y,z], dir:[x,y,z]` | Streaming, bake and LOD focus. Sent every frame or two, including while the player is not in control. |
 | `blast` | `pos:[x,y,z], radius, energy` | Rocket or explosion. `energy` is in J. |
@@ -75,6 +76,7 @@ Conventions:
 | `stats` | `stats: {tickMs, structuralMs, rigidMs, voxels, chunks, memoryMB, events, pieces, awakePieces, contacts, bondsBroken, ...}` | About 4 Hz. `events` counts events since the previous stats message. The full set is `EngineStats` in `protocol.ts`; extra keys are shown generically by the HUD. |
 | `error` (**ext**) | `message, fatal:boolean, command?` | `fatal`: the engine cannot continue. `command`: the command type that failed. |
 | `progress` (**ext**) | `stage, done, total` | Load progress for the loading screen. |
+| `presets` (**ext**) | `presets: [{id, label, group, description, generator, experimental, available}], defaultId` | The engine's presets ([`PRESETS.md`](PRESETS.md)), once after `init`. The settings list the available ones. |
 
 ### Chunk mesh vertex format: 28 bytes, interleaved
 
