@@ -128,7 +128,7 @@ and voxels are only reproduced if every number is.
 
 ### 2.4 Performance
 
-Port first, profile after conformance. The targets (plan §7.6): at most 0.35 ms per non-empty
+Port first, profile after conformance. The targets ([`PROCGEN_MERGE_PLAN.md`](PROCGEN_MERGE_PLAN.md) §7.6): at most 0.35 ms per non-empty
 chunk on one native thread, near-linear scaling to 8 threads, WASM within twice native. Avoid
 allocation per voxel; hoist configuration reads; keep JS's lazy structure (what JS computes only
 when a LOD 0 chunk touches it, C++ does too).
@@ -175,7 +175,7 @@ reference/voxel_city/ the reference (pinned snapshot)
 
 ## 5. Order of the port
 
-Each stage conformance-checked before the next (plan §7.4):
+Each stage conformance-checked before the next ([`PROCGEN_MERGE_PLAN.md`](PROCGEN_MERGE_PLAN.md) §7.4):
 
 1. core, config (done)
 2. world: chart, wrap, season, island, fields; terrain: landforms, terrain; network: arterials,
