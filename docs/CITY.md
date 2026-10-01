@@ -42,6 +42,10 @@ exports, natively and in WASM, on any thread count.
 | interior data | `buildings/interior/{prefabs,civicPrefabs,civicRules,common,stairs,grid}.js` | `buildings/interior/` | stages `prefabs`, `civicrules`, `floorgrid`, `stairs` |
 | prop prefabs, industry | `city/{propPrefabs,industry}.js` | `city/propPrefabs.*`, `city/industry.*` | stages `propprefabs`, `industry` |
 | polygon blocks, chamfers | `city/blockPoly.js`, `buildings/chamfer.js` | `city/blockPoly.*`, `buildings/chamfer.*` | stages `blockpoly`, `chamfer` |
+| land cover, farmland | `nature/landcover.js`, `nature/farmland.js` | `nature/landcover.*`, `nature/farmland.*` | stage `landcover` |
+| rivers, lakes, port lakes | `nature/rivers.js`, `nature/lakes.js` | `nature/rivers.*`, `nature/lakes.*` | stage `water` (§6: port lakes) |
+| createWorld (so far), harbour grading, water predicates | `world/createWorld.js` | `world/createWorld.cpp`: land cover, rivers, lakes, the terrain's `port_grade`, caves; `sea_at` ... `water_hits_rect`; marked places for the rest | stage `water`; `test_nature_threads.cpp` |
+| caves, their feature source | `nature/caves.js` | `nature/caves.*`: `cave_z_range` and `cave_rasterize` over a view of the ground tile's columns (`CaveColumns`), for compose to wrap as a `FeatureSource` | stage `caves` (synthetic tiles) |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -241,3 +245,23 @@ so that it stays the oracle.
   (to be measured when the golden stage is ported).
 - **The gullies' kernel cache** (`terrain/landforms.js`) is keyed `i * 1000003 + j` in the
   reference, which collides only for cells 40,000 km apart; the port keys it by the exact cell.
+- **Port lakes and the harbour grading** (`createWorld.js`'s `portGrade` hook, `lakes.portLakeOf`).
+  A lake is a pure function of its lattice cell, and a town's port lake of the town, once the
+  terrain samples they read are (the entry above). The reference makes a town's port lake inside
+  the first terrain sample near it (in the shared context: that sample's `rugged` and `coast`, on an
+  island `h`) and keeps 512 lake cells (an LRU); the port plans in contexts of their own, caches
+  the lakes (any size: `Lakes(world, capacity)`) and the port lake on its town
+  (`Settlement::port_lake`), whichever thread asks first. The stages make the reference pure with
+  `tools/procgen_ref/lib/worlds.mjs` `pureTerrain(world)`: every terrain sample first makes, in a
+  fixed order, the base heights and - where createWorld's hook will run (not raw, near a town) -
+  the port lakes it reads (it runs the hook once first), and a terrain call nested in a sample
+  throws, so a stage that passes nested none. A stage that samples the terrain through any plan
+  (lakes, rivers, land cover, roads ...) calls it once after making the world (`landcover`,
+  `water`, `caves` do). `test_nature_threads.cpp` checks the port: any order, a 16-cell lake
+  cache, four threads.
+- **Not differences, for the ports to come.** `Rivers.at` and `Lakes.at` return one shared object
+  per instance that the next call overwrites; the port returns values (every caller reads its
+  result before the next call: a port of one that keeps it across another call copies what
+  JavaScript would read then). The reference's `hash32` / `hashFloat` read four arguments and
+  ignore any more (`farmland.js`, `caves.js`, `sites/links.js`): the port's take four, so such a
+  call is ported without its extra ones (a farm field's key is its strip's cut hash).
