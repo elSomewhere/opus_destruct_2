@@ -322,6 +322,36 @@ so that it stays the oracle.
   a `create_world` World's own cell networks and waters instead, the port grading on (the
   reference's terrain made pure with `pureTerrain`); the recorded roads are those of a createWorld
   world whose terrain has no port grading, so a harbour town's may differ from them.
+- **The road network's memory: road structures and what was handed out** (`svx/roads.js`,
+  `svx/highwayLanes.js`). The reference keeps every road's structure it made (`roadInfo`: its
+  nodes, links, junctions, corners, lanes and walks) and every highway edge's lanes for good, and
+  remembers every lane and walk a query handed out (`laneIndex`, `walkIndex`, `walkEnds`, the
+  highways' `index`): `lane(id)`, `walk(id)`, `next`, `signal` and `walkNext` answer for those
+  alone - the lanes of a road whose lanes `lanesIn`, `next` (or a ramp's way on) made, the walks of
+  a road whose walks `walksIn` or `walkNext` made. Both grow without bound as a game drives on. The
+  port keeps the structures in caches (`RoadNetworkOptions` `roads`, `edges`: a structure is a pure
+  function of its road's id, made again alike when dropped) and remembers what was handed out by
+  road (edge): the `remembered` roads (edges) whose records a query handed out or asked about most
+  recently. A lane or walk of a road forgotten that way is unknown again - `lane` and `walk` answer
+  none, `next` and `walkNext` nothing, `green` and `walkOpen` always, as the reference does for an
+  id never handed out - until a query hands its road's records out again (`lanes_in`, `next`,
+  `walks_in`, `walk_next` round it). The stage `svxroads` gives the network room for all it touches
+  (the reference's answers, ids not handed out included); `test_svxroads.cpp` shows what the bounds
+  forget, and that queries asked from four threads over small caches write the same records. The
+  reference also keeps road structures per world (a WeakMap) but the walks handed out per network,
+  so a second network over one world finds walk lists the first made and never learns their walks
+  (its `walkNext` can throw on them); the port keeps both per network (one network per world, as the
+  export's worker makes it, answers alike). The stage runs on worlds as the export makes them
+  (`make_world`), the reference made pure (`pureTerrain`, the World's caches unbounded: the road
+  identity entry above). The voxels the reference's own checks look at under lanes and walks
+  (`buildChunk`) wait for compose; the port's checks read the road levels there instead.
+- **Not differences, for the road network.** The reference compares road structures by identity
+  (`g.info === info`, a corner's `other`): it keeps one per road id, so the port compares ids; a
+  road's own segments met in its view (`e.road === road`) are skipped as JS skips them, whichever
+  object asked. In a wrapping world a road's structure is made from its canonical cell's view and
+  keyed by its id, which every lap shares: lanes and walks are those of the canonical lap, in the
+  reference and in the port. Where the reference would throw on a record it reads unguarded (a
+  turn's lane that every link has), the port skips it.
 - **A building's look asked with two seeds** (`buildings/facade.js` `buildingLook`): the reference
   keeps the look per envelope (a WeakMap) whatever seed asks, so a second seed would get the first
   one's look; the port keeps it on the envelope too (`Envelope::look_cache`) and fails
