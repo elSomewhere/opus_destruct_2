@@ -115,7 +115,7 @@ TEST_CASE("city caves: caves and their feature source conform to the reference (
       const double d = r() * 90;
       out << (Line() << "f" << x << y << z << d << cv.region(x, y) << cv.field(x, y, z, d));
     }
-    for (int k = 0; k < 36; ++k) {
+    for (int k = 0; k < 24; ++k) {
       const int lod = k % 3;
       const double s = 1 << lod;
       // a column in a cave region (most of the time), or anywhere

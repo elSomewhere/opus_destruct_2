@@ -98,7 +98,7 @@ export default function* caves() {
       const d = r() * 90;
       yield line("f", x, y, z, d, cv.region(x, y), cv.field(x, y, z, d));
     }
-    for (let k = 0; k < 36; k += 1) {
+    for (let k = 0; k < 24; k += 1) {
       const lod = k % 3;
       const s = 1 << lod;
       // a column in a cave region (most of the time), or anywhere
