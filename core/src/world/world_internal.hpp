@@ -118,6 +118,11 @@ struct SecAcc {
   std::vector<i8> jsg;
   std::vector<f32> jw;
   void add(const IVec3& lower, int ax, int sign_from_a = 1) {
+    if (faces.empty()) {  // (a section of a few faces at least: grown from one at a time, three times over)
+      faces.reserve(8);
+      fax.reserve(8);
+      fsg.reserve(8);
+    }
     faces.push_back(lower);
     fax.push_back(static_cast<u8>(ax));
     fsg.push_back(static_cast<i8>(sign_from_a));

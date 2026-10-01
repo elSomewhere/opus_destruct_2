@@ -407,8 +407,17 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
   s->id = next_id_++;
   s->P.mats = mats_.get();
   std::vector<FragKey> members;
+  // (the node map of the chunk met last at hand: a walk meets one chunk's fragments many times
+  // over - and an element of the map stays where it is as the map grows)
+  GKey last_key{};
+  std::vector<i32>* last_map = nullptr;
   auto nodemap_slot = [&](const FragKey& f) -> i32& {
-    auto& v = s->nodemap[GKey{f.grid, f.chunk}];
+    const GKey key{f.grid, f.chunk};
+    if (!last_map || !(key == last_key)) {
+      last_map = &s->nodemap[key];
+      last_key = key;
+    }
+    std::vector<i32>& v = *last_map;
     if (v.empty()) {
       FragChunk* fc = frag_chunk_if(f);
       v.assign(fc ? fc->frags.size() : size_t(f.idx + 1), -1);
@@ -486,17 +495,22 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
       const u8 brk_p = ch->broken.empty() ? 0 : ch->broken[size_t(li)];
       for (int a = 0; a < 3; ++a)
         for (int sg = -1; sg <= 1; sg += 2) {
-          IVec3 q = p;
-          q[a] += sg;
           const bool inside = l[a] + sg >= 0 && l[a] + sg < kChunk;
           const int qi2 = li + sg * kStride[a];
+          // (a face within the fragment - most of them - adds nothing)
+          if (inside && fcp->at(qi2) == F.idx) continue;
+          IVec3 q = p;
+          q[a] += sg;
           const Vox vq = inside ? (ch->uniform ? ch->value : ch->v[size_t(qi2)]) : G.get(q);
           // a neighbour in a chunk not resident (not generated yet, or evicted) holds it: the
           // world there is unknown, and is not air
           const bool unloaded = g == 0 && !inside && !chunk_resident(chunk_of(q));
           if (!unloaded) {
             if (!vox_solid(vq)) continue;
-            const bool face_broken = sg > 0 ? ((brk_p >> a) & 1) != 0 : G.broken(q, a);
+            // (the face is the lower voxel's: in this chunk, its broken flags are at hand)
+            const bool face_broken = sg > 0      ? ((brk_p >> a) & 1) != 0
+                                     : inside ? !ch->broken.empty() && ((ch->broken[size_t(qi2)] >> a) & 1) != 0
+                                              : G.broken(q, a);
             if (face_broken) continue;
           }
           const IVec3 lower = sg > 0 ? p : q;
