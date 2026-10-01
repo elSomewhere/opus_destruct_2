@@ -435,3 +435,8 @@ The generator reaches the game through a `GameSource` (`svx/game/source.hpp`) in
   `svx_buildings_in`, `svx_furniture_in`, `svx_zone_at`).
 - **Far tier**: the export's coarse view, and its open water as a flat surface at its level
   (`GameSource::coarse_water`).
+- **Roads**: the export's road network (`include/svx/city/roads.hpp`: lanes and their ways on,
+  signals, walks and their corners, crossings, parking, the highways' lanes) as the game's
+  `RoadNetwork` for its traffic, parked cars and pedestrians (`CityRoadNetwork`,
+  `svx/procgen/city_roads.hpp`; [`VEHICLES.md`](VEHICLES.md)); `GameSource::roads` returns it once
+  the city's chunks stream.
