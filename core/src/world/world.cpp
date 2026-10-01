@@ -478,22 +478,7 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
   s->reach = max_radius;
   nodemap_slot(seed) = 0;
   members.push_back(seed);
-  std::vector<SecAcc> accs;
-  std::unordered_map<u64, i32> acc_index;
-  auto acc_for = [&](i32 a, i32 b, int axis, int sign, u16 grid) -> SecAcc& {
-    const u64 k = acc_key(a, b, axis, sign);
-    auto it = acc_index.find(k);
-    if (it != acc_index.end()) return accs[size_t(it->second)];
-    acc_index.emplace(k, static_cast<i32>(accs.size()));
-    accs.emplace_back();
-    SecAcc& A = accs.back();
-    A.a = b >= 0 ? std::min(a, b) : a;
-    A.b = b >= 0 ? std::max(a, b) : b;
-    A.axis = static_cast<u32>(axis);
-    A.sign = static_cast<i8>(sign);
-    A.grid = grid;
-    return A;
-  };
+  SectionLog fine;
   // A fragment met through a face or a junction: a member (its slot), or held fixed (-2)
   auto meet = [&](const FragKey& G) -> i32 {
     i32& slot = nodemap_slot(G);
@@ -563,9 +548,9 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
           const IVec3 lower = sg > 0 ? p : q;
           if (unloaded) touched_unloaded = true;
           if (vox_anchored(vq) || unloaded) {
-            SecAcc& A = acc_for(nF, -1, a, sg, g);
-            A.mb = unloaded ? vox_mat(ch->uniform ? ch->value : ch->v[size_t(li)]) : vox_mat(vq);
-            A.add(lower, a);
+            const i32 A = fine.at(nF, -1, a, sg, g);
+            fine.head(A).mb = unloaded ? vox_mat(ch->uniform ? ch->value : ch->v[size_t(li)]) : vox_mat(vq);
+            fine.face(A, lower, a);
             any_support = true;
             continue;
           }
@@ -586,11 +571,11 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
           }
           const i32 slot = meet(Gk);
           if (slot >= 0) {
-            if (sg > 0) acc_for(nF, slot, a, 1, g).add(lower, a, nF < slot ? 1 : -1);
+            if (sg > 0) fine.face(fine.at(nF, slot, a, 1, g), lower, a, nF < slot ? 1 : -1);
           } else {
-            SecAcc& A = acc_for(nF, -1, a, sg, g);
-            A.mb = vox_mat(vq);
-            A.add(lower, a);
+            const i32 A = fine.at(nF, -1, a, sg, g);
+            fine.head(A).mb = vox_mat(vq);
+            fine.face(A, lower, a);
             any_support = true;
           }
         }
@@ -601,9 +586,9 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
     each_junction(js, F, [&](const JSample& j, bool fwd) {
       if (fwd && j.kind == kJunctionUnknown) {
         // (reaching into the unknown world: it holds it)
-        SecAcc& A = acc_for(nF, -1, 3 + j.face, 1, g);
-        A.mb = vox_mat(G.get(j.v));
-        A.add_sample(j, 1, 1.0f);
+        const i32 A = fine.at(nF, -1, 3 + j.face, 1, g);
+        fine.head(A).mb = vox_mat(G.get(j.v));
+        fine.sample(A, j, 1, 1.0f);
         any_support = true;
         touched_unloaded = true;
         const IVec3 oc = chunk_of(j.o);
@@ -617,9 +602,9 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
       const Vox vo = vg(other.grid).get(other.p);
       if (!vox_solid(vo)) return;
       if (vox_anchored(vo)) {
-        SecAcc& A = acc_for(nF, -1, 3 + 6 * other.grid + junction_side(g, j, fwd), 1, g);
-        A.mb = vox_mat(vo);
-        A.add_sample(j, fwd ? 1 : -1, junction_weight(j));
+        const i32 A = fine.at(nF, -1, 3 + 6 * other.grid + junction_side(g, j, fwd), 1, g);
+        fine.head(A).mb = vox_mat(vo);
+        fine.sample(A, j, fwd ? 1 : -1, junction_weight(j));
         any_support = true;
         return;
       }
@@ -627,11 +612,11 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
       if (!frag_at(other, &Gk)) return;
       const i32 slot = meet(Gk);
       if (slot >= 0) {
-        if (fwd) acc_for(nF, slot, 0, 1, g).add_sample(j, nF < slot ? 1 : -1, junction_weight(j));
+        if (fwd) fine.sample(fine.at(nF, slot, 0, 1, g), j, nF < slot ? 1 : -1, junction_weight(j));
       } else {
-        SecAcc& A = acc_for(nF, -1, 3 + 6 * other.grid + junction_side(g, j, fwd), 1, g);
-        A.mb = vox_mat(vo);
-        A.add_sample(j, fwd ? 1 : -1, junction_weight(j));
+        const i32 A = fine.at(nF, -1, 3 + 6 * other.grid + junction_side(g, j, fwd), 1, g);
+        fine.head(A).mb = vox_mat(vo);
+        fine.sample(A, j, fwd ? 1 : -1, junction_weight(j));
         any_support = true;
       }
     });
@@ -667,7 +652,7 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
     return nullptr;
   }
   std::vector<i64> superseded;
-  append_nodes(*s, members, accs, cluster_cell(static_cast<i64>(members.size())), &superseded);
+  append_nodes(*s, members, fine, cluster_cell(static_cast<i64>(members.size())), &superseded);
   std::sort(superseded.begin(), superseded.end());
   superseded.erase(std::unique(superseded.begin(), superseded.end()), superseded.end());
   for (i64 id : superseded)
@@ -751,7 +736,7 @@ i32 World::Impl::cluster_cell(i64 fragments, i32 limit) const {
   return fragments <= 6 * static_cast<i64>(limit) ? 8 : 16;
 }
 
-void World::Impl::append_nodes(Structure& s, const std::vector<FragKey>& frags, const std::vector<SecAcc>& fine, i32 cell,
+void World::Impl::append_nodes(Structure& s, const std::vector<FragKey>& frags, const SectionLog& fine, i32 cell,
                           std::vector<i64>* superseded) {
   const i32 m = static_cast<i32>(frags.size());
   const i32 n0 = static_cast<i32>(s.P.nodes.size());
@@ -772,7 +757,7 @@ void World::Impl::append_nodes(Structure& s, const std::vector<FragKey>& frags, 
     key[size_t(f)] = mix64(frags[size_t(f)].chunk ^ (c << 58));
   }
   std::vector<std::pair<i32, i32>> links;
-  for (const SecAcc& A : fine)
+  for (const SecHead& A : fine.heads())
     if (A.a >= 0 && A.a < m && A.b >= 0 && A.b < m) links.push_back({A.a, A.b});
   std::vector<u16> group;
   if (oriented_ > 0) {
@@ -841,9 +826,8 @@ void World::Impl::append_nodes(Structure& s, const std::vector<FragKey>& frags, 
   auto xf = [this](u16 g) -> const LatticeXf& { return xf_of(g); };
   auto hx = [this](u16 g) { return h_of(g); };
   auto at = [this](u16 g, const IVec3& p) { return voxel_at(GVox{p, g}); };
-  const std::vector<SecAcc> merged = merge_accs(fine, [&](i32 e) { return e >= kExisting ? e - kExisting : n0 + fnode[size_t(e)]; });
-  for (const SecAcc& A0 : merged) {
-    SecAcc A = A0;
+  std::vector<SecAcc> merged = fine.merge([&](i32 e) { return e >= kExisting ? e - kExisting : n0 + fnode[size_t(e)]; });
+  for (SecAcc& A : merged) {
     // (the bond's ends in the order of their identities: the same bond gets the same identity
     // and local frame whatever order an extraction found its nodes in - its reference load for
     // sudden changes is found again, and in the same frame)
@@ -1669,22 +1653,7 @@ bool World::Impl::patch_structure(Structure& s) {
   // 3. their bonds: to each other through + faces (counted once), to the structure's other
   // nodes through faces of either side, to supports; and their junctions (a member's own
   // samples with its walk; both sides' where the other side is not walked)
-  std::vector<SecAcc> fine;
-  std::unordered_map<u64, i32> index;
-  auto acc_for = [&](i32 a, i32 b, int axis, int sign, u16 grid) -> SecAcc& {
-    const u64 k = acc_key(a, b, axis, sign);
-    auto it = index.find(k);
-    if (it != index.end()) return fine[size_t(it->second)];
-    index.emplace(k, static_cast<i32>(fine.size()));
-    fine.emplace_back();
-    SecAcc& A = fine.back();
-    A.a = b >= 0 ? std::min(a, b) : a;
-    A.b = b >= 0 ? std::max(a, b) : b;
-    A.axis = static_cast<u32>(axis);
-    A.sign = static_cast<i8>(sign);
-    A.grid = grid;
-    return A;
-  };
+  SectionLog fine;
   for (size_t mi = 0; mi < members.size(); ++mi) {
     const FragKey F = members[mi];
     const i32 eF = static_cast<i32>(mi);
@@ -1704,9 +1673,9 @@ bool World::Impl::patch_structure(Structure& s) {
           }
           const IVec3 lower = sg > 0 ? p : q;
           if (vox_anchored(vq) || unloaded) {
-            SecAcc& A = acc_for(eF, -1, a, sg, F.grid);
-            A.mb = unloaded ? vox_mat(G.get(p)) : vox_mat(vq);
-            A.add(lower, a);
+            const i32 A = fine.at(eF, -1, a, sg, F.grid);
+            fine.head(A).mb = unloaded ? vox_mat(G.get(p)) : vox_mat(vq);
+            fine.face(A, lower, a);
             continue;
           }
           FragKey Gk;
@@ -1721,19 +1690,19 @@ bool World::Impl::patch_structure(Structure& s) {
           }
           if (eG < 0) {
             // a fragment of no structure here (another one's, a frontier): held fixed
-            SecAcc& A = acc_for(eF, -1, a, sg, F.grid);
-            A.mb = vox_mat(vq);
-            A.add(lower, a);
+            const i32 A = fine.at(eF, -1, a, sg, F.grid);
+            fine.head(A).mb = vox_mat(vq);
+            fine.face(A, lower, a);
             continue;
           }
           const i32 low = sg > 0 ? eF : eG;
-          acc_for(eF, eG, a, 1, F.grid).add(lower, a, low == std::min(eF, eG) ? 1 : -1);
+          fine.face(fine.at(eF, eG, a, 1, F.grid), lower, a, low == std::min(eF, eG) ? 1 : -1);
         }
     each_junction(js, F, [&](const JSample& j, bool fwd) {
       if (fwd && j.kind == kJunctionUnknown) {
-        SecAcc& A = acc_for(eF, -1, 3 + j.face, 1, F.grid);
-        A.mb = vox_mat(G.get(j.v));
-        A.add_sample(j, 1, 1.0f);
+        const i32 A = fine.at(eF, -1, 3 + j.face, 1, F.grid);
+        fine.head(A).mb = vox_mat(G.get(j.v));
+        fine.sample(A, j, 1, 1.0f);
         return;
       }
       const GVox other = fwd ? GVox{j.o, j.og} : GVox{j.v, j.vg};
@@ -1753,13 +1722,13 @@ bool World::Impl::patch_structure(Structure& s) {
       }
       if (eG < 0) {
         // (a support, or a fragment held fixed)
-        SecAcc& A = acc_for(eF, -1, 3 + 6 * other.grid + junction_side(F.grid, j, fwd), 1, F.grid);
-        A.mb = vox_mat(vo);
-        A.add_sample(j, fwd ? 1 : -1, junction_weight(j));
+        const i32 A = fine.at(eF, -1, 3 + 6 * other.grid + junction_side(F.grid, j, fwd), 1, F.grid);
+        fine.head(A).mb = vox_mat(vo);
+        fine.sample(A, j, fwd ? 1 : -1, junction_weight(j));
         return;
       }
       if (walked && !fwd) return;  // (a member's own samples come with its walk)
-      acc_for(eF, eG, 0, 1, F.grid).add_sample(j, (fwd ? 1 : -1) * (eF < eG ? 1 : -1), junction_weight(j));
+      fine.sample(fine.at(eF, eG, 0, 1, F.grid), j, (fwd ? 1 : -1) * (eF < eG ? 1 : -1), junction_weight(j));
     });
   }
   append_nodes(s, members, fine, s.cell, nullptr);

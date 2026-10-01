@@ -102,13 +102,17 @@ inline V3 junction_point(const IVec3& v, int face, int sub, i32 S, f64 h, f64 pu
   return s;
 }
 
-struct SecAcc {
+// What makes an accumulator one bond: its ends, and a support's side.
+struct SecHead {
   i32 a = -1, b = -1;  // b < 0: support
   u32 axis = 0;        // supports: face axis (a junction support: 3 + 6 x the lattice it reaches + its side)
   i8 sign = 1;         // supports: side of a
   MaterialId mb = MaterialId::Rock;
+  u16 grid = 0;        // the lattice of its faces
+};
+
+struct SecAcc : SecHead {
   f64 strength_b = 1.0;
-  u16 grid = 0;              // the lattice of its faces
   std::vector<IVec3> faces;  // lower voxel of each face (the face p -> p + e_axis)
   std::vector<u8> fax;       // its axis
   std::vector<i8> fsg;       // +1: a is on the lower side of the face (its normal from a to b is +e_axis)
@@ -117,21 +121,6 @@ struct SecAcc {
   std::vector<JSample> js;
   std::vector<i8> jsg;
   std::vector<f32> jw;
-  void add(const IVec3& lower, int ax, int sign_from_a = 1) {
-    if (faces.empty()) {  // (a section of a few faces at least: grown from one at a time, three times over)
-      faces.reserve(8);
-      fax.reserve(8);
-      fsg.reserve(8);
-    }
-    faces.push_back(lower);
-    fax.push_back(static_cast<u8>(ax));
-    fsg.push_back(static_cast<i8>(sign_from_a));
-  }
-  void add_sample(const JSample& s, int sign_from_a, f32 w) {
-    js.push_back(s);
-    jsg.push_back(static_cast<i8>(sign_from_a));
-    jw.push_back(w);
-  }
   // hx(lattice) -> its voxel size; xf(lattice) -> const LatticeXf&: the lattices in the frame the
   // bond is made in (a body's frame: the static world's is the world); S: junction samples per
   // face edge. Faces of an unplaced lattice (the world grid's, a body's first shape) are measured
@@ -503,39 +492,167 @@ inline i32 cluster_items(const std::vector<u64>& cell, const std::vector<std::pa
   return k;
 }
 
-// Node-level bond accumulators from finer ones: endpoints mapped (a support stays < 0), the
-// faces and junction samples of one node pair (a support: one node, axis and side) combined,
-// pairs inside one node dropped. Face and sample signs stay relative to the merged bond's a.
-template <class Map>
-std::vector<SecAcc> merge_accs(const std::vector<SecAcc>& fine, Map&& node_of) {
-  std::vector<SecAcc> out;
-  std::unordered_map<u64, i32> index;
-  for (const SecAcc& F : fine) {
-    const i32 a = node_of(F.a);
-    const i32 b = F.b >= 0 ? node_of(F.b) : -1;
-    if (b >= 0 && a == b) continue;
-    const u64 k = acc_key(a, b, static_cast<int>(F.axis), F.sign);
-    auto it = index.find(k);
-    SecAcc* M;
-    if (it == index.end()) {
-      index.emplace(k, static_cast<i32>(out.size()));
-      out.emplace_back();
-      M = &out.back();
-      M->a = b >= 0 ? std::min(a, b) : a;
-      M->b = b >= 0 ? std::max(a, b) : b;
-      M->axis = F.axis;
-      M->sign = F.sign;
-      M->mb = F.mb;
-      M->grid = F.grid;
-    } else {
-      M = &out[size_t(it->second)];
+// Keys to dense indices - 0, 1, 2, ... in the order the keys first came - in one open-addressed
+// table: a walk looks up the key of every face it meets, mostly keys it met before.
+class KeyIndex {
+ public:
+  // the index of key k (a new key: the next index, size() before the call)
+  i32 operator()(u64 k) {
+    if (2 * (static_cast<size_t>(n_) + 1) > slots_.size()) grow();
+    for (size_t i = static_cast<size_t>(mix64(k)) & mask_;; i = (i + 1) & mask_) {
+      Slot& s = slots_[i];
+      if (s.v < 0) {
+        s = {k, n_};
+        return n_++;
+      }
+      if (s.k == k) return s.v;
     }
-    const bool flip = b >= 0 && a != M->a;
-    for (size_t q = 0; q < F.faces.size(); ++q) M->add(F.faces[q], F.fax[q], flip ? -F.fsg[q] : F.fsg[q]);
-    for (size_t q = 0; q < F.js.size(); ++q) M->add_sample(F.js[q], flip ? -F.jsg[q] : F.jsg[q], F.jw[q]);
   }
-  return out;
-}
+  i32 size() const { return n_; }
+
+ private:
+  struct Slot {
+    u64 k = 0;
+    i32 v = -1;  // (-1: empty)
+  };
+  std::vector<Slot> slots_;
+  size_t mask_ = 0;
+  i32 n_ = 0;
+  void grow() {
+    std::vector<Slot> old(std::max<size_t>(64, 2 * slots_.size()));
+    old.swap(slots_);
+    mask_ = slots_.size() - 1;
+    for (const Slot& s : old) {
+      if (s.v < 0) continue;
+      size_t i = static_cast<size_t>(mix64(s.k)) & mask_;
+      while (slots_[i].v >= 0) i = (i + 1) & mask_;
+      slots_[i] = s;
+    }
+  }
+};
+
+// The fine accumulators of a walk - a bond per fragment pair, a support per fragment, axis and
+// side (acc_key) - and the faces and junction samples it meets, logged in the order it meets
+// them: a fine bond has a few faces, and a list of its own, grown one face at a time, cost more
+// than the walk. merge() hands them to node-level bonds.
+class SectionLog {
+ public:
+  // fine bond (a, b) - b < 0: a's support across axis and side sign - made on its first face
+  i32 at(i32 a, i32 b, int axis, int sign, u16 grid) {
+    const i32 s = index_(acc_key(a, b, axis, sign));
+    if (s == static_cast<i32>(heads_.size())) {
+      SecHead& H = heads_.emplace_back();
+      H.a = b >= 0 ? std::min(a, b) : a;
+      H.b = b >= 0 ? std::max(a, b) : b;
+      H.axis = static_cast<u32>(axis);
+      H.sign = static_cast<i8>(sign);
+      H.grid = grid;
+    }
+    return s;
+  }
+  SecHead& head(i32 s) { return heads_[size_t(s)]; }
+  const std::vector<SecHead>& heads() const { return heads_; }
+  // the face lower -> lower + e_axis (sign_from_a +1: a on its lower side)
+  void face(i32 s, const IVec3& lower, int axis, int sign_from_a = 1) {
+    faces_.push_back({lower, s, static_cast<u8>(axis), static_cast<i8>(sign_from_a)});
+  }
+  void sample(i32 s, const JSample& j, int sign_from_a, f32 w) { samples_.push_back({j, s, w, static_cast<i8>(sign_from_a)}); }
+
+  // Node-level bonds: endpoints mapped (a support stays < 0), the faces and junction samples of
+  // one node pair (a support: one node, axis and side) combined - fine bond by fine bond, in the
+  // order the fine bonds were made, each one's in the order they were met - pairs inside one node
+  // dropped. Face and sample signs stay relative to the merged bond's a.
+  template <class Map>
+  std::vector<SecAcc> merge(Map&& node_of) const {
+    std::vector<SecAcc> out;
+    KeyIndex index;
+    std::vector<i32> to(heads_.size(), -1);  // fine -> merged (-1: inside one node)
+    std::vector<u8> flip(heads_.size(), 0);
+    for (size_t f = 0; f < heads_.size(); ++f) {
+      const SecHead& F = heads_[f];
+      const i32 a = node_of(F.a);
+      const i32 b = F.b >= 0 ? node_of(F.b) : -1;
+      if (b >= 0 && a == b) continue;
+      const i32 m = index(acc_key(a, b, static_cast<int>(F.axis), F.sign));
+      if (m == static_cast<i32>(out.size())) {
+        SecAcc& M = out.emplace_back();
+        static_cast<SecHead&>(M) = F;
+        M.a = b >= 0 ? std::min(a, b) : a;
+        M.b = b >= 0 ? std::max(a, b) : b;
+      }
+      to[f] = m;
+      flip[f] = b >= 0 && a != out[size_t(m)].a;
+    }
+    const Grouped gf = grouped(faces_, heads_.size()), gs = grouped(samples_, heads_.size());
+    std::vector<size_t> nf(out.size(), 0), ns(out.size(), 0);
+    for (size_t f = 0; f < to.size(); ++f) {
+      if (to[f] < 0) continue;
+      nf[size_t(to[f])] += static_cast<size_t>(gf.start[f + 1] - gf.start[f]);
+      ns[size_t(to[f])] += static_cast<size_t>(gs.start[f + 1] - gs.start[f]);
+    }
+    for (size_t m = 0; m < out.size(); ++m) {
+      SecAcc& M = out[m];
+      M.faces.reserve(nf[m]);
+      M.fax.reserve(nf[m]);
+      M.fsg.reserve(nf[m]);
+      M.js.reserve(ns[m]);
+      M.jsg.reserve(ns[m]);
+      M.jw.reserve(ns[m]);
+    }
+    for (size_t f = 0; f < to.size(); ++f) {
+      if (to[f] < 0) continue;
+      SecAcc& M = out[size_t(to[f])];
+      const int sg = flip[f] ? -1 : 1;
+      for (i32 k = gf.start[f]; k < gf.start[f + 1]; ++k) {
+        const Face& e = faces_[size_t(gf.order[size_t(k)])];
+        M.faces.push_back(e.p);
+        M.fax.push_back(e.axis);
+        M.fsg.push_back(static_cast<i8>(sg * e.sign));
+      }
+      for (i32 k = gs.start[f]; k < gs.start[f + 1]; ++k) {
+        const Sample& e = samples_[size_t(gs.order[size_t(k)])];
+        M.js.push_back(e.j);
+        M.jsg.push_back(static_cast<i8>(sg * e.sign));
+        M.jw.push_back(e.w);
+      }
+    }
+    return out;
+  }
+
+ private:
+  struct Face {
+    IVec3 p;
+    i32 s;
+    u8 axis;
+    i8 sign;
+  };
+  struct Sample {
+    JSample j;
+    i32 s;
+    f32 w;
+    i8 sign;
+  };
+  std::vector<SecHead> heads_;
+  KeyIndex index_;
+  std::vector<Face> faces_;
+  std::vector<Sample> samples_;
+
+  // A log's entries by fine bond: fine bond f's are order[start[f] .. start[f + 1]), in log order.
+  struct Grouped {
+    std::vector<i32> start, order;
+  };
+  template <class E>
+  static Grouped grouped(const std::vector<E>& log, size_t nfine) {
+    Grouped g;
+    g.start.assign(nfine + 1, 0);
+    for (const E& e : log) ++g.start[size_t(e.s) + 1];
+    for (size_t f = 0; f < nfine; ++f) g.start[f + 1] += g.start[f];
+    g.order.resize(log.size());
+    std::vector<i32> fill(g.start.begin(), g.start.end() - 1);
+    for (size_t k = 0; k < log.size(); ++k) g.order[size_t(fill[size_t(log[k].s)]++)] = static_cast<i32>(k);
+    return g;
+  }
+};
 
 // Connected components over the intact bonds between nodes (supports ignored). Component 0 holds
 // every node reachable from a node with seed[i] != 0; the rest are numbered from 1 in node order.
@@ -641,6 +758,10 @@ struct BodyGraph {
   std::vector<world_detail::JSample> jref;
   std::vector<f64> u;
 };
+
+// A piece's graph is held at its node nearest the piece's centre of mass (com: body frame), the
+// reference its stresses are solved against.
+void pin_reference(BodyGraph& G, const V3& com);
 
 struct World::Impl::Structure {
   i64 id = 0;

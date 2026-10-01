@@ -16,7 +16,7 @@
 namespace svx {
 
 namespace world_detail {
-struct SecAcc;
+class SectionLog;
 struct VoxelAt;
 struct JSample;
 struct Rd;
@@ -391,7 +391,7 @@ struct World::Impl {
   // Appends the nodes of fragments `frags` (clusters of `cell` voxels, 0: one per fragment) and the
   // bonds of `fine` (endpoints: fragment indices, kExisting + existing node, < 0 supports); the
   // fragments become the structure's (the ids of structures they belonged to go to superseded).
-  void append_nodes(Structure& s, const std::vector<FragKey>& frags, const std::vector<world_detail::SecAcc>& fine,
+  void append_nodes(Structure& s, const std::vector<FragKey>& frags, const world_detail::SectionLog& fine,
                     i32 cell, std::vector<i64>* superseded);
   i32 cluster_cell(i64 fragments, i32 limit = 0) const;  // (limit: 0 = cluster_nodes)
   void retire_structure_nodes(Structure& s, const std::vector<i32>& list);
@@ -521,7 +521,8 @@ struct World::Impl {
   // A piece whose voxels changed in place (crumpled): its fragments, mass and samples again at the
   // same place in the world; it keeps its id while it holds together (else it splits).
   void reshape_in_place(Body& b);
-  // (its voxels changed, its lattice where it was: mass and samples again, the same place and motion)
+  // (its voxels changed, its lattice where it was - its fragments made again, refragment_body: mass
+  // and samples again, the same place and motion)
   void refresh_in_place(Body& b, const V3& com0, const V3& x0);
 
   // ---- streaming (world_io.cpp)

@@ -267,7 +267,63 @@ void body_junctions(const Body& b, i32 S, f64 reach, std::vector<JSample>& out) 
   }
 }
 
+// The faces a piece's bonds are made of, in one of its shapes: f(lower voxel p, axis, the
+// fragment at p, the fragment across) for each unbroken face between two of its fragments, in
+// cell order.
+template <class F>
+void each_bond_face(const BodyShape& S, F&& f) {
+  const i32 stride[3] = {S.dim[1] * S.dim[2], S.dim[2], 1};
+  i32 i = 0;
+  for (i32 x = 0; x < S.dim[0]; ++x)
+    for (i32 y = 0; y < S.dim[1]; ++y)
+      for (i32 z = 0; z < S.dim[2]; ++z, ++i) {
+        if (!vox_solid(S.vox[size_t(i)])) continue;
+        const i32 fp = static_cast<i32>(S.frag[size_t(i)]) - 1;
+        if (fp < 0) continue;
+        const i32 l[3] = {x, y, z};
+        for (int a = 0; a < 3; ++a) {
+          if (((S.brk[size_t(i)] >> a) & 1) || l[a] + 1 >= S.dim[a]) continue;
+          const i32 j = i + stride[a];
+          if (!vox_solid(S.vox[size_t(j)])) continue;
+          const i32 fq = static_cast<i32>(S.frag[size_t(j)]) - 1;
+          if (fq == fp || fq < 0) continue;
+          f(IVec3{S.lo[0] + x, S.lo[1] + y, S.lo[2] + z}, a, fp, fq);
+        }
+      }
+}
+
+// The junction samples between a piece's shapes that join two of its fragments: f(sample, the
+// fragment at its voxel, the fragment at its other end).
+template <class F>
+void each_bond_sample(const Body& b, i32 S, f64 reach, F&& f) {
+  if (b.shapes.size() < 2) return;
+  std::vector<JSample> js;
+  body_junctions(b, S, reach, js);
+  for (const JSample& j : js) {
+    const BodyShape& A = b.shapes[j.vg];
+    const BodyShape& B = b.shapes[j.og];
+    const i32 fp = static_cast<i32>(A.frag[size_t(A.index(j.v))]) - 1;
+    const i32 fq = static_cast<i32>(B.frag[size_t(B.index(j.o))]) - 1;
+    if (fp >= 0 && fq >= 0 && fp != fq) f(j, fp, fq);
+  }
+}
+
 }  // namespace
+
+void pin_reference(BodyGraph& G, const V3& com) {
+  i32 pin = 0;
+  f64 best = 1e300;
+  for (i32 i = 0; i < static_cast<i32>(G.P.nodes.size()); ++i) {
+    SNode& nd = G.P.nodes[size_t(i)];
+    nd.fixed = false;
+    const f64 d = norm2(nd.c - com);
+    if (d < best) {
+      best = d;
+      pin = i;
+    }
+  }
+  if (!G.P.nodes.empty()) G.P.nodes[size_t(pin)].fixed = true;
+}
 
 void World::Impl::rebuild_body_graph(Body& b) {
   const f64 h = grid_.h;
@@ -277,70 +333,16 @@ void World::Impl::rebuild_body_graph(Body& b) {
   G.P.mats = mats_.get();
   const i32 nf = static_cast<i32>(b.frags.size());
   // fragment-level bonds from the shapes
-  std::vector<SecAcc> fine;
-  std::unordered_map<u64, i32> index;
-  for (size_t sk = 0; sk < b.shapes.size(); ++sk) {
-    const BodyShape& S = b.shapes[sk];
-    const i32 cells = static_cast<i32>(S.vox.size());
-    for (i32 i = 0; i < cells; ++i) {
-      if (!vox_solid(S.vox[size_t(i)])) continue;
-      const i32 fp = static_cast<i32>(S.frag[size_t(i)]) - 1;
-      if (fp < 0) continue;
-      const IVec3 p = S.voxel(i);
-      for (int a = 0; a < 3; ++a) {
-        if ((S.brk[size_t(i)] >> a) & 1) continue;
-        IVec3 q = p;
-        q[a] += 1;
-        const i32 j = S.index(q);
-        if (j < 0 || !vox_solid(S.vox[size_t(j)])) continue;
-        const i32 fq = static_cast<i32>(S.frag[size_t(j)]) - 1;
-        if (fq == fp || fq < 0) continue;
-        const u64 key = acc_key(fp, fq, a, 1);
-        auto it = index.find(key);
-        i32 ai;
-        if (it == index.end()) {
-          ai = static_cast<i32>(fine.size());
-          index.emplace(key, ai);
-          fine.emplace_back();
-          SecAcc& A = fine.back();
-          A.a = std::min(fp, fq);
-          A.b = std::max(fp, fq);
-          A.grid = static_cast<u16>(sk);
-        } else {
-          ai = it->second;
-        }
-        fine[size_t(ai)].add(p, a, fp < fq ? 1 : -1);
-      }
-    }
-  }
+  SectionLog fine;
+  for (size_t sk = 0; sk < b.shapes.size(); ++sk)
+    each_bond_face(b.shapes[sk], [&](const IVec3& p, int a, i32 fp, i32 fq) {
+      fine.face(fine.at(fp, fq, 0, 1, static_cast<u16>(sk)), p, a, fp < fq ? 1 : -1);
+    });
   // junctions between its shapes (both sides' samples, half each)
   const i32 JS = std::clamp(cfg_.junction_samples, 1, 7);
-  if (b.shapes.size() > 1) {
-    std::vector<JSample> js;
-    body_junctions(b, JS, std::clamp(cfg_.junction_reach, 0.0, 2.0), js);
-    for (const JSample& j : js) {
-      const BodyShape& A = b.shapes[j.vg];
-      const BodyShape& B = b.shapes[j.og];
-      const i32 fp = static_cast<i32>(A.frag[size_t(A.index(j.v))]) - 1;
-      const i32 fq = static_cast<i32>(B.frag[size_t(B.index(j.o))]) - 1;
-      if (fp < 0 || fq < 0 || fp == fq) continue;
-      const u64 key = acc_key(fp, fq, 0, 1);
-      auto it = index.find(key);
-      i32 ai;
-      if (it == index.end()) {
-        ai = static_cast<i32>(fine.size());
-        index.emplace(key, ai);
-        fine.emplace_back();
-        SecAcc& A2 = fine.back();
-        A2.a = std::min(fp, fq);
-        A2.b = std::max(fp, fq);
-        A2.grid = j.vg;
-      } else {
-        ai = it->second;
-      }
-      fine[size_t(ai)].add_sample(j, fp < fq ? 1 : -1, junction_weight(j));
-    }
-  }
+  each_bond_sample(b, JS, std::clamp(cfg_.junction_reach, 0.0, 2.0), [&](const JSample& j, i32 fp, i32 fq) {
+    fine.sample(fine.at(fp, fq, 0, 1, j.vg), j, fp < fq ? 1 : -1, junction_weight(j));
+  });
   // resolution: clusters of fragments for large pieces (cells in the body frame, within a shape)
   i64 live = 0;
   for (const BodyFrag& f : b.frags) live += f.count > 0 ? 1 : 0;
@@ -358,7 +360,7 @@ void World::Impl::rebuild_body_graph(Body& b) {
                           static_cast<i32>(std::floor(c.z / (h * cell))));
   }
   std::vector<std::pair<i32, i32>> links;
-  for (const SecAcc& A : fine) links.push_back({A.a, A.b});
+  for (const SecHead& A : fine.heads()) links.push_back({A.a, A.b});
   std::vector<u16> group;
   if (b.shapes.size() > 1) {
     group.resize(size_t(nf));
@@ -415,18 +417,8 @@ void World::Impl::rebuild_body_graph(Body& b) {
     nd.mass = G.node_mass[size_t(i)];
     G.P.nodes.push_back(nd);
   }
-  // the reference node: nearest the centre of mass
-  i32 pin = 0;
-  f64 best = 1e300;
-  for (i32 i = 0; i < n; ++i) {
-    const f64 d = norm2(G.P.nodes[size_t(i)].c - b.com);
-    if (d < best) {
-      best = d;
-      pin = i;
-    }
-  }
-  if (n > 0) G.P.nodes[size_t(pin)].fixed = true;
-  const std::vector<SecAcc> merged = merge_accs(fine, [&](i32 f) { return G.frag_node[size_t(f)]; });
+  pin_reference(G, b.com);
+  std::vector<SecAcc> merged = fine.merge([&](i32 f) { return G.frag_node[size_t(f)]; });
   G.face_start.assign(1, 0);
   G.face_p.clear();
   G.face_axis.clear();
@@ -436,9 +428,8 @@ void World::Impl::rebuild_body_graph(Body& b) {
   auto xf = [&b](u16 k) -> const LatticeXf& { return b.shapes[k].xf; };
   auto hx = [&b](u16 k) { return b.shapes[k].h; };
   auto at = [&](u16 k, const IVec3& p) { return piece_voxel_at(b, k, p); };
-  for (const SecAcc& A0 : merged) {
-    if (A0.a < 0 || A0.b < 0) continue;
-    SecAcc A = A0;
+  for (SecAcc& A : merged) {
+    if (A.a < 0 || A.b < 0) continue;
     A.mb = nmat[size_t(A.b)];
     A.strength_b = nstr[size_t(A.b)];
     SBond B = A.finish(hx, xf, JS, G.P.nodes[size_t(A.a)].c, &G.P.nodes[size_t(A.b)].c, nmat[size_t(A.a)], nstr[size_t(A.a)]);
@@ -1222,7 +1213,6 @@ void World::Impl::refresh_in_place(Body& b, const V3& com0, const V3& x0) {
   b.v += cross(b.w, b.x - x0);
   b.v_pre = b.v;
   b.w_pre = b.w;
-  b.graph_dirty = true;
   b.stress_cooldown = 0;
   b.refresh_box();
   pw_.reshaped.push_back(b.id);

@@ -498,7 +498,7 @@ Things a harness should not do:
 - Some work is done whole, in the tick that needs it, not spread over ticks:
   - The first touch of a large structure: its fragments are walked and its multigrid is built.
     A streamed one is also designed, in the same tick. The drive city's first blast at a
-    building takes about 1.3 s on 3 threads; a baked 32 m building's first carve about 0.6 s.
+    building takes about 1 s on 3 threads; a baked 32 m building's first carve about 0.35 s.
   - Each patch (a shot or a carve on a registered structure) builds the structure's multigrid
     afresh: about 50 ms a shot on a 1000-node building. Keeping the old multigrid stalls
     where a patch cuts a load path (see the patch in `world.cpp`).

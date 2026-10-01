@@ -681,6 +681,7 @@ void World::Impl::reshape_in_place(Body& b) {
     return;
   }
   refresh_in_place(b, com0, x0);
+  pin_reference(*b.graph, b.com);  // (its graph stands: only its centre of mass moved)
   b.stress_cooldown = cooldown;  // (its checks keep their spacing while it crumples: crumple_check_gap)
 }
 
