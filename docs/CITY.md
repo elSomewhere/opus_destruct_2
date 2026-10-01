@@ -44,6 +44,7 @@ exports, natively and in WASM, on any thread count.
 | polygon blocks, chamfers | `city/blockPoly.js`, `buildings/chamfer.js` | `city/blockPoly.*`, `buildings/chamfer.*` | stages `blockpoly`, `chamfer` |
 | site complexes | `sites/complex.js`, `sites/kit.js` (`box`, `finishStructure`) | `sites/complex.*`, `sites/kit.*` (the kit's surface structures and `planGate` come with the site kinds) | stage `complex` |
 | site layer | `world/sites.js` | `world/sites.*` (SITES, the layer, pads, the ground override, the site source's z range and rasterizer; the kinds, and the highway and water tests of a site's placement, come later) | stage `sites` (stand-in kinds: `tools/procgen_ref/lib/sitekinds.mjs`, `tests/city/site_kinds.hpp`) |
+| site links | `sites/links.js` | `sites/links.*` (`site_link_source()`) | stage `sitelinks` (the same stand-in kinds) |
 
 (The table grows with the port; §5 lists the order.)
 
