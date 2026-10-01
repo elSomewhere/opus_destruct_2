@@ -6,8 +6,9 @@
 // rasterized into the chunks its foot, its crown and the corners of its bounds lie in (every
 // chunk it touches for the first three of a kind at LODs 0 and 2, always at LODs 5 and 8), empty
 // or partly filled first, tracking isolated voxels or not, isolating or not; then groves of
-// eight trees of any kinds into shared chunks. A chunk is recorded by its non-air count and the
-// digests of its data and iso arrays (as stages/chunk.mjs digests them).
+// eight trees of any kinds into shared chunks, and wild logs along the axes. A chunk is recorded
+// by its non-air count and the digests of its data and iso arrays (as stages/chunk.mjs digests
+// them).
 import { REF, line, samples } from "../lib/rec.mjs";
 import { KINDS, sampleTree, treeFields, SEASONS } from "../lib/trees.mjs";
 
@@ -150,4 +151,23 @@ export default function* treevox() {
       }
     }
   }
+  // wild logs along the axes (limbs parallel to x and y), lying or windthrown
+  for (const yaw of [0, 33, 66, 99])
+    for (const plate of [false, true]) {
+      const x = Math.floor((r() - 0.5) * 60000);
+      const y = Math.floor((r() - 0.5) * 60000);
+      const z = Math.floor(r() * 600);
+      const h = 3 + Math.floor(r() * 5);
+      const rr = 24 + Math.floor(r() * 24);
+      const seed = Math.floor(r() * 4294967296);
+      const t = { x, y, z, h, r: rr, kind: "log", seed, open: false, wild: true, reach: 27, yaw, plate };
+      const bb = treeBounds(t);
+      yield line("lt", ...treeFields(t), bb.x0, bb.y0, bb.z0, bb.x1, bb.y1, bb.z1);
+      for (const lod of [0, 2])
+        for (const c of chunksTouching(lod, bb)) {
+          const ch = prepare(r, lod, c, t);
+          rasterizeTree(ch, t);
+          yield chunkLine(lod, c, ch);
+        }
+    }
 }

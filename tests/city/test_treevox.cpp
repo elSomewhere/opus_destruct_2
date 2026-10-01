@@ -180,5 +180,33 @@ TEST_CASE("city treevox: trees rasterize into chunks as the reference's (stage t
       }
     }
   }
+  // wild logs along the axes (limbs parallel to x and y), lying or windthrown
+  for (const int yaw : {0, 33, 66, 99})
+    for (const bool plate : {false, true}) {
+      Tree t;
+      t.x = std::floor((r() - 0.5) * 60000);
+      t.y = std::floor((r() - 0.5) * 60000);
+      t.z = std::floor(r() * 600);
+      t.h = 3 + std::floor(r() * 5);
+      t.r = 24 + std::floor(r() * 24);
+      t.seed = std::floor(r() * 4294967296.0);
+      t.kind = TreeKind::Log;
+      t.wild = true;
+      t.reach = 27;
+      t.yaw = yaw;
+      t.plate = plate;
+      const Box3 bb = tree_bounds(t);
+      Line l;
+      l << "lt";
+      trec::tree_fields(l, "log", t);
+      trec::box_fields(l, bb);
+      out << l;
+      for (const int lod : {0, 2})
+        for (const Chunk3& c : chunks_touching(lod, bb)) {
+          ChunkBuffer ch = prepare(r, lod, c, t);
+          rasterize_tree(ch, t);
+          out << chunk_line(lod, c, ch);
+        }
+    }
   CHECK(rec::record("treevox", out.text()) == rec::recorded_digest("treevox"));
 }
