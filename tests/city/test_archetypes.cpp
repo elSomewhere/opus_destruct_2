@@ -35,6 +35,23 @@ const std::vector<std::vector<std::string>>& domes() {
 }
 const double kPitched[4] = {0.08, 0.35, 0.65, 1};
 
+// The context envelope(ctx) gets: { lot, frame, district, rng, ...extra }.
+ArchetypeCtx ctx_of(const Lot& lot, const Frame& lot_frame, const District& d, Rng& rng, const EnvelopeExtra& extra) {
+  ArchetypeCtx ctx;
+  ctx.lot = &lot;
+  ctx.frame = &lot_frame;
+  ctx.district = &d;
+  ctx.rng = &rng;
+  ctx.u = extra.u;
+  ctx.core = extra.core;
+  ctx.ground_z = extra.ground_z;
+  ctx.config = extra.config;
+  ctx.chapel = extra.chapel;
+  ctx.dome = extra.dome;
+  ctx.pitched_civic = extra.pitched_civic;
+  return ctx;
+}
+
 void queries(rec::Out& out, const Envelope& e) {
   std::string tiers;
   for (double fl = -3; fl <= e.floors + 1; fl += 1) {
@@ -103,21 +120,28 @@ TEST_CASE("city archetypes: fits, envelopes and their finalizing are the referen
       Rng rng(std::floor(r() * 4294967296.0));
       const EnvelopeExtra extra = extra_of();
       const Frame lot_frame = lot_frame_of(lot.turn, lot.rect, lot.front);
-      ArchetypeCtx ctx;
-      ctx.lot = &lot;
-      ctx.frame = &lot_frame;
-      ctx.district = &d;
-      ctx.rng = &rng;
-      ctx.u = extra.u;
-      ctx.core = extra.core;
-      ctx.ground_z = extra.ground_z;
-      ctx.config = extra.config;
-      ctx.chapel = extra.chapel;
-      ctx.dome = extra.dome;
-      ctx.pitched_civic = extra.pitched_civic;
+      const ArchetypeCtx ctx = ctx_of(lot, lot_frame, d, rng, extra);
       const std::optional<EnvSpec> env = a.envelope(ctx);
       out << (Line() << "a" << a.id << U << V << d.id << lot.id << static_cast<bool>(lot.turn) << spec_line(env) << rng.next());
     }
+  }
+  // ---- tall towers
+  std::vector<const District*> downtown;
+  for (const District& d : DS)
+    if (d.id == "downtown") downtown.push_back(&d);
+  const Archetype& tower = archetype_registry().get("tower");
+  for (int s = 0; s < 80; ++s) {
+    const double U = 240 + std::floor(r() * 400);
+    const double V = 240 + std::floor(r() * 400);
+    const District& d = *downtown[static_cast<size_t>(std::floor(r() * static_cast<double>(downtown.size())))];
+    const Lot lot = scripted_lot(r, U, V, (k += 1), d.id);
+    Rng rng(std::floor(r() * 4294967296.0));
+    EnvelopeExtra extra = extra_of();
+    extra.core = 0.75 + r() * 0.5;
+    const Frame lot_frame = lot_frame_of(lot.turn, lot.rect, lot.front);
+    const ArchetypeCtx ctx = ctx_of(lot, lot_frame, d, rng, extra);
+    const std::optional<EnvSpec> env = tower.envelope(ctx);
+    out << (Line() << "t" << U << V << d.id << lot.id << static_cast<bool>(lot.turn) << spec_line(env) << rng.next());
   }
   // ---- planBuildingEnvelope
   for (int s = 0; s < 4000; ++s) {

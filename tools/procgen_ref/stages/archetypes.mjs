@@ -1,11 +1,11 @@
 // Stage "archetypes": the building archetypes (buildings/archetypes.js, after civic.js's) - every
 // archetype's fits() over every lot size up to 720 x 720 cells; every archetype's envelope(ctx) on
 // scripted contexts (plain and turned lot frames, the districts as every flavor sees them, the
-// configs of every world, chapels, church domes, pitched civic roofs); planBuildingEnvelope on
-// scripted lots of every size (the archetype weighted by district, fallbacks, a flavor's pitched
-// roofs, the style) and planBuildingEnvelopeAs for every archetype; on each envelope tierRects,
-// floorZ, floorHeight and envelopeFrame. Lots and districts come from lib/buildings.mjs (the C++
-// twin: tests/city/building_records.hpp).
+// configs of every world, chapels, church domes, pitched civic roofs; tall downtown towers for
+// their upper setback); planBuildingEnvelope on scripted lots of every size (the archetype
+// weighted by district, fallbacks, a flavor's pitched roofs, the style) and planBuildingEnvelopeAs
+// for every archetype; on each envelope tierRects, floorZ, floorHeight and envelopeFrame. Lots and
+// districts come from lib/buildings.mjs (the C++ twin: tests/city/building_records.hpp).
 import { REF, line, f, samples } from "../lib/rec.mjs";
 import { districtList, configList, scriptedLot, specLine, envLine, rectStr } from "../lib/buildings.mjs";
 
@@ -81,6 +81,20 @@ export default function* archetypes() {
       const env = a.envelope({ lot, frame: lotFrame, district: d, rng, ...extra });
       yield `${line("a", a.id, U, V, d.id, lot.id, !!lot.turn)} ${specLine(env)} ${f(rng.next())}`;
     }
+  }
+  // ---- tall towers: downtown as every flavor sees it, a high core (the upper setback above 28 floors)
+  const downtown = DS.filter((d) => d.id === "downtown");
+  const tower = ARCHETYPES.get("tower");
+  for (let s = 0; s < 80; s += 1) {
+    const U = 240 + Math.floor(r() * 400);
+    const V = 240 + Math.floor(r() * 400);
+    const d = downtown[Math.floor(r() * downtown.length)];
+    const lot = scriptedLot(r, U, V, (k += 1), d.id);
+    const rng = new Rng(Math.floor(r() * 4294967296));
+    const extra = extraOf();
+    extra.core = 0.75 + r() * 0.5;
+    const env = tower.envelope({ lot, frame: F.lotFrameOf(lot), district: d, rng, ...extra });
+    yield `${line("t", U, V, d.id, lot.id, !!lot.turn)} ${specLine(env)} ${f(rng.next())}`;
   }
   // ---- planBuildingEnvelope: the district's archetypes
   for (let s = 0; s < 4000; s += 1) {

@@ -1,4 +1,4 @@
-archetypes 37023c62c4f4ad44
+archetypes 6efe822a9dc40fa7
 arterials 09ffd9590dee63af
 biomes 0ef5fa2a143f0413
 blockpoly 562ea3982a8cffbb
