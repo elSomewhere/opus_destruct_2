@@ -441,7 +441,14 @@ so that it stays the oracle.
 ## 7. In the engine
 
 The generator reaches the game through a `GameSource` (`svx/game/source.hpp`) in `svx_procgen`
-(PROCGEN_MERGE_PLAN.md §10; `svx_level` after the restructuring), built from these pieces:
+(PROCGEN_MERGE_PLAN.md §10; `svx_level` after the restructuring): `CityWorldSource`
+(`svx/procgen/city_source.hpp`, `make_city_world(params, seed)`), which copies the export's plain
+arrays and records (`include/svx/city/source.hpp`: `city::Export` - extent, column ranges, chunks
+with their look and water layers and seams, the parts as oriented grids, regions, the far tier's
+coarse voxels and water, the spawn, spawn records, the bytes its caches hold) into the engine's
+types. Until the export is ported (`svx/source.js`, `world/partRaster.js`, `stream/queries.js`
+`probe`: §5) `city::Export` is a placeholder - the extent and nothing in it - and the presets do
+not load a city yet. It is built from these pieces:
 
 - **The world**: `make_world(spec)` (`include/svx/city/world.hpp`) - a voxel_city preset, its size
   and season, a seed and config overrides - is the world the export makes (`svx/source.js`:
