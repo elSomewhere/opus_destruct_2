@@ -42,6 +42,10 @@ exports, natively and in WASM, on any thread count.
 | interior data | `buildings/interior/{prefabs,civicPrefabs,civicRules,common,stairs,grid}.js` | `buildings/interior/` | stages `prefabs`, `civicrules`, `floorgrid`, `stairs` |
 | prop prefabs, industry | `city/{propPrefabs,industry}.js` | `city/propPrefabs.*`, `city/industry.*` | stages `propprefabs`, `industry` |
 | polygon blocks, chamfers | `city/blockPoly.js`, `buildings/chamfer.js` | `city/blockPoly.*`, `buildings/chamfer.*` | stages `blockpoly`, `chamfer` |
+| road records, road views, road surface | `network/roadView.js`, `network/roadSurface.js` (and `World.roadView`) | `network/road.hpp`, `network/roadView.*` (`World::road_view` over `World::cell_roads`), `network/roadSurface.*` | stages `roadview`, `roadsurface` (scripted roads, and recorded ones: §6) |
+| road levels | `network/roadLevel.js` (and `createWorld`'s `streetLevel`) | `network/roadLevel.*` (`World::street_level`) | stage `roadlevel` (recorded roads; §6) |
+| pitched road pieces | `network/roadParts.js` | `network/roadParts.*` | stage `roadparts` (recorded roads and waters) |
+| highways | `network/highways.js` | `network/highways.*` (`highwaySource`: `highway_z_range`, `rasterize_highways`, the ground tile's z as an array) | stage `highways` (recorded roads and waters) |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -241,3 +245,26 @@ so that it stays the oracle.
   (to be measured when the golden stage is ported).
 - **The gullies' kernel cache** (`terrain/landforms.js`) is keyed `i * 1000003 + j` in the
   reference, which collides only for cells 40,000 km apart; the port keys it by the exact cell.
+- **A road's identity across road views** (`network/roadLevel.js`). The reference compares roads
+  by object identity, also across views: `throughAt` skips the road's own segments in another
+  cell's view (`s.road === road`), and the angled world's `ownSeg` finds the road's segment in its
+  owner cell's view. A view holds the road objects of the cell networks it was made from, so once
+  the reference's cell-network cache (64) or road-view cache (32) has dropped and remade a network,
+  two views can hold different objects for one road: `throughAt` then takes the road's own end for
+  a corner (its node level instead of a through road's), `ownSeg` falls back to the asking segment.
+  The port compares pointers within a view and road ids across views (`same_road`; ids are unique
+  in a view unless a torus has fewer than 3 cells round it), which is the reference's result when
+  nothing is dropped, whatever the cache sizes. The stages run the reference with every cache
+  unbounded (`tools/procgen_ref/lib/roads.mjs` `recordingWorld`).
+- **The road network's stages run on recorded inputs.** The road network reads the cell networks
+  (city stage 1) and the waters (`createWorld`'s `isWet`: rivers, lakes, the island's sea), later
+  stages of the port. Its stages record what the reference reads - the roads of every cell a stage
+  asks for, the questions `isWet` answered yes (any other is dry) - in
+  `tools/procgen_ref/data/<stage>.json`, and the tests serve them through `World::cell_roads` and
+  `World::wet_source` (`tests/city/road_inputs.hpp`; `World::is_wet` is defined by the test until
+  `world/createWorld.cpp` defines it, asking `wet_source` first). The reference's world is
+  `createWorld`'s with its terrain's port grading off (`terrain.portGrade`: the port has no lakes
+  yet) and its base heights made first (`warmAround`). When the cell networks, the waters and the
+  port lakes are ported, the stages can run on the port's own (the recorded roads are what the
+  reference's cell networks make on that terrain) and the port grading comes back on, the port
+  lakes planned first.
