@@ -1,0 +1,479 @@
+:root {
+  color-scheme: dark;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
+  font-size: 12px;
+  --bg: rgba(18, 22, 28, 0.92);
+  --line: rgba(255, 255, 255, 0.12);
+  --dim: #9aa3ad;
+  --accent: #3f6f9a;
+  --accent-line: #7fb2e0;
+}
+html,
+body,
+#root {
+  margin: 0;
+  height: 100%;
+  background: #0f1216;
+  color: #e8e6e0;
+  overflow: hidden;
+}
+.app {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+.viewport {
+  position: absolute;
+  inset: 0;
+  touch-action: none;
+}
+button {
+  background: rgba(20, 24, 30, 0.85);
+  color: #e8e6e0;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 5px 9px;
+  font: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+}
+button:hover {
+  border-color: rgba(255, 255, 255, 0.3);
+}
+button.on {
+  background: var(--accent);
+  border-color: var(--accent-line);
+}
+button.primary {
+  background: #4f7a3f;
+  width: 100%;
+  margin-top: 6px;
+  padding: 7px;
+}
+button.primary.pending {
+  background: #b8762b;
+  border-color: #f0b46a;
+}
+input[type="number"],
+select {
+  background: #0f1216;
+  color: inherit;
+  border: 1px solid #333a44;
+  border-radius: 4px;
+  padding: 4px;
+  font: inherit;
+  min-width: 0;
+}
+input[type="range"] {
+  width: 100%;
+  min-width: 0;
+}
+.small {
+  color: var(--dim);
+  font-size: 11px;
+}
+.dim {
+  color: var(--dim);
+}
+.warn {
+  color: #ff9a6a;
+}
+.ok {
+  color: #8ad08a;
+}
+hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  width: 100%;
+}
+
+/* HUD: modes, map, inspector, panel; readout; status chips */
+.hud {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: calc(100% - 20px);
+  pointer-events: none;
+}
+.hud > * {
+  pointer-events: auto;
+}
+.bar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.seg {
+  display: flex;
+}
+.seg button {
+  border-radius: 0;
+}
+.seg button:first-child {
+  border-radius: 6px 0 0 6px;
+}
+.seg button:last-child {
+  border-radius: 0 6px 6px 0;
+}
+.readout,
+.hint,
+.chip {
+  background: rgba(20, 24, 30, 0.8);
+  border-radius: 6px;
+  padding: 4px 8px;
+  width: fit-content;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+.readout {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+}
+.hint {
+  color: #ffd98a;
+}
+.chip {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  border-left: 3px solid var(--accent-line);
+}
+.chip.warn {
+  border-left-color: #ff9a6a;
+  color: #ffc0a0;
+}
+.chip.ok {
+  border-left-color: #8ad08a;
+}
+.chip button {
+  padding: 2px 6px;
+}
+.crosshair {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 14px;
+  height: 14px;
+  margin: -7px 0 0 -7px;
+  pointer-events: none;
+  background:
+    linear-gradient(#fff, #fff) center / 2px 100% no-repeat,
+    linear-gradient(#fff, #fff) center / 100% 2px no-repeat;
+  mix-blend-mode: difference;
+}
+
+/* the panel: tabs over a scrolling body, always within the window */
+.panel {
+  position: absolute;
+  top: 10px;
+  right: 10px;
+  width: 300px;
+  max-height: calc(100% - 20px);
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.panelHead {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 10px 12px 6px;
+}
+.panelHead h1 {
+  font-size: 15px;
+  margin: 0;
+}
+.panelHead .sub {
+  color: var(--dim);
+}
+button.close {
+  padding: 2px 7px;
+}
+.tabs {
+  display: flex;
+  gap: 2px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+.tabs button {
+  flex: 1;
+  border-radius: 6px 6px 0 0;
+  border-bottom: none;
+  padding: 5px 4px;
+}
+.panelBody {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+.panelBody label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.panelBody label.row {
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
+}
+.row2 {
+  display: flex;
+  gap: 6px;
+  align-items: flex-end;
+}
+.row2 > label,
+.row2 > input {
+  flex: 1;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+.section {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+}
+.sectionHead {
+  display: flex;
+  justify-content: space-between;
+  width: 100%;
+  border: none;
+  background: transparent;
+  padding: 6px 8px;
+  font-weight: bold;
+}
+.sectionBody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0 8px 8px;
+}
+.list {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.list button {
+  text-align: left;
+  white-space: normal;
+  padding: 4px 8px;
+}
+.viewLink {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 5px 8px;
+  color: #e8e6e0;
+  text-decoration: none;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+}
+.viewLink:hover {
+  border-color: var(--accent-line);
+}
+.viewLink span {
+  color: var(--dim);
+  font-size: 10px;
+}
+.groupHead {
+  margin-top: 6px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.markRow {
+  display: flex;
+  gap: 3px;
+}
+.markRow button:first-child {
+  flex: 1;
+}
+.keys {
+  padding: 6px 12px 8px;
+  border-top: 1px solid var(--line);
+}
+.legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.legend i,
+i.dot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  margin-right: 4px;
+  vertical-align: -1px;
+}
+table.stats {
+  border-collapse: collapse;
+  width: 100%;
+}
+table.stats td {
+  padding: 1px 4px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+table.stats thead td {
+  color: var(--dim);
+}
+pre.json {
+  margin: 0;
+  max-height: 260px;
+  overflow: auto;
+  font-size: 10px;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+/* the inspector's answer, bottom left */
+.inspectCard {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  width: 360px;
+  max-width: calc(100% - 20px);
+  box-sizing: border-box;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 0 12px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.inspectCard .panelHead {
+  padding: 8px 0 2px;
+}
+
+/* map and building inspector */
+.mapPanel {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(94vw, 1500px);
+  height: min(88vh, 980px);
+  background: #14181e;
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.mapBar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 10px;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.08);
+}
+.mapBar button {
+  margin-left: auto;
+}
+.mapBody {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+}
+.mapBody canvas {
+  width: 100%;
+  height: 100%;
+  display: block;
+  cursor: crosshair;
+}
+.inspector {
+  position: absolute;
+  right: 10px;
+  top: 10px;
+  width: min(540px, calc(100% - 20px));
+  max-height: calc(100% - 20px);
+  overflow-y: auto;
+  box-sizing: border-box;
+  background: rgba(18, 22, 28, 0.96);
+  border: 1px solid rgba(255, 255, 255, 0.15);
+  border-radius: 10px;
+  padding-bottom: 8px;
+}
+.inspector canvas {
+  display: block;
+  margin: 8px auto;
+  width: min(520px, calc(100% - 16px));
+  height: auto;
+  aspect-ratio: 1;
+}
+.floorTabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+  padding: 6px 10px 0;
+}
+.floorTabs button {
+  padding: 2px 6px;
+}
+.inspector .small {
+  padding: 0 10px;
+}
+
+/* small screens: the panel is a sheet along the bottom, the map fills the window */
+@media (max-width: 720px), (max-height: 520px) {
+  .panel {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: auto;
+    max-height: 62%;
+    border-radius: 12px 12px 0 0;
+  }
+  .keys {
+    display: none;
+  }
+  .hint {
+    display: none;
+  }
+  .mapPanel {
+    width: 100%;
+    height: 100%;
+    border-radius: 0;
+  }
+  .inspectCard {
+    bottom: auto;
+    top: 96px;
+  }
+}
+@media (max-width: 420px) {
+  :root {
+    font-size: 11px;
+  }
+  button {
+    padding: 5px 7px;
+  }
+  .readout .dim {
+    display: none;
+  }
+}
+@media (max-height: 520px) and (min-width: 721px) {
+  .panel {
+    left: auto;
+    width: 300px;
+    top: 0;
+    max-height: 100%;
+    border-radius: 0;
+  }
+}
