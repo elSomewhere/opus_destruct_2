@@ -105,6 +105,13 @@ every tick's hash is the same too, where it was traced):
 
 Every one of them reproduced on 4 threads natively; the short ones (side, rooms, slab,
 chimney) under Node from the WASM build on one thread as well.
+Under Node (Emscripten 6.0.10, 4 threads) every line of `tools/baseline/golden.sh` matches
+too but the `angles` world's (`d8bee4389c71eb64` against `94a83a4f622d8e7e`), before the merge
+as after it: that level places its grids with the platform's `sin`, `cos` and `atan2`
+(`procgen/src/levels.cpp`), which differ in the last bit between glibc and musl. The engine
+itself is not involved, and the city generator's numerics are its own (V8's and fdlibm's,
+docs/CITY.md); moving the level to `dm::` would change its golden hash, so it waits for a step
+that re-baselines.
 
 **The streamed city crossed with fire and water** runs into the memory budgets: the change
 archive's (`StreamConfig::archive_mb`, 64 MB) and the pieces' (`memory.piece_mb`, 256 MB, at the

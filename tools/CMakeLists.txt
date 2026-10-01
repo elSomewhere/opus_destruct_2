@@ -32,6 +32,11 @@ target_link_libraries(svx_stream_bench PRIVATE svx_game svx_procgen)
 svx_wasm_exe_options(svx_stream_bench)
 
 # The drive city's people: their cost by how the bodies are simulated and the crowd's size.
+# A streamed preset driven through at speed: tick distribution, first touches, streaming ahead.
+add_executable(svx_city_bench bench/city_bench.cpp)
+target_link_libraries(svx_city_bench PRIVATE svx_game svx_procgen)
+svx_wasm_exe_options(svx_city_bench)
+
 add_executable(svx_people_bench bench/people_bench.cpp)
 target_link_libraries(svx_people_bench PRIVATE svx_game svx_procgen)
 svx_wasm_exe_options(svx_people_bench)

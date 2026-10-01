@@ -19,5 +19,9 @@
   },
   "tunables": {
     "pretouch_radius": 48
+  },
+  "atmosphere": {
+    "sky": "#b8c9d9",
+    "time_of_day": 13
   }
 }

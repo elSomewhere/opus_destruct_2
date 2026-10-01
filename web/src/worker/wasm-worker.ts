@@ -8,6 +8,7 @@
  * changed chunk meshes, removed chunks and events; stats go out at ~4 Hz.
  */
 import type {
+  Atmosphere,
   CharacterMesh,
   CharacterPalette,
   ChunkMesh,
@@ -27,6 +28,7 @@ import type {
   WorldInfo,
 } from '../engine/protocol.ts';
 import {
+  APPEARANCE_FLOATS,
   BLOOD_DROP_STRIDE,
   BLOOD_STAIN_STRIDE,
   CHAR_VERTEX_STRIDE,
@@ -67,6 +69,8 @@ interface SvxModule {
   _svx_presets(e: number): number;
   _svx_default_preset(): number;
   _svx_preset_atmosphere(e: number): number;
+  _svx_appearance_count(e: number): number;
+  _svx_appearances(e: number): number;
   _svx_load_wad(e: number, data: number, size: number, map: number, mode: number, shell: number): number;
   _svx_last_error(e: number): number;
   _svx_save_delta(e: number, outSize: number): number;
@@ -346,7 +350,24 @@ function worldInfo(texturesSent: boolean): WorldInfo {
     voxelCount: v(6),
     spawn: { pos: [v(7), v(8), v(9)], dir: [v(10), v(11), v(12)] },
     textures: texturesSent,
+    ...lookOf(),
   };
+}
+
+/** The world's appearance table and its preset's atmosphere (absent: none, the defaults). */
+function lookOf(): { appearances?: Float32Array; atmosphere?: Atmosphere } {
+  const m = mod as SvxModule;
+  const out: { appearances?: Float32Array; atmosphere?: Atmosphere } = {};
+  const n = m._svx_appearance_count(eng);
+  const ptr = n > 0 ? m._svx_appearances(eng) : 0;
+  if (ptr) out.appearances = m.HEAPF32.slice(ptr >> 2, (ptr >> 2) + n * APPEARANCE_FLOATS);
+  try {
+    const a: unknown = JSON.parse(m.UTF8ToString(m._svx_preset_atmosphere(eng)));
+    if (a && typeof a === 'object' && Object.keys(a).length > 0) out.atmosphere = a as Atmosphere;
+  } catch {
+    // (malformed: the defaults)
+  }
+  return out;
 }
 
 function sendTextures(): boolean {

@@ -5,7 +5,8 @@
 //                     [--spawn-latency N] [--sync-steps] [--env]
 //   svx_replay play   --world W --log session.svxl --seconds S [--threads T]
 //
-// W: rooms | tower | city (streamed 1 km^2) | wad:PATH:MAP. `record` plays a scripted session
+// W: rooms | tower | city (streamed 1 km^2) | wad:PATH:MAP | preset:ID (docs/PRESETS.md, its
+// own seed: preset:city/angledInfiniteCity). `record` plays a scripted session
 // (a moving viewer; bullet bursts every second and a rocket every 4 s, aimed by a fixed LCG
 // through ray casts into the live world; with --env also a fire every 5 s and a bucket of water
 // every 7 s) and writes the command log. Both modes print the
@@ -26,6 +27,7 @@
 #include "svx/game/replay.hpp"
 #include "svx/procgen/city.hpp"
 #include "svx/procgen/levels.hpp"
+#include "svx/procgen/presets.hpp"
 
 using namespace svx;
 
@@ -53,6 +55,14 @@ bool load_world(Game& eng, const std::string& world, std::string* err) {
     dw.live = &eng.grid();
     doom::attach_doom_movers(eng, dw);
     return true;
+  }
+  if (world.rfind("preset:", 0) == 0) {
+    const Preset* p = find_preset(world.substr(7));
+    if (!p) {
+      *err = "unknown preset " + world.substr(7);
+      return false;
+    }
+    return load_preset(eng, *p, 0, 0.125, err);
   }
   if (world == "city") {
     auto src = make_city_source(1, 1000.0, 0.125);
