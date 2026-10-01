@@ -11,6 +11,8 @@
 #include "nature/rivers.hpp"
 #include "network/highways.hpp"
 #include "terrain/terrain.hpp"
+#include "underground/sewers.hpp"
+#include "underground/subway.hpp"
 #include "world/World.hpp"
 #include "world/fields.hpp"
 #include "world/island.hpp"
@@ -55,6 +57,16 @@ std::shared_ptr<World> create_world(const Value& config) {
   const Value& highways = w.config["highways"]["enabled"];
   if (!(highways.is_bool() && !highways.truthy())) w.highways = std::make_shared<HighwayNetwork>(w);
   // (underground/subway: the subway unless config.subway.enabled is false)
+  // (the subway and the sewers read the street level, createWorld.js's world.streetLevel:
+  // World::street_level, network/roadLevel)
+  const StreetLevel street_level = [wp](double x, double y) { return wp->street_level(x, y); };
+  const Value& subway_on = w.config["subway"]["enabled"];
+  if (!(subway_on.is_bool() && !subway_on.truthy())) w.subway = std::make_shared<Subway>(w, street_level);
+  w.sewers = std::make_shared<Sewers>(w, street_level);
+  // (their feature sources: sewers - kSewerSourceId, order kSewerSourceOrder, max_lod
+  // kSewerSourceMaxLod: sewer_z_range, and sewer_rasterize over sewer_columns(tile) - and, with a
+  // subway, subway - kSubwaySourceId, kSubwaySourceOrder, kSubwaySourceMaxLod: subway_z_range and
+  // subway_rasterize; wrapped once voxel/compose's GroundTile exists)
   // (underground/sewers: the sewers)
   // (world/sites: the site layer)
   // (sites/links: the site links)
@@ -144,6 +156,14 @@ std::optional<Shore> World::shore_near(double x, double y, double max_dist) cons
 
 bool World::water_hits_rect(const Rect& r, double margin_m) const {
   return sea_hits_rect(r, margin_m) || rivers->hits_rect(r, margin_m) || lakes->hits_rect(r, margin_m);
+}
+
+// Openings in the ground (subway / sewer stairs, open manholes) that street props must avoid. (A
+// World without sewers - World.js's, which has no blocksSurface: its callers ask
+// `world.blocksSurface && world.blocksSurface(x, y)` - has none.)
+bool World::blocks_surface(double x, double y) const {
+  if (!sewers) return false;
+  return (subway ? subway->blocks_surface(x, y) : false) || sewers->blocks_surface(x, y);
 }
 
 }  // namespace svx::city
