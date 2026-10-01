@@ -3,7 +3,9 @@
 // its style (buildings/civic.js): every entry's data in registration order, classifyDistrict on
 // sample macro fields, flavorOf on sample settlements, flavoredDistrict for every district and
 // flavor (village flavors too), flavoredDistrictId on sample places, resolveStyle, civicGroup,
-// civicStyle and the civic archetypes' fits and envelopes on seeded streams.
+// civicStyle and the civic archetypes' fits and envelopes on seeded streams; the archetypes of
+// buildings/archetypes.js too (their fits; their envelopes need a lot and a district: stage
+// "archetypes").
 //
 // The registries hold what the port registers (world/register_all.cpp): the registering modules
 // it has ported, imported here in the reference's order (docs/CITY.md §2.2). What flavoredDistrict
@@ -17,6 +19,7 @@ const D = await import(REF + "city/districts.js");
 const F = await import(REF + "city/flavors.js");
 const S = await import(REF + "buildings/styles.js");
 const C = await import(REF + "buildings/civic.js");
+await import(REF + "buildings/archetypes.js");
 const { Rng } = await import(REF + "core/hash.js");
 
 /** A weighted list: [id:weight,...]. */
@@ -138,6 +141,7 @@ export default function* registries() {
     const fits = [];
     for (let U = 40; U <= 640; U += 40) for (let V = 40; V <= 640; V += 60) fits.push(a.fits(U, V) ? 1 : 0);
     yield line("arch", a.id, a.label, !!a.civic, fits.join(""), !!a.entranceU);
+    if (!a.civic) continue;
     for (let k = 0; k < 40; k += 1) {
       const U = 60 + Math.floor(r() * 700);
       const V = 60 + Math.floor(r() * 700);

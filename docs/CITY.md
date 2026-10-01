@@ -52,6 +52,10 @@ exports, natively and in WASM, on any thread count.
 | road levels | `network/roadLevel.js`; createWorld's `streetLevel` | `network/roadLevel.*` (`World::street_level`) | stage `roadlevel` (recorded roads: §6); tests (any order, views dropped and remade, 4 threads) |
 | pitched road pieces | `network/roadParts.js` | `network/roadParts.*` | stage `roadparts` (recorded roads and waters) |
 | highways, their feature source | `network/highways.js` | `network/highways.*` (`HighwayNetwork`, installed by `create_world`; `highway_z_range` and `rasterize_highways` over the ground tile's z, for compose to wrap as a `FeatureSource`); the town plans' corridor test (`city/townPlan.cpp`) | stage `highways` (recorded roads and waters); tests (4 threads) |
+| building archetypes and envelopes | `buildings/archetypes.js` | `buildings/archetypes.*` (the 17 after civic's; `plan_building_envelope`, its finalize), `city/lots.hpp` (the lot record, what the archetypes read) | stages `archetypes`, `registries` |
+| house, cabin and unit planners | `buildings/interior/{houses,cabins,units}.js`, plan.js's `PlanBuilder` | `buildings/interior/{houses,cabins,units}.*`, `buildings/interior/plan.*` (the builder's floors, grids and stairs: the rest of plan.js comes with the interior planners) | stages `houses`, `units` |
+| facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
+| sample buildings | `buildings/sample.js` | `buildings/sample.*` (`stage_archetype` reads a world through `StageWorld`, `StagedEnvelopes`, until the cell plan is ported) | stage `sample` |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -317,3 +321,8 @@ so that it stays the oracle.
   a `create_world` World's own cell networks and waters instead, the port grading on (the
   reference's terrain made pure with `pureTerrain`); the recorded roads are those of a createWorld
   world whose terrain has no port grading, so a harbour town's may differ from them.
+- **A building's look asked with two seeds** (`buildings/facade.js` `buildingLook`): the reference
+  keeps the look per envelope (a WeakMap) whatever seed asks, so a second seed would get the first
+  one's look; the port keeps it on the envelope too (`Envelope::look_cache`) and fails
+  (`SVX_FAIL`) when another seed asks, so a look never depends on which seed asked first. An
+  envelope belongs to one world: generation never asks twice.

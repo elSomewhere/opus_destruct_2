@@ -1,3 +1,4 @@
+archetypes 6efe822a9dc40fa7
 arterials 09ffd9590dee63af
 biomes 0ef5fa2a143f0413
 blockpoly 562ea3982a8cffbb
@@ -9,10 +10,12 @@ chunk 7188c6951d1dc531
 civicrules fa7eaad6cb1d3bba
 config ae3c0966cb0080c5
 core 57dc6906f3179ec1
+facade d372d84089697f25
 fields 26ac01c10ebca0ab
 floorgrid 529d0f7292c4e613
 frames b7256c507fcb4722
 highways a501cce38796defe
+houses 5de0f5d6561b491b
 ids 4edd32b9f8a56a72
 industry 55bdd13e70a1d7c0
 island 6de5e618c06b37ce
@@ -21,15 +24,17 @@ materials 1548a45e43d835c7
 parts e6c577354df3c3aa
 prefabs be78153eebbbfcd4
 propprefabs e837f71550abda52
-registries e668ce720c82c54f
+registries b2279fc3c2bc9b8d
 roadlevel 1ec8ff8f4d437c7f
 roadparts ad578b9772320ed6
 roadsurface 4a413582db95472a
 roadview 802898ee5fbc3878
+sample 2388dc3056a18299
 season 8b71362d13e49396
 stairs 721acd61aa53f91b
 streets 178f2000a7efc043
 svxmat 6929dc45e6f5ddd2
 terrain b7eb60e0c562cdee
 townplan 8bb64c2e7c9f0a7c
+units 84535102ced7d220
 water 85e6c4a02754c63a

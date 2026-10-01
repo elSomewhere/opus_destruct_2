@@ -1,6 +1,6 @@
 // svx_city tests — the data registries (voxel_city city/districts.js, city/flavors.js,
-// buildings/styles.js, buildings/civic.js) and what reads them, against the reference (stage
-// "registries" of tools/procgen_ref).
+// buildings/styles.js, buildings/civic.js, the archetypes of buildings/archetypes.js) and what
+// reads them, against the reference (stage "registries" of tools/procgen_ref).
 #include <doctest.h>
 
 #include "buildings/archetype_registry.hpp"
@@ -269,6 +269,7 @@ TEST_CASE("city registries: districts, flavors, styles and the civic table are t
     for (double U = 40; U <= 640; U += 40)
       for (double V = 40; V <= 640; V += 60) fits += a.fits(U, V) ? '1' : '0';
     out << (Line() << "arch" << a.id << str_or_undef(a.label) << a.civic << fits << static_cast<bool>(a.entrance_u));
+    if (!a.civic) continue;  // (the others' envelopes need a lot and a district: stage "archetypes")
     for (int k = 0; k < 40; ++k) {
       const double U = 60 + std::floor(r() * 700);
       const double V = 60 + std::floor(r() * 700);
@@ -294,7 +295,10 @@ TEST_CASE("city registries: registration order is the reference's") {
   CHECK(flavor_registry().size() == 9);
   CHECK(style_registry().size() == 20);
   CHECK(style_registry().all().back().id == "classical");
+  CHECK(archetype_registry().size() == 34);
   CHECK(archetype_registry().all().front().id == "supermarket");
+  CHECK(archetype_registry().all()[17].id == "house");
+  CHECK(archetype_registry().all().back().id == "church");
   CHECK(district_registry().get("oldcore").pitched == 0.85);
   FlavorSettlement v;
   v.village = true;
