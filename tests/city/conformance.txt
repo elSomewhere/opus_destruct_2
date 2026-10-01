@@ -4,6 +4,8 @@ civicrules fa7eaad6cb1d3bba
 config ae3c0966cb0080c5
 core 57dc6906f3179ec1
 floorgrid 529d0f7292c4e613
+industry 55bdd13e70a1d7c0
 materials 1548a45e43d835c7
 prefabs be78153eebbbfcd4
+propprefabs e837f71550abda52
 stairs 721acd61aa53f91b

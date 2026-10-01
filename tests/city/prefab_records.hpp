@@ -1,5 +1,6 @@
-// svx_city tests — record formats shared by the prefab stages (prefabs, civicrules): optional
-// fields as the reference's f() prints them ("-" for undefined) and a furniture prefab's options.
+// svx_city tests — record formats shared by the prefab stages (prefabs, civicrules, industry,
+// propprefabs): optional fields as the reference's f() prints them ("-" for undefined), a
+// furniture prefab's options and a prop's options.
 #pragma once
 
 #include <optional>
@@ -7,6 +8,7 @@
 #include <vector>
 
 #include "buildings/interior/prefabs.hpp"
+#include "city/industry.hpp"
 #include "core/js.hpp"
 
 namespace svx::city::irec {
@@ -29,6 +31,12 @@ inline std::string prefab_opts(const PrefabOpts& o) {
   return js::cat(fo(o.w), ",", fo(o.d), ",", fo(o.monitor), ",", fo(o.hood), ",", fo(o.upper), ",", fo(o.screen), ",", fo(o.metal), ",", fo(o.steel), ",",
                  fo(o.double_), ",", fo(o.band), ",", fo(o.piano), ",", goods, ",", fo(o.h), ",", fo(o.top), ",", fo(o.curtain), ",", fo(o.seat), ",",
                  fo(o.frame));
+}
+
+// A prop's options as the stages print them: h, reach, pole, r, seed, n, hw, len, span, plinth.
+inline std::string prop_opts(const PropOpts& o) {
+  return js::cat(fo(o.h), ",", fo(o.reach), ",", fo(o.pole), ",", fo(o.r), ",", fo(o.seed), ",", fo(o.n), ",", fo(o.hw), ",", fo(o.len), ",", fo(o.span), ",",
+                 fo(o.plinth));
 }
 
 }  // namespace svx::city::irec
