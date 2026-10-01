@@ -1,6 +1,7 @@
 // svx_city tests — the records of the road network's stage "svxroads" (tools/procgen_ref/stages/
 // svxroads.mjs is the Node twin): the worlds as the export makes them, the boxes round the spawn, a
-// town, a village and highway ramps, and the lines of lanes, walks and parking places.
+// town, a village, highway ramps and a highway junction, and the lines of lanes, walks and parking
+// places.
 #pragma once
 
 #include <array>
@@ -54,7 +55,8 @@ struct RoadBox {
 };
 // The boxes of a world (svxroads.mjs boxesOf): round the spawn (500 m), round the first town and
 // the first village whose centre lies over 400 m from the spawn (240 m), round the landings of the
-// first two ramps within 1.5 km of the spawn (160 m).
+// first two ramps within 1.5 km of the spawn (160 m), round the highway junction or terminus
+// nearest the spawn (200 m).
 inline std::vector<RoadBox> road_boxes(const World& w) {
   std::vector<RoadBox> out{{"spawn", {-250, -250}, {250, 250}}};
   const MacroFields& F = *w.fields;
@@ -77,6 +79,23 @@ inline std::vector<RoadBox> road_boxes(const World& w) {
         out.push_back({"ramp", {to_m(r.x) - 80, to_m(r.y) - 80}, {to_m(r.x) + 80, to_m(r.y) + 80}});
         n += 1;
       }
+    // (the lattice node nearest the spawn where other than two highways meet: a junction, a terminus)
+    bool found = false;
+    double best_d = 0, best_x = 0, best_y = 0;
+    for (double b = -3; b <= 3; b += 1)
+      for (double a = -3; a <= 3; a += 1) {
+        const size_t deg = w.highways->edges_at(a, b).size();
+        if (deg == 0 || deg == 2) continue;
+        const HighwayNode p = w.highways->node(a, b);
+        const double d = js::hypot(p.x, p.y);
+        if (!found || d < best_d) {
+          found = true;
+          best_d = d;
+          best_x = p.x;
+          best_y = p.y;
+        }
+      }
+    if (found) out.push_back({"node", {to_m(best_x) - 100, to_m(best_y) - 100}, {to_m(best_x) + 100, to_m(best_y) + 100}});
   }
   return out;
 }

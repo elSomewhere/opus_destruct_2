@@ -3,11 +3,12 @@
 // them (svx/source.js createSvxSource: makeConfig, the angled world's parts apart), the terrain
 // made pure (lib/worlds.mjs pureTerrain) and the World's caches unbounded (one object per road:
 // docs/CITY.md §6, road identity). One network per world, asked in a fixed order: in boxes round
-// the spawn, a town and a village, and highway ramps, every lane (its key), the way on from it
-// (next), its signal and green over a cycle, the lanes it leads to as lane(id) has them; every
-// walk, the walks at its ends (walkNext), walkOpen over a cycle, the walks they are (walk(id));
-// every parking place. And the answers for ids not (yet) handed out (lane(id) knows only the lanes
-// handed out: the roads lanesIn and next have touched). tests/city/test_svxroads.cpp is the twin.
+// the spawn, a town and a village, highway ramps and a highway junction, every lane (its key), the
+// way on from it (next), its signal and green over a cycle, the lanes it leads to as lane(id) has
+// them; every walk, the walks at its ends (walkNext), walkOpen over a cycle, the walks they are
+// (walk(id)); every parking place. And the answers for ids not (yet) handed out (lane(id) knows
+// only the lanes handed out: the roads lanesIn and next have touched), and a region round the
+// spawn whole (region). tests/city/test_svxroads.cpp is the twin.
 import { REF, line } from "../lib/rec.mjs";
 import { pureTerrain } from "../lib/worlds.mjs";
 
@@ -50,7 +51,8 @@ export function exportWorld(id, size) {
 /**
  * The boxes of a world ([tag, lo, hi], metres): round the spawn (500 m), round the first town and
  * the first village (settlementsIn, villagesIn) whose centre lies over 400 m from the spawn (240
- * m), round the landings of the first two ramps within 1.5 km of the spawn (160 m).
+ * m), round the landings of the first two ramps within 1.5 km of the spawn (160 m), round the
+ * highway junction or terminus nearest the spawn (200 m).
  */
 export function boxesOf(w) {
   const out = [["spawn", [-250, -250], [250, 250]]];
@@ -68,6 +70,17 @@ export function boxesOf(w) {
         out.push(["ramp", [m(r.x) - 80, m(r.y) - 80], [m(r.x) + 80, m(r.y) + 80]]);
         n += 1;
       }
+    // (the lattice node nearest the spawn where other than two highways meet: a junction, a terminus)
+    let best = null;
+    for (let b = -3; b <= 3; b += 1)
+      for (let a = -3; a <= 3; a += 1) {
+        const deg = w.highways.edgesAt(a, b).length;
+        if (deg === 0 || deg === 2) continue;
+        const p = w.highways.node(a, b);
+        const d = Math.hypot(p.x, p.y);
+        if (!best || d < best.d) best = { d, x: p.x, y: p.y };
+      }
+    if (best) out.push(["node", [m(best.x) - 100, m(best.y) - 100], [m(best.x) + 100, m(best.y) + 100]]);
   }
   return out;
 }
