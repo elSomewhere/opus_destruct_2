@@ -18,6 +18,8 @@ add_executable(svx_core_tests
   core/test_columns.cpp
   core/test_seams.cpp
   core/test_decorative.cpp
+  core/test_layer_kinds.cpp
+  core/test_pretouch.cpp
   core/test_config.cpp)
 target_include_directories(svx_core_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
 target_link_libraries(svx_core_tests PRIVATE svx_core)

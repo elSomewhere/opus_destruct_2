@@ -43,7 +43,7 @@ ChunkMesh mesh_water(const VoxelGrid& g, int L, const IVec3& cc) {
   out.chunk = cc;
   const Chunk* c = g.chunk(cc);
   if (!c || L < 0 || L >= kMaxLayers || c->layer[size_t(L)].empty()) return out;
-  const std::vector<u8>& a = c->layer[size_t(L)];
+  const LayerValues& a = c->layer[size_t(L)];
   const f64 h = g.h;
   const IVec3 base{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
   // (inside the chunk: its arrays; outside: the grid)

@@ -78,7 +78,9 @@ class ChunkSource {
   virtual u64 region(const IVec3& chunk) const { return key3(chunk[0] >> 3, chunk[1] >> 3, 0); }
   // The values of a layer (World::add_layer) the source makes, e.g. "water" for its lakes and
   // seas: kChunkVox values in Chunk::v order; false: none (all zero). Called from the world's
-  // thread after generate().
+  // thread after generate() - and, for a regenerable layer (LayerSpec::regenerable: a city's
+  // looks), whenever its values are read and not cached, from any thread: a pure function of
+  // (chunk, layer). A layer's one value over a whole chunk is kept as one (a lake's water).
   virtual bool generate_layer(const IVec3& chunk, const std::string& layer, std::vector<u8>& out) const {
     (void)chunk, (void)layer, (void)out;
     return false;
@@ -96,6 +98,9 @@ class ChunkSource {
     (void)id, (void)out;
     return false;
   }
+  // What the source holds now (bytes: a generator's caches of plans), reported with the world's
+  // memory (MemoryReport::sources). Called from the world's thread.
+  virtual i64 memory_bytes() const { return 0; }
   // The joints at home in a chunk (docs/MOTION.md: a machine's, a hanging part's): made when the
   // chunk's grids are, their anchors on those grids' voxels or the world grid's. A machine that
   // went out of range is archived as it was, with its joints, and comes back so: its source's

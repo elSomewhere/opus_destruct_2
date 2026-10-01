@@ -119,7 +119,7 @@ WaterConfig sanitized(WaterConfig c) {
 bool held(const World& w, int L, const Chunk& c, const IVec3& cc, i32 i) {
   const IVec3 l{i / (kChunk * kChunk), (i / kChunk) % kChunk, i % kChunk};
   constexpr int kHold[5][3] = {{0, 0, -1}, {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}};
-  const std::vector<u8>& a = c.layer[size_t(L)];
+  const LayerValues& a = c.layer[size_t(L)];
   for (const auto& d : kHold) {
     const IVec3 q{l[0] + d[0], l[1] + d[1], l[2] + d[2]};
     const IVec3 p{cc[0] * kChunk + q[0], cc[1] * kChunk + q[1], cc[2] * kChunk + q[2]};
@@ -210,7 +210,7 @@ void WaterSystem::wake_chunk(const World& w, u64 k) {
   const Chunk* c = w.grid().chunk(unkey3(k));
   if (!c || water_ < 0 || c->layer[size_t(water_)].empty()) return;
   const IVec3 cc = unkey3(k);
-  const std::vector<u8>& a = c->layer[size_t(water_)];
+  const LayerValues& a = c->layer[size_t(water_)];
   for (i32 i = 0; i < kChunkVox; ++i)
     if (a[size_t(i)] && !(a[size_t(i)] == 255 && held(w, water_, *c, cc, i))) {
       const IVec3 l{i / (kChunk * kChunk), (i / kChunk) % kChunk, i % kChunk};
@@ -485,7 +485,7 @@ void WaterSystem::chunk_loads(const World& w, const IVec3& cc, std::vector<Voxel
   }
   if (!free_near) return;
   const f64 h = w.voxel_size(), rg = cfg_.density * kG;
-  const std::vector<u8>& a = c->layer[size_t(water_)];
+  const LayerValues& a = c->layer[size_t(water_)];
   for (i32 i = 0; i < kChunkVox; ++i) {
     if (!a[size_t(i)]) continue;
     const IVec3 p{cc[0] * kChunk + i / (kChunk * kChunk), cc[1] * kChunk + (i / kChunk) % kChunk, cc[2] * kChunk + i % kChunk};
