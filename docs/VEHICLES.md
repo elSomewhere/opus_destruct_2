@@ -16,6 +16,7 @@ describes how the game builds them on those, and how to use them.
 | Parts | `game/src/vehicle_models.cpp` on the core's joints ([`DAMAGE.md`](DAMAGE.md) §5) | doors, bonnet, boot, bumpers, cargo on latched hinges and fixed joints |
 | Game | `game/src/vehicles.cpp`, `vehicle_models.cpp`, `traffic.cpp` | models, drivetrain, player driving, traffic |
 | City | `procgen/src/drive_city.cpp` (`svx_procgen`) | the endless city with roads, lanes, signals, parking |
+| City roads | `procgen/src/city_roads.cpp` (`svx_procgen`) over `svx_city` | the world generator's streets, highways, walkways and parking as a `RoadNetwork` |
 | C ABI | `game/src/api/svx_api.cpp` (the core's own: `core/src/capi/svx_core.cpp`) | vehicles, drive, shoot, traffic (wheels) |
 | Front end | `web/src/game/driving.ts`, `vehicles.ts`, `vehicle-effects.ts`, `web/src/render/wheels.ts`, `skids.ts` | controls, cameras, wheels, skid marks, effects, HUD |
 
@@ -142,6 +143,23 @@ there, whatever its speed, and the car itself is a focus of the streaming (and t
 the traffic) whatever the host's viewer says: a host that falls behind never sees the car it
 drives archived out of range.
 
+**The city's road network** (`procgen/src/city_roads.cpp`, `CityRoadNetwork`; the generator's
+side: [`CITY.md`](CITY.md)). The world generator's streets, highways, walkways and kerbside parking
+(`svx_city`'s port of voxel_city's export, `svx/city/roads.hpp`) as a `RoadNetwork` over a city
+world (`city::make_world`): the drive city's conventions - keep right, turn codes (right
+clockwise), lanes cut at junctions and bends, stopping at the kerb line of the road met - with a
+city's variety: one to two lanes each way, medians, graded streets and their pitched pieces (lanes
+carry `z`), highway decks (27.8 m/s) and their ramps landing on arterials, junctions of any
+number of roads, signals of one 17 s phase per heading of a junction's roads (green 14 s;
+unsignalled junctions always green), crossings open the first 4 s of the phase after their road's,
+sidewalks corner to corner with an inset towards the buildings, walks down alleys and old-town
+lanes (no traffic on them), parking places every 6 m in the parking strips. Ids are stable 52-bit
+integers of structural keys; queries answer in id order; a lane's (walk's) id is known to `lane`
+(`walk`) once a query has handed it out (`lanes_in`, `next`, `walks_in`, `walk_next`), the most
+recent roads' when the network's bounds are reached (`city::RoadNetworkOptions`). Thread-safe.
+`tests/game/test_city_roads.cpp` checks what the traffic and the pedestrians rely on. Not yet
+streamed: the city's `GameSource` (its chunks) comes later and will return it from `roads()`.
+
 ## Using it
 
 C++ (`svx::Game`):
@@ -255,6 +273,10 @@ Measured natively on 4 threads in the drive city: a building's first touch is ~0
   car's side tears its door off (the car keeps its id), and a removed car takes the parts
   still on it along; at 100 km/h a car does not pass through a loose slab 12.5 cm thick; a car
   driven over a bridge has its deck solved again a few times a second, not at every fragment.
+- `tests/game/test_city_roads.cpp`: the world generator's roads - lanes in a box in a stable
+  order, every lane near the spawn leading on, walks joined at their corners, crossings opening
+  only while the traffic they cross is held, parking at lanes' kerbsides, the same answers from
+  four threads.
 - `tests/game/test_drive_city.cpp`: lanes on asphalt between kerbs, markings, parking, turns
   that lead on; streamed traffic drives and parks, nothing falls through the road, and no
   driving car loses a part; the player's car stays in the world while the host's viewer lags
