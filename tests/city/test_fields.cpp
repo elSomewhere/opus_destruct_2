@@ -34,8 +34,8 @@ void id_or_undef(Line& l, const Settlement* s) {
 TEST_CASE("city fields: the macro fields conform to the reference (stage fields)") {
   rec::Samples r(29);
   rec::Out out;
-  for (const test::WorldSpec& ws : test::worlds()) {
-    const World w(test::world_overrides(ws));
+  for (const test::WorldCase& ws : test::all_worlds()) {
+    const World w(ws.overrides);
     const MacroFields& F = *w.fields;
     out << (Line() << "fields" << ws.key << F.n_town << F.n_village << std::vector<double>{F.m_off[0], F.m_off[1]} << (F.island != nullptr) << F.wrap.on);
     for (const Settlement* s : F.settlements_in({-400000, -400000, 400000, 400000})) rec_line(out, "town", s);

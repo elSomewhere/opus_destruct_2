@@ -1,6 +1,10 @@
 // The worlds the stages of the world base sample (tests/city/worlds.hpp is the C++ twin): every
 // golden preset and size variant of the reference (scripts/lib/golden.js GOLDEN_PRESETS), plus two
 // angled presets. [key, preset id, size id | null].
+import { REF } from "./rec.mjs";
+
+const { presetConfig } = await import(REF + "config/presets.js");
+
 export const WORLDS = [
   ["cities", "cities", null],
   ["infiniteCity", "infiniteCity", null],
@@ -23,6 +27,33 @@ export const WORLDS = [
   ["angledCities", "angledCities", null],
   ["angledOldHarbourTown", "angledOldHarbourTown", null],
 ];
+
+/**
+ * Worlds beyond the presets, as config overrides (JSON, parsed alike by both sides): other seeds,
+ * a torus without latitude, other cube faces, islands without highlands or fjords, tiny and
+ * desert islands (the main town's fallback site), deserts, a wet planet face, mountains
+ * everywhere, spawn-mountain ranges no offset can meet (the offset's fallbacks).
+ */
+export const EXTRA_WORLDS = [
+  ["seed7", '{"seed":7}'],
+  ["torusInfinite", '{"seed":99,"world":{"mode":"infiniteCity","chart":"torus","size":30000,"latitude":false}}'],
+  ["cube2", '{"seed":2024,"world":{"chart":"cube","planet":{"radius":120000,"face":2}}}'],
+  ["islandFlat", '{"seed":5,"world":{"mode":"island","island":{"radius":3000,"highlands":0,"fjords":0,"skerries":0,"population":60000,"towns":2,"villages":3,"hamlets":3}}}'],
+  ["islandDesert", '{"seed":11,"world":{"mode":"island","island":{"radius":12000,"highlands":0.9,"fjords":1,"cliffs":0.9,"elongation":3,"roughness":1,"townRise":20},"climate":{"temperature":0.7,"moisture":0.2}}}'],
+  ["desert", '{"seed":3,"world":{"climate":{"temperature":0.75,"temperatureVar":0.05,"moisture":0.15}}}'],
+  ["islandTiny", '{"seed":13,"world":{"mode":"island","island":{"radius":1500,"population":500,"peak":300}}}'],
+  ["islandCrowded", '{"seed":21,"world":{"mode":"island","island":{"radius":900,"population":30000,"highlands":0.95}}}'],
+  ["spawnNear", '{"seed":8,"terrain":{"spawnMountains":[1,2]}}'],
+  ["spawnFar", '{"seed":9,"terrain":{"spawnMountains":[300,400]}}'],
+  ["allMountains", '{"seed":4,"terrain":{"mountainBelt":[0,0.01]}}'],
+  ["cube5Wet", '{"seed":-12345,"world":{"chart":"cube","planet":{"radius":240000,"face":5},"climate":{"moisture":0.9}}}'],
+  ["islandBeaches", '{"seed":31,"world":{"mode":"island","season":"winter","island":{"radius":5000,"fjords":0.3,"skerries":1,"cliffs":0}}}'],
+];
+
+/** Every world of the world base's stages as [key, config overrides]: WORLDS (presetConfig), then EXTRA_WORLDS. */
+export function allWorlds() {
+  return [...WORLDS.map(([key, id, size]) => [key, presetConfig(id, { size })]), ...EXTRA_WORLDS.map(([key, json]) => [key, JSON.parse(json)])];
+}
 
 /** The golden sample points (metres): the spawn town's centre, its streets, the outskirts, open country, far away. */
 export const GOLDEN_POINTS = [

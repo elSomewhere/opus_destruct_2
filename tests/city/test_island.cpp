@@ -15,9 +15,9 @@ using rec::Line;
 TEST_CASE("city island: island plans conform to the reference (stage island)") {
   rec::Samples r(31);
   rec::Out out;
-  for (const test::WorldSpec& ws : test::worlds()) {
-    if (make_config(test::world_overrides(ws))["world"]["mode"].str() != "island") continue;
-    const World w(test::world_overrides(ws));
+  for (const test::WorldCase& ws : test::all_worlds()) {
+    if (make_config(ws.overrides)["world"]["mode"].str() != "island") continue;
+    const World w(ws.overrides);
     const IslandPlan& P = *w.fields->island;
     out << (Line() << "plan" << ws.key << P.R << P.theta << P.a << P.b << P.cos_ << P.sin_ << P.hdx << P.hdy << P.fjord_count << P.fjord_phase << P.ox
                    << P.oy << P.high_threshold);

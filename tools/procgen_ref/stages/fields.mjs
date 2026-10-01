@@ -1,21 +1,21 @@
-// Stage "fields": the macro fields (world/fields.js) of every world of lib/worlds.mjs - the
-// settlement and village records (lattices and laps, or an island's places), and at sample points
-// urbanization (u, core, settlement, parts, prox), proximity, mountainness, climate, the district,
-// industry, style and fringe noises, the settlement warp and distances, the coast distance and the
-// nearest places; settlementsIn / villagesIn over rects.
+// Stage "fields": the macro fields (world/fields.js) of every world of lib/worlds.mjs
+// (allWorlds: the presets and the extra worlds) - the settlement and village records (lattices and
+// laps, or an island's places), and at sample points urbanization (u, core, settlement, parts,
+// prox), proximity, mountainness, climate, the district, industry, style and fringe noises, the
+// settlement warp and distances, the coast distance and the nearest places; settlementsIn /
+// villagesIn over rects.
 import { REF, line, samples } from "../lib/rec.mjs";
-import { WORLDS, samplePoints, settlementFields } from "../lib/worlds.mjs";
+import { allWorlds, samplePoints, settlementFields } from "../lib/worlds.mjs";
 
 const { World } = await import(REF + "world/World.js");
-const { presetConfig } = await import(REF + "config/presets.js");
 
 const rec = (tag, s) => (s ? line(tag, ...settlementFields(s)) : line(tag, "-"));
 const ids = (list) => list.map((s) => s.id);
 
 export default function* fields() {
   const r = samples(29);
-  for (const [key, id, size] of WORLDS) {
-    const w = new World(presetConfig(id, { size }));
+  for (const [key, overrides] of allWorlds()) {
+    const w = new World(overrides);
     const F = w.fields;
     yield line("fields", key, F.nTown, F.nVillage, F.mOff, !!F.island, F.wrap.on);
     for (const s of F.settlementsIn({ x0: -400000, y0: -400000, x1: 400000, y1: 400000 })) yield rec("town", s);

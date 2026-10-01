@@ -25,8 +25,8 @@ void stream_of(Line& l, const std::optional<Stream>& s) {
 TEST_CASE("city terrain: the terrain conforms to the reference (stage terrain)") {
   rec::Samples r(37);
   rec::Out out;
-  for (const test::WorldSpec& ws : test::worlds()) {
-    const World w(test::world_overrides(ws));
+  for (const test::WorldCase& ws : test::all_worlds()) {
+    const World w(ws.overrides);
     const Terrain& T = *w.terrain;
     std::string forms;
     for (const Terrain::Form& f : T.forms()) forms += (forms.empty() ? "" : ",") + f.lf->id;

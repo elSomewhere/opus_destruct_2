@@ -8,6 +8,7 @@
 #include <vector>
 
 #include "config/presets.hpp"
+#include "svx/base/types.hpp"
 #include "core/value.hpp"
 #include "records.hpp"
 #include "world/World.hpp"
@@ -50,6 +51,52 @@ inline const std::vector<WorldSpec>& worlds() {
 
 // presetConfig(id, { size }) (JS's size null: the preset's default).
 inline Value world_overrides(const WorldSpec& w) { return preset_config(w.id, w.size); }
+
+// Worlds beyond the presets, as config overrides (JSON, parsed alike by both sides): other seeds,
+// a torus without latitude, other cube faces, islands without highlands or fjords, tiny and
+// desert islands (the main town's fallback site), deserts, a wet planet face, mountains
+// everywhere, spawn-mountain ranges no offset can meet (lib/worlds.mjs EXTRA_WORLDS).
+struct ExtraWorld {
+  const char* key;
+  const char* json;
+};
+inline const std::vector<ExtraWorld>& extra_worlds() {
+  static const std::vector<ExtraWorld> w = {
+      {"seed7", R"({"seed":7})"},
+      {"torusInfinite", R"({"seed":99,"world":{"mode":"infiniteCity","chart":"torus","size":30000,"latitude":false}})"},
+      {"cube2", R"({"seed":2024,"world":{"chart":"cube","planet":{"radius":120000,"face":2}}})"},
+      {"islandFlat",
+       R"({"seed":5,"world":{"mode":"island","island":{"radius":3000,"highlands":0,"fjords":0,"skerries":0,"population":60000,"towns":2,"villages":3,"hamlets":3}}})"},
+      {"islandDesert",
+       R"({"seed":11,"world":{"mode":"island","island":{"radius":12000,"highlands":0.9,"fjords":1,"cliffs":0.9,"elongation":3,"roughness":1,"townRise":20},"climate":{"temperature":0.7,"moisture":0.2}}})"},
+      {"desert", R"({"seed":3,"world":{"climate":{"temperature":0.75,"temperatureVar":0.05,"moisture":0.15}}})"},
+      {"islandTiny", R"({"seed":13,"world":{"mode":"island","island":{"radius":1500,"population":500,"peak":300}}})"},
+      {"islandCrowded", R"({"seed":21,"world":{"mode":"island","island":{"radius":900,"population":30000,"highlands":0.95}}})"},
+      {"spawnNear", R"({"seed":8,"terrain":{"spawnMountains":[1,2]}})"},
+      {"spawnFar", R"({"seed":9,"terrain":{"spawnMountains":[300,400]}})"},
+      {"allMountains", R"({"seed":4,"terrain":{"mountainBelt":[0,0.01]}})"},
+      {"cube5Wet", R"({"seed":-12345,"world":{"chart":"cube","planet":{"radius":240000,"face":5},"climate":{"moisture":0.9}}})"},
+      {"islandBeaches", R"({"seed":31,"world":{"mode":"island","season":"winter","island":{"radius":5000,"fjords":0.3,"skerries":1,"cliffs":0}}})"},
+  };
+  return w;
+}
+
+// Every world of the world base's stages: the presets (worlds()), then the extra worlds
+// (lib/worlds.mjs allWorlds).
+struct WorldCase {
+  std::string key;
+  Value overrides;
+};
+inline std::vector<WorldCase> all_worlds() {
+  std::vector<WorldCase> out;
+  for (const WorldSpec& w : worlds()) out.push_back({w.key, world_overrides(w)});
+  for (const ExtraWorld& e : extra_worlds()) {
+    Value v;
+    if (!Value::parse_json(e.json, &v)) SVX_FAIL("worlds: an extra world's JSON does not parse");
+    out.push_back({e.key, v});
+  }
+  return out;
+}
 
 // The golden sample points (metres).
 constexpr std::array<std::array<double, 2>, 5> kGoldenPoints = {{{0, 0}, {180, -140}, {1400, 900}, {-3200, 2600}, {7000, -5200}}};

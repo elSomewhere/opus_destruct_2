@@ -1,19 +1,19 @@
-// Stage "island": the island plans (world/island.js) of the island worlds of lib/worlds.mjs - the
-// ellipse, highland threshold, fjords and the island's offset, the sited places and their
-// settlement records, the harbour, the bounds, the pointwise functions (shape, highlands, fjord
-// cuts, coast, cliffs, skerries) over the bounds, and the trunk roads (A* over the arterial grid).
+// Stage "island": the island plans (world/island.js) of the island worlds of lib/worlds.mjs
+// (allWorlds) - the ellipse, highland threshold, fjords and the island's offset, the sited places
+// and their settlement records, the harbour, the bounds, the pointwise functions (shape,
+// highlands, fjord cuts, coast, cliffs, skerries) over the bounds, and the trunk roads (A* over
+// the arterial grid).
 import { REF, line, samples } from "../lib/rec.mjs";
-import { WORLDS, settlementFields } from "../lib/worlds.mjs";
+import { allWorlds, settlementFields } from "../lib/worlds.mjs";
 
 const { World } = await import(REF + "world/World.js");
 const { makeConfig } = await import(REF + "config/defaults.js");
-const { presetConfig } = await import(REF + "config/presets.js");
 
 export default function* island() {
   const r = samples(31);
-  for (const [key, id, size] of WORLDS) {
-    if (makeConfig(presetConfig(id, { size })).world.mode !== "island") continue;
-    const w = new World(presetConfig(id, { size }));
+  for (const [key, overrides] of allWorlds()) {
+    if (makeConfig(overrides).world.mode !== "island") continue;
+    const w = new World(overrides);
     const P = w.fields.island;
     yield line("plan", key, P.R, P.theta, P.a, P.b, P.cos, P.sin, P.hdx, P.hdy, P.fjordCount, P.fjordPhase, P.ox, P.oy, P.highThreshold);
     for (const s of P.sites) yield line("site", s.kind, s.lx, s.ly, s.radius, s.importance);

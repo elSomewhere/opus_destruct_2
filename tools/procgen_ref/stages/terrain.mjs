@@ -1,22 +1,21 @@
 // Stage "terrain": the terrain (terrain/terrain.js and the landform stack of terrain/landforms.js)
-// of every world of lib/worlds.mjs - Terrain.sample()'s whole record at the sample points (hints,
-// stream channels, roughness, ruggedness, coast), samples with a precomputed urban sample and raw
-// ones, heights, the landform stack run directly (natural() and the context it leaves: the hints
-// and its lazy coast type, climate and desertness), and the settlements' base heights. Samples run
-// in order on one Terrain: its one context carries what nested calls leave (a settlement's base
-// height made inside a sample), as the reference's does.
+// of every world of lib/worlds.mjs (allWorlds) - Terrain.sample()'s whole record at the sample
+// points (hints, stream channels, roughness, ruggedness, coast), samples with a precomputed urban
+// sample and raw ones, heights, the landform stack run directly (natural() and the context it
+// leaves: the hints and its lazy coast type, climate and desertness), and the settlements' base
+// heights. Samples run in order on one Terrain: its one context carries what nested calls leave
+// (a settlement's base height made inside a sample), as the reference's does.
 import { REF, line, samples } from "../lib/rec.mjs";
-import { WORLDS, samplePoints } from "../lib/worlds.mjs";
+import { allWorlds, samplePoints } from "../lib/worlds.mjs";
 
 const { World } = await import(REF + "world/World.js");
-const { presetConfig } = await import(REF + "config/presets.js");
 
 const streamOf = (s) => (s ? [s.d, s.half, s.extra, s.wet] : "-");
 
 export default function* terrain() {
   const r = samples(37);
-  for (const [key, id, size] of WORLDS) {
-    const w = new World(presetConfig(id, { size }));
+  for (const [key, overrides] of allWorlds()) {
+    const w = new World(overrides);
     const T = w.terrain;
     yield line("terrain", key, T.seaLevel, T.forms.map((f) => f.lf.id).join(","), T.ctx.torusR);
     const pts = samplePoints(w, r);
