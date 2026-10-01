@@ -1097,6 +1097,22 @@ std::optional<RoadWalk> RoadNetwork::walk(uint64_t id) const {
   return w->walk->walk;
 }
 std::vector<RoadTurn> RoadNetwork::walk_next(uint64_t id, int end) const { return impl_->walk_next(id, end); }
+
+RoadRegion RoadNetwork::region(const Vec2& lo, const Vec2& hi) const {
+  RoadRegion out;
+  for (RoadLane& l : lanes_in(lo, hi)) {
+    std::vector<RoadTurn> next = this->next(l.id);
+    std::optional<RoadSignal> sig = signal(l.id);
+    out.lanes.push_back({std::move(l), std::move(next), sig});
+  }
+  for (RoadWalk& w : walks_in(lo, hi)) {
+    std::vector<RoadTurn> a = walk_next(w.id, 0);
+    std::vector<RoadTurn> b = walk_next(w.id, 1);
+    out.walks.push_back({std::move(w), std::move(a), std::move(b)});
+  }
+  out.parking = parking_in(lo, hi);
+  return out;
+}
 const World& RoadNetwork::world() const { return impl_->world; }
 
 }  // namespace svx::city

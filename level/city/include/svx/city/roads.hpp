@@ -110,6 +110,24 @@ struct RoadParking {
 // (0 its a, 1 its b).
 using RoadTurn = std::pair<uint64_t, int>;
 
+// Everything of a box a host's own road network holds (a host that cannot call back: a browser's
+// engine beside a worker): its lanes with their ways on and signals, its walks with the walks at
+// their ends, its parking places (RoadNetwork::region).
+struct RoadRegion {
+  struct LaneEntry {
+    RoadLane lane;
+    std::vector<std::pair<uint64_t, int>> next;
+    std::optional<RoadSignal> signal;
+  };
+  struct WalkEntry {
+    RoadWalk walk;
+    std::vector<std::pair<uint64_t, int>> next_a, next_b;
+  };
+  std::vector<LaneEntry> lanes;
+  std::vector<WalkEntry> walks;
+  std::vector<RoadParking> parking;
+};
+
 // Bounds of what the network keeps (least recently used dropped beyond them: a structure dropped
 // is made again alike when asked; a road's records dropped from what lane() and walk() remember are
 // answered again once a query hands them out again).
@@ -152,6 +170,9 @@ class RoadNetwork {
   // The walks meeting walk `id`'s end (0 a, 1 b) at its corner, and at which of their ends, in id
   // order.
   std::vector<RoadTurn> walk_next(uint64_t id, int end) const;
+  // Everything of a box (metres): lanes_in with next and signal of each, walks_in with walk_next
+  // of each end, parking_in.
+  RoadRegion region(const Vec2& lo, const Vec2& hi) const;
 
   const World& world() const;
 

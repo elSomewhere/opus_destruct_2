@@ -38,6 +38,16 @@ TEST_CASE("city svx roads: lanes, ways on, signals, walks, corners, parking conf
     for (const uint64_t id : ids) out << test::road_probe(net, "before", id);
     for (const test::RoadBox& b : boxes) test::road_box_records(out, net, b);
     for (const uint64_t id : ids) out << test::road_probe(net, "after", id);
+    // (a region round the spawn whole, as the worker gives a host)
+    const RoadRegion reg = net.region({-60, -60}, {60, 60});
+    out << (Line() << "region" << reg.lanes.size() << reg.walks.size() << reg.parking.size());
+    for (const RoadRegion::LaneEntry& l : reg.lanes)
+      out << (Line() << "rl" << l.lane.id << test::farr(l.lane.a) << test::farr(l.lane.b) << l.lane.width << l.lane.speed << test::fturns(l.next)
+                     << test::fsig(l.signal));
+    for (const RoadRegion::WalkEntry& q : reg.walks)
+      out << (Line() << "rw" << q.walk.id << test::farr(q.walk.a) << test::farr(q.walk.b) << test::farr(q.walk.inset) << q.walk.width << q.walk.crossing
+                     << walk_kind_name(q.walk.kind) << test::fsig(q.walk.signal) << test::fturns(q.next_a) << test::fturns(q.next_b));
+    for (const RoadParking& p : reg.parking) out << (Line() << "rp" << p.id << test::farr(p.pos) << test::farr(p.heading));
   }
   CHECK(rec::record("svxroads", out.text()) == rec::recorded_digest("svxroads"));
 }

@@ -139,5 +139,11 @@ export default function* svxroads() {
     for (const q of ids) yield probe(net, "before", q);
     for (const [tag, lo, hi] of boxes) yield* boxRecords(net, tag, lo, hi);
     for (const q of ids) yield probe(net, "after", q);
+    // (a region round the spawn whole, as the worker gives a host)
+    const reg = net.region([-60, -60], [60, 60]);
+    yield line("region", reg.lanes.length, reg.walks.length, reg.parking.length);
+    for (const l of reg.lanes) yield line("rl", l.id, l.a, l.b, l.width, l.speed, l.next, sigOf(l.signal));
+    for (const q of reg.walks) yield line("rw", q.id, q.a, q.b, q.inset, q.width, q.crossing, q.kind, sigOf(q.signal), q.nextA, q.nextB);
+    for (const p of reg.parking) yield line("rp", p.id, p.pos, p.heading);
   }
 }

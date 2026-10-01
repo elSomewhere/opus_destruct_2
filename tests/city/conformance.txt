@@ -35,7 +35,7 @@ season 8b71362d13e49396
 stairs 721acd61aa53f91b
 streets 178f2000a7efc043
 svxmat 6929dc45e6f5ddd2
-svxroads e279cd8f45338a35
+svxroads 57aba5c7d4ce6f83
 terrain b7eb60e0c562cdee
 townplan 8bb64c2e7c9f0a7c
 townworld 48efe740af849843
