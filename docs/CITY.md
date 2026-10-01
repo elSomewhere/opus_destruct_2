@@ -27,6 +27,13 @@ exports, natively and in WASM, on any thread count.
 | core | `core/*.js` | `core/` | stage `core` |
 | config, presets | `config/*.js` | `config/` | stage `config` |
 | material palette | `voxel/materials.js` | `voxel/materials.*` (generated: `tools/procgen_ref/gen_materials.mjs`) | stage `materials` |
+| charts, wrap | `world/chart.js`, `world/wrap.js` | `world/chart.*`, `world/wrap.hpp` | stage `chart` |
+| seasons | `world/season.js` | `world/season.*` | stage `season` |
+| biomes | `nature/biomes.js` | `nature/biomes.*` | stage `biomes` |
+| macro fields, island | `world/fields.js`, `world/island.js` | `world/fields.*`, `world/island.*` | stages `fields`, `island` |
+| terrain, landforms | `terrain/*.js` | `terrain/*` | stage `terrain` (§6: nested calls isolated) |
+| arterial grid, road classes | `network/arterials.js`, `network/roadClasses.js` | `network/arterials.*`, `network/roadClasses.*` | stage `arterials` |
+| World (constructor) | `world/World.js` | `world/World.cpp` | tests (`test_world_ctor.cpp`) |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -202,4 +209,27 @@ Each stage conformance-checked before the next ([`PROCGEN_MERGE_PLAN.md`](PROCGE
 
 ## 6. Known differences
 
-None.
+Where the reference's result depends on call order (and so on its cache sizes and, across its
+workers, on timing), the port gives the order-independent result: the engine needs the same
+voxels on any thread count. The conformance stages make the reference order-independent first,
+so that it stays the oracle.
+
+- **Terrain samples near a settlement: the reference's shared terrain context.** The reference's
+  `Terrain` reuses one mutable context object (`this.ctx`) for every call, and `sample()` reads
+  its `coast` and `rugged` back (and, on an island, the coast that grades the town's waterfront,
+  so `h` too) after nested calls that run the landform stack again in that object: a settlement's
+  base height made on first use (`settlementBase` in `cityMeters`), and the world's `portGrade`
+  hook (lakes sampling the terrain when a port lake is first planned). So in the reference the
+  first sample that makes a base height or a port lake takes values from the settlement's centre:
+  up to 5 of the terrain stage's 2,000 samples per world (before the stages made the base heights
+  first), and the island trunk roads, whose A* samples the terrain. The port runs every call in a
+  context of its own (`terrain/terrain.hpp`), so a sample is a pure function of (world, x, y,
+  arguments). The conformance stages make every base height a sample can read first, in a fixed
+  order (`tools/procgen_ref/lib/worlds.mjs` `warmBasesAt` / `warmBasesIn`); the reference's
+  samples are then the same in any order, and the port's. A stage that samples the terrain near
+  settlements, directly or through any plan, must do the same, and plan the port lakes first once
+  lakes are ported (`lakes.portLakeOf`). The reference's golden digests (`test/golden/*.json`)
+  were recorded with the shared context: a golden sample that was such a first touch may differ
+  (to be measured when the golden stage is ported).
+- **The gullies' kernel cache** (`terrain/landforms.js`) is keyed `i * 1000003 + j` in the
+  reference, which collides only for cells 40,000 km apart; the port keys it by the exact cell.
