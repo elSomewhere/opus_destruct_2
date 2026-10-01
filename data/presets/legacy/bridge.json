@@ -1,0 +1,9 @@
+{
+  "id": "legacy/bridge",
+  "label": "Bridge (test level)",
+  "group": "legacy",
+  "description": "Physics test: a 16 m reinforced concrete deck on two piers.",
+  "generator": "level",
+  "level": "bridge",
+  "seed": 1
+}

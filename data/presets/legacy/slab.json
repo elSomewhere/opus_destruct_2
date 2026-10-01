@@ -1,0 +1,9 @@
+{
+  "id": "legacy/slab",
+  "label": "Slab (test level)",
+  "group": "legacy",
+  "description": "Physics test: a reinforced concrete slab on four columns.",
+  "generator": "level",
+  "level": "slab",
+  "seed": 1
+}

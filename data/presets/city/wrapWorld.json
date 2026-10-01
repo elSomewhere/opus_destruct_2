@@ -1,0 +1,24 @@
+{
+  "id": "city/wrapWorld",
+  "label": "Wrapping world (experimental)",
+  "group": "city",
+  "description": "Runs as an unwrapped plane: its changes are not shared between laps.",
+  "generator": "city",
+  "params": {
+    "preset": "wrapWorld"
+  },
+  "seed": 1337,
+  "streaming": {
+    "load_radius": 112,
+    "evict_radius": 144,
+    "chunks_per_tick": 48,
+    "archive_mb": 128
+  },
+  "far": {
+    "radius": 520
+  },
+  "tunables": {
+    "pretouch_radius": 48
+  },
+  "experimental": true
+}

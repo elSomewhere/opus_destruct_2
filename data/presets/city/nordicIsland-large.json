@@ -1,0 +1,24 @@
+{
+  "id": "city/nordicIsland-large",
+  "label": "Nordic island (large)",
+  "group": "city",
+  "description": "A northern island: fjords, skerries, a low sun.",
+  "generator": "city",
+  "params": {
+    "preset": "nordicIsland",
+    "size": "large"
+  },
+  "seed": 1337,
+  "streaming": {
+    "load_radius": 112,
+    "evict_radius": 144,
+    "chunks_per_tick": 48,
+    "archive_mb": 128
+  },
+  "far": {
+    "radius": 520
+  },
+  "tunables": {
+    "pretouch_radius": 48
+  }
+}

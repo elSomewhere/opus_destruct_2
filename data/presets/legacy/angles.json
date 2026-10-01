@@ -1,0 +1,9 @@
+{
+  "id": "legacy/angles",
+  "label": "Angles (test level)",
+  "group": "legacy",
+  "description": "Structures in oriented grids: a turned tower, a diagonal deck, a ramp, a portal.",
+  "generator": "level",
+  "level": "angles",
+  "seed": 1
+}

@@ -1,0 +1,9 @@
+{
+  "id": "legacy/tower",
+  "label": "Tower (test level)",
+  "group": "legacy",
+  "description": "A ten-storey tower on open ground.",
+  "generator": "level",
+  "level": "tower",
+  "seed": 1
+}

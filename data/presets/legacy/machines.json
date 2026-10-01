@@ -1,0 +1,9 @@
+{
+  "id": "legacy/machines",
+  "label": "Machines (test level)",
+  "group": "legacy",
+  "description": "Pieces on driven joints: a lift, a turntable, a drawbridge, a crane, a pendulum.",
+  "generator": "level",
+  "level": "machines",
+  "seed": 1
+}

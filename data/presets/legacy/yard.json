@@ -1,0 +1,9 @@
+{
+  "id": "legacy/yard",
+  "label": "Yard (test level)",
+  "group": "legacy",
+  "description": "A yard of wood, stone, glass, steel and reinforced concrete.",
+  "generator": "level",
+  "level": "yard",
+  "seed": 1
+}

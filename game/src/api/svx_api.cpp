@@ -14,6 +14,7 @@
 #include "svx/procgen/city.hpp"
 #include "svx/procgen/drive_city.hpp"
 #include "svx/procgen/levels.hpp"
+#include "svx/procgen/presets.hpp"
 #include "svx/world/tunables.hpp"
 
 using namespace svx;
@@ -22,6 +23,7 @@ struct svx_engine {
   Game eng;
   f64 h = 0.125;
   std::string error;
+  std::string presets_json, atmosphere_json = "{}";
   std::vector<ChunkMesh> meshes;
   std::vector<u64> removed;
   std::vector<GridChunk> removed_grid;
@@ -92,9 +94,55 @@ void svx_set_params(svx_engine* e, double fragility, double impact, double dif, 
   e->eng.set_params(p);
 }
 
+namespace {
+std::string json_string(const std::string& s) {
+  std::string o = "\"";
+  for (char c : s) {
+    if (c == '"' || c == '\\') o += '\\';
+    if (static_cast<unsigned char>(c) < 0x20) continue;
+    o += c;
+  }
+  return o + "\"";
+}
+}  // namespace
+
+int svx_load_preset(svx_engine* e, const char* id, double seed) {
+  const Preset* p = find_preset(id ? id : "");
+  if (!p) {
+    e->error = std::string("unknown preset ") + (id ? id : "");
+    return 1;
+  }
+  e->doom.reset();
+  std::string err;
+  if (!load_preset(e->eng, *p, seed_of(seed), e->h, &err)) {
+    e->error = err;
+    return 1;
+  }
+  e->atmosphere_json = p->atmosphere_json.empty() ? "{}" : p->atmosphere_json;
+  return 0;
+}
+
+const char* svx_presets(svx_engine* e) {
+  std::string o = "[";
+  for (const Preset& p : presets()) {
+    if (o.size() > 1) o += ",";
+    const bool available = p.generator != "city";  // (the city generator joins with the city's integration)
+    o += "{\"id\":" + json_string(p.id) + ",\"label\":" + json_string(p.label) + ",\"group\":" + json_string(p.group) +
+         ",\"description\":" + json_string(p.description) + ",\"generator\":" + json_string(p.generator) +
+         ",\"experimental\":" + (p.experimental ? "true" : "false") + ",\"available\":" + (available ? "true" : "false") + "}";
+  }
+  e->presets_json = o + "]";
+  return e->presets_json.c_str();
+}
+
+const char* svx_default_preset(void) { return default_preset_id(); }
+
+const char* svx_preset_atmosphere(svx_engine* e) { return e->atmosphere_json.c_str(); }
+
 int svx_load_procedural(svx_engine* e, const char* kind, double seed) {
   const std::string k = kind ? kind : "rooms";
   e->doom.reset();
+  e->atmosphere_json = "{}";
   if (k == "city") {
     // the 1 km^2 city streams around the viewer (plan Phase 6), some of its buildings turned
     e->eng.load_streaming(make_city_source(seed_of(seed), 1000.0, e->h, true), e->h);
