@@ -68,6 +68,8 @@ exports, natively and in WASM, on any thread count.
 | site complexes | `sites/complex.js`, `sites/kit.js` (`box`, `finishStructure`) | `sites/complex.*`, `sites/kit.*` (the kit's surface structures and `planGate` come with the site kinds) | stage `complex` |
 | site layer | `world/sites.js` | `world/sites.*` (SITES, the layer, pads, the ground override, the site source's z range and rasterizer; the kinds, and the highway and water tests of a site's placement, come later) | stage `sites` (stand-in kinds: `tools/procgen_ref/lib/sitekinds.mjs`, `tests/city/site_kinds.hpp`) |
 | site links | `sites/links.js` | `sites/links.*` (`site_link_source()`) | stage `sitelinks` (the same stand-in kinds) |
+| subway, its feature source | `underground/subway.js` | `underground/subway.*`: `Subway` (lines, spans, stations cached by node, tunnels, `blocks_surface`, `map_data`), `subway_z_range` and `subway_rasterize` for compose to wrap as a `FeatureSource`; installed by `create_world` unless `config.subway.enabled` is false | stages `subway` (a World of World.js, the terrain's height for a street level: §6; chunks over ground of its own), `underworld` (create_world's World, the road levels' street level); `test_underground_threads.cpp` (any order, any cache, 4 threads) |
+| sewers, their feature source; `World::blocks_surface` | `underground/sewers.js`; createWorld's `blocksSurface` | `underground/sewers.*`: `Sewers` (cell plans cached by cell: runs, nodes, hall stairs, openings; `near`, `blocks_surface`, `map_data`, `nearest_hall`, `hits_subway`), `sewer_z_range` and `sewer_rasterize` over a view of the ground tile's columns (`SewerColumns`); `create_world` installs them; `World::blocks_surface` (`world/createWorld.cpp`) | stages `sewers` (a World of World.js, the terrain's height for a street level: §6; synthetic tiles), `underworld` (create_world's: lakes, highways, harbour grading, the road levels' street level); `test_underground_threads.cpp` |
 
 | the props' classes (the export's change, PROCGEN_MERGE_PLAN.md §7.3, §10.2): fixed, loose, entity, decorative; uses; an entity's kind | - (the reference draws every prop and piece of furniture as isolated voxels) | `data/city/props.json` (embedded: `svx/data.hpp`), `svx/props.*` (`prop_class`) | test `city props` (every prop, piece of furniture and civic fitting has one) |
 | the public entry: a world from a preset, its materials | `svx/source.js` (`createSvxSource`'s world), `svx/materials.js` (`svxMaterials`) | `include/svx/city/world.hpp` (`make_world`), `include/svx/city/materials.hpp` (`physics_classes`, `looks`) | tests `city world api`; `svx_game_tests` `city materials` |
@@ -316,6 +318,28 @@ so that it stays the oracle.
   (lakes, rivers, land cover, roads ...) calls it once after making the world (`landcover`,
   `water`, `caves` do). `test_nature_threads.cpp` checks the port: any order, a 16-cell lake
   cache, four threads.
+- **The underground's street level.** The subway's stations (their platform, mezzanine and
+  entrances) and the sewers' nodes (their invert, the street a manhole opens in, a hall's stair) are
+  built against `world.streetLevel` (createWorld.js: the nearest road's graded level within 3 m,
+  else the terrain; the port's `World::street_level`, `network/roadLevel`). The port's `Subway` and
+  `Sewers` take it as a function (`StreetLevel`, `underground/subway.hpp`), which `create_world`
+  makes `World::street_level`. The stages `subway` and `sewers` give both sides the terrain's
+  height instead (`tools/procgen_ref/lib/underground.mjs` `undergroundWorld`,
+  `tests/city/underground_records.hpp`), on a World of `World.js` with createWorld's island sea
+  tests and rivers (the cell networks' bare World, the entry above): they check the underground's
+  own logic, the road network's stages the street level. With that street level (pure:
+  `pureTerrain`) the reference's sewer plans and stations are pure functions of the cell and the
+  node: measured on 8 of the stages' worlds (cities, the infinite city and its angled twin, a
+  torus, a wrapping world, an island, mountains, a wet cube face), its plans and stations made
+  backwards with its own cache sizes (64 cell networks, 48 plans, 64 or 2 stations) are those made
+  forwards with caches that drop nothing. (A plan compares roads as objects only among the networks
+  of its own 3 x 3 cells, fetched together; the port's `same_road`.) The stage `underworld` checks
+  them as the generator runs them, on createWorld's worlds with the road levels' street level (each
+  cell network made once): identical. There too, measured on 6 worlds (cities, the infinite city, a
+  wrapping world, an island, an old harbour town, angled cities), the reference's plans and
+  stations made backwards with its own cache sizes (64 cell networks, 32 road views, 48 plans, 64
+  stations) are those made forwards with caches that drop nothing: whatever its road levels may
+  depend on (road identity, above) flips nothing there. The port's are pure.
 - **Not differences, for the ports to come.** `Rivers.at` and `Lakes.at` return one shared object
   per instance that the next call overwrites; the port returns values (every caller reads its
   result before the next call: a port of one that keeps it across another call copies what
