@@ -42,6 +42,9 @@ exports, natively and in WASM, on any thread count.
 | interior data | `buildings/interior/{prefabs,civicPrefabs,civicRules,common,stairs,grid}.js` | `buildings/interior/` | stages `prefabs`, `civicrules`, `floorgrid`, `stairs` |
 | prop prefabs, industry | `city/{propPrefabs,industry}.js` | `city/propPrefabs.*`, `city/industry.*` | stages `propprefabs`, `industry` |
 | polygon blocks, chamfers | `city/blockPoly.js`, `buildings/chamfer.js` | `city/blockPoly.*`, `buildings/chamfer.*` | stages `blockpoly`, `chamfer` |
+| building archetypes and envelopes | `buildings/archetypes.js` | `buildings/archetypes.*` (the 17 after civic's; `plan_building_envelope`, its finalize), `city/lots.hpp` (the lot record, what the archetypes read) | stages `archetypes`, `registries` |
+| house, cabin and unit planners | `buildings/interior/{houses,cabins,units}.js`, plan.js's `PlanBuilder` | `buildings/interior/{houses,cabins,units}.*`, `buildings/interior/plan.*` (the builder's floors, grids and stairs: the rest of plan.js comes with the interior planners) | stages `houses`, `units` |
+| facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -241,3 +244,8 @@ so that it stays the oracle.
   (to be measured when the golden stage is ported).
 - **The gullies' kernel cache** (`terrain/landforms.js`) is keyed `i * 1000003 + j` in the
   reference, which collides only for cells 40,000 km apart; the port keys it by the exact cell.
+- **A building's look asked with two seeds** (`buildings/facade.js` `buildingLook`): the reference
+  keeps the look per envelope (a WeakMap) whatever seed asks, so a second seed would get the first
+  one's look; the port keeps it on the envelope too (`Envelope::look_cache`) and fails
+  (`SVX_FAIL`) when another seed asks, so a look never depends on which seed asked first. An
+  envelope belongs to one world: generation never asks twice.
