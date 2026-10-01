@@ -67,6 +67,7 @@ class SiteLinks;
 struct CellNet;
 struct CellPlan;
 class RoadView;
+struct Road;  // network/road.hpp
 struct BuildingPlan;
 struct Dressing;
 struct Envelope;
@@ -143,6 +144,15 @@ class World {
   std::shared_ptr<const BuildingPlan> building_plan(const Envelope& env) const;  // buildings/interior/plan.cpp
   void voxelize_building(const Envelope& env, ChunkBuffer& chunk) const;  // buildings/interior/voxelize.cpp
   bool blocks_surface(double x, double y) const;
+
+  // ---- where the road network's inputs come from (network/roadView.cpp)
+  // The roads of cell (i, j)'s network (World.js: cellNet(i, j).roads), which road_view gathers
+  // for the 3 x 3 cells round a cell: the cell networks install it (city/cellNetwork.cpp:
+  // cell_net(i, j)->roads); a test may serve given roads instead (tools/procgen_ref/data).
+  std::function<std::vector<std::shared_ptr<const Road>>(double i, double j)> cell_roads;
+  // Water answered from elsewhere (a test serving the reference's answers): is_wet asks it first
+  // when it is set.
+  std::function<bool(double x, double y, double margin_m)> wet_source;
 
   // ---- caches (World.js's LRUs; createWorld's dressing cache; keys as their modules make them)
   struct Caches;
