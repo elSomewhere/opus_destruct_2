@@ -6,7 +6,7 @@
  */
 import { existsSync, mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { afterLoad, beforeLoad, launch } from './browser.mjs';
+import { afterLoad, beforeLoad, launch, worldQuery } from './browser.mjs';
 
 const puppeteer = (await import('puppeteer-core')).default;
 const base = process.argv[2] ?? 'http://localhost:5190/';
@@ -53,7 +53,7 @@ try {
   });
   page.on('pageerror', (e) => errors.push(`pageerror ${e.message}`));
   await beforeLoad(page);
-  await page.goto(`${base}?engine=wasm&world=rooms&seed=1`, { waitUntil: 'load' });
+  await page.goto(`${base}?engine=wasm&${worldQuery('world=rooms&seed=1')}`, { waitUntil: 'load' });
   await afterLoad(page);
   await waitFor(page, settled, null, 60000, 'wasm rooms world ready and drawn');
   let s = await state(page);

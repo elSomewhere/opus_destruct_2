@@ -73,6 +73,36 @@ void junction_curve(const Lane& from, const Lane& to, std::vector<V3>& out) {
   }
 }
 
+// A spawn record's vehicle: the kind the game has a model of nearest to it (until it has more:
+// a fire engine, a lorry or a tank comes as a truck, an ambulance as a van), in its colours.
+VehicleSpec spawn_spec(const SpawnRecord& r) {
+  VehicleSpec s;
+  const std::string& k = r.kind;
+  if (k == "fire_truck") {
+    s = {VehicleKind::Truck, Paint::Red};
+  } else if (k == "ambulance") {
+    s = {VehicleKind::Van, Paint::White};
+  } else if (k == "police") {
+    s = {VehicleKind::Sedan, Paint::NavyBlue};
+  } else if (k == "lorry" || k == "truck") {
+    s = {VehicleKind::Truck, Paint::White};
+  } else if (k == "tank" || k == "military_truck") {
+    s = {VehicleKind::Truck, Paint::Green};
+  } else if (k == "van") {
+    s = {VehicleKind::Van, Paint::White};
+  } else if (k == "pickup") {
+    s = {VehicleKind::Pickup, Paint::Silver};
+  } else if (k == "compact") {
+    s = {VehicleKind::Compact, Paint::Blue};
+  } else {
+    s = {VehicleKind::Sedan, Paint::Silver};  // ("car", or a kind the game does not know)
+  }
+  // (an ordinary vehicle: a colour of the record's own)
+  if (k != "fire_truck" && k != "ambulance" && k != "police" && k != "tank" && k != "military_truck")
+    s.paint = kCarPaints[size_t(mix(r.id ^ 0x5EC0) % kCarPaints.size())];
+  return s;
+}
+
 }  // namespace
 
 void Game::steer_driver(Vehicle& v, const Body& b) {
@@ -249,7 +279,7 @@ void Game::steer_driver(Vehicle& v, const Body& b) {
 void Game::step_traffic() {
   const RoadNetwork* roads = source_ ? source_->roads() : nullptr;
   traffic_clock_ += world_.config().dt;
-  if (!roads || traffic_clock_ < 0.5) return;
+  if (!source_ || traffic_clock_ < 0.5) return;
   traffic_clock_ = 0.0;
   // (about the player's car when they drive: the host's viewer may lag behind it)
   const Body* car = player_car();
@@ -274,6 +304,8 @@ void Game::step_traffic() {
       continue;
     }
     if (d > far) continue;
+    if (v.record)
+      continue;  // (an entity's: not one of the kerbside places' cars)
     if (v.flags & WheelTag::kTagParked)
       ++parked;
     else if (!v.wreck)
@@ -283,6 +315,7 @@ void Game::step_traffic() {
     const auto it = vehicles_.find(id);
     if (it == vehicles_.end()) continue;
     if (it->second.spot) parked_spots_.erase(it->second.spot);
+    if (it->second.record) spawned_records_.erase(it->second.record);
     remove_vehicle_bodies(it->second);
     vehicles_.erase(it);
   }
@@ -306,6 +339,27 @@ void Game::step_traffic() {
     s.paint = kCarPaints[size_t(mix(h ^ 0x51ED) % kCarPaints.size())];
     return s;
   };
+  // the source's entities: every one in range, out of sight, a few a step (they stay where they are)
+  {
+    std::vector<SpawnRecord> recs;
+    const V3 r{radius, radius, 0.0};
+    source_->spawns_in(at - r, at + r, recs);
+    i32 budget = 2;
+    for (const SpawnRecord& rec : recs) {
+      if (budget <= 0) break;
+      const f64 d = flat_dist(rec.pos, at);
+      if (d < near || d > radius || spawned_records_.count(rec.id)) continue;
+      if (!free_at(rec.pos, 4.0) || !resident(rec.pos)) continue;
+      const u32 id = spawn_vehicle_internal(spawn_spec(rec), rec.pos, rec.yaw, WheelTag::kTagNpc | WheelTag::kTagParked);
+      if (!id) continue;
+      vehicles_[id].home = rec.pos;
+      vehicles_[id].record = rec.id;
+      spawned_records_.insert(rec.id);
+      taken.push_back(rec.pos);
+      --budget;
+    }
+  }
+  if (!roads) return;
   // drivers: on a lane out of sight, its ground resident, room around it
   if (driving < traffic_.cars) {
     std::vector<Lane> lanes;

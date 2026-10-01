@@ -5,7 +5,14 @@
   "description": "Diagonal boulevards, curving country roads, a building in eight turned to its street.",
   "generator": "city",
   "params": {
-    "preset": "angledCities"
+    "preset": "angledCities",
+    "config": {
+      "world": {
+        "angles": {
+          "residentRadius": 144
+        }
+      }
+    }
   },
   "seed": 1337,
   "streaming": {

@@ -192,6 +192,8 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
         gloss = 0.7;
       } else if (slot == 46u || slot == 17u) {
         gloss = 0.2;
+      } else if (slot == 60u) {
+        gloss = 0.8; // (the far tier's open water)
       }
     }
     // Faint per-voxel variation keeps the voxel scale readable on flat colours (fainter on paint).

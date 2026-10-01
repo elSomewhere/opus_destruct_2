@@ -12,7 +12,7 @@
  */
 import type { GridFrames } from '../engine/gridframes.ts';
 import type { Atmosphere, TextureInfo, Vec3 } from '../engine/protocol.ts';
-import { APPEARANCE_FLOATS, DebugView, Material, Paint, PAINT_SLOT_BASE, VERTEX_STRIDE } from '../engine/protocol.ts';
+import { APPEARANCE_FLOATS, DebugView, FAR_WATER_SLOT, Material, Paint, PAINT_SLOT_BASE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { GpuAtlas } from './atlas.ts';
 import { CharacterRenderer, type CharacterDraw } from './characters.ts';
 import { ChunkStore } from './chunks.ts';
@@ -99,8 +99,9 @@ export interface RenderStats {
 }
 
 /**
- * Linear-space colours (vec4 each): materials by id (0..20), [31] the untextured default, paints
- * at PAINT_SLOT_BASE + paint (cars, facades, the road's markings), [59] a wheel's blurred spokes.
+ * Linear-space colours (vec4 each): materials by id (0..20; the city's own 21..26), [31] the
+ * untextured default, paints at PAINT_SLOT_BASE + paint (cars, facades, the road's markings), [59] a
+ * wheel's blurred spokes, [60] the far tier's open water.
  */
 const PALETTE: Float32Array = (() => {
   const p = new Float32Array(PALETTE_SIZE * 4).fill(1);
@@ -156,6 +157,16 @@ const PALETTE: Float32Array = (() => {
   paint(Paint.LineYellow, 0.72, 0.48, 0.03);
   paint(Paint.Kerb, 0.42, 0.42, 0.4);
   set(RIM_BLUR_SLOT, 0.24, 0.245, 0.25);
+  // the city's own classes (21: roofing, partition, soft, ice, snow, foliage): their colours in
+  // the far tier (near, the appearance table draws their looks)
+  set(21, 0.2, 0.09, 0.06);
+  set(22, 0.62, 0.6, 0.56);
+  set(23, 0.35, 0.22, 0.18);
+  set(24, 0.55, 0.68, 0.78);
+  set(25, 0.85, 0.87, 0.9);
+  set(26, 0.07, 0.17, 0.04);
+  // the far tier's open water
+  set(FAR_WATER_SLOT, 0.035, 0.09, 0.12);
   return p;
 })();
 

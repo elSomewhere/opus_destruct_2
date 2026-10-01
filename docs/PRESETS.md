@@ -68,7 +68,9 @@ legacy presets load exactly what `svx_load_procedural` loads.
   variants), `nordicTown`, `angledNordicTown`, `oldHarbourTown`, `angledOldHarbourTown`,
   `whiteSeaTown`; experimental: `wrapWorld` (an unwrapped plane), `planetEquator`, `planetNorth`
   (one flat face; gravity stays vertical). They stream with a 112 m load radius and pre-touch
-  structures within 48 m.
+  structures within 48 m; their turned parts' budget (`world.angles.residentRadius`) holds in a
+  disc of the 144 m evict radius, where the engine keeps chunks (voxel_city's
+  `docs/MERGE_SVX.md` §5), not the generator's default 96 m.
 - **Legacy** (the baseline's and the tests' worlds, unchanged): `legacy/drive` (the default until
   the city is integrated), `legacy/city1km`, and the test levels `rooms`, `tower`, `yard`, `slab`,
   `chimney`, `bridge`, `angles`, `machines`. Doom maps load through `svx_load_wad`.

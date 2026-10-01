@@ -5,7 +5,14 @@
   "description": "The infinite city with diagonal boulevards and turned buildings along them.",
   "generator": "city",
   "params": {
-    "preset": "angledInfiniteCity"
+    "preset": "angledInfiniteCity",
+    "config": {
+      "world": {
+        "angles": {
+          "residentRadius": 144
+        }
+      }
+    }
   },
   "seed": 1337,
   "streaming": {

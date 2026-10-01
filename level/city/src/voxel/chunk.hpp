@@ -19,6 +19,7 @@
 
 #include <cmath>
 #include <cstdint>
+#include <string>
 #include <vector>
 
 #include "core/math.hpp"
@@ -65,6 +66,41 @@ class ChunkBuffer {
   // (JS: chunk.iso, null when not tracking)
   uint16_t* iso_data() { return iso.empty() ? nullptr : iso.data(); }
   const uint16_t* iso_data() const { return iso.empty() ? nullptr : iso.data(); }
+
+  // (The export's addition, PROCGEN_MERGE_PLAN.md §7.3, §10.2: no JS twin.) Which object an
+  // isolated voxel belongs to - a street prop, a piece of furniture, a civic fitting - so that the
+  // export can give a loose one seams on every outer face, leave an entity out and bond a fixed one
+  // (svx/props.hpp). `obj` holds 1 + the index in `objects` of the object being written while it
+  // is isolating, 0 elsewhere; empty until track_objects(). An emitter brackets an object's writes
+  // with begin_object / end_object (which turn `isolating` on and off as the reference does);
+  // an object begun again under the same id (its boxes drawn one by one) keeps its index.
+  struct ObjectRef {
+    std::string group;  // "props", "furniture", "civic" (svx/props.hpp)
+    std::string kind;   // its prefab's id
+    std::string id;     // the instance (stable: the same object, the same id, in every chunk)
+  };
+  std::vector<uint32_t> obj;
+  std::vector<ObjectRef> objects;
+  uint32_t object = 0;  // (the one being written: 1 + its index; 0: none)
+  ChunkBuffer& track_objects() {
+    obj.assign(kP3, 0);
+    return *this;
+  }
+  void begin_object(const char* group, const std::string& kind, const std::string& id) {
+    isolating = true;
+    if (obj.empty()) return;
+    for (size_t k = 0; k < objects.size(); ++k)
+      if (objects[k].id == id && objects[k].group == group) {
+        object = static_cast<uint32_t>(k + 1);
+        return;
+      }
+    objects.push_back(ObjectRef{group, kind, id});
+    object = static_cast<uint32_t>(objects.size());
+  }
+  void end_object() {
+    isolating = false;
+    object = 0;
+  }
 
   static int index(int i, int j, int k) { return i + j * kP + k * kP2; }
 

@@ -114,6 +114,11 @@ export const Paint = {
   Kerb: 27,
 } as const;
 export const PAINT_SLOT_BASE = 31;
+/**
+ * (front-end extension) The far tier's open water (the sea, lakes: flat surfaces at their level)
+ * comes with texture `TEXTURE_MATERIAL_BASE + FAR_WATER_SLOT`: palette slot 60.
+ */
+export const FAR_WATER_SLOT = 60;
 /** The paints a car is sprayed in. */
 export const CAR_PAINTS: readonly number[] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14];
 

@@ -5,7 +5,14 @@
   "description": "One flat face of a cube-sphere planet; gravity stays vertical.",
   "generator": "city",
   "params": {
-    "preset": "planetNorth"
+    "preset": "planetNorth",
+    "config": {
+      "world": {
+        "angles": {
+          "residentRadius": 144
+        }
+      }
+    }
   },
   "seed": 1337,
   "streaming": {
