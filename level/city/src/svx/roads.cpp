@@ -1045,9 +1045,12 @@ struct RoadNetwork::Impl {
 
   std::vector<RoadWalk> walks_in(const Vec2& lo, const Vec2& hi) const {
     std::vector<RoadWalk> out;
-    for (const RoadPtr& road : roads_in(vox_box(lo, hi)))
-      for (const WalkRec& w : walks_of(road_info(road)))
+    for (const RoadPtr& road : roads_in(vox_box(lo, hi))) {
+      // (held: the cache may drop it meanwhile)
+      const InfoPtr info = road_info(road);
+      for (const WalkRec& w : walks_of(info))
         if (in_box(w.walk.a, w.walk.b, lo, hi)) out.push_back(w.walk);
+    }
     sort_by_id(out);
     return out;
   }
@@ -1057,12 +1060,14 @@ struct RoadNetwork::Impl {
     if (!e) return {};
     const Point2 p = end == 0 ? e->walk->pa : e->walk->pb;
     std::vector<RoadTurn> out;
-    for (const RoadPtr& road : e->walk->roads)
-      for (const WalkRec& w : walks_of(road_info(road))) {
+    for (const RoadPtr& road : e->walk->roads) {
+      const InfoPtr info = road_info(road);
+      for (const WalkRec& w : walks_of(info)) {
         if (w.walk.id == id) continue;
         if (js::hypot(w.pa.x - p.x, w.pa.y - p.y) <= kSnap) out.push_back({w.walk.id, 0});
         if (js::hypot(w.pb.x - p.x, w.pb.y - p.y) <= kSnap) out.push_back({w.walk.id, 1});
       }
+    }
     js::sort(out, [](const RoadTurn& a, const RoadTurn& b) {
       const double d = static_cast<double>(a.first) - static_cast<double>(b.first);
       return js::truthy(d) ? d : static_cast<double>(a.second - b.second);
