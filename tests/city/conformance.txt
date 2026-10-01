@@ -18,6 +18,7 @@ highways a501cce38796defe
 houses 5de0f5d6561b491b
 ids 4edd32b9f8a56a72
 industry 55bdd13e70a1d7c0
+interiors 444f782cc1888046
 island 6de5e618c06b37ce
 landcover 3e4d29cf9f4d0a6b
 materials 1548a45e43d835c7
