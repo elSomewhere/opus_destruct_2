@@ -4,6 +4,7 @@ biomes 0ef5fa2a143f0413
 blockpoly 562ea3982a8cffbb
 caves 1176b52d2de4eeb2
 cellnet f0c71bda65c7de9e
+cellworld 5979d189dbdab3c5
 chamfer 46ce522084b95a42
 chart 9595d7959f4665ee
 chunk 7188c6951d1dc531
@@ -36,5 +37,6 @@ streets 178f2000a7efc043
 svxmat 6929dc45e6f5ddd2
 terrain b7eb60e0c562cdee
 townplan 8bb64c2e7c9f0a7c
+townworld 48efe740af849843
 units 84535102ced7d220
 water 85e6c4a02754c63a

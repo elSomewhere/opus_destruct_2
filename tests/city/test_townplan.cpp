@@ -93,6 +93,16 @@ TEST_CASE("city townPlan: town plans conform to the reference (stage townplan)")
   CHECK(rec::record("townplan", out.text()) == rec::recorded_digest("townplan"));
 }
 
+TEST_CASE("city townPlan: town plans of create_world's worlds - lakes, highways, harbour grading - conform (stage townworld)") {
+  rec::Samples r(71);
+  rec::Out out;
+  for (const test::WorldCase& ws : test::city_worlds()) {
+    const std::shared_ptr<World> w = create_world(ws.overrides);
+    for (const Settlement* s : places_of(*w)) town_lines(out, *w, ws.key, *s, r);
+  }
+  CHECK(rec::record("townworld", out.text()) == rec::recorded_digest("townworld"));
+}
+
 TEST_CASE("city townPlan: plans and landmark uses are the same whichever is asked first, from several threads") {
   for (const char* key : {"nordicTown:fjord", "island:medium", "wrapWorld:small", "oldHarbourTown"}) {
     const std::vector<test::WorldCase> all = test::city_worlds();

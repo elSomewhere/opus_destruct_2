@@ -42,8 +42,8 @@ exports, natively and in WASM, on any thread count.
 | interior data | `buildings/interior/{prefabs,civicPrefabs,civicRules,common,stairs,grid}.js` | `buildings/interior/` | stages `prefabs`, `civicrules`, `floorgrid`, `stairs` |
 | prop prefabs, industry | `city/{propPrefabs,industry}.js` | `city/propPrefabs.*`, `city/industry.*` | stages `propprefabs`, `industry` |
 | polygon blocks, chamfers | `city/blockPoly.js`, `buildings/chamfer.js` | `city/blockPoly.*`, `buildings/chamfer.*` | stages `blockpoly`, `chamfer` |
-| cell network (city stage 1), street patterns, diagonal boulevards; the road record | `city/cellNetwork.js`, `city/streets.js`, `city/diagonals.js`; `World.cellNet`; createWorld's island sea tests | `city/cellNetwork.*` (`World::cell_net`), `city/streets.*`, `city/diagonals.*`, `network/road.hpp`, `world/createWorld.cpp` (`sea_at`, `sea_hits_rect`, `sea_share`, `sea_hits_seg`) | stages `cellnet`, `streets`; tests (any order, 4 threads); on a World without lakes and highways (§6) |
-| town plans | `city/townPlan.js` | `city/townPlan.*` (`Settlement::plan`) | stage `townplan`; tests (any order, 4 threads); without highways (§6) |
+| cell network (city stage 1), street patterns, diagonal boulevards; the road record | `city/cellNetwork.js`, `city/streets.js`, `city/diagonals.js`; `World.cellNet`; createWorld's island sea tests | `city/cellNetwork.*` (`World::cell_net`), `city/streets.*`, `city/diagonals.*`, `network/road.hpp`, `world/createWorld.cpp` (`sea_at`, `sea_hits_rect`, `sea_share`, `sea_hits_seg`) | stages `cellnet` (a World of World.js), `cellworld` (create_world's: lakes - harbour districts on a big lake's shore, `port_near` - highways, harbour grading), `streets`; tests (any order, 4 threads) |
+| town plans | `city/townPlan.js` | `city/townPlan.*` (`Settlement::plan`) | stages `townplan` (a World of World.js), `townworld` (create_world's: the highways' corridors keep civic landmarks off a block); tests (any order, 4 threads) |
 | land cover, farmland | `nature/landcover.js`, `nature/farmland.js` | `nature/landcover.*`, `nature/farmland.*` | stage `landcover` |
 | rivers, lakes, port lakes | `nature/rivers.js`, `nature/lakes.js` | `nature/rivers.*`, `nature/lakes.*` | stage `water` (§6: port lakes) |
 | createWorld (so far), harbour grading, water predicates | `world/createWorld.js` | `world/createWorld.cpp`: land cover, rivers, lakes, the terrain's `port_grade`, caves; `sea_at` ... `water_hits_rect`; marked places for the rest | stage `water`; `test_nature_threads.cpp` |
@@ -271,14 +271,14 @@ so that it stays the oracle.
   World caches 64: give it a cache that drops nothing, `tools/procgen_ref/lib/roads.mjs`
   `recordingWorld`), so the reference's objects stay one per road; `test_roads_threads.cpp` remakes
   the port's views from other road objects half way and gets the same levels.
-- **Cell networks and town plans, on a World without lakes and highways.** The reference asks
+- **Cell networks and town plans, on both kinds of World.** The reference asks
   `world.lakes?.shoreNear` for a harbour district (`portNear`) and `world.highways` for the
   civic landmarks (a highway's corridor keeps them off a block), both installed by
-  `createWorld`. Until the port installs them (`create_world`), its cell network and town plans
-  are those of a World of `World.js` with createWorld's island sea tests (the stages:
-  `lib/worlds.mjs` `withSeaTests` on a bare World; no lakes, highways or harbour grading of the
-  terrain): `port_near` fails on a World that has lakes, the place to wire them (`resolve_town`
-  asks the highways' corridors on a World that has them: `network/highways`). Their base heights are made first (`warmBasesIn`, `warmIsland`); measured
+  `createWorld`. The stages `cellnet` and `townplan` plan on a World of `World.js` with
+  createWorld's island sea tests (`lib/worlds.mjs` `withSeaTests` on a bare World: no lakes,
+  highways or harbour grading of the terrain), `cellworld` and `townworld` on createWorld's (made
+  pure: `pureTerrain`), where `port_near` asks the lakes and `resolve_town` the highways'
+  corridors. On the bare World the base heights are made first (`warmBasesIn`, `warmIsland`); measured
   on the `cellnet` cells, the reference's networks are the same planned cold and backwards (the
   country roads' slope test and the trunk roads' A* read heights, but none of these cells
   flips); a town plan's church (the highest of a few spots near the centre) compares terrain

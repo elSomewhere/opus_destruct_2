@@ -1,5 +1,6 @@
 // svx_city tests — the cell networks (voxel_city city/cellNetwork.js with city/streets.js and
-// city/diagonals.js; World::cell_net) against the reference (stage "cellnet"), and their purity:
+// city/diagonals.js; World::cell_net) against the reference (stages "cellnet" on a World of
+// World.js, "cellworld" on create_world's: lakes, highways, harbour grading), and their purity:
 // the same networks in any order and from several threads (docs/CITY.md §6).
 #include <doctest.h>
 
@@ -51,6 +52,18 @@ TEST_CASE("city cellNetwork: cell networks conform to the reference (stage celln
     (void)A;
   }
   CHECK(rec::record("cellnet", out.text()) == rec::recorded_digest("cellnet"));
+}
+
+TEST_CASE("city cellNetwork: the cell networks of create_world's worlds - lakes, highways, harbour grading - conform (stage cellworld)") {
+  rec::Samples r(59);
+  rec::Out out;
+  for (const test::WorldCase& ws : test::city_worlds()) {
+    const std::shared_ptr<World> w = create_world(ws.overrides);
+    const std::vector<test::Cell> cells = test::cells_of(*w, r);
+    out << (Line() << "world" << ws.key << cells.size());
+    for (const test::Cell& c : cells) test::net_lines(out, *plan_cell_network(*w, c[0], c[1]));
+  }
+  CHECK(rec::record("cellworld", out.text()) == rec::recorded_digest("cellworld"));
 }
 
 namespace {

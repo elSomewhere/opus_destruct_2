@@ -14,6 +14,7 @@
 #include "core/js.hpp"
 #include "core/math.hpp"
 #include "core/noise.hpp"
+#include "nature/lakes.hpp"
 #include "network/arterials.hpp"
 #include "terrain/terrain.hpp"
 #include "world/World.hpp"
@@ -122,10 +123,7 @@ std::vector<RoadPt> wobble(const World& world, int axis, double line, double fix
 // Does a sub-cell centre lie on a harbour front? Near a big lake's shore, or on an island near the
 // main town's harbour (one small port, not the whole waterfront).
 bool port_near(const World& world, double x, double y) {
-  // world.lakes?.shoreNear(x, y, vx(420)): nature/lakes is a stage of its own; a World without
-  // lakes (World.js's, the port's until createWorld installs them) skips it. A World with lakes
-  // needs this wired to them first.
-  if (world.lakes) SVX_FAIL("cellNetwork: port_near does not ask the lakes yet (nature/lakes)");
+  if (world.lakes && world.lakes->shore_near(x, y, vx(420))) return true;
   const IslandPlan* isl = world.fields->island.get();
   if (!isl) return false;
   const std::optional<Harbour>& h = isl->harbour();

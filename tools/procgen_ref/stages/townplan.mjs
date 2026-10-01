@@ -33,11 +33,21 @@ export default function* townplan() {
   for (const [key, overrides] of cityWorlds()) {
     const w = withSeaTests(new World(overrides));
     warmIsland(w);
-    const A = w.arterials;
+    yield* townsOf(w, key, r, true);
+  }
+}
+
+/**
+ * The records of a world's town plans (placesOf), drawing from r; warm: make every base height
+ * they can read first (a World of World.js; a pureTerrain world makes them as it samples).
+ */
+export function* townsOf(w, key, r, warm) {
+  const A = w.arterials;
+  {
     for (const s of placesOf(w)) {
       // (the plan's church, and every cell its landmarks and the blocks below reach)
       const m = s.radius * 1.3 + 3 * A.spacing;
-      warmBasesIn(w, { x0: s.x - m, y0: s.y - m, x1: s.x + m, y1: s.y + m });
+      if (warm) warmBasesIn(w, { x0: s.x - m, y0: s.y - m, x1: s.x + m, y1: s.y + m });
       const plan = townPlan(w, s);
       yield line("town", key, s.id, s.x, s.y, s.radius, plan.anchors.length);
       if (!plan.anchors.length) continue;
