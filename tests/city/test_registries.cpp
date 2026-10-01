@@ -10,7 +10,9 @@
 #include "city/districts.hpp"
 #include "city/flavors.hpp"
 #include "records.hpp"
+#include "sites/complex.hpp"
 #include "world/register_all.hpp"
+#include "world/sites.hpp"
 
 using namespace svx::city;
 using rec::Line;
@@ -291,7 +293,18 @@ TEST_CASE("city registries: districts, flavors, styles and the civic table are t
 TEST_CASE("city registries: registration order is the reference's") {
   register_all();
   register_all();  // (once)
-  CHECK(district_registry().size() == 17);
+  // city/districts.js's 17, then the site kinds' (sites/militaryBase.js, researchComplex.js,
+  // mountainBase.js, after the complex themes), with their SITES in that order
+  CHECK(district_registry().size() == 20);
+  CHECK(district_registry().all()[16].id == "rural");
+  CHECK(district_registry().all()[17].id == "military");
+  CHECK(district_registry().all()[18].id == "research");
+  CHECK(district_registry().all()[19].id == "stronghold");
+  REQUIRE(site_registry().size() == 3);
+  CHECK(site_registry().all()[0].id == "militaryBase");
+  CHECK(site_registry().all()[1].id == "researchComplex");
+  CHECK(site_registry().all()[2].id == "mountainBase");
+  CHECK(complex_themes().size() == 6);
   CHECK(flavor_registry().size() == 9);
   CHECK(style_registry().size() == 20);
   CHECK(style_registry().all().back().id == "classical");

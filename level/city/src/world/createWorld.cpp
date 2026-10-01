@@ -10,10 +10,12 @@
 #include "nature/landcover.hpp"
 #include "nature/rivers.hpp"
 #include "network/highways.hpp"
+#include "sites/links.hpp"
 #include "terrain/terrain.hpp"
 #include "world/World.hpp"
 #include "world/fields.hpp"
 #include "world/island.hpp"
+#include "world/sites.hpp"
 
 namespace svx::city {
 
@@ -56,8 +58,9 @@ std::shared_ptr<World> create_world(const Value& config) {
   if (!(highways.is_bool() && !highways.truthy())) w.highways = std::make_shared<HighwayNetwork>(w);
   // (underground/subway: the subway unless config.subway.enabled is false)
   // (underground/sewers: the sewers)
-  // (world/sites: the site layer)
-  // (sites/links: the site links)
+  // the sites (SITES' kinds) and the deep tunnels linking them
+  w.sites = std::make_shared<SiteLayer>(w);
+  w.site_links = std::make_shared<SiteLinks>(w);
   // (city/dressing: the dressing cache, World::dressing)
   // (buildings/interior/plan: World::building_plan; buildings/interior/voxelize:
   // World::voxelize_building)
