@@ -247,11 +247,15 @@ so that it stays the oracle.
   reference, which collides only for cells 40,000 km apart; the port keys it by the exact cell.
 - **Port lakes and the harbour grading** (`createWorld.js`'s `portGrade` hook, `lakes.portLakeOf`).
   A lake is a pure function of its lattice cell, and a town's port lake of the town, once the
-  terrain samples they read are (the entry above). The reference makes a town's port lake inside
-  the first terrain sample near it (in the shared context: that sample's `rugged` and `coast`, on an
-  island `h`) and keeps 512 lake cells (an LRU); the port plans in contexts of their own, caches
-  the lakes (any size: `Lakes(world, capacity)`) and the port lake on its town
-  (`Settlement::port_lake`), whichever thread asks first. The stages make the reference pure with
+  terrain samples they read are (the entry above). The reference plans a town's port lake inside
+  the first terrain sample near it, in the shared context (that sample's `rugged` and `coast` then
+  come from the lakes' samples; on an island its `h` could), and keeps 512 lake cells (an LRU).
+  Measured with the base heights (the entry above) over points of the stage `water` near towns,
+  forward against backward on fresh worlds: the `rugged` of 13 of 390 points differs (cities), 29
+  of 510 (desert), the `rugged` or `coast` of 4 of 300 (island:large); the heights and the water
+  answers do not. The port plans in contexts of their own and caches the lakes (any size:
+  `Lakes(world, capacity)`) and each town's port lake (`Settlement::port_lake`), whichever thread
+  asks first. The stages make the reference pure with
   `tools/procgen_ref/lib/worlds.mjs` `pureTerrain(world)`: every terrain sample first makes, in a
   fixed order, the base heights and - where createWorld's hook will run (not raw, near a town) -
   the port lakes it reads (it runs the hook once first), and a terrain call nested in a sample
