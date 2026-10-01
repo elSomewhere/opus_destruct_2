@@ -105,7 +105,8 @@ export function laneFields(l) {
 
 /** The answers for an id: lane, next, signal, green, walk, walkNext both ends, walkOpen. */
 function probe(net, tag, id) {
-  return line(tag, id, net.lane(id) ? 1 : 0, net.next(id), sigOf(net.signal(id)), net.green(id, 3), net.walk(id) ? 1 : 0, net.walkNext(id, 0), net.walkNext(id, 1), net.walkOpen(id, 3));
+  return line(tag, id, net.lane(id) ? 1 : 0, net.next(id), sigOf(net.signal(id)), net.green(id, 3), net.walk(id) ? 1 : 0,
+    net.walkNext(id, 0), net.walkNext(id, 1), net.walkOpen(id, 3));
 }
 
 function* boxRecords(net, tag, lo, hi) {

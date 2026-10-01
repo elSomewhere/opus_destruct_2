@@ -160,7 +160,8 @@ std::shared_ptr<const HighwayLanes::Rec> HighwayLanes::build(const HighwayEdgePt
     // (the deck ends of the ramps on that side, once each, in order)
     std::vector<double> cuts;
     for (const HighwayRamp& r : ramps)
-      if (r.side == side && r.s_deck > s0 + 8 && r.s_deck < s1 - 8 && std::find(cuts.begin(), cuts.end(), r.s_deck) == cuts.end()) cuts.push_back(r.s_deck);
+      if (r.side == side && r.s_deck > s0 + 8 && r.s_deck < s1 - 8 && std::find(cuts.begin(), cuts.end(), r.s_deck) == cuts.end())
+        cuts.push_back(r.s_deck);
     js::sort(cuts, [](double p, double q) { return p - q; });
     std::vector<double> bounds{s0};
     bounds.insert(bounds.end(), cuts.begin(), cuts.end());
@@ -429,7 +430,10 @@ std::vector<RoadTurn> HighwayLanes::next(uint64_t id) const {
         return nullptr;
       };
       // (every lane of an edge's link has its first piece: JS reads them unguarded)
-      const RoadLane* q = turn == 0 ? by_k(k.k) : turn == 1 && (k.k == n - 1 || !straight_on) ? by_k(n - 1) : turn == -1 && (k.k == 0 || !straight_on) ? by_k(0) : nullptr;
+      const RoadLane* q = turn == 0                                         ? by_k(k.k)
+                          : turn == 1 && (k.k == n - 1 || !straight_on)  ? by_k(n - 1)
+                          : turn == -1 && (k.k == 0 || !straight_on)     ? by_k(0)
+                                                                         : nullptr;
       if (q) out.push_back({q->id, turn});
     }
   }
