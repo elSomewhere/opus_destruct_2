@@ -124,6 +124,7 @@ void VoxelGrid::compact_changed() {
     release_buffer(std::move(c.strength));
     c.v = {};
     c.broken = {};
+    std::vector<u32>().swap(c.broken_few);
     c.strength = {};
     std::vector<u32>().swap(c.jbroken);
     c.uniform = true;
@@ -148,8 +149,46 @@ void VoxelGrid::forget_modified(u64 k) {
 
 bool VoxelGrid::broken(const IVec3& p, int axis) const {
   const Chunk* c = chunk(chunk_of(p));
-  if (!c || c->broken.empty()) return false;
-  return (c->broken[chunk_index(p)] >> axis) & 1;
+  if (!c || !c->any_broken()) return false;
+  return (c->broken_at(chunk_index(p)) >> axis) & 1;
+}
+
+namespace {
+// Sets broken bits of voxel i (true: some were not set).
+bool set_broken_bits(Chunk& c, i32 i, u8 bits, VoxelGrid& g) {
+  if (!c.broken.empty()) {
+    u8& b = c.broken[size_t(i)];
+    if ((b | bits) == b) return false;
+    b = static_cast<u8>(b | bits);
+    return true;
+  }
+  const u32 key = static_cast<u32>(i) << 3;
+  auto it = std::lower_bound(c.broken_few.begin(), c.broken_few.end(), key);
+  if (it != c.broken_few.end() && (*it >> 3) == static_cast<u32>(i)) {
+    if (((*it & 7) | bits) == (*it & 7)) return false;
+    *it |= bits;
+    return true;
+  }
+  if (c.broken_few.size() >= kBrokenListMax) {
+    // (many: a byte per voxel)
+    c.broken = g.acquire_buffer(0);
+    for (u32 e : c.broken_few) c.broken[e >> 3] = static_cast<u8>(e & 7);
+    std::vector<u32>().swap(c.broken_few);
+    c.broken[size_t(i)] = bits;
+    return true;
+  }
+  c.broken_few.insert(it, key | bits);
+  return true;
+}
+}  // namespace
+
+void VoxelGrid::install_seams(const IVec3& cc, const std::vector<u8>& bits) {
+  const auto it = chunks_.find(key3(cc[0], cc[1], cc[2]));
+  if (it == chunks_.end() || bits.size() != size_t(kChunkVox)) return;
+  Chunk& c = it->second;
+  if (c.uniform && !vox_solid(c.value)) return;
+  for (i32 i = 0; i < kChunkVox; ++i)
+    if ((bits[size_t(i)] & 7) && vox_solid(c.uniform ? c.value : c.v[size_t(i)])) set_broken_bits(c, i, static_cast<u8>(bits[size_t(i)] & 7), *this);
 }
 
 bool VoxelGrid::bond(const IVec3& p, int axis) const {
@@ -169,10 +208,7 @@ void VoxelGrid::break_bond(const IVec3& p, int axis) {
   if (it == chunks_.end()) return;
   Chunk& c = it->second;
   if (c.uniform && !vox_solid(c.value)) return;
-  if (c.broken.empty()) c.broken = acquire_buffer(0);
-  u8& b = c.broken[chunk_index(p)];
-  if (b & (1u << axis)) return;
-  b = static_cast<u8>(b | (1u << axis));
+  if (!set_broken_bits(c, chunk_index(p), static_cast<u8>(1u << axis), *this)) return;
   // (a broken bond changes no surface: the chunk is not reported changed)
   note_modified(chunk_of(p));
   const IVec3 bc = chunk_of(p);
@@ -385,7 +421,7 @@ void VoxelGrid::compact() {
   // mixed chunks whose voxels are all equal (and carry no broken bonds) become uniform
   for (auto it = chunks_.begin(); it != chunks_.end();) {
     Chunk& c = it->second;
-    if (!c.uniform && c.broken.empty() && c.strength.empty() && c.jbroken.empty()) {
+    if (!c.uniform && !c.any_broken() && c.strength.empty() && c.jbroken.empty()) {
       const Vox v0 = c.v[0];
       bool same = true;
       for (Vox v : c.v)
@@ -402,7 +438,7 @@ void VoxelGrid::compact() {
         c.free = vox_free(v0) ? kChunkVox : 0;
       }
     }
-    if (c.uniform && c.value == kAir && c.broken.empty() && c.strength.empty() && c.jbroken.empty() && !c.has_layers()) it = chunks_.erase(it);
+    if (c.uniform && c.value == kAir && !c.any_broken() && c.strength.empty() && c.jbroken.empty() && !c.has_layers()) it = chunks_.erase(it);
     else ++it;
   }
 }
@@ -546,7 +582,7 @@ std::vector<u8> VoxelGrid::chunk_record(u64 k) const {
   if (c) {
     if (c->uniform) std::fill(vox.begin(), vox.end(), c->value);
     else vox = c->v;
-    if (!c->broken.empty()) brk = c->broken;
+    if (c->any_broken()) c->broken_dense(brk);
     if (!c->strength.empty()) str = c->strength;
   }
   o.rle(vox);
@@ -679,14 +715,20 @@ bool VoxelGrid::apply_record(const std::vector<u8>& rec, u64* key_out) {
     c.solid += vox_solid(v) ? 1 : 0;
     c.free += vox_free(v) ? 1 : 0;
   }
-  bool anyb = false;
-  for (u8 x : cd.brk) anyb = anyb || x != 0;
-  if (anyb) {
-    release_buffer(std::move(c.broken));
+  size_t nb = 0;
+  for (u8& x : cd.brk) {
+    x &= 7;  // (a face per axis)
+    nb += x != 0;
+  }
+  release_buffer(std::move(c.broken));
+  c.broken = {};
+  std::vector<u32>().swap(c.broken_few);
+  if (nb > kBrokenListMax) {
     c.broken = std::move(cd.brk);
-  } else {
-    release_buffer(std::move(c.broken));
-    c.broken = {};
+  } else if (nb > 0) {
+    c.broken_few.reserve(nb);
+    for (i32 i = 0; i < kChunkVox; ++i)
+      if (cd.brk[size_t(i)]) c.broken_few.push_back((static_cast<u32>(i) << 3) | cd.brk[size_t(i)]);
   }
   if (!cd.str.empty()) {  // (empty: a v1 record, the chunk keeps its classes)
     bool anys = false;
@@ -758,6 +800,7 @@ void VoxelGrid::insert_chunk(const IVec3& cc, std::vector<Vox>&& voxels) {
   }
   c.v = std::move(voxels);
   c.broken = {};
+  std::vector<u32>().swap(c.broken_few);
   c.strength = {};
   std::vector<u32>().swap(c.jbroken);
   c.uniform = false;

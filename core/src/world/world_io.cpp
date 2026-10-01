@@ -441,11 +441,14 @@ bool World::Impl::load_delta(const std::vector<u8>& bytes) {
         const Chunk* c0 = grid_.chunk(unkey3(k));
         const std::vector<Vox> before = c0 && !c0->uniform ? c0->v : std::vector<Vox>{};
         const Vox before_value = c0 && c0->uniform ? c0->value : kAir;
+        std::vector<u32> before_broken, after_broken;  // (a generated chunk's: its seams)
+        if (c0) c0->broken_list(before_broken);
         if (!grid_.apply_record(r, &key)) return false;
         touched.push_back(GKey{0, key});
         // (voxels or bonds changed by the delta: a player's; only layers: not)
         const Chunk* c1 = grid_.chunk(unkey3(key));
-        bool same = c1 && c1->broken.empty() && c1->jbroken.empty();
+        if (c1) c1->broken_list(after_broken);
+        bool same = c1 && after_broken == before_broken && c1->jbroken.empty();
         if (same && !before.empty()) same = !c1->uniform && c1->v == before;
         else if (same) same = c1->uniform ? c1->value == before_value : std::all_of(c1->v.begin(), c1->v.end(), [&](Vox x) { return x == before_value; });
         if (!same) grid_.note_voxels_modified(key);
@@ -649,7 +652,7 @@ bool World::Impl::chunk_known(u64 key) const {
   return col && (cc[2] < col->base || cc[2] >= col->z_hi) && cc[2] >= strm_.lo[2] && cc[2] < strm_.hi[2];
 }
 
-void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v, bool from_source) {
+void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v, bool from_source, std::vector<u8>* seams) {
   struct GridsAfter {  // (the source's grids at home here come once the chunk is in)
     Impl& w;
     u64 k;
@@ -677,6 +680,13 @@ void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v, bool
   if (any) {
     grid_.insert_chunk(cc, std::move(v));
     changed = true;
+    // (its seams: base state, as its voxels are)
+    std::vector<u8> own;
+    if (from_source && !seams && strm_.source->generate_seams(cc, own)) seams = &own;
+    if (from_source && seams && seams->size() == size_t(kChunkVox)) {
+      grid_.install_seams(cc, *seams);
+      seamed_ = seamed_ || grid_.chunk(cc)->any_broken();
+    }
   } else {
     grid_.release_buffer(std::move(v));
   }
@@ -700,13 +710,16 @@ void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v, bool
     // (water, burn marks): then it is the generator's chunk still, to be designed when first
     // touched (a chunk changed by play was designed before it was changed)
     std::vector<Vox> generated;
+    std::vector<u32> generated_seams, now_broken;
     if (const Chunk* g0 = grid_.chunk(cc); any && g0 && !g0->uniform) generated = g0->v;
+    if (const Chunk* g0 = grid_.chunk(cc)) g0->broken_list(generated_seams);
     const Vox generated_value = grid_.chunk(cc) && grid_.chunk(cc)->uniform ? grid_.chunk(cc)->value : kAir;
     grid_.track_changes(true);
     changed = grid_.apply_record(strm_.archive->get(key)) || changed;  // (records were checked when archived or loaded)
     strm_.archive->erase(key);
     const Chunk* ch = grid_.chunk(cc);
-    bool same = ch && ch->broken.empty() && ch->jbroken.empty();
+    if (ch) ch->broken_list(now_broken);
+    bool same = ch && now_broken == generated_seams && ch->jbroken.empty();
     if (same && !generated.empty()) same = !ch->uniform && ch->v == generated;
     else if (same) same = ch->uniform ? ch->value == generated_value : std::all_of(ch->v.begin(), ch->v.end(), [&](Vox x) { return x == generated_value; });
     if (!same) grid_.note_voxels_modified(key);
@@ -826,6 +839,13 @@ void World::Impl::generate_grids(u64 key) {
     if (id == 0) continue;
     const u16 sl = static_cast<u16>(slot_of(id));
     GridState& st = gs(sl);
+    // (a source's grid may carry seams of its own: VoxelGrid::break_bond in generate_grid)
+    if (!seamed_)
+      for (const auto& [k, c] : st.g.chunks())
+        if (c.any_broken()) {
+          seamed_ = true;
+          break;
+        }
     if (!saved.empty()) {
       // its changes back (a grid changed by play was designed before it was changed)
       std::vector<u64> touched;
@@ -1193,6 +1213,8 @@ int World::Impl::stream_update() {
   int budget = strm_.config.chunks_per_tick, empty_budget = 16 * strm_.config.chunks_per_tick;
   std::vector<std::vector<Vox>> vox;
   std::vector<u8> any;
+  std::vector<std::vector<u8>> seams;  // (ChunkSource::generate_seams, with the voxels)
+  std::vector<u8> has_seams;
   while (budget > 0 && empty_budget > 0) {
     take(size_t(2 * budget + 8));
     if (want.empty()) break;
@@ -1209,9 +1231,14 @@ int World::Impl::stream_update() {
       const StreamColumn& col = strm_.columns[key3(c[0], c[1], 0)];
       if (c[2] < col.z_lo || c[2] >= col.z_hi) fill[j] = 1;
     }
+    seams.resize(n);
+    has_seams.assign(n, 0);
     parallel_for(static_cast<i64>(n), 1, [&](i64 b0, i64 e0) {
-      for (i64 j = b0; j < e0; ++j)
-        if (!fill[size_t(j)]) any[size_t(j)] = src->generate(unkey3(want[size_t(j)]), vox[size_t(j)]) ? 1 : 0;
+      for (i64 j = b0; j < e0; ++j) {
+        if (fill[size_t(j)]) continue;
+        any[size_t(j)] = src->generate(unkey3(want[size_t(j)]), vox[size_t(j)]) ? 1 : 0;
+        if (any[size_t(j)]) has_seams[size_t(j)] = src->generate_seams(unkey3(want[size_t(j)]), seams[size_t(j)]) ? 1 : 0;
+      }
     });
     for (size_t j = 0; j < n && budget > 0 && empty_budget > 0; ++j) {
       const u64 k = want[j];
@@ -1229,7 +1256,8 @@ int World::Impl::stream_update() {
         else --empty_budget;
         continue;
       }
-      insert_generated(k, any[j] != 0, std::move(vox[j]));
+      std::vector<u8> none;
+      insert_generated(k, any[j] != 0, std::move(vox[j]), true, has_seams[j] ? &seams[j] : &none);
       vox[j] = {};
       ++generated;
       if (grid_.chunk(unkey3(k))) --budget;
@@ -1534,8 +1562,8 @@ MemoryReport World::Impl::memory() const {
   for (const auto& [id, l] : dead_loads_) m.caches += vec_bytes(l);
   m.caches += hash_bytes(strm_.generated) + hash_bytes(strm_.columns) + hash_bytes(strm_.home_grids);
   // (the fragment labelling's memo: kinds of chunk seen, their labels - a few dozen at most)
-  for (const auto& [k, fm] : frag_memo_) m.caches += vec_bytes(fm.v) + vec_bytes(fm.broken) + fm.frags.memory_bytes();
-  m.caches += hash_bytes(frag_memo_) + hash_bytes(solids_) + vec_bytes(touching_);
+  for (const auto& [k, fm] : frag_memo_) m.caches += vec_bytes(fm.v) + vec_bytes(fm.broken) + vec_bytes(fm.broken_few) + fm.frags.memory_bytes();
+  m.caches += hash_bytes(frag_memo_) + hash_bytes(solids_) + vec_bytes(touching_) + hash_bytes(loose_checked_);
   for (const auto& [k, c] : solids_) m.caches += vec_bytes(c.bits) + vec_bytes(c.from);
   m.queues = vec_bytes(events_) + vec_bytes(strm_.evicted_chunks) + vec_bytes(queue_) + vec_bytes(seeds_) + grid_.dirty_bytes() + vec_bytes(grid_dirty_) +
              hash_bytes(ext_.host_dirty) + vec_bytes(ext_.sys_changed) + vec_bytes(ext_.sys_generated) + vec_bytes(ext_.sys_evicted);
@@ -1558,7 +1586,7 @@ u64 World::Impl::state_hash() const {
       bool uni = c.uniform;
       Vox v0 = c.uniform ? c.value : (c.v.empty() ? kAir : c.v[0]);
       if (!uni) uni = std::all_of(c.v.begin(), c.v.end(), [&](Vox v) { return v == v0; });
-      const bool any_broken = std::any_of(c.broken.begin(), c.broken.end(), [](u8 b) { return b != 0; });
+      const bool any_broken = !c.broken_few.empty() || std::any_of(c.broken.begin(), c.broken.end(), [](u8 b) { return b != 0; });
       if (uni && v0 == kAir && !any_broken && !c.has_layers() && c.jbroken.empty()) continue;
       mix(k);
       if (uni) {
@@ -1566,8 +1594,19 @@ u64 World::Impl::state_hash() const {
       } else {
         for (Vox v : c.v) mix(v);
       }
-      if (any_broken)
-        for (u8 b : c.broken) mix(b);
+      if (any_broken) {
+        // (as a byte per voxel, whichever way the chunk keeps them)
+        if (!c.broken.empty()) {
+          for (u8 b : c.broken) mix(b);
+        } else {
+          size_t e = 0;
+          for (i32 i = 0; i < kChunkVox; ++i) {
+            u8 b = 0;
+            if (e < c.broken_few.size() && (c.broken_few[e] >> 3) == static_cast<u32>(i)) b = static_cast<u8>(c.broken_few[e++] & 7);
+            mix(b);
+          }
+        }
+      }
       for (int L = 0; L < kMaxLayers; ++L)
         if (!c.layer[size_t(L)].empty()) {
           mix(0x1A7E0000ull + static_cast<u64>(L));

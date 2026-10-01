@@ -61,6 +61,17 @@ class ChunkSource {
     *z_hi = chunk_hi()[2];
     *below = kAir;
   }
+  // Faces of the chunk's voxels that do not bond (a seam: an object resting on a floor, a chair
+  // standing on it): kChunkVox values in Chunk::v order, bit a of a voxel its face towards +axis a
+  // - towards the next chunk's voxels too (the source knows them). False: none. Part of the base
+  // world (installed as the chunk's broken faces when it is generated, not a change). A source
+  // draws a loose object with seams on every face between its voxels and anything else: it is a
+  // free component then, which rests where it is until something moves it (docs/CORE.md §3
+  // Streaming, resting objects). A pure function of the chunk: called from several threads at once.
+  virtual bool generate_seams(const IVec3& chunk, std::vector<u8>& out) const {
+    (void)chunk, (void)out;
+    return false;
+  }
   // The region a chunk's changes are remembered and forgotten with (StreamConfig::archive_mb):
   // a unit that should come back whole, like a city block, so that no building returns in half.
   // Default: 8 x 8 chunk columns (32 m at the default voxel size), all heights.

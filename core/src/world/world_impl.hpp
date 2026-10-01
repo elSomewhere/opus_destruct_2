@@ -237,6 +237,29 @@ struct World::Impl {
       return static_cast<size_t>(x ^ (x >> 29));
     }
   };
+  struct FragKeyHash {
+    size_t operator()(const FragKey& k) const {
+      u64 x = k.chunk ^ (static_cast<u64>(k.grid) * 0x9E3779B97F4A7C15ull) ^ (static_cast<u64>(static_cast<u32>(k.idx)) * 0xC2B2AE3D27D4EB4Full);
+      x = (x ^ (x >> 31)) * 0xBF58476D1CE4E5B9ull;
+      return static_cast<size_t>(x ^ (x >> 29));
+    }
+  };
+
+  // ---- resting objects (world.cpp; docs/CORE.md §3, seams): free components a source drew with
+  // seams round them, standing where they are until something moves them
+  // The free component holding voxel v, walked through its bonds up to max_voxels: true (its
+  // fragments in *out) if it closes with no support - no anchored voxel, no world not generated
+  // yet, no bond to another grid's voxels. (Read only: a pure function of voxels, bonds and residency.)
+  bool free_component(const GVox& v, i64 max_voxels, std::vector<FragKey>* out);
+  i64 loosen(GridId id, const IVec3& voxel, const V3& impulse);
+  // (bake) a free component with seams on a solid voxel beneath one of its voxels: it stays
+  bool resting(const std::vector<FragKey>& members);
+  // A link of an articulation presses on a voxel of no structure: its component comes loose if
+  // it is free (seeded: the extraction detaches it). Each fragment once a tick.
+  void link_contact(const GVox& v, const FragKey& f);
+  bool seamed_ = false;  // (the world has seams: a source's, a level's resting objects)
+  std::unordered_set<FragKey, FragKeyHash> loose_checked_;
+  i64 loose_tick_ = -1;
 
   // ---- joints (world_joints.cpp)
   struct JointRec;
@@ -555,8 +578,9 @@ struct World::Impl {
   void evict_chunk(u64 key);
   void reset_archive(size_t bytes);  // (empty, bounded to bytes - 0: unbounded - with nothing listed as in it)
   void tear_fragment(const FragKey& f, const std::vector<IVec3>& vox);  // (torn out whole: WorldConfig::shards_hold_together)
-  // (from_source false: a chunk of its column's fill or air - no layers or grids asked of the source)
-  void insert_generated(u64 key, bool any, std::vector<Vox>&& voxels, bool from_source = true);
+  // (from_source false: a chunk of its column's fill or air - no layers, seams or grids asked of the
+  // source; seams: its seams made already - none if empty - else asked of the source here)
+  void insert_generated(u64 key, bool any, std::vector<Vox>&& voxels, bool from_source = true, std::vector<u8>* seams = nullptr);
   f64 focus_distance(const IVec3& chunk) const;  // horizontal, m (to the nearest focus point)
   void generate_grids(u64 key);              // (the source's grids at home in a chunk just generated)
   void evict_grid(u16 g, u64 home_region);   // (a streamed grid out of range: its changes archived)
@@ -675,6 +699,7 @@ struct World::Impl {
     FragParams par;
     std::vector<Vox> v;
     std::vector<u8> broken;
+    std::vector<u32> broken_few;
     FragChunk frags;
   };
   std::unordered_map<u64, FragMemo> frag_memo_;

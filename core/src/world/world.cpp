@@ -132,6 +132,9 @@ void World::Impl::load(VoxelGrid&& g) {
   designed_all_ = false;
   dead_loads_.clear();
   blast_loads_.clear();
+  seamed_ = false;
+  loose_checked_.clear();
+  loose_tick_ = -1;
   // the grid's layers are the world's (by name: a grid made with layers of its own keeps them)
   for (const LayerSpec& spec : g.layers())
     if (std::none_of(ext_.layers.begin(), ext_.layers.end(), [&](const LayerSpec& l) { return l.name == spec.name; }) &&
@@ -222,13 +225,14 @@ FragChunk& World::Impl::frag_chunk(u16 g, const IVec3& cc) {
     u64 hsh = key3(cc[0], cc[1], cc[2]) ^ 0x9E3779B97F4A7C15ull;
     for (Vox x : ch->v) hsh = (hsh ^ x) * 0x100000001B3ull;
     for (u8 x : ch->broken) hsh = (hsh ^ x) * 0x100000001B3ull;
+    for (u32 x : ch->broken_few) hsh = (hsh ^ x) * 0x100000001B3ull;
     hsh ^= static_cast<u64>(std::llround(par.scale * 65536.0));
     const auto mt = frag_memo_.find(hsh);
     const FragParams& mp = mt != frag_memo_.end() ? mt->second.par : par;
     const bool same_par = mp.min_voxels == par.min_voxels && mp.jitter_lo == par.jitter_lo && mp.jitter_span == par.jitter_span &&
                           mp.noise_scale == par.noise_scale && mp.salt == par.salt && mp.mats == par.mats;
     if (mt != frag_memo_.end() && same_par && mt->second.cc == cc && mt->second.scale == par.scale && mt->second.v == ch->v &&
-        mt->second.broken == ch->broken) {
+        mt->second.broken == ch->broken && mt->second.broken_few == ch->broken_few) {
       FragChunk copy = mt->second.frags;
       copy.vox_version = ch->vox_version;
       return adopt_fragments(g, key, std::move(copy));
@@ -241,6 +245,7 @@ FragChunk& World::Impl::frag_chunk(u16 g, const IVec3& cc) {
     m.par = par;
     m.v = ch->v;
     m.broken = ch->broken;
+    m.broken_few = ch->broken_few;
     m.frags = nf;
     return adopt_fragments(g, key, std::move(nf));
   }
@@ -524,7 +529,7 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
       if (fcp->id[size_t(li)] != static_cast<u16>(F.idx + 1)) continue;
       const IVec3 l = local_of(li);
       const IVec3 p{base[0] + l[0], base[1] + l[1], base[2] + l[2]};
-      const u8 brk_p = ch->broken.empty() ? 0 : ch->broken[size_t(li)];
+      const u8 brk_p = ch->broken_at(li);
       for (int a = 0; a < 3; ++a)
         for (int sg = -1; sg <= 1; sg += 2) {
           const bool inside = l[a] + sg >= 0 && l[a] + sg < kChunk;
@@ -541,7 +546,7 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
             if (!vox_solid(vq)) continue;
             // (the face is the lower voxel's: in this chunk, its broken flags are at hand)
             const bool face_broken = sg > 0      ? ((brk_p >> a) & 1) != 0
-                                     : inside ? !ch->broken.empty() && ((ch->broken[size_t(qi2)] >> a) & 1) != 0
+                                     : inside ? ((ch->broken_at(qi2) >> a) & 1) != 0
                                               : G.broken(q, a);
             if (face_broken) continue;
           }
@@ -636,6 +641,10 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
         const IVec3 cc = unkey3(f.chunk), l = local_of(fc->frags[size_t(f.idx)].first);
         seeds_.push_back(GVox{{cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]}, f.grid});
       }
+    } else if (resting(members)) {
+      // (bake) a resting object - seamed, on a solid voxel beneath it: it stays as it is, free,
+      // until something moves it (a shot, a piece landing on it, World::loosen, a link pressing)
+      seamed_ = true;
     } else {
       // (bake) a piece of the source world that cannot stand: removed, not a gameplay change
       for (const FragKey& f : members) {
@@ -728,6 +737,151 @@ bool World::Impl::pristine(const Structure& s) const {
   for (const FragKey& f : s.frags)
     if (f.idx >= 0 && vg(f.grid).voxels_modified(f.chunk)) return false;
   return true;
+}
+
+// ---------------------------------------------------------------------------------------------
+// Resting objects (docs/CORE.md §3, seams)
+
+bool World::Impl::free_component(const GVox& v, i64 max_voxels, std::vector<FragKey>* out) {
+  FragKey f0;
+  if (!frag_at(v, &f0)) return false;
+  std::vector<FragKey> members{f0};
+  std::unordered_set<FragKey, FragKeyHash> seen{f0};
+  i64 voxels = 0;
+  JunctionScratch js;
+  constexpr int kStride[3] = {kChunk * kChunk, kChunk, 1};
+  for (size_t qi = 0; qi < members.size(); ++qi) {
+    const FragKey F = members[qi];
+    const u16 g = F.grid;
+    const VoxelGrid& G = vg(g);
+    const IVec3 cc = unkey3(F.chunk);
+    FragChunk* fcp = frag_chunk_if(F);
+    const Chunk* ch = G.chunk(cc);
+    if (!fcp || !ch || F.idx < 0 || F.idx >= static_cast<i32>(fcp->frags.size())) return false;
+    voxels += fcp->frags[size_t(F.idx)].count;
+    if (voxels > max_voxels) return false;
+    const IVec3 base{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
+    for (i32 k = fcp->vox_start[size_t(F.idx)]; k < fcp->vox_start[size_t(F.idx) + 1]; ++k) {
+      const i32 li = fcp->vox[size_t(k)];
+      if (fcp->id[size_t(li)] != static_cast<u16>(F.idx + 1)) continue;
+      const IVec3 l = local_of(li);
+      const IVec3 p{base[0] + l[0], base[1] + l[1], base[2] + l[2]};
+      const u8 brk_p = ch->broken_at(li);
+      for (int a = 0; a < 3; ++a)
+        for (int sg = -1; sg <= 1; sg += 2) {
+          const bool inside = l[a] + sg >= 0 && l[a] + sg < kChunk;
+          const int qi2 = li + sg * kStride[a];
+          if (inside && fcp->at(qi2) == F.idx) continue;
+          IVec3 q = p;
+          q[a] += sg;
+          if (g == 0 && !inside && !chunk_resident(chunk_of(q))) return false;  // (the unknown world holds it)
+          const Vox vq = inside ? (ch->uniform ? ch->value : ch->v[size_t(qi2)]) : G.get(q);
+          if (!vox_solid(vq)) continue;
+          const bool face_broken = sg > 0      ? ((brk_p >> a) & 1) != 0
+                                   : inside ? ((ch->broken_at(qi2) >> a) & 1) != 0
+                                            : G.broken(q, a);
+          if (face_broken) continue;
+          if (vox_anchored(vq)) return false;
+          FragKey Gk;
+          Gk.grid = g;
+          if (inside) {
+            const i32 g2 = fcp->at(qi2);
+            if (g2 < 0) continue;
+            Gk.chunk = F.chunk;
+            Gk.idx = g2;
+          } else {
+            const IVec3 qc = chunk_of(q);
+            FragChunk& fq = frag_chunk(g, qc);
+            const i32 g2 = fq.at(chunk_index(q));
+            if (g2 < 0) continue;
+            Gk.chunk = key3(qc[0], qc[1], qc[2]);
+            Gk.idx = g2;
+          }
+          if (seen.insert(Gk).second) members.push_back(Gk);
+        }
+    }
+    // (bonded to another grid's voxels, or reaching into the unknown world: not walked - held)
+    bool held = false;
+    each_junction(js, F, [&](const JSample& j, bool fwd) {
+      if (held) return;
+      if (fwd && j.kind == kJunctionUnknown) {
+        held = true;
+        return;
+      }
+      const GVox other = fwd ? GVox{j.o, j.og} : GVox{j.v, j.vg};
+      if (vox_solid(vg(other.grid).get(other.p))) held = true;
+    });
+    if (held) return false;
+  }
+  if (out) *out = std::move(members);
+  return true;
+}
+
+i64 World::Impl::loosen(GridId id, const IVec3& voxel, const V3& impulse) {
+  if (in_tick_ || !finite3(impulse)) return 0;
+  const i32 sl = id == kWorldGrid ? 0 : slot_of(id);
+  if (sl < 0 || (sl == 0 && id != kWorldGrid)) return 0;
+  const GVox v{voxel, static_cast<u16>(sl)};
+  if (!vox_free(vg(v.grid).get(voxel))) return 0;
+  constexpr i64 kMaxVoxels = 20000;
+  std::vector<FragKey> members;
+  if (!free_component(v, kMaxVoxels, &members)) return 0;
+  // (what a structure holds is its own: it detaches what stands on nothing itself)
+  for (const FragKey& f : members)
+    if (owner_of(f) != 0) return 0;
+  const V3 at = voxel_centre(v);
+  Body* b = make_body_from_world(members, V3{}, V3{});
+  if (!b) return 0;
+  apply_impulse(b->id, at, impulse);
+  return b->id;
+}
+
+bool World::Impl::resting(const std::vector<FragKey>& members) {
+  std::unordered_set<FragKey, FragKeyHash> mine(members.begin(), members.end());
+  std::vector<IVec3> vox;
+  for (const FragKey& f : members) {
+    const VoxelGrid& G = vg(f.grid);
+    // (beneath: the world grid's -z; an oriented grid's lattice axis nearest the world's down)
+    int da = 2, ds = -1;
+    if (f.grid != 0) {
+      const LatticeXf& X = xf_of(f.grid);
+      const V3 o = X.to(V3{0, 0, 0});
+      f64 best = 0.0;
+      for (int a = 0; a < 3; ++a) {
+        V3 e{0, 0, 0};
+        e[a] = 1.0;
+        const f64 z = (X.to(e) - o).z;
+        if (std::fabs(z) > best) {
+          best = std::fabs(z);
+          da = a;
+          ds = z > 0.0 ? -1 : 1;
+        }
+      }
+    }
+    vox.clear();
+    voxels_of(f, vox);
+    for (const IVec3& p : vox) {
+      IVec3 q = p;
+      q[da] += ds;
+      const Vox vq = G.get(q);
+      if (!vox_solid(vq)) continue;
+      // (the face between them is the lower voxel's: a seam there)
+      if (!G.broken(ds < 0 ? q : p, da)) continue;
+      if (vox_anchored(vq)) return true;
+      FragKey k;
+      if (frag_at(GVox{q, f.grid}, &k) && !mine.count(k)) return true;
+    }
+  }
+  return false;
+}
+
+void World::Impl::link_contact(const GVox& v, const FragKey& f) {
+  if (loose_tick_ != st_.ticks) {
+    loose_checked_.clear();
+    loose_tick_ = st_.ticks;
+  }
+  if (!loose_checked_.insert(f).second) return;
+  if (free_component(v, cfg_.link_loosen_voxels, nullptr)) seeds_.push_back(v);
 }
 
 i32 World::Impl::cluster_cell(i64 fragments, i32 limit) const {
@@ -1761,6 +1915,9 @@ void World::Impl::structure_loads(f64 dt_sub) {
     Structure* s = o ? structure(o) : nullptr;
     if (!s) {
       if (norm(F) > 4.0 * cfg_.load_trigger_abs) seeds_.push_back(wv);
+      else if (seamed_ && cfg_.link_loosen_force > 0.0 && norm(F) > cfg_.link_loosen_force && c.a >= 0 &&
+               rigid_.bodies[size_t(c.a)]->link)
+        link_contact(wv, f);  // (a hand on a chair: it comes loose if it stands free)
       continue;
     }
     const i32 i = s->node(f);

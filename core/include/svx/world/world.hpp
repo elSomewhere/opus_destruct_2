@@ -272,6 +272,11 @@ struct WorldConfig {
   i32 crumple_check_gap = 8;       // a piece crumpling (in place): collisions re-check it every so many substeps (else 2)
   i32 rollback_part_voxels = 500;  // a part at least this large coming apart re-solves the contact step
   i32 min_body_voxels = 16;        // smaller pieces (breaking off, or coming loose) turn to dust, not rigid pieces
+  // Resting objects (docs/CORE.md §3, seams; only in a world with seams): a link of an
+  // articulation - a character's hand, foot - pressing at least this hard (N) on a free component
+  // of at most link_loosen_voxels voxels (a chair, a crate) makes it a piece (0: never)
+  f64 link_loosen_force = 40.0;
+  i32 link_loosen_voxels = 4096;
   // blasts
   f64 blast_shatter = 1.7;         // shatter radius / crater radius: fragments come loose
   f64 blast_reach = 3.5;           // load radius / crater radius
@@ -681,6 +686,13 @@ class World {
   i32 set_voxels(GridId grid, const std::vector<VoxelEdit>& edits, u32 flags = 0);  // (in a grid's coordinates)
   bool apply_impulse(i64 piece, const V3& point, const V3& impulse);  // N s at a world point
   bool remove_piece(i64 piece);                                         // PieceRemoved (Removed)
+  // Immediate. A resting object comes loose (docs/CORE.md §3, seams): the component holding the
+  // grid's voxel - at most 20,000 voxels - leaves the grid as a piece with this impulse (N s, at
+  // the voxel's centre) if nothing holds it: no anchored voxel, no bond to anything that stands,
+  // no world not generated yet. Hosts call it when the player or a scripted action pushes
+  // something. Returns the piece (0: held, too large, not a free voxel, smaller than a piece -
+  // WorldConfig::min_body_voxels: dust - or from inside a tick).
+  i64 loosen(GridId grid, const IVec3& voxel, const V3& impulse);
   // A piece the host keeps: never culled over max_bodies or the pieces' memory budget (a joint's
   // pieces - a machine's parts, what hangs on it - are kept anyway). Its parts keep it when it
   // breaks.

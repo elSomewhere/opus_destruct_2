@@ -88,11 +88,17 @@ struct LayerSpec {
   LayerBind bind = LayerBind::Place;
 };
 
+// A chunk's broken faces are kept as a sorted list while there are few (a seam under a chair, a
+// crack) and as an array of a byte per voxel beyond this many voxels with one.
+constexpr size_t kBrokenListMax = 2048;
+
 struct Chunk {
   bool uniform = true;
   Vox value = kAir;             // uniform chunks
   std::vector<Vox> v;           // kChunkVox when mixed (index: (x * 32 + y) * 32 + z)
-  std::vector<u8> broken;       // lazily allocated: bit a = bond to the +a neighbour broken
+  // Broken faces (bit a of a voxel: its bond to the +a neighbour is broken), either
+  std::vector<u8> broken;       // a byte per voxel (kChunkVox), or
+  std::vector<u32> broken_few;  // (voxel index << 3) | bits, sorted: while there are few (kBrokenListMax)
   std::vector<u8> strength;     // lazily allocated: design strength class per voxel
   u32 vox_version = 0;          // changes (unique value) when voxels change: fragment caches
   i32 solid = 0;                // solid voxel count (mixed chunks)
@@ -101,10 +107,44 @@ struct Chunk {
   std::array<u16, kMaxLayers> layer_count{};      // nonzero values per layer
   std::vector<u32> jbroken;     // broken junction samples of its voxels (junction_code), sorted
   i32 free_count() const { return uniform ? (vox_free(value) ? kChunkVox : 0) : free; }
+  // The broken faces of voxel i (Chunk::v order).
+  u8 broken_at(i32 i) const {
+    if (!broken.empty()) return broken[size_t(i)];
+    if (broken_few.empty()) return 0;
+    size_t lo = 0, hi = broken_few.size();
+    const u32 key = static_cast<u32>(i) << 3;
+    while (lo < hi) {
+      const size_t m = (lo + hi) / 2;
+      if (broken_few[m] < key) lo = m + 1;
+      else hi = m;
+    }
+    return lo < broken_few.size() && (broken_few[lo] >> 3) == static_cast<u32>(i) ? static_cast<u8>(broken_few[lo] & 7) : 0;
+  }
+  bool any_broken() const { return !broken.empty() || !broken_few.empty(); }
+  // Its broken faces as a byte per voxel (zeros where none).
+  void broken_dense(std::vector<u8>& out) const {
+    if (!broken.empty()) {
+      out = broken;
+      return;
+    }
+    out.assign(kChunkVox, 0);
+    for (u32 e : broken_few) out[e >> 3] = static_cast<u8>(e & 7);
+  }
+  // Its broken faces as a sorted list ((voxel index << 3) | bits), whichever way it keeps them.
+  void broken_list(std::vector<u32>& out) const {
+    if (broken.empty()) {
+      out = broken_few;
+      return;
+    }
+    out.clear();
+    for (i32 i = 0; i < kChunkVox; ++i)
+      if (broken[size_t(i)] & 7) out.push_back((static_cast<u32>(i) << 3) | (broken[size_t(i)] & 7u));
+  }
   // Its bytes (what the grid's memory_bytes counts for it): its own record - of pointer-sized
   // containers: in what is used a fixed size, about its size on a 64-bit platform - and its arrays.
   i64 memory_bytes(Bytes kind = Bytes::Held) const {
-    i64 b = record_bytes<Chunk>(kind, 328) + vec_bytes(v, kind) + vec_bytes(broken, kind) + vec_bytes(strength, kind) + vec_bytes(jbroken, kind);
+    i64 b = record_bytes<Chunk>(kind, 328) + vec_bytes(v, kind) + vec_bytes(broken, kind) + vec_bytes(broken_few, kind) + vec_bytes(strength, kind) +
+            vec_bytes(jbroken, kind);
     for (const auto& l : layer) b += vec_bytes(l, kind);
     return b;
   }
@@ -129,6 +169,9 @@ class VoxelGrid {
   bool bond(const IVec3& p, int axis) const;
   bool broken(const IVec3& p, int axis) const;
   void break_bond(const IVec3& p, int axis);
+  // A generated chunk's seams (ChunkSource::generate_seams: bit a of a voxel, its face to the +a
+  // neighbour does not bond): the chunk's base state, not a change. (The chunk is there.)
+  void install_seams(const IVec3& cc, const std::vector<u8>& bits);
 
   u8 strength(const IVec3& p) const;  // design strength class (0: as the material)
   void set_strength(const IVec3& p, u8 cls);

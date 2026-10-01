@@ -247,6 +247,38 @@ Large worlds are generated on demand. Implement `ChunkSource`:
   `kMaxColumnChunks` (1024) tall. Without it, every chunk of the extent's height is generated.
   `World::column_range` reports a column's range; `chunk_resident` is false for the solid
   implicit fill (it is rock that is not stored).
+- `generate_seams(chunk, out)` (optional, a pure function too) says which faces of the chunk's
+  voxels do not bond: bit a of a voxel, its face towards +a (towards the next chunk's voxels
+  too). The world installs them as the chunk's broken faces when it generates it; they are base
+  state, not a change (the chunk is not modified, its record is not archived for them, and a
+  chunk that comes back - from the archive, after its region was forgotten - has them again).
+  A source's oriented grid carries seams of its own: `generate_grid` may call `break_bond` on
+  the grid it fills (`add_grid` keeps a grid's broken faces).
+
+**Resting objects.** A source draws a loose object (a chair, a crate, a bench) with seams on
+every face between its voxels and anything else. It is then a free component with no bond to a
+support, and the world leaves it alone: it is never extracted while nothing happens near it (it
+costs its voxels, which render with its chunk and collide for the player), and when something
+does - a shot, a blast, voxels vacated next to it, a piece landing on it, a body falling asleep
+on it - it is extracted, found standing on nothing, and comes loose as one piece. Besides:
+
+- `World::loosen(grid, voxel, impulse)` makes the component holding a voxel a piece now, with
+  an impulse, if nothing holds it (at most 20,000 voxels; 0 if it is held - an anchored voxel, a
+  bond to anything that stands, a world not generated yet - too large, or a shard). Hosts call
+  it when the player or a scripted action pushes something.
+- In a world with seams, a link of an articulation (a character's hand or foot) pressing on a
+  free component at least `WorldConfig::link_loosen_force` hard (40 N; 0: never) makes it a
+  piece, if it has at most `link_loosen_voxels` voxels (4096): the component is walked once a
+  tick per fragment touched. (Pieces are loaded and seeded by heavier contacts only: 4 x
+  `load_trigger_abs`.)
+- A bounded level's `bake()` keeps a free component that has seams and stands on a solid voxel
+  across one (directly beneath one of its voxels, in the grid's axis nearest the world's down):
+  a resting object. A level marks its seams with `VoxelGrid::break_bond` before `load()`. What
+  floats is removed as before, seams or not; a level without seams bakes as it did.
+
+A chunk keeps its broken faces as a sorted list while there are few (`kBrokenListMax`, 2048
+voxels with one: the seams round a room's furniture cost a few KB) and as a byte per voxel
+beyond; both are the same to everything that reads them (records, hashes, fragments).
 
 Then call `enable_streaming(source, StreamConfig)`. `set_focus(points)` tells the world where it
 must be resident: one point per player, camera or AI of interest.
@@ -371,7 +403,8 @@ A streamed world is infinite, but the memory of what the player changed need not
 
 ### Bounded levels (islands, Doom maps, Teardown-style scenes)
 
-A level loaded whole (`load` + `bake`) holds its grid, which the level bounds. Destruction
+A level loaded whole (`load` + `bake`) holds its grid, which the level bounds (resting objects
+of a level: §3 Streaming, seams). Destruction
 does not grow it: emptied chunks are compacted, and chunk arrays are recycled through a bounded
 pool. Everything derived from the grid is under the budgets above, and changes stay (they are
 the level's state; `save_delta` persists them).

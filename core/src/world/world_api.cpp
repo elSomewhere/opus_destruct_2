@@ -95,6 +95,7 @@ void World::blast(const V3& pos, f64 radius, f64 energy) { impl_->blast(pos, rad
 i32 World::set_voxels(const std::vector<VoxelEdit>& edits, u32 flags) { return impl_->set_voxels(edits, flags); }
 i32 World::set_voxels(GridId grid, const std::vector<VoxelEdit>& edits, u32 flags) { return impl_->set_voxels(grid, edits, flags); }
 bool World::apply_impulse(i64 piece, const V3& point, const V3& impulse) { return impl_->apply_impulse(piece, point, impulse); }
+i64 World::loosen(GridId grid, const IVec3& voxel, const V3& impulse) { return impl_->loosen(grid, voxel, impulse); }
 bool World::remove_piece(i64 piece) { return impl_->remove_piece(piece); }
 bool World::set_piece_keep(i64 piece, bool keep) { return impl_->set_piece_keep(piece, keep); }
 void World::tick() { impl_->tick(); }

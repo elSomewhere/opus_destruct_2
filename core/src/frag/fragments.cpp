@@ -88,7 +88,11 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
   if (ch->free_count() == 0) return out;
   const IVec3 base{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
   auto vox_at = [&](int i) -> Vox { return ch->uniform ? ch->value : ch->v[static_cast<size_t>(i)]; };
-  auto broken_at = [&](int i) -> u8 { return ch->broken.empty() ? u8(0) : ch->broken[static_cast<size_t>(i)]; };
+  // (a chunk's few broken faces - seams, a crack - as an array for the scans below)
+  std::vector<u8> few;
+  if (ch->broken.empty() && !ch->broken_few.empty()) ch->broken_dense(few);
+  const u8* brk = !ch->broken.empty() ? ch->broken.data() : few.empty() ? nullptr : few.data();
+  auto broken_at = [&](int i) -> u8 { return brk ? brk[static_cast<size_t>(i)] : u8(0); };
   constexpr int S = kChunk;
 
   // 1. Voronoi label per free voxel: (material, seed cell) packed into a u64. A reinforcement
