@@ -771,9 +771,9 @@ TEST_CASE("memory: budgets bound what a bounded level keeps, however long it run
 }
 
 TEST_CASE("memory: the pieces' budget releases awake pieces' solvers, then culls the smallest pieces, sleeping ones first") {
-  auto session = [](bool release, i64* peak, WorldStats* st) {
+  auto session = [](f64 mb, bool release, i64* peak, WorldStats* st) {
     WorldConfig cfg;
-    cfg.memory.piece_mb = 0.1;
+    cfg.memory.piece_mb = mb;
     cfg.release_solvers = release;
     World w;
     w.configure(cfg);
@@ -789,18 +789,25 @@ TEST_CASE("memory: the pieces' budget releases awake pieces' solvers, then culls
     }
     *st = w.stats();
   };
-  i64 peak = 0, peak_kept = 0;
-  WorldStats st, st_kept;
-  session(true, &peak, &st);
-  session(false, &peak_kept, &st_kept);
-  MESSAGE("pieces: peak " << peak / 1024 << " KB, " << st.released_solvers << " solvers released, " << st.culled_pieces << " culled (solvers kept: "
-                          << st_kept.culled_pieces << " culled)");
-  CHECK(st.culled_pieces > 0);
-  CHECK(st.released_solvers > 0);
-  CHECK(st.culled_pieces < st_kept.culled_pieces);  // (what a solver's release saves, no piece pays for)
   // (checked every tick, by what the pieces use: what the allocator holds for them is a little more)
-  CHECK(peak <= static_cast<i64>(1.2 * 0.1 * 1048576.0) + 16 * 1024);
-  CHECK(peak_kept <= static_cast<i64>(1.2 * 0.1 * 1048576.0) + 16 * 1024);
+  auto bound = [](f64 mb) { return static_cast<i64>(1.2 * mb * 1048576.0) + 16 * 1024; };
+  // a budget the pieces' solvers alone exceed: released, nothing is culled - kept, pieces are
+  i64 peak = 0, peak_kept = 0, peak_tight = 0;
+  WorldStats st, st_kept, st_tight;
+  session(0.3, true, &peak, &st);
+  session(0.3, false, &peak_kept, &st_kept);
+  // one the pieces exceed without their solvers: released, and the smallest pieces culled
+  session(0.1, true, &peak_tight, &st_tight);
+  MESSAGE("0.3 MB: " << st.released_solvers << " solvers released, " << st.culled_pieces << " pieces culled, peak " << peak / 1024
+                     << " KB (solvers kept: " << st_kept.culled_pieces << " culled, peak " << peak_kept / 1024 << " KB); 0.1 MB: "
+                     << st_tight.released_solvers << " released, " << st_tight.culled_pieces << " culled, peak " << peak_tight / 1024 << " KB");
+  CHECK(st.released_solvers > 0);
+  CHECK(st.culled_pieces == 0);
+  CHECK(st_kept.culled_pieces > 0);
+  CHECK(st_tight.culled_pieces > 0);
+  CHECK(peak <= bound(0.3));
+  CHECK(peak_kept <= bound(0.3));
+  CHECK(peak_tight <= bound(0.1));
 }
 
 TEST_CASE("world: a later extraction takes a registered structure over whole (no frontier next to what happens)") {
