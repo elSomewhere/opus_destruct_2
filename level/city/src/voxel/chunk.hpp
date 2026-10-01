@@ -103,17 +103,24 @@ class ChunkBuffer {
     double j = y - by - half;
     double k = z - bz - half;
     if (s > 1) {
-      // (i % s !== 0 for s a power of two: i / s is exact, an integer exactly when s divides i;
-      // NaN fails here, an infinity the bounds below)
       i /= s;
       j /= s;
       k /= s;
-      if (std::floor(i) != i || std::floor(j) != j || std::floor(k) != k) return -1;
     }
-    if (i < 0 || j < 0 || k < 0 || i >= kP || j >= kP || k >= kP) return -1;
+    // (JS tests divisibility, then the bounds: either only returns, so the bounds come first
+    // here, rejecting NaN and the infinities too, and the integer tests below convert safely)
+    if (!(i >= 0 && j >= 0 && k >= 0 && i < kP && j < kP && k < kP)) return -1;
+    if (s > 1) {
+      // (i % s !== 0 for s a power of two: i / s is exact, an integer exactly when s divides i)
+      const int ii = static_cast<int>(i), jj = static_cast<int>(j), kk = static_cast<int>(k);
+      if (ii != i || jj != j || kk != k) return -1;
+      return index(ii, jj, kk);
+    }
+    // (at LOD 0 an index that is no integer: the typed array ignores the store)
     const double idx = i + j * kP + k * kP2;
-    if (!(std::floor(idx) == idx) || idx >= kP3) return -1;
-    return static_cast<int>(idx);
+    const int n = static_cast<int>(idx);
+    if (n != idx || n >= kP3) return -1;
+    return n;
   }
 
   // Write a single LOD 0 voxel (only lands if it is a representative).

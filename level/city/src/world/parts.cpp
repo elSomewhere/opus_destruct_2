@@ -69,6 +69,8 @@ PartBudget::PartBudget(const Value& config, const Rect& cell_rect, PartLattice l
   ny = js::max(1.0, std::floor((cell_rect.y1 - cell_rect.y0) / side));
   // (8-bit part indices: at most 255 parts per cell)
   limit = js::min(255.0, nx * ny * cluster);
+  // (JS: new Uint8Array(nx * ny) throws a RangeError for a length that is none - partArea 0)
+  if (!(nx * ny <= 1e9)) SVX_FAIL("parts: a budget of no valid size (angles.partArea, partCluster)");
   used.assign(static_cast<size_t>(nx * ny), 0);
   max_resident = a["maxResident"].num(8);
   R = resident_d(config) / 2;
