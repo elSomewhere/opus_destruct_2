@@ -5,7 +5,14 @@
   "description": "Steep streets climbing the hillside on smooth ramps.",
   "generator": "city",
   "params": {
-    "preset": "angledOldHarbourTown"
+    "preset": "angledOldHarbourTown",
+    "config": {
+      "world": {
+        "angles": {
+          "residentRadius": 144
+        }
+      }
+    }
   },
   "seed": 1337,
   "streaming": {

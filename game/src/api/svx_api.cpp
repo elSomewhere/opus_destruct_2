@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <memory>
 #include <string>
 #include <vector>
@@ -25,6 +26,7 @@ struct svx_engine {
   std::string error;
   std::string presets_json, atmosphere_json = "{}";
   std::vector<float> appearances;
+  std::string semantics_json;
   std::vector<ChunkMesh> meshes;
   std::vector<u64> removed;
   std::vector<GridChunk> removed_grid;
@@ -143,6 +145,65 @@ const char* svx_preset_atmosphere(svx_engine* e) { return e->atmosphere_json.c_s
 int svx_appearance_count(svx_engine* e) {
   const AppearanceTable* t = e->eng.appearances();
   return t ? static_cast<int>(t->size()) : 0;
+}
+
+namespace {
+std::string num(f64 x) {
+  if (!std::isfinite(x)) return "null";
+  char b[32];
+  std::snprintf(b, sizeof b, "%.10g", x);
+  return b;
+}
+std::string vec(const V3& v) { return "[" + num(v.x) + "," + num(v.y) + "," + num(v.z) + "]"; }
+const char* kAffordances[] = {"sit", "sleep", "work", "eat", "open", "climb"};
+}  // namespace
+
+const char* svx_buildings_in(svx_engine* e, double x0, double y0, double z0, double x1, double y1, double z1) {
+  std::string o = "[";
+  if (const WorldSemantics* s = e->eng.semantics()) {
+    std::vector<BuildingInfo> bs;
+    s->buildings_in(V3{x0, y0, z0}, V3{x1, y1, z1}, bs);
+    for (const BuildingInfo& b : bs) {
+      if (o.size() > 1) o += ",";
+      o += "{\"id\":" + json_string(b.id) + ",\"program\":" + json_string(b.program) + ",\"footprint\":[";
+      for (size_t k = 0; k < b.footprint.size(); ++k) o += (k ? "," : "") + vec(b.footprint[k]);
+      o += "],\"floors\":[";
+      for (size_t k = 0; k < b.floors.size(); ++k) o += (k ? "," : "") + num(b.floors[k]);
+      o += "],\"entrances\":[";
+      for (size_t k = 0; k < b.entrances.size(); ++k)
+        o += std::string(k ? "," : "") + "{\"pos\":" + vec(b.entrances[k].pos) + ",\"facing\":" + vec(b.entrances[k].facing) +
+             ",\"street\":" + json_string(b.entrances[k].street) + "}";
+      o += "]}";
+    }
+  }
+  e->semantics_json = o + "]";
+  return e->semantics_json.c_str();
+}
+
+const char* svx_furniture_in(svx_engine* e, double x0, double y0, double z0, double x1, double y1, double z1) {
+  std::string o = "[";
+  if (const WorldSemantics* s = e->eng.semantics()) {
+    std::vector<FurnitureInfo> fs;
+    s->furniture_in(V3{x0, y0, z0}, V3{x1, y1, z1}, fs);
+    for (const FurnitureInfo& f : fs) {
+      if (o.size() > 1) o += ",";
+      o += "{\"id\":" + std::to_string(f.id) + ",\"prefab\":" + json_string(f.prefab) + ",\"pos\":" + vec(f.pos) + ",\"yaw\":" + num(f.yaw) +
+           ",\"building\":" + json_string(f.building) + ",\"uses\":[";
+      for (size_t k = 0; k < f.uses.size(); ++k)
+        o += std::string(k ? "," : "") + "{\"kind\":\"" + kAffordances[static_cast<int>(f.uses[k].kind) % 6] + "\",\"pos\":" + vec(f.uses[k].pos) +
+             ",\"yaw\":" + num(f.uses[k].yaw) + "}";
+      o += "]}";
+    }
+  }
+  e->semantics_json = o + "]";
+  return e->semantics_json.c_str();
+}
+
+const char* svx_zone_at(svx_engine* e, double x, double y, double z) {
+  ZoneInfo zi;
+  if (const WorldSemantics* s = e->eng.semantics()) zi = s->zone_at(V3{x, y, z});
+  e->semantics_json = "{\"district\":" + json_string(zi.district) + ",\"settlement\":" + json_string(zi.settlement) + ",\"flavor\":" + json_string(zi.flavor) + "}";
+  return e->semantics_json.c_str();
 }
 
 const float* svx_appearances(svx_engine* e) {

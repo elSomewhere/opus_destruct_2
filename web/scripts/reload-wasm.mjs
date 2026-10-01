@@ -16,7 +16,7 @@
  */
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { launch, beforeLoad, afterLoad } from './browser.mjs';
+import { launch, beforeLoad, afterLoad, worldQuery } from './browser.mjs';
 
 const puppeteer = (await import('puppeteer-core')).default;
 const base = process.argv[2] ?? 'http://localhost:5190/';
@@ -73,7 +73,7 @@ try {
   });
   page.on('pageerror', (e) => errors.push(`pageerror ${e.message}`));
   await beforeLoad(page);
-  await page.goto(`${base}?engine=wasm&world=tower&seed=1`, { waitUntil: 'load' });
+  await page.goto(`${base}?engine=wasm&${worldQuery('world=tower&seed=1')}`, { waitUntil: 'load' });
   await afterLoad(page);
   await waitReady(page, 'the tower world');
 

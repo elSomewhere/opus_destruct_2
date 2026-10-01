@@ -42,6 +42,14 @@ const char* svx_preset_atmosphere(svx_engine* e);
  * noise, gloss, glow (1/0) - valid until the next load (0 and NULL: the world has none). */
 int svx_appearance_count(svx_engine* e);
 const float* svx_appearances(svx_engine* e);
+/* What the loaded world means (svx/game/semantics.hpp), as JSON (valid until the next call; "[]"
+ * or "{}" when it has none): the buildings in a box - [{id, program, footprint: [[x, y, z]...],
+ * floors: [z...], entrances: [{pos, facing, street}]}] - the furniture in it - [{id, prefab, pos,
+ * yaw, building, uses: [{kind, pos, yaw}]}] - and the zones at a point - {district, settlement,
+ * flavor}. */
+const char* svx_buildings_in(svx_engine* e, double x0, double y0, double z0, double x1, double y1, double z1);
+const char* svx_furniture_in(svx_engine* e, double x0, double y0, double z0, double x1, double y1, double z1);
+const char* svx_zone_at(svx_engine* e, double x, double y, double z);
 /* Doom map from an in-memory WAD; mode 0 = rock, 1 = air. */
 int svx_load_wad(svx_engine* e, const uint8_t* data, size_t size, const char* map, int mode, int shell_voxels);
 const char* svx_last_error(svx_engine* e);

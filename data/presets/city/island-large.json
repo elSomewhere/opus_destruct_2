@@ -6,7 +6,14 @@
   "generator": "city",
   "params": {
     "preset": "island",
-    "size": "large"
+    "size": "large",
+    "config": {
+      "world": {
+        "angles": {
+          "residentRadius": 144
+        }
+      }
+    }
   },
   "seed": 1337,
   "streaming": {

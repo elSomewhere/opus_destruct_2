@@ -37,6 +37,11 @@ add_executable(svx_city_bench bench/city_bench.cpp)
 target_link_libraries(svx_city_bench PRIVATE svx_game svx_procgen)
 svx_wasm_exe_options(svx_city_bench)
 
+# The traffic's acceptance on a preset's world (docs/PROCGEN_MERGE_PLAN.md §10.3).
+add_executable(svx_traffic_check traffic_check/main.cpp)
+target_link_libraries(svx_traffic_check PRIVATE svx_game svx_procgen)
+svx_wasm_exe_options(svx_traffic_check)
+
 add_executable(svx_people_bench bench/people_bench.cpp)
 target_link_libraries(svx_people_bench PRIVATE svx_game svx_procgen)
 svx_wasm_exe_options(svx_people_bench)

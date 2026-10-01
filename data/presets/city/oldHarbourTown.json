@@ -5,7 +5,14 @@
   "description": "A Bergen-like harbour town on a steep hillside.",
   "generator": "city",
   "params": {
-    "preset": "oldHarbourTown"
+    "preset": "oldHarbourTown",
+    "config": {
+      "world": {
+        "angles": {
+          "residentRadius": 144
+        }
+      }
+    }
   },
   "seed": 1337,
   "streaming": {

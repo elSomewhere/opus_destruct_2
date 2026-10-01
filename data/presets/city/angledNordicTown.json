@@ -5,7 +5,14 @@
   "description": "Crooked old-town lanes, winding roads through a more natural forest.",
   "generator": "city",
   "params": {
-    "preset": "angledNordicTown"
+    "preset": "angledNordicTown",
+    "config": {
+      "world": {
+        "angles": {
+          "residentRadius": 144
+        }
+      }
+    }
   },
   "seed": 1337,
   "streaming": {

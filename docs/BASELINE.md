@@ -105,6 +105,10 @@ every tick's hash is the same too, where it was traced):
 
 Every one of them reproduced on 4 threads natively; the short ones (side, rooms, slab,
 chimney) under Node from the WASM build on one thread as well.
+**Replays** (`tools/baseline/replay_check.sh TOOLS WORLD [SECONDS]`, `WASM_TOOLS=` for Node):
+a scripted session recorded on 4 threads replays to the same session hashes on 1, 4 and 8 threads
+and under Node from the WASM build - `preset:legacy/drive` for 12 s: `1db8566dc60d362a` each way.
+
 Under Node (Emscripten 6.0.10, 4 threads) every line of `tools/baseline/golden.sh` matches
 too but the `angles` world's (`d8bee4389c71eb64` against `94a83a4f622d8e7e`), before the merge
 as after it: that level places its grids with the platform's `sin`, `cos` and `atan2`
