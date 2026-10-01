@@ -178,7 +178,11 @@ ArticulationId World::Impl::add_articulation_now(const ArticulationDesc& d, Arti
   for (const auto& [a, b] : d.collide) R.pairs.push_back((static_cast<u32>(std::min(a, b)) << 16) | std::max(a, b));
   std::sort(R.pairs.begin(), R.pairs.end());
   R.pairs.erase(std::unique(R.pairs.begin(), R.pairs.end()), R.pairs.end());
-  rigid_.articulations.push_back(std::move(R));
+  // (in id order - the solver finds an articulation's rules by search - however it comes: one
+  // back from the archive keeps its id, lower than those made since)
+  const auto rt = std::lower_bound(rigid_.articulations.begin(), rigid_.articulations.end(), id,
+                                   [](const ArticulationRules& r, ArticulationId v) { return r.id < v; });
+  rigid_.articulations.insert(rt, std::move(R));
   // its drive: nothing yet
   rec->control = std::make_unique<ArticulationControl>();
   ArticulationControl& C = *rec->control;

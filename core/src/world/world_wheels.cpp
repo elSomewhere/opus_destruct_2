@@ -223,6 +223,7 @@ bool World::Impl::wheel(WheelId id, WheelState* out) const {
   for (size_t k = 0; k < att_.wheels.size(); ++k) {
     const Wheel& w = rigid_.wheels[k];
     if (w.id != id || w.broken) continue;
+    if (!out) return true;  // (whether there is one)
     const WheelRec& r = att_.wheels[k];
     WheelState s;
     s.radius = w.radius;

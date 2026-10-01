@@ -228,6 +228,9 @@ struct WorldConfig {
   //     structure's second level) is aggregated again at half the threshold, up to three times;
   //     off: aggregated once - it barely coarsens, and its smoothed coarse level fills in (a
   //     damaged building's: 180 blocks a row, most of each assembly's and each cycle's work).
+  //   shards_hold_together: a fragment a blast or a punch tears out whole has its faces with the
+  //     rest torn, and keeps its own: a later cut breaks the shard as a piece; off: every face of
+  //     its voxels is torn - a shard of loose voxels, all dust at the next cut or shot.
   //   rigid.busy_hold, rigid.warm_to_step (RigidParams): busy mode decided once a tick, and held
   //     until a collapse is well under its thresholds; the solver's warm starts scaled to the
   //     substep's length; off: decided every substep, warm starts as they were.
@@ -243,6 +246,7 @@ struct WorldConfig {
   bool rebuild_stale_only = true;
   bool coarsen_dense_levels = true;
   bool reaggregate_levels = true;
+  bool shards_hold_together = true;
   i32 evict_scan_ticks = 10;
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
   f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)
@@ -619,7 +623,7 @@ class World {
   // The oriented grids in the world grid's voxels: a voxel whose centre lies in a solid voxel of
   // one. For systems of the world's lattice (water flows around a turned wall, smoke is held by
   // it): per world chunk, kChunkVox bits (voxel i: bit i & 7 of byte i >> 3), null where no grid
-  // reaches; kept until the grids there change.
+  // reaches; valid until the grids there change or the world ticks again, whichever is first.
   const u8* grid_solids(const IVec3& world_chunk) const;
   // What grid_solids(world_chunk) holds, as a stamp that changes when it does (0: none).
   u64 grid_solids_stamp(const IVec3& world_chunk) const;

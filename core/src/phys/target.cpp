@@ -49,10 +49,13 @@ void RigidWorld::prepare_target(size_t k, f64 dt, const std::vector<M3>& Iw, con
   P.mb = B.inv_mass;
   P.Ib = Iw[size_t(ib)];
   // the spring (implicit: soft, stable at any stiffness) and the damper, as rows of their own
-  P.spring = ks > 0.0;
-  P.damper = c > 0.0;
-  P.gs = P.spring ? 1.0 / (dt * dt * ks) : 0.0;
-  P.gd = P.damper ? 1.0 / (dt * c) : 0.0;
+  // (a spring or damper so weak its softness is not finite acts on nothing: off, never Inf x 0)
+  P.gs = ks > 0.0 ? 1.0 / (dt * dt * ks) : 0.0;
+  P.gd = c > 0.0 ? 1.0 / (dt * c) : 0.0;
+  P.spring = ks > 0.0 && std::isfinite(P.gs);
+  P.damper = c > 0.0 && std::isfinite(P.gd);
+  if (!P.spring) P.gs = 0.0;
+  if (!P.damper) P.gd = 0.0;
   P.cap = D.max > 0.0 ? D.max * dt : 0.0;
   auto row = [&](f64 K, f64 err) {
     P.ks[P.rows] = P.spring && K + P.gs > 0.0 ? 1.0 / (K + P.gs) : 0.0;

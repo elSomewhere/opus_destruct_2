@@ -119,9 +119,10 @@ void JointDrive::goal(f64 t, f64* x, f64* rate) const {
     *rate = 0.0;
     return;
   }
-  // (eased: from target to target2 and back, a cosine)
+  // (eased: from target to target2 and back, a cosine - of the phase within the period: exact,
+  // and accurate however long the world has run)
   constexpr f64 kTau = 6.283185307179586;
-  const f64 a = kTau * (t + phase) / period;
+  const f64 a = kTau * std::fmod(t + phase, period) / period;
   *x = target + (target2 - target) * 0.5 * (1.0 - dm::cos(a));
   *rate = (target2 - target) * 0.5 * dm::sin(a) * kTau / period;
 }
@@ -160,6 +161,7 @@ void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, cons
 
   Joint& j = joints[k];
   JointPrep& P = jprep_[k];
+  P.joint = j.id;
   if (j.broken) return;
   const i32 ia = j.a.body != 0 ? index_of(j.a.body) : -1, ib = j.b.body != 0 ? index_of(j.b.body) : -1;
   if ((j.a.body != 0 && ia < 0) || (j.b.body != 0 && ib < 0)) return;
@@ -271,6 +273,7 @@ void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, cons
       const f64 over = L > j.max_length ? L - j.max_length : L < j.min_length ? L - j.min_length : 0.0;
       P.soft = (j.stiffness / denom) * over;
       P.ksoft = 1.0 / (k + P.gamma);
+      if (!std::isfinite(P.gamma) || !std::isfinite(P.soft)) P.gamma = P.soft = P.ksoft = 0.0;  // (too weak to act: slack)
     } else {
       if (L > j.max_length + slop) P.eax = pull(L - j.max_length, slop);
       else if (L < j.min_length - slop) P.eax = pull(L - j.min_length, slop);
@@ -354,7 +357,7 @@ void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, cons
       // (the damper sized for the limb it moves, not for the two bodies alone)
       if (M.inertia > 0.0 && kk > 0.0) c *= std::min(1.0, (1.0 / kk) / M.inertia);
       const f64 denom = c + dt * k;
-      if (denom > 0.0 && kk > 0.0) {
+      if (denom > 0.0 && kk > 0.0 && std::isfinite(1.0 / (dt * denom))) {  // (else too weak to act)
         P.mus_on = true;
         P.mus_gamma = 1.0 / (dt * denom);
         P.mus_bias = V3{(k / denom) * dot(e, P.ax), 0.0, 0.0};
@@ -371,7 +374,7 @@ void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, cons
         if (ku > 0.0) c *= std::min(1.0, (1.0 / ku) / M.inertia);
       }
       const f64 denom = c + dt * k;
-      if (denom > 0.0) {
+      if (denom > 0.0 && std::isfinite(1.0 / (dt * denom))) {  // (else too weak to act)
         P.mus_on = true;
         P.mus_gamma = 1.0 / (dt * denom);
         P.mus_bias = e * (k / denom);
@@ -762,7 +765,8 @@ std::vector<u8> RigidWorld::machine_parts() const {
   std::vector<u8> out(bodies.size(), 0);
   const std::vector<std::array<i32, 2>> ends = joint_bodies();
   for (size_t k = 0; k < joints.size() && k < jprep_.size(); ++k) {
-    if (!driving(joints[k], jprep_[k])) continue;
+    // (prepared last substep: for the joint at k then - joints come and go between substeps)
+    if (jprep_[k].joint != joints[k].id || !driving(joints[k], jprep_[k])) continue;
     for (const i32 i : ends[k])
       if (i >= 0) out[size_t(i)] = 1;
   }
@@ -772,7 +776,8 @@ std::vector<u8> RigidWorld::machine_parts() const {
 std::vector<u8> RigidWorld::hanging(const std::vector<u8>& held) const {
   std::vector<u8> out(bodies.size(), 0);
   const std::vector<std::array<i32, 2>> ends = joint_bodies();
-  for (int pass = 0; pass < 16; ++pass) {
+  // (to the end: a pass marks one more link at least - a chain of any length, joints in any order)
+  for (size_t pass = 0; pass <= joints.size(); ++pass) {
     bool more = false;
     for (size_t k = 0; k < joints.size(); ++k) {
       const i32 ia = ends[k][0], ib = ends[k][1];
@@ -804,14 +809,14 @@ void RigidWorld::joint_stillness() {
     if (j.broken) continue;
     const i32 ia = j.a.body != 0 ? index_of(j.a.body) : -1, ib = j.b.body != 0 ? index_of(j.b.body) : -1;
     // (a drive at work keeps its ends awake: running, or short of its target)
-    if (k < jprep_.size() && driving(j, jprep_[k])) {
+    if (k < jprep_.size() && jprep_[k].joint == j.id && driving(j, jprep_[k])) {
       if (ia >= 0) bodies[size_t(ia)]->still = 0;
       if (ib >= 0) bodies[size_t(ib)]->still = 0;
     }
     if (ia >= 0 && ib >= 0 && !bodies[size_t(ia)]->asleep && !bodies[size_t(ib)]->asleep) pairs.push_back({ia, ib});
   }
-  // (the least still of a chain holds the rest)
-  for (int pass = 0; pass < 16; ++pass) {
+  // (the least still of a chain holds the rest - to the end of any chain)
+  for (size_t pass = 0; pass <= pairs.size(); ++pass) {
     bool more = false;
     for (const auto& [a, b] : pairs) {
       Body& A = *bodies[size_t(a)];

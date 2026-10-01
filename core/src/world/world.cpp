@@ -131,7 +131,9 @@ void World::Impl::load(VoxelGrid&& g) {
   strm_.generated.clear();
   strm_.column_count.clear();
   strm_.region_resident.clear();
-  strm_.archive->reset(0);
+  reset_archive(0);
+  strm_.evicted_chunks.clear();  // (the last level's: the host has dropped its chunks)
+  touching_.clear();
   strm_.focus.clear();
   strm_.focus_set = false;
   strm_.evict_scan_tick = -1000000;
@@ -141,7 +143,11 @@ void World::Impl::load(VoxelGrid&& g) {
   design_ = DesignReport{};
   events_ = keep;
   grid_.track_changes(true);
-  for (auto& sys : ext_.systems) sys->on_load(*self_);
+  // (by index over the systems there are now, each held while it runs: one may add another)
+  for (size_t i = 0, n = ext_.systems.size(); i < n; ++i) {
+    const std::shared_ptr<WorldSystem> s = ext_.systems[i];
+    s->on_load(*self_);
+  }
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -446,7 +452,7 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
     const IVec3 cc = unkey3(F.chunk);
     FragChunk* fcp = frag_chunk_if(F);
     const Chunk* ch = G.chunk(cc);
-    if (!fcp || !ch) continue;
+    if (!fcp || !ch || F.idx < 0 || F.idx >= static_cast<i32>(fcp->frags.size())) continue;
     const IVec3 base{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
     for (i32 k = fcp->vox_start[size_t(F.idx)]; k < fcp->vox_start[size_t(F.idx) + 1]; ++k) {
       const i32 li = fcp->vox[size_t(k)];
@@ -594,6 +600,21 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
     // its bonds taking their new strengths. (A structure damaged before it was designed is left
     // as it is.)
     const i64 id = out->id;
+    // (extracted again from the seed's voxel: what is generated meanwhile may fragment the seed's
+    // chunk again - a grid at home there displacing its voxels - and the seed is no more if that
+    // voxel is gone or taken)
+    GVox seed_vox;
+    bool seed_known = false;
+    if (FragChunk* fc = frag_chunk_if(seed); fc && seed.idx >= 0 && seed.idx < static_cast<i32>(fc->frags.size()) && fc->frags[size_t(seed.idx)].count > 0) {
+      const IVec3 cc = unkey3(seed.chunk), l = local_of(fc->frags[size_t(seed.idx)].first);
+      seed_vox = GVox{{cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]}, seed.grid};
+      seed_known = true;
+    }
+    auto extract_again = [&]() -> Structure* {
+      FragKey again;
+      if (!seed_known || !frag_at(seed_vox, &again) || owner_of(again) != 0) return nullptr;
+      return extract(again, max_nodes, max_radius, detach_free);
+    };
     static const bool dbgd = diag("SVX_DEBUG_DESIGN");
     if (dbgd)
       std::printf("  [first touch] s%lld: %zu nodes, unloaded %d, ensuring %d, pristine %d\n", static_cast<long long>(id), out->P.nodes.size(),
@@ -616,7 +637,7 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
       drop_structure(id);
       ++ensuring_;
       if (lo[0] <= hi[0]) ensure_chunks(lo, hi);
-      Structure* again = extract(seed, max_nodes, max_radius, detach_free);
+      Structure* again = extract_again();
       --ensuring_;
       return again;
     }
@@ -632,7 +653,7 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
       // (the reference's way: extracted again with the new strengths, a structure of a new id
       // that starts its solve afresh)
       drop_structure(id);
-      Structure* again = extract(seed, max_nodes, max_radius, detach_free);
+      Structure* again = extract_again();
       if (dbg && again) design_structure(*again, true);
       return again;
     }
@@ -1927,7 +1948,18 @@ i32 World::Impl::world_set_voxels(u16 g, const std::vector<VoxelEdit>& in, u32 f
       lo[a] = std::min(lo[a], e.p[a]);
       hi[a] = std::max(hi[a], e.p[a]);
     }
-  if (strm_.source && g == 0) ensure_chunks({lo[0] - 1, lo[1] - 1, lo[2] - 1}, {hi[0] + 2, hi[1] + 2, hi[2] + 2});
+  if (strm_.source && g == 0) {
+    // (the chunks of the edits and of their neighbours, in key order - not the box about them all:
+    // edits far apart must not make the world between them resident)
+    std::vector<u64> keys;
+    for (const VoxelEdit& e : edits)
+      for (i32 x = (e.p[0] - 1) >> kChunkBits; x <= (e.p[0] + 1) >> kChunkBits; ++x)
+        for (i32 y = (e.p[1] - 1) >> kChunkBits; y <= (e.p[1] + 1) >> kChunkBits; ++y)
+          for (i32 z = (e.p[2] - 1) >> kChunkBits; z <= (e.p[2] + 1) >> kChunkBits; ++z) keys.push_back(key3(x, y, z));
+    std::sort(keys.begin(), keys.end());
+    keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
+    for (u64 k : keys) generate_chunk(k);
+  }
   VoxelGrid& G = vg(g);
   const bool tracked = G.tracking();
   if (flags & kEditUntracked) G.track_changes(false);
@@ -1998,7 +2030,8 @@ bool World::Impl::set_piece_keep(i64 id, bool keep) {
 }
 
 bool World::Impl::remove_piece(i64 id) {
-  if (!rigid_.find(id)) return false;
+  const Body* b = rigid_.find(id);
+  if (!b || b->is_link()) return false;  // (a link goes with its articulation: remove_articulation)
   remove_bodies({id}, PieceEnd::Removed);
   return true;
 }
@@ -2204,6 +2237,27 @@ void World::Impl::process(const PendingEvent& e) {
   rigid_.wake_box(e.pos - V3{reach, reach, reach}, e.pos + V3{reach, reach, reach});
 }
 
+void World::Impl::tear_fragment(const FragKey& f, const std::vector<IVec3>& vox) {
+  // A fragment torn out of its grid whole (a blast's shard, what a punch knocks out): its faces
+  // with the rest are torn - its own between its voxels too without
+  // WorldConfig::shards_hold_together (the reference's: a shard of loose voxels, all dust at the
+  // next cut)
+  VoxelGrid& G = vg(f.grid);
+  const FragChunk* fc = cfg_.shards_hold_together ? frag_chunk_if(f) : nullptr;
+  if (fc && fc->id.size() != size_t(kChunkVox)) fc = nullptr;
+  const IVec3 cc = unkey3(f.chunk);
+  const u16 own = static_cast<u16>(f.idx + 1);
+  auto mine = [&](const IVec3& q) { return fc && chunk_of(q) == cc && fc->id[size_t(chunk_index(q))] == own; };
+  for (const IVec3& p : vox)
+    for (int a = 0; a < 3; ++a) {
+      IVec3 q = p;
+      q[a] += 1;
+      if (!mine(q)) G.break_bond(p, a);  // (its +a face)
+      q[a] -= 2;
+      if (!mine(q)) G.break_bond(q, a);  // (its -a face: q's +a face)
+    }
+}
+
 void World::Impl::blast_world(const PendingEvent& e) {
   const f64 rs = cfg_.blast_shatter * e.radius, rl = cfg_.blast_reach * e.radius;
   // fragments within the load radius, grid by grid
@@ -2271,14 +2325,7 @@ void World::Impl::blast_world(const PendingEvent& e) {
     if (owner_of(f)) mark_owners_stale(f.grid, f.chunk);
     std::vector<IVec3> vox;
     voxels_of(f, vox);
-    VoxelGrid& G = vg(f.grid);
-    for (const IVec3& p : vox)
-      for (int a = 0; a < 3; ++a) {
-        G.break_bond(p, a);
-        IVec3 q = p;
-        q[a] -= 1;
-        G.break_bond(q, a);
-      }
+    tear_fragment(f, vox);
     make_body_from_world({f}, dir * speed(d), spin);
     std::vector<GVox> gv;
     gv.reserve(vox.size());
@@ -2522,6 +2569,13 @@ void World::Impl::tick() {
       reap_wheels();
     }
     rigid_.substep(dts, statics_, [this](f64 dt) { return fracture_hook(dt); });
+    if (k + 1 == ns && strm_.source) {
+      // (what touches what at the step's end, by id: streaming groups what rests on what by it
+      // next tick, when the body list - which the contacts index - has changed)
+      touching_.clear();
+      for (const Contact& c : rigid_.contacts())
+        if (c.b >= 0) touching_.push_back({rigid_.bodies[size_t(c.a)]->id, rigid_.bodies[size_t(c.b)]->id});
+    }
     structure_loads(dts);
     crumple(dts);  // (what crumpled in this substep's collisions folds)
     if (!att_.joints.empty()) reap_joints();
@@ -2563,6 +2617,7 @@ void World::Impl::tick() {
   step_systems();
   st_.systems_ms = ms_since(tsys);
   flush_body_changes();
+  if (solids_.size() > 65536) solids_.clear();  // (the grids' solids in the world's chunks: made again as needed)
   grid_.compact_changed();
   for (size_t g = 1; g < grids_.size(); ++g) {
     if (!grids_[g]) continue;

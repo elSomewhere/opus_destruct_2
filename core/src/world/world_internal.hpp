@@ -34,6 +34,8 @@ inline IVec3 voxel_of(const V3& p, f64 h) {
 // Design strength classes: 1, 1.5, 2, 3, 4, 6, 8, ... x 1024 (class 20).
 constexpr int kStrengthClasses = 21;
 constexpr i32 kExisting = 1 << 30;  // (patch accumulators: endpoints >= this are existing nodes)
+// (a streamed world's grids made in play - add_grid - take ids from here up; a source's are below)
+constexpr GridId kSessionGrids = 0x40000000u;
 inline f64 class_mult(u8 c) {
   if (c == 0) return 1.0;
   const int k = std::min<int>(c, kStrengthClasses - 1);

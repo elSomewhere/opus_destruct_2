@@ -523,6 +523,8 @@ struct World::Impl {
   void ensure_chunks(const IVec3& vlo, const IVec3& vhi);
   bool generate_chunk(u64 key);
   void evict_chunk(u64 key);
+  void reset_archive(size_t bytes);  // (empty, bounded to bytes - 0: unbounded - with nothing listed as in it)
+  void tear_fragment(const FragKey& f, const std::vector<IVec3>& vox);  // (torn out whole: WorldConfig::shards_hold_together)
   void insert_generated(u64 key, bool any, std::vector<Vox>&& voxels);
   f64 focus_distance(const IVec3& chunk) const;  // horizontal, m (to the nearest focus point)
   void generate_grids(u64 key);              // (the source's grids at home in a chunk just generated)
@@ -574,6 +576,7 @@ struct World::Impl {
     bool focus_set = false;
   };
   Streaming strm_;
+  std::vector<std::pair<i64, i64>> touching_;  // (streamed) the pieces touching at the last step's end, by id
   // The extensions (world_ext.cpp): layers, systems, host loads, and what changed for the systems
   // and the host.
   struct Extensions {

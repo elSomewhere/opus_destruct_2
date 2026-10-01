@@ -1,6 +1,8 @@
 // Rigid voxel bodies (docs/V2_DESIGN.md §4): resting contact, stacking, momentum.
+#include <algorithm>
 #include <cmath>
 #include <memory>
+#include <string>
 #include <vector>
 
 #include "doctest.h"
@@ -230,4 +232,206 @@ TEST_CASE("rigid: a stack stays put through busy mode's switch between two subst
   const f64 scaled = jitter(true), raw = jitter(false);
   MESSAGE("the stack's fastest block across the switches: " << scaled << " m/s scaled, " << raw << " m/s not");
   CHECK(scaled < raw);
+}
+
+TEST_CASE("rigid: a wheel holds up its carrier, found by id, when a fracture without a re-solve removed a body before it") {
+  // (a piece pulverized to dust leaves the body list mid-substep: the carrier's place in it moves,
+  // and its wheel's support goes to the carrier - not to what took its place, or past the list)
+  const VoxelGrid g = ground();
+  for (int falling = 0; falling < 2; ++falling) {
+    RigidWorld w;
+    w.add(box(1, {30, 30, 1}, {3, 3, 3}, g.h));  // a piece far off (the lowest id)
+    w.add(box(2, {-4, -4, 8}, {8, 8, 2}, g.h));  // the carrier, a wheel under it
+    if (falling) {
+      auto y = box(3, {-20, -20, 200}, {3, 3, 3}, g.h);  // a piece in free fall, high up
+      y->v = V3{0, 0, -3.0};
+      w.add(std::move(y));
+    }
+    Wheel wh;
+    wh.id = 1;
+    wh.body = 2;
+    wh.p = V3{0, 0, -0.6};
+    w.wheels.push_back(wh);
+    int calls = 0;
+    auto fracture = [&](f64) -> int {
+      if (calls++ != 3) return 0;
+      w.remove_if([](const Body& b) { return b.id == 1; });
+      return 1;  // (bodies changed, no re-solve)
+    };
+    for (int s = 0; s < 6; ++s) {
+      w.begin_tick();
+      w.substep(1.0 / 120.0, g, fracture);
+    }
+    REQUIRE(w.find(2) != nullptr);
+    if (falling) {
+      REQUIRE(w.find(3) != nullptr);
+      CHECK(w.find(3)->held == 0);  // (nothing holds a piece in free fall)
+    }
+  }
+}
+
+TEST_CASE("rigid: a long chain hangs still and sleeps, whatever order its joints were made in") {
+  // ("held by a joint" goes link to link along the joints: to the end of a chain of any length -
+  // longer than 16, the passes it once had; at 24 links and more the solver's default iterations
+  // no longer bring a chain to rest at all: RigidParams::iterations)
+  const VoxelGrid g = ground();
+  for (int bottom_up = 0; bottom_up < 2; ++bottom_up) {
+    RigidWorld w;
+    const i32 n = 17;
+    const f64 top = 8.0, gap = 0.3;
+    for (i32 i = 0; i < n; ++i) {
+      auto b = box(100 + i, {0, 0, 0}, {2, 2, 2}, g.h);
+      b->x = V3{0.0, 0.0, top - gap * (i + 1)};
+      b->refresh_box();
+      w.add(std::move(b));
+    }
+    std::vector<Joint> js;
+    for (i32 i = 0; i < n; ++i) {
+      Joint j;
+      j.type = JointType::Ball;
+      j.collide = false;
+      j.a.body = i == 0 ? 0 : 100 + i - 1;
+      j.a.p = i == 0 ? V3{0.0, 0.0, top - 0.15} : V3{0, 0, -0.15};
+      j.b.body = 100 + i;
+      j.b.p = V3{0, 0, 0.15};
+      js.push_back(j);
+    }
+    if (bottom_up) std::reverse(js.begin(), js.end());
+    for (size_t k = 0; k < js.size(); ++k) {
+      js[k].id = static_cast<u32>(k + 1);
+      w.joints.push_back(js[k]);
+    }
+    for (int s = 0; s < 30 * 120; ++s) {
+      if (s % 2 == 0) w.begin_tick();
+      w.substep(1.0 / 120.0, g, nullptr);
+    }
+    int asleep = 0;
+    for (const auto& b : w.bodies) asleep += b->asleep ? 1 : 0;
+    MESSAGE("joints made " << std::string(bottom_up ? "bottom-up" : "top-down") << ": " << asleep << " of " << n << " asleep");
+    CHECK(asleep == n);
+  }
+}
+
+TEST_CASE("rigid: soft rows too weak to act stay finite (a target's or a muscle's tone decayed to nothing)") {
+  const VoxelGrid g = ground();
+  auto link = [&](i64 id, const V3& at) {
+    auto b = std::make_unique<Body>();
+    b->id = id;
+    b->link = std::make_unique<LinkData>();
+    b->link->articulation = 1;
+    b->link->index = static_cast<u16>(id % 2);
+    b->link->spheres.push_back(BodySphere{V3{}, 0.1});
+    b->mass = 2.0;
+    b->inv_mass = 0.5;
+    b->inertia = M3::identity();
+    for (f64& x : b->inertia.m) x *= 0.01;
+    b->inv_inertia = M3::identity();
+    for (f64& x : b->inv_inertia.m) x *= 100.0;
+    b->x = at;
+    b->radius = 0.1;
+    b->keep = true;
+    b->refresh_box();
+    return b;
+  };
+  for (int which = 0; which < 3; ++which) {
+    RigidWorld w;
+    w.add(link(10, V3{0.0, 0.0, 1.0}));
+    w.add(link(11, V3{0.0, 0.0, 1.3}));
+    ArticulationRules r;
+    r.id = 1;
+    r.self_collide = false;
+    w.articulations.push_back(r);
+    if (which == 0) {
+      Target t;
+      t.id = 1;
+      t.body = 10;
+      t.kind = Target::Kind::Point;
+      t.drive.on = true;
+      t.drive.pos = V3{0, 0, 1.0};
+      t.drive.stiffness = 1e-310;
+      w.targets.push_back(t);
+    } else {
+      Joint j;
+      j.id = 1;
+      j.type = which == 1 ? JointType::Hinge : JointType::Ball;
+      j.a.body = 10;
+      j.b.body = 11;
+      j.a.p = V3{0, 0, 0.15};
+      j.b.p = V3{0, 0, -0.15};
+      j.a.axis = j.b.axis = V3{1, 0, 0};
+      j.a.ref = j.b.ref = V3{0, 0, 1};
+      j.supple = true;
+      j.muscle.stiffness = 1e-305;
+      w.joints.push_back(j);
+    }
+    for (int s = 0; s < 8; ++s) {
+      if (s % 2 == 0) w.begin_tick();
+      w.substep(1.0 / 120.0, g, nullptr);
+    }
+    for (const auto& b : w.bodies) {
+      CHECK(std::isfinite(b->v.x + b->v.y + b->v.z));
+      CHECK(std::isfinite(b->w.x + b->w.y + b->w.z));
+    }
+  }
+}
+
+TEST_CASE("rigid: a substep solved again starts its wheels where it found them (spin, turn, impulses)") {
+  const VoxelGrid g = ground();
+  auto run = [&](int resolve_at) {
+    RigidWorld w;
+    w.add(box(2, {-4, -4, 8}, {8, 8, 2}, g.h));
+    Wheel wh;
+    wh.id = 1;
+    wh.body = 2;
+    wh.p = V3{0, 0, -0.6};
+    wh.drive = 600.0;
+    w.wheels.push_back(wh);
+    int calls = 0;
+    auto fracture = [&](f64) -> int { return calls++ == resolve_at ? 2 : 0; };
+    f64 spin = 0.0;
+    for (int s = 0; s <= 30; ++s) {
+      if (s % 2 == 0) w.begin_tick();
+      w.substep(1.0 / 120.0, g, fracture);
+      if (s == 30) spin = w.wheels[0].spin;
+    }
+    return spin;
+  };
+  const f64 once = run(-1), twice = run(30);
+  MESSAGE("spin after substep 30: " << once << " rad/s, solved twice " << twice);
+  CHECK(std::abs(twice - once) < 1.0);  // (the drive's spin-up, 4.2 rad/s a substep, not twice)
+}
+
+TEST_CASE("rigid: continuous collision looks ahead by the finest grid near a body: a fast block stops at a fine grid's thin wall") {
+  int passed = 0, runs = 0;
+  for (f64 hf : {0.03125, 0.0625})
+    for (f64 speed : {3.0, 5.0, 7.0})
+      for (int k = 0; k < 24; ++k) {
+        VoxelGrid world;  // (an empty world grid: nothing but the wall)
+        world.h = 0.125;
+        VoxelGrid fine;  // a one-voxel wall of a fine grid across x = 1 m
+        fine.h = hf;
+        const i32 wx = static_cast<i32>(std::floor(1.0 / hf + 0.5));
+        for (i32 y = static_cast<i32>(-1.0 / hf); y < static_cast<i32>(1.0 / hf); ++y)
+          fine.fill_column(wx, y, static_cast<i32>(-1.0 / hf), static_cast<i32>(1.0 / hf), make_vox(MaterialId::Steel, true));
+        fine.compact();
+        std::vector<StaticGrid> statics(2);
+        statics[0].g = &world;
+        statics[0].unbounded = true;
+        statics[1].g = &fine;
+        statics[1].lo = V3{0.9, -1.1, -1.1};
+        statics[1].hi = V3{1.2, 1.1, 1.1};
+        statics[1].slot = 1;
+        RigidWorld w;
+        w.par.gravity = 0.0;
+        w.par.linear_damping = w.par.angular_damping = 0.0;
+        auto b = box(1, {-2, -2, -2}, {4, 4, 4}, 0.125);  // (a 0.5 m block)
+        b->x = V3{0.0025 * k, 0.0, 0.0};
+        b->v = V3{speed, 0, 0};
+        w.add(std::move(b));
+        for (int s = 0; s < 240; ++s) w.substep(1.0 / 120.0, statics, nullptr);
+        ++runs;
+        passed += w.bodies[0]->x.x > 1.0 ? 1 : 0;
+      }
+  MESSAGE(passed << " of " << runs << " runs passed through the wall");
+  CHECK(passed == 0);
 }

@@ -210,13 +210,21 @@ void World::Impl::crumple(f64 dt) {
       };
       auto world_of = [&](const IVec3& p) { return b.lattice_to_world(k, V3{h * p[0], h * p[1], h * p[2]}); };
       auto air = [&](const IVec3& q) { return !vox_solid(S.get(q)); };
-      // the anchors on its voxels follow them (a joint's end, a wheel's mount); a voxel gone lets go
+      // the anchors on its voxels follow them (a joint's end, a wheel's mount: the voxel, and the
+      // point it acts at, in the same lattice); a voxel gone lets go
       auto follow = [&](const IVec3& from, const IVec3& to) {
+        const V3 shift{h * (to[0] - from[0]), h * (to[1] - from[1]), h * (to[2] - from[2])};
         for (JointRec& r : att_.joints)
           for (JointRec::End* E : {&r.a, &r.b})
-            if (E->piece == b.id && E->shape == static_cast<i32>(k) && E->voxel == from) E->voxel = to;
+            if (E->piece == b.id && E->shape == static_cast<i32>(k) && E->voxel == from) {
+              E->voxel = to;
+              E->point += shift;
+            }
         for (WheelRec& r : att_.wheels)
-          if (r.mount.piece == b.id && r.mount.shape == static_cast<i32>(k) && r.mount.voxel == from) r.mount.voxel = to;
+          if (r.mount.piece == b.id && r.mount.shape == static_cast<i32>(k) && r.mount.voxel == from) {
+            r.mount.voxel = to;
+            r.mount.point += shift;
+          }
       };
       auto clear = [&](i32 i) {
         S.vox[size_t(i)] = kAir;
@@ -633,14 +641,7 @@ bool World::Impl::punch(Body& b, u16 g, const V3& n, const V3& plo, const V3& ph
     if (owner_of(f)) mark_owners_stale(f.grid, f.chunk);
     std::vector<IVec3> vox;
     voxels_of(f, vox);
-    VoxelGrid& Gm = vg(f.grid);
-    for (const IVec3& p : vox)
-      for (int a = 0; a < 3; ++a) {
-        Gm.break_bond(p, a);
-        IVec3 q = p;
-        q[a] -= 1;
-        Gm.break_bond(q, a);
-      }
+    tear_fragment(f, vox);
     make_body_from_world({f}, vd + spread, spin);
     std::vector<GVox> gv;
     gv.reserve(vox.size());

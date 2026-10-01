@@ -8,15 +8,15 @@ parity 5bed2317fe01ebed engine_demo --world slab --seconds 5
 parity 4a2a3bdec467cf82 engine_demo --world bridge --seconds 5
 parity 075130665ee44277 engine_demo --world chimney --seconds 5
 # engine: the engine as it is - pinned again (--update) only with a deliberate change of behaviour.
-engine fb82a7ddd548e945 engine_demo --world tower --scenario side --seconds 5
-engine c95ca4f8d34df808 engine_demo --world tower --scenario core --seconds 5
-engine 82a31c52c12eca88 engine_demo --world tower --scenario pillars --seconds 5 --turn 30
-engine b51c442c0e9de5c7 engine_demo --world rooms --seconds 5
+engine 8d5919785a39ccfd engine_demo --world tower --scenario side --seconds 5
+engine fe5ffafa80bf12a4 engine_demo --world tower --scenario core --seconds 5
+engine e333f931de87a852 engine_demo --world tower --scenario pillars --seconds 5 --turn 30
+engine 992365b3d689163a engine_demo --world rooms --seconds 5
 engine c26a57868fcd026d engine_demo --world slab --seconds 5
-engine 36aa1682c0d278f2 engine_demo --world bridge --seconds 5
+engine 79332e543e28d89c engine_demo --world bridge --seconds 5
 engine 2b6e28ea23b08f2f engine_demo --world chimney --seconds 5
-engine 7e9939c50d5e650d engine_demo --world yard --seconds 4
-engine ec707476f5da85ad engine_demo --world machines --seconds 12
-engine 7d6ffabea03dbe88 engine_demo --world angles --seconds 3
+engine 5910cf88ec1932d0 engine_demo --world yard --seconds 4
+engine cf51a8db8143feeb engine_demo --world machines --seconds 12
+engine 94a83a4f622d8e7e engine_demo --world angles --seconds 3
 engine 6c16bd69cc68b2f0 engine_demo --world drive --seconds 4
-engine a75edc9905ec0250 env_bench --scenario flood
+engine fafa7ad0776ed86a env_bench --scenario flood

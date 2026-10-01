@@ -14,7 +14,9 @@ namespace svx {
 // An oriented grid a source places in its world (docs/GRIDS.md): a voxel lattice with a frame of
 // its own (its voxel p is centred at origin + rot (h p)).
 struct SourceGrid {
-  u32 id = 0;        // unique and stable (not 0): the same grid gets the same id every time
+  // unique and stable (not 0, below 2^30): the same grid gets the same id every time (a streamed
+  // world gives the grids made in play - add_grid - ids of 2^30 and up: never one of these)
+  u32 id = 0;
   V3 origin;
   Quat rot;
   f64 voxel_size = 0.0;  // its voxel size (m; 0: the world's)

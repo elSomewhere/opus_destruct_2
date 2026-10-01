@@ -566,18 +566,21 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
         if (!any_fine_ || !fine_[size_t(ia)]) link_grid_contacts(A, ia, statics, link_margin(A, step_dt_), wc[size_t(ia)], link_caches);
         continue;
       }
-      // (continuous collision: a body that may move more than half a voxel this substep looks
-      // along its motion - its box grown by it)
+      // (continuous collision: a body that may move more than half a voxel - of the finest grid
+      // near it - this substep looks along its motion: its box grown by it)
       const f64 motion = (norm(A.v) + A.radius * norm(A.w)) * step_dt_;
-      const bool fast = par.speculative && motion > 0.5 * statics.front().g->h;
-      const f64 grow = fast ? motion : 0.0;
+      const f64 grow = par.speculative ? motion : 0.0;
+      f64 hmin = statics.front().g->h;
       near.clear();
       for (u32 s = 0; s < static_cast<u32>(statics.size()); ++s) {
         const StaticGrid& G = statics[s];
         if (G.unbounded || !(A.box_hi.x + grow < G.lo.x || A.box_lo.x - grow > G.hi.x || A.box_hi.y + grow < G.lo.y ||
-                             A.box_lo.y - grow > G.hi.y || A.box_hi.z + grow < G.lo.z || A.box_lo.z - grow > G.hi.z))
+                             A.box_lo.y - grow > G.hi.y || A.box_hi.z + grow < G.lo.z || A.box_lo.z - grow > G.hi.z)) {
           near.push_back(s);
+          hmin = std::min(hmin, G.g->h);
+        }
       }
+      const bool fast = par.speculative && motion > 0.5 * hmin;
       std::vector<Contact>& out = wc[size_t(ia)];
       spec.clear();
       const auto& W = A.wpts;
@@ -619,7 +622,7 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
         if (!fast || out.size() != before) continue;
         const V3 d = (A.v + cross(A.w, X - A.x)) * step_dt_;
         const f64 len = norm(d);
-        if (!(len > 0.25 * statics.front().g->h)) continue;
+        if (!(len > 0.25 * hmin)) continue;
         const V3 dir = d * (1.0 / len);
         Contact best;
         f64 bt = 1e300;
@@ -1419,6 +1422,10 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
     cast_wheels(statics);
   }
   const auto t1 = Clock::now();
+  // (the wheels as the substep found them - their spin, turn and impulses: a re-solve starts them
+  // from there, as it does the bodies)
+  std::vector<Wheel> wheels_pre;
+  if (fracture && !wheels.empty()) wheels_pre = wheels;
   {
     static const bool sv = diag("SVX_SERIAL_SOLVE");
     std::unique_ptr<SerialScope> ss(sv ? new SerialScope() : nullptr);
@@ -1436,6 +1443,15 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
     for (size_t i = 0; i < bodies.size(); ++i)
       if (fine_[i]) fine_bodies.push_back(bodies[i]->id);
   const int changed = fracture ? fracture(dt) : 0;
+  // (a contact whose cell is no longer solid goes: a piece split in place keeps its id, not the
+  // part that left it - that part's contacts go with it)
+  auto cell_solid = [&](i32 bi, i16 shape, i32 cell) {
+    if (cell < 0) return true;  // (a link's sphere, the world's side)
+    const Body& B = *bodies[size_t(bi)];
+    if (shape < 0 || shape >= static_cast<i16>(B.shapes.size())) return false;
+    const BodyShape& S = B.shapes[size_t(shape)];
+    return cell < static_cast<i32>(S.vox.size()) && vox_solid(S.vox[size_t(cell)]);
+  };
   if (any_fine_ && changed != 0) {
     // (pieces came and went: the fine links, which never break, by their ids again)
     fine_.assign(bodies.size(), 0);
@@ -1458,6 +1474,7 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
       const i32 a = index_of(cid[k].first);
       const i32 b = cid[k].second >= 0 ? index_of(cid[k].second) : -1;
       if (a < 0 || (cid[k].second >= 0 && b < 0)) continue;
+      if (!cell_solid(a, contacts_[k].shape_a, contacts_[k].vox_a) || (b >= 0 && !cell_solid(b, contacts_[k].shape_b, contacts_[k].vox_b))) continue;
       Contact c = contacts_[k];
       c.a = a;
       c.b = b;
@@ -1485,6 +1502,7 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
       b.v = b.v_pre;
       b.w = b.w_pre;
     }
+    if (wheels_pre.size() == wheels.size()) wheels.swap(wheels_pre);
     // Solve again with the new pieces: the contacts among the bodies that stayed are kept, the new
     // ones collide afresh (with everything).
     auto index_of = [&](i64 id) -> i32 {
@@ -1497,6 +1515,7 @@ void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const s
       const i32 a = index_of(cid[k].first);
       const i32 b = cid[k].second >= 0 ? index_of(cid[k].second) : -1;
       if (a < 0 || (cid[k].second >= 0 && b < 0)) continue;
+      if (!cell_solid(a, contacts_[k].shape_a, contacts_[k].vox_a) || (b >= 0 && !cell_solid(b, contacts_[k].shape_b, contacts_[k].vox_b))) continue;
       Contact c = contacts_[k];
       c.a = a;
       c.b = b;

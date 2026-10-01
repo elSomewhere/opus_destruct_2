@@ -409,12 +409,20 @@ std::vector<u8> RigidWorld::articulation_steps(f64 dt) const {
     }
     B.any = true;
   }
-  // (held by a joint to a piece: solved with it)
+  // (held by a joint to a piece: solved with it; held by one to another articulation's link: as
+  // that one is stepped - below)
+  std::vector<std::pair<i32, i32>> tied;
   for (const Joint& j : joints) {
     if (j.broken || j.a.body == 0 || j.b.body == 0) continue;
     const Body* A = find(j.a.body);
     const Body* B = find(j.b.body);
-    if (!A || !B || (A->link != nullptr) == (B->link != nullptr)) continue;
+    if (!A || !B) continue;
+    if (A->link && B->link) {
+      const i32 a = art_index(articulations, A->link->articulation), b = art_index(articulations, B->link->articulation);
+      if (a >= 0 && b >= 0 && a != b) tied.push_back({a, b});
+      continue;
+    }
+    if (!A->link && !B->link) continue;
     const Body* L = A->link ? A : B;
     const i32 a = art_index(articulations, L->link->articulation);
     if (a >= 0) box[size_t(a)].fine = false;
@@ -428,9 +436,14 @@ std::vector<u8> RigidWorld::articulation_steps(f64 dt) const {
     for (Box& B : box)
       if (B.any && B.fine && boxes_meet(B.lo, B.hi, lo, hi)) B.fine = false;
   }
-  // (near an articulation solved with the pieces: with them too)
+  // (near an articulation solved with the pieces, or tied to one by a joint: with them too)
   for (bool more = true; more;) {
     more = false;
+    for (const auto& [a, b] : tied)
+      if (box[size_t(a)].any && box[size_t(b)].any && box[size_t(a)].fine != box[size_t(b)].fine) {
+        box[size_t(a)].fine = box[size_t(b)].fine = false;
+        more = true;
+      }
     for (size_t a = 0; a < na; ++a) {
       if (!box[a].any || !box[a].fine) continue;
       for (size_t b = 0; b < na; ++b) {

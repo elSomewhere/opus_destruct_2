@@ -54,12 +54,13 @@ car - so it is not comparable across the two; both tools print the world's hash 
 | `rebuild_stale_only` | a solve slow to converge, or whose residual grows, rebuilds its preconditioner only when that makes another (a stale one, a small structure's block-Jacobi one), else restarts on it; a diverged iterate is never the next solve's start | rebuilt in any case (a large structure assembled again every tick, its solve getting nowhere), the iterate kept | `3ab0666` |
 | `coarsen_dense_levels` | a stress solve's multigrid level grown dense (a large damaged structure's third or fourth) is coarsened once more, by its aggregates' rigid motions, and that solved densely (since this pass at any size: a dense level of a hundred nodes was factored, an assembly's most expensive part) | it is the coarsest: factored if it is small enough, else smoothed - eight sweeps of its dense rows a cycle, slow to converge | `3ab0666`, this pass |
 | `reaggregate_levels` | a stress solve's multigrid level whose aggregates would hold fewer than two nodes on average (its couplings mostly under the strength threshold: a large irregular structure's second level) is aggregated again at half the threshold, up to three times | aggregated once: it barely coarsens, and its smoothed coarse level fills in (a damaged building's: 180 blocks a row - each assembly 200 ms and more, each cycle twice the work) | this pass |
+| `shards_hold_together` | a fragment a blast or a punch tears out whole has its faces with the rest torn, and keeps its own: a later cut or shot breaks the shard as a piece | every face of its voxels is torn: a shard of loose voxels, all dust at the next cut | this pass |
 | `rigid.busy_hold` | busy mode (one substep a tick, fewer iterations) is decided once a tick for all its substeps, and holds until the collapse is under two thirds of both thresholds | decided again every substep, at the thresholds: a collapse at their edge switches between one substep and two, tick after tick | `3ab0666` |
 | `rigid.warm_to_step` | the impulses contacts, wheels and joints start a substep from are scaled to its length (1/60 s after 1/120 s: twice them - what holds a resting load, a car on its springs) | as they were: a car dropped and kicked up at each switch of busy mode | `3ab0666` |
 
 Set them with `--tune NAME=VALUE` on `svx_engine_demo` and `svx_env_bench`, `World::configure`,
 `set_tunable` (C++, the C API, the web worker's settings panel). `tools/baseline/compare.sh
---parity` and `golden.sh`'s parity lines set all eighteen.
+--parity` and `golden.sh`'s parity lines set all nineteen.
 
 **Content.** Three procedural levels changed as well: the steel members of the `yard` (the
 greenhouse's and the shed's frames), the `angles` world (the braced portal) and the `machines`

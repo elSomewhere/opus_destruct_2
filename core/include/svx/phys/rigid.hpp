@@ -451,6 +451,7 @@ class RigidWorld {
   std::vector<V3> pseudo_v_, pseudo_w_;  // split-impulse pseudo velocities of the last solve
   // joints (joint.cpp): per joint, its rows this substep
   struct JointPrep {
+    u32 joint = 0;                     // the joint it was prepared for (the list changes between substeps)
     bool on = false;                   // (both ends there, not both immovable)
     i32 ia = -1, ib = -1;              // awake bodies (-1: a frame, or a sleeping body: immovable)
     f64 ma = 0.0, mb = 0.0;

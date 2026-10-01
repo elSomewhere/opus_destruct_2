@@ -200,7 +200,12 @@ const World::Impl::SolidsCache* World::Impl::solids_entry(const IVec3& cc) const
           c.bits[size_t(i >> 3)] = static_cast<u8>(c.bits[size_t(i >> 3)] | (1u << (i & 7)));
         }
   }
-  if (solids_.size() > 65536) solids_.clear();  // (a bound: what is needed is made again)
+  // (a chunk no grid reaches is not kept: the cache holds what grids cover - and is bounded
+  // between ticks, never within a query: what it handed out stays while the grids there do)
+  if (c.from.empty()) {
+    if (it != solids_.end()) solids_.erase(it);
+    return nullptr;
+  }
   return &(solids_[key] = std::move(c));
 }
 
@@ -352,8 +357,17 @@ GridId World::Impl::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId 
     slot = static_cast<u16>(grids_.size());
     grids_.emplace_back();
   }
+  // (its id: the one asked for - a source's grid, a saved one - never one in use; else the next
+  // free one, in a streamed world from kSessionGrids up: a source's grids are below it, and a
+  // grid made in play must never take the id of one not generated yet)
+  GridId id = want;
+  if (id == 0) {
+    if (strm_.source && next_grid_ < kSessionGrids) next_grid_ = kSessionGrids;
+    while (slots_.count(next_grid_) || next_grid_ == 0) ++next_grid_;
+    id = next_grid_++;
+  }
   auto st = std::make_unique<GridState>();
-  st->id = want != 0 ? want : next_grid_++;
+  st->id = id;
   st->base = d.base;
   st->priority = d.priority;
   st->home = home;
@@ -374,7 +388,6 @@ GridId World::Impl::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId 
   st->g.hi = {0, 0, 0};
   st->g.track_changes(true);
   st->g.mark_all_dirty();
-  const GridId id = st->id;
   grids_[slot] = std::move(st);
   slots_[id] = slot;
   if (home != ~0ull) strm_.home_grids[home].push_back(slot);

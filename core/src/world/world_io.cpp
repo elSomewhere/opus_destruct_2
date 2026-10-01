@@ -480,6 +480,17 @@ bool World::Impl::load_delta(const std::vector<u8>& bytes) {
   return true;
 }
 
+void World::Impl::reset_archive(size_t bytes) {
+  // (what is out of range goes with the records it is kept in: its pieces, their joints, its
+  // articulations - nothing may stay listed as archived, or a save would hold it without its record)
+  strm_.archive->reset(bytes);
+  strm_.archived_groups.clear();
+  strm_.archived_joints.clear();
+  strm_.archived_arts.clear();
+  st_.archived_pieces = 0;
+  st_.archived_articulations = 0;
+}
+
 void World::Impl::enable_streaming(std::shared_ptr<const ChunkSource> src, const StreamConfig& sc) {
   strm_.source = std::move(src);
   strm_.config = sc;
@@ -495,7 +506,7 @@ void World::Impl::enable_streaming(std::shared_ptr<const ChunkSource> src, const
   strm_.evict_scan_tick = -1000000;
   strm_.evict_scan_focus.clear();
   // (a bounded archive: its arena, once; an unbounded one grows)
-  strm_.archive->reset(strm_.source ? static_cast<size_t>(strm_.config.archive_mb * 1048576.0) : 0);
+  reset_archive(strm_.source ? static_cast<size_t>(strm_.config.archive_mb * 1048576.0) : 0);
   if (!strm_.source) return;
   const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
   grid_.lo = {lo[0] * kChunk, lo[1] * kChunk, lo[2] * kChunk};
@@ -534,11 +545,7 @@ bool World::Impl::generate_chunk(u64 key) {
   const IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
   if (cc[0] < lo[0] || cc[1] < lo[1] || cc[2] < lo[2] || cc[0] >= hi[0] || cc[1] >= hi[1] || cc[2] >= hi[2]) return false;
   std::vector<Vox> v;
-  bool any = strm_.source->generate(cc, v);
-  if (any && v.size() != size_t(kChunkVox)) any = false;  // (a source that did not fill it: air)
-  if (any)
-    for (Vox& x : v)
-      if (!vox_valid(x)) x = kAir;  // (invalid values from the source: air)
+  const bool any = strm_.source->generate(cc, v);
   insert_generated(key, any, std::move(v));
   return true;
 }
@@ -550,6 +557,12 @@ void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
     ~GridsAfter() { w.generate_grids(k); }
   } grids_after{*this, key};
   const IVec3 cc = unkey3(key);
+  // (what the source returned, on every path here: a chunk it did not fill is air, its invalid
+  // values air)
+  if (any && v.size() != size_t(kChunkVox)) any = false;
+  if (any)
+    for (Vox& x : v)
+      if (!vox_valid(x)) x = kAir;
   strm_.generated.insert(key);
   ext_.sys_generated.push_back(key);
   ++strm_.column_count[key3(cc[0], cc[1], 0)];
@@ -658,7 +671,7 @@ void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
 void World::Impl::generate_grids(u64 key) {
   if (!strm_.source) return;
   for (const SourceGrid& sg : strm_.source->grids(unkey3(key))) {
-    if (sg.id == 0 || slot_of(sg.id) >= 0) continue;  // (here already)
+    if (sg.id == 0 || sg.id >= kSessionGrids || slot_of(sg.id) >= 0) continue;  // (not a source's id; here already)
     VoxelGrid g;
     g.h = sg.voxel_size > 0.0 ? sg.voxel_size : grid_.h;
     if (!strm_.source->generate_grid(sg.id, g)) continue;
@@ -825,9 +838,16 @@ std::vector<std::vector<i64>> World::Impl::piece_groups(bool touching) const {
   };
   for (const auto& e : rigid_.joint_bodies())
     if (e[0] >= 0 && e[1] >= 0) join(e[0], e[1]);
-  if (touching)
-    for (const Contact& c : rigid_.contacts())
-      if (c.b >= 0 && size_t(c.a) < n && size_t(c.b) < n) join(c.a, c.b);
+  if (touching) {
+    auto index_of = [&](i64 id) -> i32 {
+      const auto it = std::lower_bound(rigid_.bodies.begin(), rigid_.bodies.end(), id, [](const std::unique_ptr<Body>& b, i64 v) { return b->id < v; });
+      return it != rigid_.bodies.end() && (*it)->id == id ? static_cast<i32>(it - rigid_.bodies.begin()) : -1;
+    };
+    for (const auto& [a, b] : touching_) {
+      const i32 ia = index_of(a), ib = index_of(b);
+      if (ia >= 0 && ib >= 0) join(ia, ib);
+    }
+  }
   std::vector<std::vector<i64>> out;
   std::vector<i32> slot(n, -1);
   for (size_t i = 0; i < n; ++i) {
@@ -875,8 +895,14 @@ void World::Impl::archive_record(u64 key, const std::vector<u8>& rec, u64 region
 bool World::Impl::forget_regions(size_t need, u64 keep) {
   // the regions out of range, least recently seen first (ties: by key)
   std::vector<std::pair<i64, u64>> cand;
+  size_t pages = strm_.archive->free_bytes() / world_detail::ChangeArchive::kPage;  // (free, and theirs)
   for (const auto& [r, info] : strm_.archive->regions())
-    if (r != keep && !strm_.region_resident.count(r)) cand.push_back({info.seen, r});
+    if (r != keep && !strm_.region_resident.count(r)) {
+      cand.push_back({info.seen, r});
+      pages += info.pages;
+    }
+  // (a record that would not fit with all of them forgotten forgets none: it alone is lost)
+  if (pages < world_detail::ChangeArchive::pages_for(need)) return false;
   std::sort(cand.begin(), cand.end());
   for (const auto& [seen, r] : cand) {
     if (strm_.archive->fits(need)) break;

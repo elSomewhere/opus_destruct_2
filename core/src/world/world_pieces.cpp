@@ -155,9 +155,6 @@ Body* World::Impl::make_body_from_world(const std::vector<FragKey>& frags, const
   }
   for (size_t k = 0; k < grids.size(); ++k)
     for (const IVec3& p : vox[k]) vg(grids[k]).set(p, kAir);
-  // (what held on to them alone - edge to edge, corner to corner - is checked for support again)
-  if (cfg_.recheck_vacated)
-    for (size_t k = 0; k < grids.size(); ++k) recheck_vacated(grids[k], b->shapes[k]);
   for (const FragKey& f : frags) {
     if (!current[GKey{f.grid, f.chunk}]) continue;
     FragChunk* fc = frag_chunk_if(f);
@@ -173,6 +170,10 @@ Body* World::Impl::make_body_from_world(const std::vector<FragKey>& frags, const
     auto ot = owner.find(f.chunk);
     if (ot != owner.end() && f.idx < static_cast<i32>(ot->second.size())) ot->second[size_t(f.idx)] = 0;
   }
+  // (what held on to them alone - edge to edge, corner to corner - is checked for support again:
+  // after the caches are patched, so that what they hold is known, not seeded blind)
+  if (cfg_.recheck_vacated)
+    for (size_t k = 0; k < grids.size(); ++k) recheck_vacated(grids[k], b->shapes[k]);
   if (grids.size() == 1 && grids[0] == 0) {
     const f64 h = grid_.h;
     const V3 m{h, h, h};
@@ -1140,7 +1141,9 @@ bool World::Impl::split_body(Body& b, bool use_pre, bool force_replace, const st
   for (i32 pc = 0; pc < static_cast<i32>(parts.size()); ++pc) {
     auto& part = parts[size_t(pc)];
     if (part.empty() || pc == stay) continue;
-    if (nc > 1 && static_cast<i32>(part.size()) < cfg_.min_body_voxels) {
+    // (too small to be a piece: a part split off, or what is left of a piece cut down - a single
+    // part, made again - turns to dust, as it would breaking off)
+    if ((nc > 1 || force_replace) && static_cast<i32>(part.size()) < cfg_.min_body_voxels) {
       lost = true;
       // (a shard: dust and a few chips, not a rigid piece)
       V3 c;

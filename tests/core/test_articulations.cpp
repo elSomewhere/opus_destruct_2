@@ -692,6 +692,24 @@ TEST_CASE("articulations: its own joints are in its state, not the host's joints
   CHECK(w.joints().empty());  // (the host's joint lost its end with it)
 }
 
+TEST_CASE("articulations: a link is not a piece - remove_piece refuses it, joined_pieces leaves it out") {
+  World w;
+  w.load(ground());
+  w.bake();
+  const Chain c = chain(w, V3{0, 0, 3.0}, 3, 0.3, 2.0);
+  REQUIRE(c.id != 0);
+  const i64 l1 = w.link_body(c.id, 1);
+  REQUIRE(l1 != 0);
+  CHECK_FALSE(w.remove_piece(l1));  // (it goes with its articulation: remove_articulation)
+  CHECK(w.joined_pieces(w.link_body(c.id, 0)).empty());
+  for (int t = 0; t < 30; ++t) w.tick();
+  ArticulationState s;
+  REQUIRE(w.articulation_state(c.id, &s));
+  CHECK(s.links.size() == 3);
+  CHECK(chain_gap(w, c) < 0.02);  // (whole: its joints hold)
+  CHECK(w.load_delta(w.save_delta()));  // (and its record is whole)
+}
+
 TEST_CASE("articulations: removed, it is gone; a lost link touches nothing; no piece events") {
   World w;
   w.load(ground());

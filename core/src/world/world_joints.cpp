@@ -216,6 +216,7 @@ bool World::Impl::joint(JointId id, JointState* out) const {
   for (size_t k = 0; k < att_.joints.size(); ++k) {
     const Joint& j = rigid_.joints[k];
     if (j.id != id || j.broken) continue;
+    if (!out) return true;  // (whether there is one)
     auto world_of = [&](const JointEnd& e) {
       if (e.body == 0) return e.p;
       const Body* b = rigid_.find(e.body);  // (bodies in id order: a search, not a walk)
@@ -240,7 +241,10 @@ std::vector<i64> World::Impl::joined_pieces(i64 piece) const {
   if (piece <= 0) return out;
   for (size_t k = 0; k < att_.joints.size(); ++k) {
     if (rigid_.joints[k].broken) continue;
-    const i64 a = att_.joints[k].a.piece, b = att_.joints[k].b.piece;
+    // (an articulation's link is not a piece: it goes with its articulation)
+    const auto& A = att_.joints[k].a;
+    const auto& B = att_.joints[k].b;
+    const i64 a = A.kind == JointAnchor::Kind::Link ? 0 : A.piece, b = B.kind == JointAnchor::Kind::Link ? 0 : B.piece;
     if (a == piece && b > 0 && b != piece) out.push_back(b);
     else if (b == piece && a > 0 && a != piece) out.push_back(a);
   }

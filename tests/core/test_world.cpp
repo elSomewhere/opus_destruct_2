@@ -1,5 +1,7 @@
 // The physics core on its own: hand-built worlds, no game harness (links svx_core only).
+#include <array>
 #include <cmath>
+#include <cstring>
 #include <unordered_set>
 #include <vector>
 
@@ -328,6 +330,96 @@ TEST_CASE("world: hostile inputs are refused without effect") {
   CHECK(w.stats().events == 1);  // (the far carve only)
 }
 
+namespace {
+
+// A delta of one piece, written by hand: its shape (dim, one run per array of `fill`) and its
+// broken junction samples, as a malformed or hostile file might hold them.
+std::vector<u8> one_piece_delta(i64 id, std::array<u32, 3> dim, Vox fill, const std::vector<u64>& jbrk) {
+  auto p8 = [](std::vector<u8>& b, u8 v) { b.push_back(v); };
+  auto p32 = [](std::vector<u8>& b, u32 v) {
+    for (int i = 0; i < 4; ++i) b.push_back(static_cast<u8>(v >> (8 * i)));
+  };
+  auto p64 = [](std::vector<u8>& b, u64 v) {
+    for (int i = 0; i < 8; ++i) b.push_back(static_cast<u8>(v >> (8 * i)));
+  };
+  auto pf = [&](std::vector<u8>& b, f64 x) {
+    u64 u;
+    std::memcpy(&u, &x, 8);
+    p64(b, u);
+  };
+  std::vector<u8> rec;
+  p8(rec, 2);  // (piece record version)
+  p64(rec, static_cast<u64>(id));
+  p64(rec, 0);
+  p8(rec, 1);  // (asleep)
+  for (f64 x : {0.0, 0.0, 10.0}) pf(rec, x);
+  for (f64 x : {0.0, 0.0, 0.0, 1.0}) pf(rec, x);
+  for (int k = 0; k < 6; ++k) pf(rec, 0.0);
+  p32(rec, 0);
+  p32(rec, 0);
+  for (int k = 0; k < 3; ++k) pf(rec, 0.0);
+  p32(rec, 1);  // (one shape)
+  p8(rec, 1);   // (identity frame)
+  p32(rec, 0);
+  pf(rec, 0.125);
+  p32(rec, 0);
+  for (int a = 0; a < 3; ++a) p32(rec, 0);
+  for (u32 d : dim) p32(rec, d);
+  const u32 n = dim[0] * dim[1] * dim[2];
+  p32(rec, 1), p32(rec, n), p8(rec, fill);                        // vox
+  p32(rec, 1), p32(rec, n), p32(rec, vox_solid(fill) ? 1u : 0u);  // frag
+  p32(rec, 1), p32(rec, n), p8(rec, 0);                           // brk
+  p8(rec, 0);
+  p32(rec, static_cast<u32>(jbrk.size()));
+  for (u64 j : jbrk) p64(rec, j);
+  p32(rec, 1);  // (one fragment)
+  for (int k = 0; k < 3; ++k) pf(rec, 0.0);
+  pf(rec, 1.0);
+  for (int k = 0; k < 9; ++k) pf(rec, k % 4 == 0 ? 1.0 : 0.0);
+  p8(rec, static_cast<u8>(MaterialId::Concrete));
+  p32(rec, n);
+  pf(rec, 1.0);
+  p32(rec, 0);
+  std::vector<u8> d;
+  p32(d, 0x44585653), p32(d, 4), p32(d, 0);             // (world grid: no records)
+  p32(d, 0x47585653), p32(d, 7), p32(d, 0), p32(d, 0);  // (grids: none)
+  p32(d, 0x53534553);                                   // (the session)
+  p64(d, 0), p64(d, static_cast<u64>(id + 1)), p32(d, 1), p32(d, 1);
+  p32(d, 1);
+  p32(d, static_cast<u32>(rec.size()));
+  d.insert(d.end(), rec.begin(), rec.end());
+  p32(d, 0), p32(d, 0), p32(d, 0);  // (joints, dead loads, wheels)
+  p32(d, 0);                        // (archived groups)
+  p32(d, 0), p32(d, 0);             // (articulations)
+  return d;
+}
+
+}  // namespace
+
+TEST_CASE("world: a delta's piece records are checked whole: boxes bounded by the record's size, junctions in the box, voxels in the piece") {
+  World w;
+  VoxelGrid g;
+  g.h = kH;
+  g.fill_column(0, 0, 0, 1, kRock);
+  g.compact();
+  w.load(std::move(g));
+  REQUIRE(w.bake());
+  // (as written: a piece of 2 x 2 x 2 voxels, one broken junction sample)
+  const u64 j = (u64(3) << 16) | (u64(1) << 8) | 5;
+  REQUIRE(w.load_delta(one_piece_delta(7, {2, 2, 2}, kConcrete, {j})));
+  CHECK(w.pieces().size() == 1);
+  // a junction sample of a cell outside the box, of a seventh face, of no sample
+  CHECK_FALSE(w.load_delta(one_piece_delta(7, {2, 2, 2}, kConcrete, {u64(8) << 16})));
+  CHECK_FALSE(w.load_delta(one_piece_delta(7, {2, 2, 2}, kConcrete, {u64(6) << 8})));
+  CHECK_FALSE(w.load_delta(one_piece_delta(7, {2, 2, 2}, kConcrete, {u64(64)})));
+  // a few hundred bytes for a box of 16 M cells of air (a piece of no voxels)
+  CHECK_FALSE(w.load_delta(one_piece_delta(7, {4096, 4096, 1}, kAir, {})));
+  CHECK_FALSE(w.load_delta(one_piece_delta(7, {2, 2, 2}, kAir, {})));
+  // an id no session reaches
+  CHECK_FALSE(w.load_delta(one_piece_delta(i64(1) << 62, {2, 2, 2}, kConcrete, {})));
+  CHECK(w.pieces().size() == 1);  // (refused whole: the world is as it was)
+}
+
 TEST_CASE("world: a delta restores the voxels and their design classes (v2 records)") {
   World a;
   VoxelGrid g = table_world();
@@ -560,6 +652,36 @@ TEST_CASE("memory: a bounded change archive forgets the regions seen least recen
   t.go(10, 20);
   CHECK_FALSE(vox_solid(t.w.grid().get(PillarTrip::voxel(10, 8))));
   CHECK(t.w.memory().archive == mem);  // (the arena never grows)
+}
+
+TEST_CASE("memory: a level loaded after a streamed one keeps nothing of its archive - its saves load") {
+  PillarTrip t(0.0);
+  t.cut(1);
+  REQUIRE_FALSE(t.w.pieces().empty());
+  t.go(4, 30);  // (the rubble out of range, archived)
+  REQUIRE(t.w.stats().archived_pieces > 0);
+  // the next level - bounded - in the same world
+  t.w.load(table_world());
+  CHECK(t.w.stats().archived_pieces == 0);
+  REQUIRE(t.w.bake());
+  for (int k = 0; k < 10; ++k) t.w.tick();
+  const std::vector<u8> d = t.w.save_delta();
+  World w2;
+  w2.load(table_world());
+  REQUIRE(w2.bake());
+  CHECK(w2.load_delta(d));
+  // ... and the streamed one again: as new
+  PillarTrip fresh(0.0);
+  t.w.load(VoxelGrid{});
+  StreamConfig sc;
+  sc.load_radius = 20.0;
+  sc.evict_radius = 28.0;
+  sc.chunks_per_tick = 400;
+  t.w.enable_streaming(std::make_shared<PillarSource>(), sc);
+  fresh.go(1, 10);
+  t.go(1, 10);
+  CHECK(t.w.stats().archived_pieces == 0);
+  CHECK(t.w.state_hash() == fresh.w.state_hash());
 }
 
 TEST_CASE("memory: rubble goes out of range with its chunks, in the archive, and comes back with them") {
@@ -909,6 +1031,94 @@ TEST_CASE("materials: a blast strips concrete off its bars, and ductile bars nev
   const f64 conc = static_cast<f64>(count(kConcrete)) / static_cast<f64>(conc0);
   MESSAGE("left after the blast: bars " << 100 * bars << "%, concrete " << 100 * conc << "%");
   CHECK(bars > conc);
+}
+
+TEST_CASE("world: a blast's shard keeps its own bonds - a shot breaks it as a piece, not all to dust (shards_hold_together)") {
+  auto shot_shard = [](bool hold, i32* voxels, i64* left) {
+    WorldConfig cfg;
+    cfg.shards_hold_together = hold;
+    World w;
+    w.configure(cfg);
+    VoxelGrid g;
+    g.h = kH;
+    box(g, {-48, -48, -4}, {48, 48, 0}, kRock);
+    box(g, {0, 0, 0}, {48, 8, 32}, kConcrete);  // (a wall 6 m long, 1 m thick, 4 m high)
+    g.compact();
+    g.lo = {-48, -48, -4};
+    g.hi = {48, 48, 64};
+    w.load(std::move(g));
+    REQUIRE(w.bake());
+    w.blast(V3{kH * 24, kH * -1, kH * 16}, 0.6, 4e5);
+    for (int t = 0; t < 2; ++t) w.tick();
+    const Body* best = nullptr;
+    for (const PieceState& p : w.pieces()) {
+      const Body* b = w.piece(p.id);
+      if (!best || b->count > best->count) best = b;
+    }
+    REQUIRE(best != nullptr);
+    const i64 id = best->id;
+    *voxels = best->count;
+    // a bullet's hole at one of its voxels
+    const BodyShape& S = best->shapes[0];
+    IVec3 v{0, 0, 0};
+    for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i)
+      if (vox_solid(S.vox[size_t(i)])) {
+        v = S.voxel(i);
+        break;
+      }
+    w.take_events();
+    w.carve(best->lattice_to_world(0, V3{S.h * v[0], S.h * v[1], S.h * v[2]}), 0.07);
+    w.tick();
+    *left = 0;
+    if (const Body* b = w.piece(id)) *left += b->count;
+    for (const WorldEvent& e : w.take_events())
+      if (e.kind == WorldEvent::Kind::PieceAdded && e.parent == id) *left += e.voxels;
+  };
+  i32 n = 0;
+  i64 left = 0;
+  shot_shard(true, &n, &left);
+  MESSAGE("the blast's largest shard: " << n << " voxels, " << left << " of them a piece still after a shot");
+  CHECK(n > 40);
+  CHECK(left >= n / 2);
+  shot_shard(false, &n, &left);  // (the reference's: a shard of loose voxels)
+  CHECK(left == 0);
+}
+
+TEST_CASE("world: a piece cut down to fewer voxels than a piece has turns to dust") {
+  World w;
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-48, -48, -4}, {48, 48, 0}, kRock);
+  g.compact();
+  g.lo = {-48, -48, -4};
+  g.hi = {48, 48, 64};
+  w.load(std::move(g));
+  REQUIRE(w.bake());
+  // a 4 x 4 x 3 block (48 voxels) dropped in, cut down to a corner of 8
+  std::vector<VoxelEdit> e;
+  for (i32 x = 0; x < 4; ++x)
+    for (i32 y = 0; y < 4; ++y)
+      for (i32 z = 2; z < 5; ++z) e.push_back({{x, y, z}, kConcrete});
+  w.set_voxels(e);
+  for (int t = 0; t < 120; ++t) w.tick();
+  REQUIRE(w.pieces().size() == 1);
+  const i64 id = w.pieces().front().id;
+  const Body* b = w.piece(id);
+  std::vector<IVec3> cut;
+  for (const BodyShape& S : b->shapes)
+    for (i32 i = 0; i < static_cast<i32>(S.vox.size()); ++i) {
+      if (!vox_solid(S.vox[size_t(i)])) continue;
+      const IVec3 p = S.voxel(i);
+      if (p[0] >= 2 || p[1] >= 2) cut.push_back(p);
+    }
+  REQUIRE(cut.size() >= 30);
+  w.take_events();
+  REQUIRE(w.remove_piece_voxels(id, 0, cut, true));
+  w.tick();
+  CHECK(w.pieces().empty());  // (what was left - fewer voxels than min_body_voxels - is dust)
+  bool dust = false;
+  for (const WorldEvent& ev : w.take_events()) dust = dust || ev.kind == WorldEvent::Kind::Dust;
+  CHECK(dust);
 }
 
 TEST_CASE("world: a blast in the air loads what is around it by its energy") {

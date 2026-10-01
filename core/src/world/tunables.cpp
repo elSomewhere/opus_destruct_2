@@ -142,6 +142,7 @@ const Field kFields[] = {
     SVX_T_BOOL("rigid.warm_to_step", rigid.warm_to_step),
     SVX_T_BOOL("coarsen_dense_levels", coarsen_dense_levels),
     SVX_T_BOOL("reaggregate_levels", reaggregate_levels),
+    SVX_T_BOOL("shards_hold_together", shards_hold_together),
 };
 #undef SVX_T_F64
 #undef SVX_T_I32

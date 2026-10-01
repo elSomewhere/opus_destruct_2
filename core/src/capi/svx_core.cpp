@@ -43,7 +43,10 @@ class CallbackSource final : public ChunkSource {
   CallbackSource(svxc_generate_fn fn, void* user, const IVec3& lo, const IVec3& hi, i32 region)
       : fn_(fn), user_(user), lo_(lo), hi_(hi), region_(std::max(1, region)) {}
   u64 region(const IVec3& c) const override {
-    auto fdiv = [&](i32 a) { return a >= 0 ? a / region_ : -((-a + region_ - 1) / region_); };
+    auto fdiv = [&](i32 a) {  // (floor division, in 64 bits: any chunk, any region size)
+      const i64 r = region_;
+      return static_cast<i32>(a >= 0 ? a / r : -((-static_cast<i64>(a) + r - 1) / r));
+    };
     return key3(fdiv(c[0]), fdiv(c[1]), 0);
   }
   bool generate(const IVec3& c, std::vector<Vox>& out) const override {
@@ -78,7 +81,7 @@ namespace {
 
 std::vector<LayerEdit> layer_edits(const int32_t* xyz, const uint8_t* values, int n) {
   std::vector<LayerEdit> e(static_cast<size_t>(std::max(0, n)));
-  for (int i = 0; i < n; ++i) e[size_t(i)] = {{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]}, values[i]};
+  for (int i = 0; i < n; ++i) e[size_t(i)] = {{xyz[3 * size_t(i)], xyz[3 * size_t(i) + 1], xyz[3 * size_t(i) + 2]}, values[i]};
   return e;
 }
 
@@ -329,7 +332,7 @@ int svxc_grid_frame(svxc_world* w, uint32_t id, double origin[3], double rot[4])
 int svxc_set_grid_voxels(svxc_world* w, uint32_t grid, const int32_t* xyz, const uint8_t* values, int n, unsigned flags) {
   if (!w || n <= 0 || !xyz || !values) return 0;
   std::vector<VoxelEdit> edits(static_cast<size_t>(n));
-  for (int i = 0; i < n; ++i) edits[size_t(i)] = {{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]}, values[i]};
+  for (int i = 0; i < n; ++i) edits[size_t(i)] = {{xyz[3 * size_t(i)], xyz[3 * size_t(i) + 1], xyz[3 * size_t(i) + 2]}, values[i]};
   u32 f = 0;
   if (flags & SVXC_EDIT_UNTRACKED) f |= kEditUntracked;
   if (flags & SVXC_EDIT_ISOLATED) f |= kEditIsolated;
@@ -369,7 +372,7 @@ void svxc_set_grid_loads(svxc_world* w, uint64_t group, const uint32_t* grids, c
   if (!w || (n > 0 && (!xyz || !forces))) return;
   std::vector<VoxelLoad> loads;
   for (int i = 0; i < n; ++i)
-    loads.push_back({{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]}, {forces[3 * i], forces[3 * i + 1], forces[3 * i + 2]}, grids ? grids[i] : 0u});
+    loads.push_back({{xyz[3 * size_t(i)], xyz[3 * size_t(i) + 1], xyz[3 * size_t(i) + 2]}, {forces[3 * size_t(i)], forces[3 * size_t(i) + 1], forces[3 * size_t(i) + 2]}, grids ? grids[i] : 0u});
   w->w.set_loads(group, std::move(loads));
 }
 
@@ -408,7 +411,7 @@ void svxc_enable_streaming(svxc_world* w, svxc_generate_fn fn, void* user, const
 void svxc_set_focus(svxc_world* w, const double* xyz, int count) {
   if (!w || (!xyz && count > 0)) return;
   std::vector<V3> pts;
-  for (int i = 0; i < count; ++i) pts.push_back({xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]});
+  for (int i = 0; i < count; ++i) pts.push_back({xyz[3 * size_t(i)], xyz[3 * size_t(i) + 1], xyz[3 * size_t(i) + 2]});
   w->w.set_focus(pts);
 }
 
@@ -443,7 +446,7 @@ void svxc_blast(svxc_world* w, double x, double y, double z, double radius, doub
 int svxc_set_voxels(svxc_world* w, const int32_t* xyz, const uint8_t* values, int n, unsigned flags) {
   if (!w || n <= 0 || !xyz || !values) return 0;
   std::vector<VoxelEdit> edits(static_cast<size_t>(n));
-  for (int i = 0; i < n; ++i) edits[size_t(i)] = {{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]}, values[i]};
+  for (int i = 0; i < n; ++i) edits[size_t(i)] = {{xyz[3 * size_t(i)], xyz[3 * size_t(i) + 1], xyz[3 * size_t(i) + 2]}, values[i]};
   u32 f = 0;
   if (flags & SVXC_EDIT_UNTRACKED) f |= kEditUntracked;
   if (flags & SVXC_EDIT_ISOLATED) f |= kEditIsolated;
@@ -485,7 +488,7 @@ uint8_t svxc_piece_layer(svxc_world* w, int64_t piece, int layer, int x, int y, 
 int svxc_remove_piece_voxels(svxc_world* w, int64_t piece, const int32_t* xyz, int n, int dust) {
   if (!w || n <= 0 || !xyz) return 0;
   std::vector<IVec3> v(static_cast<size_t>(n));
-  for (int i = 0; i < n; ++i) v[size_t(i)] = {xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]};
+  for (int i = 0; i < n; ++i) v[size_t(i)] = {xyz[3 * size_t(i)], xyz[3 * size_t(i) + 1], xyz[3 * size_t(i) + 2]};
   return w->w.remove_piece_voxels(piece, v, dust != 0) ? 1 : 0;
 }
 
@@ -494,7 +497,7 @@ void svxc_set_loads(svxc_world* w, uint64_t group, const int32_t* xyz, const dou
   std::vector<VoxelLoad> loads;
   if (n > 0)
     for (int i = 0; i < n; ++i)
-      loads.push_back({{xyz[3 * i], xyz[3 * i + 1], xyz[3 * i + 2]}, {forces[3 * i], forces[3 * i + 1], forces[3 * i + 2]}});
+      loads.push_back({{xyz[3 * size_t(i)], xyz[3 * size_t(i) + 1], xyz[3 * size_t(i) + 2]}, {forces[3 * size_t(i)], forces[3 * size_t(i) + 1], forces[3 * size_t(i) + 2]}});
   w->w.set_loads(group, std::move(loads));
 }
 

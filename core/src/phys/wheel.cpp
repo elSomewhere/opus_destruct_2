@@ -472,11 +472,14 @@ void RigidWorld::wheel_support(const std::function<void(i32, bool, f64)>& push) 
     const Wheel& w = wheels[k];
     const WheelPrep& P = wprep_[k];
     if (!P.on || !P.touch || !(w.ls + w.lbump > 0.0)) continue;
+    // (the carrier by id: a fracture since the solve may have changed the body list)
+    const i32 ia = index_of(w.body);
+    if (ia < 0) continue;
     // (what it stands on must be held itself: the world, a sleeping body, or a held one - the
     // caller's push resolves that through its queue; here: the world or a sleeper)
     const i32 ib = w.ground_body != 0 ? index_of(w.ground_body) : -1;
     if (w.ground_body != 0 && ib >= 0 && !bodies[size_t(ib)]->asleep) continue;
-    push(P.ia, w.normal.z > kUp, (w.ls + w.lbump) * P.u.z);
+    push(ia, w.normal.z > kUp, (w.ls + w.lbump) * P.u.z);
   }
 }
 

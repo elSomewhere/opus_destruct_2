@@ -136,6 +136,7 @@ bool World::Impl::remove_piece_voxels(i64 id, i32 shape, const std::vector<IVec3
   refragment_body(b);
   rigid_.wake(b);
   if (b.count == 0) {
+    wake_around(b);  // (no part of it takes its place: what rested on it falls)
     remove_bodies({id}, PieceEnd::Split);
     return true;
   }

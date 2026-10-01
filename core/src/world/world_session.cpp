@@ -38,7 +38,11 @@ constexpr u8 kGroupVersion = 4;
 // (a wheel saved before its material was: the tyre it then always became - the standard preset
 // 16 of that time, now the id a host's tyre material keeps)
 constexpr u8 kLegacyWheelMaterial = 16;
-constexpr i64 kMaxCells = i64(1) << 24;    // (a piece's box at most: 16 M cells)
+constexpr i64 kMaxCells = i64(1) << 24;    // (a piece's boxes at most: 16 M cells)
+// (and at most so many cells for each byte of its record: runs expand a short record into a large
+// box - a malformed one must not make a few bytes into gigabytes; a piece's real boxes hold a
+// voxel or more for every few thousand of their cells)
+constexpr i64 kCellsPerByte = 4096;
 
 // Runs of equal values (a piece's box is mostly air): count, value.
 template <class T>
@@ -175,14 +179,16 @@ std::unique_ptr<Body> World::Impl::read_piece_record(const std::vector<u8>& rec)
     if (!std::isfinite(b->max_speed) || b->max_speed < 0.0 || b->max_speed > 1000.0) return nullptr;
   }
   const f64 qn = b->q.x * b->q.x + b->q.y * b->q.y + b->q.z * b->q.z + b->q.w * b->q.w;
-  if (!in.ok || b->id <= 0 || (flags & ~3u) != 0 || !in_range(b->x) || !finite_q(b->q) || !(qn > 0.5 && qn < 2.0) || !finite_v(b->v) ||
-      !finite_v(b->w) || !std::isfinite(b->sleep_ema) || !std::isfinite(b->age))
+  if (!in.ok || b->id <= 0 || b->id >= (i64(1) << 61) || (flags & ~3u) != 0 || !in_range(b->x) || !finite_q(b->q) || !(qn > 0.5 && qn < 2.0) ||
+      !finite_v(b->v) || !finite_v(b->w) || !std::isfinite(b->sleep_ema) || !std::isfinite(b->age))
     return nullptr;
   b->asleep = (flags & 1) != 0;
   b->keep = (flags & 2) != 0;
   const u32 ns = in.u32_();
   if (!in.ok || ns == 0 || ns > 256) return nullptr;
   b->shapes.resize(ns);
+  const i64 max_cells = std::min<i64>(kMaxCells, kCellsPerByte * static_cast<i64>(rec.size()));
+  i64 all_cells = 0, solid = 0;
   for (BodyShape& S : b->shapes) {
     const u8 ident = in.u8_();
     if (ident > 1) return nullptr;
@@ -192,7 +198,7 @@ std::unique_ptr<Body> World::Impl::read_piece_record(const std::vector<u8>& rec)
       S.xf.q = in.q4();
       S.xf.R = read_m3(in);
       S.xf.Rt = transpose(S.xf.R);
-      if (!finite_v(S.xf.off) || !finite_q(S.xf.q) || !finite_m3(S.xf.R)) return nullptr;
+      if (!in_range(S.xf.off) || !finite_q(S.xf.q) || !finite_m3(S.xf.R)) return nullptr;
     }
     S.grid = in.u32_();
     S.h = in.f64_();
@@ -204,7 +210,8 @@ std::unique_ptr<Body> World::Impl::read_piece_record(const std::vector<u8>& rec)
       if (S.dim[size_t(a)] < 1 || S.dim[size_t(a)] > 4096) return nullptr;
       cells *= S.dim[size_t(a)];
     }
-    if (!in.ok || !std::isfinite(S.h) || !(S.h >= grid_.h / 64.0) || !(S.h <= grid_.h * 64.0) || cells > kMaxCells) return nullptr;
+    all_cells += cells;
+    if (!in.ok || !std::isfinite(S.h) || !(S.h >= grid_.h / 64.0) || !(S.h <= grid_.h * 64.0) || all_cells > max_cells) return nullptr;
     for (int a = 0; a < 3; ++a)
       if (std::abs(static_cast<i64>(S.lo[size_t(a)])) > kVoxelLimit) return nullptr;
     const size_t n = static_cast<size_t>(cells);
@@ -214,6 +221,7 @@ std::unique_ptr<Body> World::Impl::read_piece_record(const std::vector<u8>& rec)
       if (vox_anchored(v)) return nullptr;  // (a piece has no supports)
       S.count += vox_solid(v) ? 1 : 0;
     }
+    solid += S.count;
     const u8 nl = in.u8_();
     for (u8 k = 0; k < nl && in.ok; ++k) {
       const u8 len = in.u8_();
@@ -228,9 +236,14 @@ std::unique_ptr<Body> World::Impl::read_piece_record(const std::vector<u8>& rec)
     const u32 nj = in.u32_();
     if (!in.ok || u64(nj) * 8 > rec.size()) return nullptr;
     S.jbrk.resize(nj);
-    for (u64& j : S.jbrk) j = in.u64_();
+    for (u64& j : S.jbrk) {
+      j = in.u64_();
+      // (a broken junction sample: a cell of the box, one of its six faces, a sample or the face)
+      if ((j >> 16) >= u64(n) || ((j >> 8) & 0xFF) >= 6 || (j & 0xFF) > u64(kJunctionFace)) return nullptr;
+    }
     if (!std::is_sorted(S.jbrk.begin(), S.jbrk.end())) return nullptr;
   }
+  if (solid == 0) return nullptr;  // (a piece of no voxels)
   const u32 nf = in.u32_();
   if (!in.ok || nf == 0 || u64(nf) * 100 > rec.size()) return nullptr;
   b->frags.resize(nf);
@@ -718,6 +731,10 @@ void World::Impl::apply_session(SessionDelta&& s) {
     }
   // the articulations (their ids as they were), and those archived out of range
   for (ArticulationSaved& a : s.articulations) restore_articulation(std::move(a));
+  // (the ids of those out of range stay theirs: one made from now on must not take one, and with
+  // it the archive's record of the one out of range)
+  for (const SessionDelta::ArchivedArticulation& a : s.archived_articulations)
+    next_art_ = std::max<ArticulationId>(next_art_, static_cast<ArticulationId>(a.key & 0xFFFFFFFFull) + 1);
   if (strm_.source)
     for (SessionDelta::ArchivedArticulation& a : s.archived_articulations) {
       if (a.chunks.empty()) continue;

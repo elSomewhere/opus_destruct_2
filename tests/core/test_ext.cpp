@@ -216,6 +216,52 @@ TEST_CASE("ext: systems are told of loads, streaming and voxel changes, and step
 
 // ---- hardening (audit regressions)
 
+namespace {
+
+// A source that does not keep its contract: short chunks, long ones (appended to), values that
+// are no voxel's (anchored air).
+class Sloppy final : public ChunkSource {
+ public:
+  bool generate(const IVec3& c, std::vector<Vox>& out) const override {
+    if (c[2] != -1) return false;
+    switch (((c[0] % 3) + 3) % 3) {
+      case 0: out.assign(1000, kRock); break;
+      case 1: out.assign(2 * size_t(kChunkVox), kRock); break;
+      default: out.assign(kChunkVox, static_cast<Vox>(0x80)); break;
+    }
+    return true;
+  }
+  IVec3 chunk_lo() const override { return {-16, -16, -1}; }
+  IVec3 chunk_hi() const override { return {16, 16, 2}; }
+};
+
+}  // namespace
+
+TEST_CASE("ext: what a source generates is checked on every path - at the first focus and tick by tick") {
+  World w;
+  VoxelGrid g;
+  g.h = kH;
+  w.load(std::move(g));
+  StreamConfig sc;
+  sc.load_radius = 48.0;  // (beyond what the first focus makes resident at once)
+  sc.evict_radius = 60.0;
+  sc.chunks_per_tick = 64;
+  w.enable_streaming(std::make_shared<Sloppy>(), sc);
+  w.set_focus(V3{0, 0, 0});
+  for (int t = 0; t < 30; ++t) w.tick();
+  REQUIRE(w.stats().generated_total > 200);
+  i64 bad = 0;
+  for (const auto& [k, c] : w.grid().chunks()) {
+    if (!c.uniform && c.v.size() != size_t(kChunkVox)) ++bad;
+    if (!c.uniform)
+      for (Vox v : c.v) bad += vox_valid(v) && !vox_solid(v) ? 0 : 1;  // (none of it was a chunk: all air)
+    else
+      bad += vox_solid(c.value) ? 1 : 0;
+  }
+  CHECK(bad == 0);
+  CHECK(w.grid().get(IVec3{40, 40, -10}) == kAir);
+}
+
 TEST_CASE("ext: layer values belong to their voxel, to the air, or to the place") {
   World w;
   const int soot = w.add_layer({"soot", true, LayerBind::Solid});
@@ -302,6 +348,34 @@ TEST_CASE("ext: a system cannot tick or load the world from inside its tick") {
   CHECK(w.ticks() == 3);
   CHECK(w.grid().get(10, 4, 10) == kConc);  // (the world was not replaced)
   CHECK(w.systems().size() == 4);
+}
+
+namespace {
+
+struct Spawning final : WorldSystem {
+  int loads = 0;
+  const char* name() const override { return "spawning"; }
+  void on_load(World& w) override {
+    ++loads;
+    for (int k = 0; k < 6; ++k) w.add_system(std::make_shared<Counting>());  // (the list grows under the load's walk)
+  }
+  void step(World&, f64) override {}
+};
+
+}  // namespace
+
+TEST_CASE("ext: a system may add systems while the world loads") {
+  World w;
+  auto s = std::make_shared<Spawning>();
+  w.add_system(s);
+  w.load(wall());
+  CHECK(s->loads == 1);
+  CHECK(w.systems().size() == 7);
+  w.load(wall());  // (those it added are told of the next load)
+  CHECK(s->loads == 2);
+  CHECK(w.systems().size() == 13);
+  for (int t = 0; t < 3; ++t) w.tick();
+  CHECK(w.ticks() == 3);
 }
 
 TEST_CASE("ext: forces set while paused do not pile up") {

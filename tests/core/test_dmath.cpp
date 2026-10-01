@@ -6,6 +6,7 @@
 
 #include "doctest.h"
 #include "svx/base/dmath.hpp"
+#include "svx/phys/joint.hpp"
 
 using namespace svx;
 
@@ -80,4 +81,36 @@ TEST_CASE("dmath: golden digest of the output bits (identical on every build)") 
   }
   std::printf("dmath digest %016llx\n", static_cast<unsigned long long>(h));
   CHECK(h == 0x410fe26f50cb825full);  // native ARM (Apple clang), WASM and x86-64
+}
+
+TEST_CASE("dmath: sin / cos of any finite argument are defined and bounded (huge ones lose accuracy, never their range)") {
+  for (f64 x : {3.0e9, 3.5e9, -3.5e9, 1e10, -1e12, 1e15, 9.007199254740993e15, 1e300, -1e300, 1.7976931348623157e308}) {
+    const f64 s = dm::sin(x), c = dm::cos(x);
+    CHECK(std::isfinite(s));
+    CHECK(std::isfinite(c));
+    CHECK(std::abs(s) <= 1.0);
+    CHECK(std::abs(c) <= 1.0);
+    CHECK(dm::sin(-x) == -s);  // (odd and even: the reduction is symmetric)
+    CHECK(dm::cos(-x) == c);
+  }
+  // (where the reduction is exact, as before: the platform's to an ulp or two)
+  for (f64 x : {1e5, 8.2e5, -8.2e5})
+    CHECK(std::abs(dm::sin(x) - std::sin(x)) <= 4e-16);
+}
+
+TEST_CASE("joint drive: an oscillation's goal is exact however long the world has run, or far its phase is set") {
+  JointDrive d;
+  d.kind = JointDrive::Kind::Oscillate;
+  d.target = 0.0;
+  d.target2 = 1.0;
+  d.period = 1.0;
+  d.phase = 1.7e9;  // (a timestamp)
+  f64 x = 0.0, r = 0.0;
+  d.goal(10.25, &x, &r);
+  CHECK(x == doctest::Approx(0.5).epsilon(1e-6));  // (a quarter period in: half way)
+  CHECK(r == doctest::Approx(3.141592653589793).epsilon(1e-6));
+  d.phase = 0.0;
+  f64 x2 = 0.0, r2 = 0.0;
+  d.goal(0.25, &x2, &r2);
+  CHECK(x2 == doctest::Approx(0.5).epsilon(1e-12));
 }
