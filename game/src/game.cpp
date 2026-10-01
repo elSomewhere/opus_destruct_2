@@ -106,6 +106,8 @@ void Game::load(VoxelGrid&& g, const V3& spawn_pos, const V3& spawn_dir) {
   world_.load(std::move(g));
   world_.take_events();  // (the old level's pieces: gone with it)
   paint_layer_ = world_.add_layer({"paint", true, LayerBind::Solid});
+  appearances_.reset();
+  look_layer_ = -1;
   vehicles_.clear();
   next_vehicle_ = 1;
   player_vehicle_ = 0;
@@ -134,6 +136,11 @@ void Game::load_streaming(std::shared_ptr<const GameSource> src, f64 h, const St
   g.h = h;
   load(std::move(g), src->spawn_pos(), src->spawn_dir());
   source_ = src;
+  // (its looks: a regenerable layer, from the source on demand)
+  if (std::shared_ptr<const AppearanceTable> t = src->appearances()) {
+    appearances_ = std::move(t);
+    look_layer_ = world_.add_layer({"look", true, LayerBind::Solid, true});
+  }
   stream_ = sc;
   far_ = far;
   world_.enable_streaming(src, sc);
@@ -544,6 +551,19 @@ ChunkMesh Game::shape_mesh(const Body& b, size_t k, bool fresh, Paint body) cons
     const int L = f->burn_layer();
     mo.light = [&S, L](const IVec3& p, int) -> u8 { return char_light(255, S.layer_at(L, S.index(p))); };
   }
+  if (look_layer_ >= 0 && appearances_ && !S.layer[size_t(look_layer_)].empty()) {
+    // (its looks, as the voxels had them where they came from)
+    const int K = look_layer_;
+    const AppearanceTable* T = appearances_.get();
+    auto inner = mo.texture;
+    mo.texture = [&S, K, T, inner](const IVec3& p, int face) -> u16 {
+      const i32 i = S.index(p);
+      const int m = static_cast<int>(vox_mat(S.get(p)));
+      const int a = T->find(m, S.layer_at(K, i));
+      if (a >= 0) return static_cast<u16>(kAppearanceTexture + a);
+      return inner ? inner(p, face) : static_cast<u16>(0xFF00 + m);
+    };
+  }
   if (paint_layer_ >= 0 && !S.layer[size_t(paint_layer_)].empty()) {
     // (painted: a car's body, its trim; glowing, it shows its material's glow)
     const int P = paint_layer_;
@@ -566,7 +586,8 @@ ChunkMesh Game::shape_mesh(const Body& b, size_t k, bool fresh, Paint body) cons
   }
   // (a large new piece - a vehicle dropped in - as one meshed before: its voxels and paint the
   // same, nothing burning or glowing, no debug colours)
-  bool memo = fresh && S.count >= 1500 && par_.debug_view != 2 && mesh_base_.concurrent && !mesh_base_.light && !mesh_base_.texture;
+  bool memo = fresh && S.count >= 1500 && par_.debug_view != 2 && mesh_base_.concurrent && !mesh_base_.light && !mesh_base_.texture &&
+              (look_layer_ < 0 || S.layer[size_t(look_layer_)].empty());
   if (const FireSystem* f = env_.fire(); memo && f && f->ok())
     memo = S.layer[size_t(f->burn_layer())].empty() && S.layer[size_t(f->heat_layer())].empty();
   static const std::vector<u8> no_paint;
@@ -672,8 +693,20 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
       return it == field.end() ? 0 : it->second[size_t(chunk_index(p))];
     };
   }
-  // painted voxels (the paint layer: road markings, facades)
   const VoxelGrid& g = world_.grid();
+  // looks (the look layer, through the appearance table: the city's)
+  if (look_layer_ >= 0 && appearances_) {
+    const int K = look_layer_;
+    const AppearanceTable* T = appearances_.get();
+    auto inner = mo.texture;
+    mo.texture = [&g, K, T, inner](const IVec3& p, int face) -> u16 {
+      const int m = static_cast<int>(vox_mat(g.get(p)));
+      const int a = T->find(m, g.layer(K, p));
+      if (a >= 0) return static_cast<u16>(kAppearanceTexture + a);
+      return inner ? inner(p, face) : static_cast<u16>(0xFF00 + m);
+    };
+  }
+  // painted voxels (the paint layer: road markings, facades)
   if (paint_layer_ >= 0) {
     const int P = paint_layer_;
     auto inner = mo.texture;
@@ -746,20 +779,26 @@ std::vector<ChunkMesh> Game::take_meshes(const MeshOptions& base) {
         const std::vector<u8>& field = gfield[size_t(j)];
         if (!field.empty()) mg.debug = [&field](const IVec3& p) -> u8 { return field[size_t(chunk_index(p))]; };
         const int P = paint_layer_;
+        // (looks: the grid's own look layer, through the appearance table)
+        const int K = appearances_ ? look_layer_ : -1;
+        const AppearanceTable* T = appearances_.get();
+        auto unpainted = [G, K, T](const IVec3& p, u16 m) -> u16 {
+          return K >= 0 ? T->texture(m, G->layer(K, p), static_cast<u16>(0xFF00 + m)) : static_cast<u16>(0xFF00 + m);
+        };
         if (fire_on) {
           const int L = fire->burn_layer(), Hl = fire->heat_layer();
           const u8 glow = glow_units(*fire);
           mg.light = [G, L](const IVec3& p, int) -> u8 { return char_light(255, G->layer(L, p)); };
-          mg.texture = [G, Hl, glow, P](const IVec3& p, int) -> u16 {
+          mg.texture = [G, Hl, glow, P, unpainted](const IVec3& p, int) -> u16 {
             const u16 m = static_cast<u16>(vox_mat(G->get(p)));
             if (G->layer(Hl, p) >= glow) return static_cast<u16>(0xFE00 + m);
             const u8 c = P >= 0 ? G->layer(P, p) : 0;
-            return c ? static_cast<u16>(kPaintTexture + c) : static_cast<u16>(0xFF00 + m);
+            return c ? static_cast<u16>(kPaintTexture + c) : unpainted(p, m);
           };
-        } else if (P >= 0) {
-          mg.texture = [G, P](const IVec3& p, int) -> u16 {
-            const u8 c = G->layer(P, p);
-            return c ? static_cast<u16>(kPaintTexture + c) : static_cast<u16>(0xFF00 + static_cast<u16>(vox_mat(G->get(p))));
+        } else if (P >= 0 || K >= 0) {
+          mg.texture = [G, P, unpainted](const IVec3& p, int) -> u16 {
+            const u8 c = P >= 0 ? G->layer(P, p) : 0;
+            return c ? static_cast<u16>(kPaintTexture + c) : unpainted(p, static_cast<u16>(vox_mat(G->get(p))));
           };
         }
         ChunkMesh m = mesh_chunk(*G, gc.chunk, mg, false);

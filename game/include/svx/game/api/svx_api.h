@@ -37,6 +37,11 @@ int svx_load_preset(svx_engine* e, const char* id, double seed);
 const char* svx_presets(svx_engine* e);
 const char* svx_default_preset(void);
 const char* svx_preset_atmosphere(svx_engine* e);
+/* The loaded world's appearance table (svx/game/appearance.hpp; docs/API.md: texture ids
+ * 0xC000 + i): its number of appearances, and 8 floats each - linear r, g, b, opacity, emissive,
+ * noise, gloss, glow (1/0) - valid until the next load (0 and NULL: the world has none). */
+int svx_appearance_count(svx_engine* e);
+const float* svx_appearances(svx_engine* e);
 /* Doom map from an in-memory WAD; mode 0 = rock, 1 = air. */
 int svx_load_wad(svx_engine* e, const uint8_t* data, size_t size, const char* map, int mode, int shell_voxels);
 const char* svx_last_error(svx_engine* e);

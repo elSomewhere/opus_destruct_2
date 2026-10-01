@@ -32,10 +32,19 @@ and a new preset needs no code as long as its generator exists.
   "env": { },                               // environment parameters by name (svx/env/env.hpp)
   "traffic": { "enabled": true, "cars": 14, "parked": 18 },
   "pedestrians": { "enabled": true, "count": 24, "bodies": 2 },
-  "atmosphere": { "sky": "#a6bdd0", "fog": 1.25, "time_of_day": 13 },   // for the front end
+  "atmosphere": { "sky": "#a6bdd0", "fog": 1.25, "sun": 0.95, "ambient": 1,
+                  "sun_elevation": 0.72, "desaturate": 0.06, "time_of_day": 14 },  // for the front end
   "spawn": { "pos": [0, 0, 1.8], "dir": [1, 0, 0] }
 }
 ```
+
+**Atmosphere** (the front end's light, after voxel_city's viewer moods; `svx_preset_atmosphere`,
+`ready`'s `info.atmosphere`): `sky` the horizon's and the fog's colour by day (`#rrggbb`, default
+`#b8c9d9`), `fog` its density (x 0.0035 per metre), `sun` and `ambient` the sunlight and the sky
+light (x the defaults), `sun_elevation` the highest the sun climbs (the sine of its altitude: a low
+northern sun below 1), `time_of_day` in hours (the sun arcs from the east at 6 through the south
+to the west at 18; at night lamps and a share of the windows light up), `desaturate` greys the
+dusk. A preset without one keeps the front end's own light (the legacy worlds').
 
 Every field but `id` and `generator` is optional; a field of the wrong kind refuses the whole
 preset (`parse_preset` names it), and an unknown tunable or environment parameter fails the load.

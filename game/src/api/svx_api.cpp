@@ -24,6 +24,7 @@ struct svx_engine {
   f64 h = 0.125;
   std::string error;
   std::string presets_json, atmosphere_json = "{}";
+  std::vector<float> appearances;
   std::vector<ChunkMesh> meshes;
   std::vector<u64> removed;
   std::vector<GridChunk> removed_grid;
@@ -138,6 +139,18 @@ const char* svx_presets(svx_engine* e) {
 const char* svx_default_preset(void) { return default_preset_id(); }
 
 const char* svx_preset_atmosphere(svx_engine* e) { return e->atmosphere_json.c_str(); }
+
+int svx_appearance_count(svx_engine* e) {
+  const AppearanceTable* t = e->eng.appearances();
+  return t ? static_cast<int>(t->size()) : 0;
+}
+
+const float* svx_appearances(svx_engine* e) {
+  const AppearanceTable* t = e->eng.appearances();
+  if (!t || t->size() == 0) return nullptr;
+  e->appearances = t->packed();
+  return e->appearances.data();
+}
 
 int svx_load_procedural(svx_engine* e, const char* kind, double seed) {
   const std::string k = kind ? kind : "rooms";

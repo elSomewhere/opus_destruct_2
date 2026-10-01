@@ -57,7 +57,7 @@ Conventions:
 | `type` | fields | notes |
 |---|---|---|
 | `loading` | `generation: number` | A load has begun: the engine counts them, and everything it sent before this belongs to the world being replaced. The host counts the loads it asked for and drops the old world's messages until the two agree, so a pose or a detached piece in flight when the world changed cannot enter the new one. The pose window ([Rigid debris](#rigid-debris)) starts over here on both sides. |
-| `ready` | `info: {bounds:{min,max}, voxelCount, spawn:{pos,dir}, textures:boolean}` | After a load. `spawn.pos` is the player's **feet** position, standing on the floor. |
+| `ready` | `info: {bounds:{min,max}, voxelCount, spawn:{pos,dir}, textures:boolean, appearances?, atmosphere?}` | After a load. `spawn.pos` is the player's **feet** position, standing on the floor. `appearances` (**ext**): the world's appearance table, a `Float32Array` of 8 floats per appearance (texture ids `0xC000 + i`, below). `atmosphere` (**ext**): the preset's atmosphere ([`PRESETS.md`](PRESETS.md)): its sky, fog and sun, and night (lamps and a share of the windows lit). |
 | `textures` | `list: [{id, name, width, height, rgba: ArrayBuffer}]` | Doom textures and flats (transfer). Sent before `ready` when `info.textures`. RGBA8, row 0 = top. |
 | `chunkMeshes` | `meshes: [{key, origin:[3], vertices: ArrayBuffer, vertexCount, indices: ArrayBuffer, indexCount, grid?}], fields?` | New or changed chunk meshes (transfer). A mesh replaces the previous mesh with the same key. `fields` (**ext**): see [Displacement fields](#displacement-fields). An oriented grid's chunk (**ext**) has the key `g<grid>:<x>,<y>,<z>` and `grid` set; its vertices and origin are in the grid's lattice (metres), drawn with the grid's frame (`grids`). |
 | `grids` (**ext**) | `frames: Float64Array (9 per grid: id, origin xyz, rotation xyzw, voxel size), removed: number[]` | The oriented grids that came or were placed anew, and the grids gone. See [Oriented grids](#oriented-grids-and-joints-ext). |
@@ -95,6 +95,14 @@ Texture ids:
 - `0xFFFF` means untextured, in a neutral colour.
 - `0xFF00 + m` (**ext**) means untextured, tinted with material `m`'s palette colour
   (m < 255).
+- `0xC000 + i` (**ext**, up to `0xFDFF`) means untextured, drawn with appearance `i` of the
+  world's appearance table (`ready`'s `info.appearances`; `svx_appearances`): the city's looks.
+  An appearance is 8 floats: linear r, g, b, opacity (below 1: see-through glazing, drawn by alpha
+  to coverage), emissive (0..1: lamps, neon, screens, brighter at night), noise (the per-voxel
+  brightness variation), gloss, glow (1: window glass, a share of its panes lit at night). The
+  engine writes one for a face whose (material, look) the table has: the "look" layer's value of
+  a world whose source has looks (`GameSource::appearances`, svx/game/appearance.hpp); paint and
+  glow still win over it.
 
 Debug byte:
 
@@ -301,7 +309,9 @@ the same world is loaded again. Worlds are identified by:
 `game/include/svx/game/api/svx_api.h` exposes the game's flat C API that the worker script
 (`web/src/worker/wasm-worker.ts`) wraps into the messages above:
 
-- lifecycle: `svx_create`, `svx_load_*`;
+- lifecycle: `svx_create`, `svx_load_*`; presets (**ext**, [`PRESETS.md`](PRESETS.md)):
+  `svx_presets`, `svx_default_preset`, `svx_load_preset`, `svx_preset_atmosphere`; the loaded
+  world's appearance table (**ext**): `svx_appearance_count` / `svx_appearances` (8 floats each);
 - simulation and commands: `svx_tick`, `svx_blast`, `svx_carve`, `svx_use`, `svx_ignite`,
   `svx_extinguish`, `svx_pour`;
 - queries: `svx_raycast`, `svx_collide` (9 values: the move, on ground, the grid stood on, the

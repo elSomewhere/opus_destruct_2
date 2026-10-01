@@ -10,6 +10,7 @@ struct Frame {
   zenith: vec4f,   // rgb zenith colour, w = voxel size (m)
   sun: vec4f,      // xyz unit direction towards the sun, w = texture count
   flash: vec4f,    // xyz flash light position, w = intensity
+  atmo: vec4f,     // x = sunlight, y = sky light (x the defaults), z = night (0..1: lamps, lit windows), w unused
   // colours: materials by id (0..20), [31] the untextured default, paints at 31 + paint
   // (renderer.ts PALETTE)
   palette: array<vec4f, 64>,

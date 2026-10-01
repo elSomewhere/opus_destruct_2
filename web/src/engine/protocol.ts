@@ -196,6 +196,15 @@ export const TEXTURE_GLOW_BASE = 0xfe00;
 export const TEXTURE_WATER = 0xfffe;
 /** (front-end extension) Ids `TEXTURE_PAINT_BASE + p`: untextured, painted in paint p (`Paint`). */
 export const TEXTURE_PAINT_BASE = TEXTURE_MATERIAL_BASE + PAINT_SLOT_BASE;
+/**
+ * (front-end extension) Ids `TEXTURE_APPEARANCE_BASE + i` (below TEXTURE_GLOW_BASE): untextured,
+ * drawn with appearance i of the world's appearance table (`WorldInfo.appearances`): the city's
+ * looks. An appearance is APPEARANCE_FLOATS floats: linear r, g, b, opacity (below 1: see-through
+ * glazing), emissive (0..1: lamps, neon, screens), noise (per-voxel variation), gloss, glow (1:
+ * window glass, a share of its panes lit at night).
+ */
+export const TEXTURE_APPEARANCE_BASE = 0xc000;
+export const APPEARANCE_FLOATS = 8;
 
 /** Doom scale: 1 texel per map unit, 32 map units per metre (plan §A4). */
 export const DOOM_TEXELS_PER_METRE = 32;
@@ -553,6 +562,23 @@ export type EngineCommandType = EngineCommand['type'];
 // Worker -> main messages
 // ---------------------------------------------------------------------------------------
 
+/**
+ * (front-end extension) A preset's atmosphere (docs/PRESETS.md), as the preset writes it: sky
+ * (#rrggbb, the horizon and the fog by day), fog (density x the default), sun (sunlight x),
+ * ambient (sky light x), sun_elevation (the highest the sun climbs: the sine of its altitude, a low
+ * northern sun below 1), time_of_day (hours, 0-24: the sun's place; lamps and windows lit at
+ * night), desaturate (0..1: grey light).
+ */
+export interface Atmosphere {
+  sky?: string;
+  fog?: number;
+  sun?: number;
+  ambient?: number;
+  sun_elevation?: number;
+  time_of_day?: number;
+  desaturate?: number;
+}
+
 export interface WorldInfo {
   bounds: Aabb;
   voxelCount: number;
@@ -560,6 +586,13 @@ export interface WorldInfo {
   spawn: { pos: Vec3; dir: Vec3 };
   /** True when a `textures` message was (or will be) sent for this world. */
   textures: boolean;
+  /**
+   * (front-end extension) The world's appearance table (TEXTURE_APPEARANCE_BASE): APPEARANCE_FLOATS
+   * floats per appearance; absent when its faces are drawn by their materials' colours.
+   */
+  appearances?: Float32Array;
+  /** (front-end extension) The preset's atmosphere (docs/PRESETS.md); absent: the defaults. */
+  atmosphere?: Atmosphere;
 }
 
 /**
