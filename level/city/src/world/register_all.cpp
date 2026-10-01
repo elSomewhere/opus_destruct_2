@@ -10,6 +10,7 @@
 #include "city/districts.hpp"
 #include "city/flavors.hpp"
 #include "nature/biomes.hpp"
+#include "sites/complex.hpp"
 #include "terrain/landforms.hpp"
 
 namespace svx::city {
@@ -24,7 +25,8 @@ void register_all() {
     register_flavors();    // FLAVORS (city/flavors.js)
     register_styles();     // STYLES (buildings/styles.js)
     register_civic();      // ARCHETYPES and STYLES (buildings/civic.js), before archetypes.js's
-    register_archetypes();  // ARCHETYPES (buildings/archetypes.js)
+    register_archetypes();      // ARCHETYPES (buildings/archetypes.js)
+    register_complex_themes();  // COMPLEX_THEMES (sites/complex.js)
   });
 }
 

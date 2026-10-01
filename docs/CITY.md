@@ -57,6 +57,9 @@ exports, natively and in WASM, on any thread count.
 | facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
 | sample buildings | `buildings/sample.js` | `buildings/sample.*` (`stage_archetype` reads a world through `StageWorld`, `StagedEnvelopes`, until the cell plan is ported) | stage `sample` |
 | lots, parks, landscape (city stage 2 parts); the lot and open space records | `city/lots.js`, `city/parks.js`, `city/landscape.js`; the lots and spaces of `city/cellPlan.js` | `city/lots.*` (`Lot`: every field a lot gets anywhere), `city/parks.*`, `city/landscape.*` (`LotEnv`: what `lot_surface` reads of an envelope), `city/space.hpp` (`OpenSpace`, the park layout and frame lazy on it) | stages `lots` (the blocks of every city world's cell networks, synthetic blocks), `parks`, `landscape` (synthetic spaces and envelopes); every block of the three modules runs; tests (4 threads) |
+| site complexes | `sites/complex.js`, `sites/kit.js` (`box`, `finishStructure`) | `sites/complex.*`, `sites/kit.*` (the kit's surface structures and `planGate` come with the site kinds) | stage `complex` |
+| site layer | `world/sites.js` | `world/sites.*` (SITES, the layer, pads, the ground override, the site source's z range and rasterizer; the kinds, and the highway and water tests of a site's placement, come later) | stage `sites` (stand-in kinds: `tools/procgen_ref/lib/sitekinds.mjs`, `tests/city/site_kinds.hpp`) |
+| site links | `sites/links.js` | `sites/links.*` (`site_link_source()`) | stage `sitelinks` (the same stand-in kinds) |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -339,3 +342,9 @@ so that it stays the oracle.
   wing's outline off the building and the streets is in its lot); fitLots tells a lot it left
   alone by `rect === lot.rect` (clearOfStreets hands back the same object), which a port keeps as
   a flag; parks.js's grid key `i * 4096 + j` gives buckets 4,096 apart one list (kept).
+- **Sites and site links sample the terrain near settlements too** (the first entry): a site's
+  placement (the default pad's five samples, a kind's own placement) and a link's floor profile (a
+  sample every 16 m of its route). The stages `sites` and `sitelinks` make every base height first
+  over the lattice cells they probe and the sites and links those reach (`warmBasesIn`); a stage of
+  the reference's own site kinds must reach as far as their placement samples (a stronghold's
+  service road runs up to 5 km from its apron).
