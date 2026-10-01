@@ -28,6 +28,54 @@ inline f4 ld4(const f32* p) {
   return v;
 }
 inline void st4(f32* p, f4 v) { __builtin_memcpy(p, &v, sizeof v); }
+
+// The build's 6x6 products (double precision, row-major): a row of the result at a time, its six
+// columns side by side in two-lane vectors - every element summed over its index in order from
+// zero, then stored or added, exactly as the scalar loops (A B: sum_q A_rq B_qc) would.
+#if defined(__clang__)
+typedef double d2 __attribute__((ext_vector_type(2)));
+#else
+typedef double d2 __attribute__((vector_size(16)));
+#endif
+inline d2 splat2(f64 x) { return d2{x, x}; }
+inline d2 ld2(const f64* p) {
+  d2 v;
+  __builtin_memcpy(&v, p, sizeof v);
+  return v;
+}
+inline void st2(f64* p, d2 v) { __builtin_memcpy(p, &v, sizeof v); }
+// row r of A B (of A^T B if trans) in s0..s2
+template <bool trans>
+inline void row6(const f64* __restrict A, int r, const f64* __restrict B, d2& s0, d2& s1, d2& s2) {
+  s0 = s1 = s2 = splat2(0.0);
+  for (int q = 0; q < 6; ++q) {
+    const d2 a = splat2(trans ? A[q * 6 + r] : A[r * 6 + q]);
+    s0 += a * ld2(B + 6 * q);
+    s1 += a * ld2(B + 6 * q + 2);
+    s2 += a * ld2(B + 6 * q + 4);
+  }
+}
+// C = A B
+inline void mul6(const f64* __restrict A, const f64* __restrict B, f64* __restrict C) {
+  for (int r = 0; r < 6; ++r) {
+    d2 s0, s1, s2;
+    row6<false>(A, r, B, s0, s1, s2);
+    st2(C + 6 * r, s0);
+    st2(C + 6 * r + 2, s1);
+    st2(C + 6 * r + 4, s2);
+  }
+}
+// C += A B (A^T B if trans)
+template <bool trans>
+inline void mul6_add(const f64* __restrict A, const f64* __restrict B, f64* __restrict C) {
+  for (int r = 0; r < 6; ++r) {
+    d2 s0, s1, s2;
+    row6<trans>(A, r, B, s0, s1, s2);
+    st2(C + 6 * r, ld2(C + 6 * r) + s0);
+    st2(C + 6 * r + 2, ld2(C + 6 * r + 2) + s1);
+    st2(C + 6 * r + 4, ld2(C + 6 * r + 4) + s2);
+  }
+}
 // (y0, y1) -= B x, B column-major padded (48 floats), x 8 floats (6 used)
 inline void bsub(const f32* __restrict B, const f32* __restrict x, f4& y0, f4& y1) {
   for (int j = 0; j < 6; ++j) {
@@ -382,18 +430,8 @@ bool Amg::coarsen(size_t l, bool smoothed) {
         f64 Pj[36], T[36], U[36];
         blk6::rigid_block(F.off[size_t(j)], Pj);
         // U = Dinv_i A_ij Pt_j
-        for (int r = 0; r < 6; ++r)
-          for (int c = 0; c < 6; ++c) {
-            f64 acc = 0.0;
-            for (int q = 0; q < 6; ++q) acc += A.val[36 * size_t(k) + size_t(r * 6 + q)] * Pj[q * 6 + c];
-            T[r * 6 + c] = acc;
-          }
-        for (int r = 0; r < 6; ++r)
-          for (int c = 0; c < 6; ++c) {
-            f64 acc = 0.0;
-            for (int q = 0; q < 6; ++q) acc += Di[r * 6 + q] * T[q * 6 + c];
-            U[r * 6 + c] = acc;
-          }
+        mul6(&A.val[36 * size_t(k)], Pj, T);
+        mul6(Di, T, U);
         add(row, agg[size_t(j)], U, -omega);
       }
       for (const auto& e : row) slot[size_t(e.first)] = -1;
@@ -449,13 +487,7 @@ bool Amg::coarsen(size_t l, bool smoothed) {
             at = static_cast<i32>(ap.size());
             ap.push_back({J, {}});
           }
-          std::array<f64, 36>* dst = &ap[size_t(at)].second;
-          for (int r = 0; r < 6; ++r)
-            for (int c = 0; c < 6; ++c) {
-              f64 acc = 0.0;
-              for (int q = 0; q < 6; ++q) acc += Aij[r * 6 + q] * Pj[q * 6 + c];
-              (*dst)[size_t(r * 6 + c)] += acc;
-            }
+          mul6_add<false>(Aij, Pj, ap[size_t(at)].second.data());
         }
       }
       for (const auto& x : ap) slot[size_t(x.first)] = -1;
@@ -476,13 +508,7 @@ bool Amg::coarsen(size_t l, bool smoothed) {
             at = static_cast<i32>(out.size());
             out.push_back({x.first, {}});
           }
-          std::array<f64, 36>* dst = &out[size_t(at)].second;
-          for (int rr = 0; rr < 6; ++rr)
-            for (int c = 0; c < 6; ++c) {
-              f64 acc = 0.0;
-              for (int q = 0; q < 6; ++q) acc += Pi[q * 6 + rr] * x.second[size_t(q * 6 + c)];
-              (*dst)[size_t(rr * 6 + c)] += acc;
-            }
+          mul6_add<true>(Pi, x.second.data(), out[size_t(at)].second.data());
         }
       }
       for (const auto& y : out) slot[size_t(y.first)] = -1;
