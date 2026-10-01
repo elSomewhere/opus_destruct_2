@@ -246,6 +246,14 @@ struct RigidParams {
   f64 busy_speed = 2.0;              // m/s
   int busy_iterations = 6;
   i64 busy_contacts = 6000;          // also beyond this many contacts (a large pile settling): busy
+  // (busy_hold: busy is decided once a tick, by the world - every substep of it alike - and holds
+  // until the collapse is under two thirds of both thresholds: a collapse at the edge of them
+  // does not switch between one substep and two tick after tick; off: decided again every
+  // substep, at the thresholds. warm_to_step: the impulses contacts, wheels and joints start a
+  // substep from are scaled to its length - a substep of 1/60 s after one of 1/120 s starts
+  // from twice its impulses, what holds a resting load; off: as they were)
+  bool busy_hold = true;
+  bool warm_to_step = true;
   f64 restitution = 0.1;             // for impacts faster than bounce_speed
   f64 bounce_speed = 2.0;
   f64 friction = 0.65;
@@ -392,6 +400,14 @@ class RigidWorld {
   const Body* find(i64 id) const;
   // Busy now? (a function of the bodies' state: the same on every thread count and platform)
   bool busy() const;
+  // Pieces (not links) awake and faster than busy_speed, counted up to `cap` (cap + 1: more).
+  i32 fast_bodies(i32 cap) const;
+  // The tick's busy decision (RigidParams::busy_hold), for its substeps (hold false: each
+  // substep decides for itself, as until a tick holds one).
+  void hold_busy(bool hold, bool busy) {
+    busy_held_ = hold;
+    busy_ = busy;
+  }
   // accumulated wall time (ms) per phase: collide, solve, fracture, rollback (collide + solve),
   // integrate + sleep
   f64 prof_ms[5] = {0, 0, 0, 0, 0};
@@ -409,10 +425,12 @@ class RigidWorld {
   void refresh_boxes();
   std::vector<Contact> contacts_;
   bool busy_ = false;
+  bool busy_held_ = false;  // (hold_busy)
   f64 sleep_speed_ = 0.15;  // (the sleep / wake threshold of the current substep length)
   f64 step_dt_ = 0.0;       // (the current substep's length)
   void set_step(f64 dt);
   std::unordered_map<u64, std::array<f64, 3>> warm_;  // contact key -> (ln, l1, l2)
+  f64 warm_dt_ = 0.0;  // (the substep warm_ is of)
   std::vector<i32> island_;  // (scratch)
   // (support: scratch)
   struct SupportPair {

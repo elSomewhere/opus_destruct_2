@@ -369,10 +369,16 @@ void body_refresh(Body& b, f64 h, int max_points) {
       }
     }
   }
-  b.pts.clear();
-  b.pt_vox.clear();
-  b.pt_shape.clear();
-  b.pt_area.clear();
+  // (made anew at their exact size: a piece's samples take what they need, however it changed)
+  std::vector<V3>().swap(b.pts);
+  std::vector<i32>().swap(b.pt_vox);
+  std::vector<u16>().swap(b.pt_shape);
+  std::vector<f32>().swap(b.pt_area);
+  std::vector<V3>().swap(b.wpts);
+  b.pts.reserve(keep.size());
+  b.pt_vox.reserve(keep.size());
+  b.pt_shape.reserve(keep.size());
+  b.pt_area.reserve(keep.size());
   b.radius = 0.0;
   // (each candidate stands for an even share of the surface; a kept one for those strided past too)
   const f64 each = uniq.empty() ? 0.0 : surface / static_cast<f64>(uniq.size());
@@ -940,15 +946,17 @@ void RigidWorld::solve(f64 dt) {
     if (!lk) c.mu = par.friction;
     c.bias = std::min(par.max_correction, par.baumgarte * std::max(0.0, c.depth - par.slop) / dt);
   }
-  // (warm starts after every contact read its approach from the velocities before the solve)
+  // (warm starts after every contact read its approach from the velocities before the solve;
+  // scaled to this substep's length: RigidParams::warm_to_step)
+  const f64 wk = 0.85 * (par.warm_to_step && warm_dt_ > 0.0 ? dt / warm_dt_ : 1.0);
   for (Contact& c : contacts_) {
     if (c.depth < 0.0) continue;  // (a speculative contact starts from nothing: it may not act at all)
     const auto it = warm_.find(c.key);
     if (it != warm_.end()) {
-      c.ln = 0.85 * it->second[0];
+      c.ln = wk * it->second[0];
       if (c.cap > 0.0) c.ln = std::min(c.ln, c.cap);
-      c.l1 = 0.85 * it->second[1];
-      c.l2 = 0.85 * it->second[2];
+      c.l1 = wk * it->second[1];
+      c.l2 = wk * it->second[2];
       apply(c, c.n * c.ln + c.t1 * c.l1 + c.t2 * c.l2);
     }
   }
@@ -1025,7 +1033,7 @@ void RigidWorld::solve(f64 dt) {
   // alone so every thread count and platform does the same)
   // (a collapse's peak, or a large pile settling: fewer iterations; a function of the state and
   // the contact count alone, the same on every thread count and platform)
-  const bool reduced = busy_ || static_cast<i64>(piece_contacts()) > par.busy_contacts;
+  const bool reduced = busy_held_ ? busy_ : busy_ || static_cast<i64>(piece_contacts()) > par.busy_contacts;
   const int vel_iters = reduced ? par.busy_iterations : par.iterations;
   const int pos_iters = reduced ? std::min(2, par.position_iterations) : par.position_iterations;
   for (int it = 0; it < vel_iters; ++it) {
@@ -1079,6 +1087,7 @@ void RigidWorld::solve(f64 dt) {
     }
   }
   warm_.clear();
+  warm_dt_ = dt;
   for (Contact& c : contacts_) {
     warm_[c.key] = {c.ln, c.l1, c.l2};
     c.crushing = c.cap > 0.0 && c.ln >= 0.98 * c.cap;
@@ -1360,12 +1369,14 @@ void RigidWorld::set_step(f64 dt) {
   step_dt_ = dt;
 }
 
-bool RigidWorld::busy() const {
+bool RigidWorld::busy() const { return fast_bodies(par.busy_bodies) > par.busy_bodies; }
+
+i32 RigidWorld::fast_bodies(i32 cap) const {
   i32 fast = 0;
   const f64 v2 = par.busy_speed * par.busy_speed;
   for (const auto& bp : bodies)
-    if (!bp->asleep && !bp->link && norm2(bp->v) > v2 && ++fast > par.busy_bodies) return true;  // (a collapse: pieces, not people)
-  return false;
+    if (!bp->asleep && !bp->link && norm2(bp->v) > v2 && ++fast > cap) break;  // (a collapse: pieces, not people)
+  return fast;
 }
 
 void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<int(f64)>& fracture) {
@@ -1376,7 +1387,7 @@ void RigidWorld::substep(f64 dt, const VoxelGrid& g, const std::function<int(f64
 }
 
 void RigidWorld::substep(f64 dt, const std::vector<StaticGrid>& statics, const std::function<int(f64)>& fracture) {
-  busy_ = busy();
+  if (!busy_held_) busy_ = busy();
   set_step(dt);
   if (!joints.empty()) wake_jointed();  // (woken between steps: the host's, a piece's edit)
   // The articulations that touch no awake piece are stepped on their own, first: their contacts

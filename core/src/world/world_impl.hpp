@@ -336,6 +336,9 @@ struct World::Impl {
   bool penetrates(const Material& M, f64 energy, f64 r, f64 d) const;
   void blast_world(const PendingEvent& e);
   void seed_near(const std::vector<GVox>& removed);
+  // Material left grid g (a piece's shape S: the voxels it took, in g's coordinates): the free
+  // voxels next to it - its 26 neighbours - that no structure holds are seeded (recheck_vacated).
+  void recheck_vacated(u16 g, const BodyShape& S);
   void seed_fragments_near(u16 g, const V3& centre, f64 r);  // (g's fragments within the box of half side r, lattice metres)
   void support_changed(const GVox& v, std::vector<GKey>* chunks);  // (before an anchored voxel goes / after one comes)
   void prune_caches();
@@ -352,6 +355,7 @@ struct World::Impl {
   void design_near(const V3& c, f64 r);
   void design_node(const Structure& s, i32 node, u8 cls, i64* strengthened);  // (its voxels to class cls)
   void refresh_structures();                 // seeds and stale structures -> (re)extracted
+  StressOptions solver_options() const;  // (a stress solve's options, as the configuration asks)
   void step_structures();                    // solves within the work budget, judging
   void judge(Structure& s);
   void break_structure_bond(Structure& s, i32 b);  // (its faces and junction samples, in the grids)
@@ -461,7 +465,7 @@ struct World::Impl {
   void announce_bodies();                    // PieceAdded events for new pieces
   void remove_bodies(std::vector<i64> ids, PieceEnd end);  // PieceRemoved events (announced pieces)
   void limit_bodies();
-  static i64 body_bytes(const Body& b);
+  static i64 body_bytes(const Body& b, Bytes kind = Bytes::Held);
 
   // ---- wheels (world_wheels.cpp)
   WheelId add_wheel_impl(const WheelDesc& d, WheelId want);
@@ -654,6 +658,7 @@ struct World::Impl {
   u64 node_chunk(const Structure& s, i32 node) const;
   bool designed_all_ = false;
   bool in_tick_ = false;  // (a system calling tick / load from inside a tick is refused)
+  bool busy_ = false;     // (the last tick was busy: RigidParams::busy_hold)
   // (the systems' part of a tick - pre_step, step: the articulations are theirs to add, remove and
   // move then; the mechanics' part is not)
   bool systems_phase_ = false;
@@ -701,7 +706,7 @@ struct World::Impl {
   void trim_fragment_caches();
   void trim_structures();
   void trim_output();
-  i64 structure_bytes(const Structure& s) const;
+  i64 structure_bytes(const Structure& s, Bytes kind = Bytes::Held) const;
 };
 
 }  // namespace svx

@@ -206,6 +206,11 @@ void RigidWorld::prepare_joint(size_t k, f64 dt, const std::vector<M3>& Iw, cons
     warm = par.joint_warm * scale;
     warm_point = par.link_warm * scale;
     j.step = dt;
+  } else if (par.warm_to_step) {
+    // (the pieces' joints too: a substep of busy mode's after one of two - RigidParams::warm_to_step)
+    const f64 scale = j.step > 0.0 ? dt / j.step : 1.0;
+    warm = warm_point = par.joint_warm * scale;
+    j.step = dt;
   }
   P.ra = P.ia >= 0 ? P.pa - xa : V3{};
   P.rb = P.ib >= 0 ? P.pb - xb : V3{};

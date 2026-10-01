@@ -134,8 +134,13 @@ bool StressProblem::build_matrix() {
 bool StressProblem::assemble(const StressOptions& opt) {
   opt_ = opt;
   assembled_ = false;
+  pc_current_ = true;
   run_.active = false;
   if (!build_matrix()) return false;
+  // (each bond's two products B^T D B into its four blocks: 12 block operations each)
+  assembly_work_ = 0;
+  for (const SBond& b : bonds)
+    if (b.in_k) assembly_work_ += 48;
   std::vector<V3> pos(static_cast<size_t>(nfree_));
   for (size_t i = 0; i < nodes.size(); ++i)
     if (dof_[i] >= 0) pos[size_t(dof_[i])] = nodes[i].c;
@@ -150,10 +155,12 @@ bool StressProblem::assemble(const StressOptions& opt) {
       if (!blk6::inv6(D, &jinv_[36 * size_t(i)]))
         for (int q = 0; q < 6; ++q) jinv_[36 * size_t(i) + size_t(q * 7)] = 1.0 / id_scale_;
     }
+    assembly_work_ += 12 * static_cast<i64>(nfree_);
     assembled_ = true;
     return true;
   }
   if (!amg_.build(K_, pos, ao)) return false;
+  assembly_work_ += amg_.build_work();
   if (diag("SVX_AMG_INFO")) {
     std::printf("  amg levels:");
     for (i32 k : amg_.level_sizes()) std::printf(" %d", k);
@@ -171,6 +178,7 @@ bool StressProblem::assemble(const StressOptions& opt) {
 bool StressProblem::reassemble() {
   if (jacobi_only_ || !amg_.built() || pc_n_ == 0) return assemble(opt_);
   run_.active = false;
+  pc_current_ = false;  // (the appended nodes' own multigrid: not K's)
   if (!build_matrix()) return false;
   if (nfree_ < pc_n_) return assemble(opt_);  // (nodes were removed: indices moved)
   jinv_.assign(36 * size_t(nfree_ - pc_n_), 0.0);
@@ -264,6 +272,7 @@ void StressProblem::remove_bond(i32 bi) {
     if (f64* k = block(ia, ib)) blk6::atbd_add(Ba, Dm, Bb, 1.0, k);
     if (f64* k = block(ib, ia)) blk6::atbd_add(Bb, Dm, Ba, 1.0, k);
   }
+  if (!jacobi_only_) pc_current_ = false;
   if (jacobi_only_)
     for (i32 d : {ia, ib}) {
       if (d < 0) continue;
@@ -291,6 +300,7 @@ void StressProblem::retire_nodes(const std::vector<i32>& list) {
     for (i32 i : list) {
       const i32 d = dof_[size_t(i)];
       if (d < 0) continue;
+      if (now[size_t(i)] && !jacobi_only_) pc_current_ = false;
       f64* D = block(d, d);
       for (int q = 0; q < 36; ++q) D[q] = (q % 7 == 0) ? id_scale_ : 0.0;
       if (jacobi_only_)
@@ -313,9 +323,26 @@ void StressProblem::precondition(const f64* r, f64* z) const {
     blk6::mv6(&jinv_[36 * size_t(i - pc_n_)], r + 6 * size_t(i), z + 6 * size_t(i));
 }
 
-i64 StressProblem::memory_bytes() const {
-  return vec_bytes(nodes) + vec_bytes(bonds) + K_.memory_bytes() + amg_.memory_bytes() + amg2_.memory_bytes() + vec_bytes(jinv_) +
-         vec_bytes(dof_) + vec_bytes(run_.x) + vec_bytes(run_.r) + vec_bytes(run_.z) + vec_bytes(run_.p) + vec_bytes(run_.q);
+void StressProblem::release() {
+  assembled_ = false;
+  pc_current_ = false;
+  jacobi_only_ = false;
+  pc_n_ = 0;
+  nfree_ = 0;
+  run_ = Run{};
+  K_ = Bsr6{};
+  amg_ = Amg{};
+  amg2_ = Amg{};
+  std::vector<f64>().swap(jinv_);
+  std::vector<i32>().swap(dof_);
+  for (SBond& b : bonds) b.in_k = false;  // (no operator holds them now)
+}
+
+i64 StressProblem::memory_bytes(Bytes kind) const { return vec_bytes(nodes, kind) + vec_bytes(bonds, kind) + solver_bytes(kind); }
+
+i64 StressProblem::solver_bytes(Bytes kind) const {
+  return K_.memory_bytes(kind) + amg_.memory_bytes(kind) + amg2_.memory_bytes(kind) + vec_bytes(jinv_, kind) + vec_bytes(dof_, kind) +
+         vec_bytes(run_.x, kind) + vec_bytes(run_.r, kind) + vec_bytes(run_.z, kind) + vec_bytes(run_.p, kind) + vec_bytes(run_.q, kind);
 }
 
 PcgResult StressProblem::solve(const std::vector<f64>& f, std::vector<f64>& u, f64 rtol, int maxit, bool warm) {

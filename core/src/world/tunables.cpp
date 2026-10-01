@@ -134,6 +134,13 @@ const Field kFields[] = {
     SVX_T_F64("rigid.link_max_speed", rigid.link_max_speed),
     SVX_T_INT("rigid.mixed_substeps", rigid.mixed_substeps),
     SVX_T_F64("rigid.link_warm", rigid.link_warm),
+    SVX_T_BOOL("release_solvers", release_solvers),
+    SVX_T_BOOL("recheck_vacated", recheck_vacated),
+    SVX_T_BOOL("true_solve_work", true_solve_work),
+    SVX_T_BOOL("rebuild_stale_only", rebuild_stale_only),
+    SVX_T_BOOL("rigid.busy_hold", rigid.busy_hold),
+    SVX_T_BOOL("rigid.warm_to_step", rigid.warm_to_step),
+    SVX_T_BOOL("coarsen_dense_levels", coarsen_dense_levels),
 };
 #undef SVX_T_F64
 #undef SVX_T_I32

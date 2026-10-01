@@ -200,13 +200,15 @@ bool Amg::finalize(Level& L) {
   L.r.assign(m, 0.0);
   L.t.assign(m, 0.0);
   L.xold.assign(m, 0.0);
+  build_work_ += 12 * static_cast<i64>(n);  // (the inverses)
   if (!opt_.sgs) L.lmax = estimate_lmax(L);
   return true;
 }
 
-f64 Amg::estimate_lmax(const Level& L) const {
+f64 Amg::estimate_lmax(const Level& L) {
   // lambda_max(D^-1 A) by power iteration
   const i32 n = L.A.n;
+  build_work_ += 15 * (L.A.blocks() + n);
   const size_t m = 6 * static_cast<size_t>(n);
   std::vector<f64> v(m), w(m);
   for (size_t k = 0; k < m; ++k) v[k] = 1.0 + 0.001 * static_cast<f64>(k % 7);
@@ -230,6 +232,7 @@ bool Amg::build(const Bsr6& A, const std::vector<V3>& pos, const AmgOptions& opt
   chol_.clear();
   chol_n_ = 0;
   work_ = 0;
+  build_work_ = 0;
   if (A.n == 0) return true;
   lv_.emplace_back();
   lv_[0].A = A;
@@ -240,19 +243,23 @@ bool Amg::build(const Bsr6& A, const std::vector<V3>& pos, const AmgOptions& opt
   }
   while (static_cast<int>(lv_.size()) < opt_.max_levels && lv_.back().A.n > opt_.coarse_max) {
     // (a level grown dense, as on huge irregular structures, would make the next products
-    // expensive and the cycle no cheaper: it becomes the coarsest, smoothed)
+    // expensive and the cycle no cheaper: it becomes the coarsest - solved densely if it is small
+    // enough, else coarsened once more by its aggregates' rigid motions alone, unsmoothed: cheap
+    // products, and a coarsest level solved exactly instead of smoothed. AmgOptions::coarsen_dense)
     const Bsr6& L = lv_.back().A;
-    if (lv_.size() > 1 && L.blocks() > 80 * static_cast<i64>(L.n)) break;
-    if (!coarsen(lv_.size() - 1)) break;
+    const bool dense = lv_.size() > 1 && L.blocks() > 80 * static_cast<i64>(L.n);
+    if (dense && !(opt_.coarsen_dense && L.n > 4 * opt_.coarse_max)) break;
+    if (!coarsen(lv_.size() - 1, !dense && opt_.smoothed)) break;
+    if (dense) break;
   }
   factor_coarsest();
   make_fast();
   for (size_t l = 0; l < lv_.size(); ++l) {
-    // (the coarsest: a dense solve of chol_n_ nodes (36 flops a block), or 8 smoothing sweeps
-    // when coarsening stalled)
+    // (the coarsest: a dense solve - its two triangles, of a block (36 flops) per pair of its
+    // nodes - or 8 smoothing sweeps when coarsening stalled)
     const bool last = l + 1 == lv_.size();
-    const i64 coarsest = chol_n_ > 0 ? std::max<i64>(lv_[l].A.blocks(), 2 * static_cast<i64>(chol_n_) * chol_n_)
-                                     : 8 * 2 * lv_[l].A.blocks();
+    const i64 nd = opt_.dense_work_per_unknown ? chol_n_ : chol_n_ / 6;
+    const i64 coarsest = chol_n_ > 0 ? std::max<i64>(lv_[l].A.blocks(), 2 * nd * nd) : 8 * 2 * lv_[l].A.blocks();
     const i64 per = last ? coarsest : lv_[l].A.blocks() * (4 * opt_.sweeps + 2);
     i64 g = 1;
     for (size_t k = 0; k < l; ++k) g *= opt_.gamma;
@@ -261,7 +268,7 @@ bool Amg::build(const Bsr6& A, const std::vector<V3>& pos, const AmgOptions& opt
   return true;
 }
 
-bool Amg::coarsen(size_t l) {
+bool Amg::coarsen(size_t l, bool smoothed) {
   Level& F = lv_[l];
   const Bsr6& A = F.A;
   const i32 n = A.n;
@@ -335,11 +342,14 @@ bool Amg::coarsen(size_t l) {
   F.parent = agg;
   F.off.resize(static_cast<size_t>(n));
   for (i32 i = 0; i < n; ++i) F.off[size_t(i)] = F.pos[size_t(i)] - C.pos[size_t(agg[size_t(i)])];
+  // (rows of the products below are independent - any partition gives the same - in chunks of
+  // about as many blocks: dense coarse levels' rows are many times their fine levels')
+  const i64 grain = std::clamp<i64>(kRowGrain * 2 * n / std::max<i64>(1, A.blocks()), 8, kRowGrain / 2);
   // prolongation: rigid-body modes of each aggregate, smoothed by one damped Jacobi step
   {
     std::vector<std::vector<std::pair<i32, std::array<f64, 36>>>> rows(static_cast<size_t>(n));
-    const f64 omega = opt_.smoothed ? (4.0 / 3.0) / std::max(1e-300, estimate_lmax(F)) : 0.0;
-    parallel_for(n, kRowGrain / 2, [&](i64 i0, i64 i1) {
+    const f64 omega = smoothed ? (4.0 / 3.0) / std::max(1e-300, estimate_lmax(F)) : 0.0;
+    parallel_for(n, grain, [&](i64 i0, i64 i1) {
     f64 Pt[36];
     // (a sparse accumulator: the row's entry of each coarse node, reset after the row)
     std::vector<i32> slot(static_cast<size_t>(na), -1);
@@ -356,9 +366,9 @@ bool Amg::coarsen(size_t l) {
       auto& row = rows[size_t(i)];
       blk6::rigid_block(F.off[size_t(i)], Pt);
       add(row, agg[size_t(i)], Pt, 1.0);
-      if (omega == 0.0) continue;
       const f64* Di = &F.Dinv[36 * size_t(i)];
-      for (i32 k = A.rowptr[size_t(i)]; k < A.rowptr[size_t(i) + 1]; ++k) {
+      // (unsmoothed: the aggregate's rigid motion alone; the row's slots are reset all the same)
+      for (i32 k = A.rowptr[size_t(i)]; k < (omega != 0.0 ? A.rowptr[size_t(i) + 1] : A.rowptr[size_t(i)]); ++k) {
         const i32 j = A.col[size_t(k)];
         f64 Pj[36], T[36], U[36];
         blk6::rigid_block(F.off[size_t(j)], Pj);
@@ -393,6 +403,14 @@ bool Amg::coarsen(size_t l) {
       F.Prow[size_t(i) + 1] = static_cast<i32>(F.Pcol.size());
     }
   }
+  // (the build's work: the smoothing's two products a block of A, A P's a block of A and of P
+  // each, below)
+  if (smoothed) build_work_ += 12 * A.blocks();
+  for (i32 i = 0; i < n; ++i)
+    for (i32 k = A.rowptr[size_t(i)]; k < A.rowptr[size_t(i) + 1]; ++k) {
+      const i32 j = A.col[size_t(k)];
+      build_work_ += 6 * static_cast<i64>(F.Prow[size_t(j) + 1] - F.Prow[size_t(j)]);
+    }
   // restriction lists: P^T by coarse node
   F.Rrow.assign(static_cast<size_t>(na) + 1, 0);
   for (size_t e = 0; e < F.Pcol.size(); ++e) ++F.Rrow[size_t(F.Pcol[e]) + 1];
@@ -407,7 +425,7 @@ bool Amg::coarsen(size_t l) {
   // Galerkin product A_c = P^T A P: (A P) by fine row, then P^T (A P) by coarse row (parallel,
   // each row in a fixed order: the same for any thread count)
   std::vector<std::vector<std::pair<i32, std::array<f64, 36>>>> apr(static_cast<size_t>(n));
-  parallel_for(n, kRowGrain / 2, [&](i64 i0, i64 i1) {
+  parallel_for(n, grain, [&](i64 i0, i64 i1) {
     std::vector<i32> slot(static_cast<size_t>(na), -1);
     for (i64 i = i0; i < i1; ++i) {
       auto& ap = apr[size_t(i)];
@@ -434,8 +452,9 @@ bool Amg::coarsen(size_t l) {
       for (const auto& x : ap) slot[size_t(x.first)] = -1;
     }
   });
+  for (i32 i = 0; i < n; ++i) build_work_ += 6 * static_cast<i64>(F.Prow[size_t(i) + 1] - F.Prow[size_t(i)]) * static_cast<i64>(apr[size_t(i)].size());
   std::vector<std::vector<std::pair<i32, std::array<f64, 36>>>> crow(static_cast<size_t>(na));
-  parallel_for(na, kRowGrain / 4, [&](i64 a0, i64 a1) {
+  parallel_for(na, std::max<i64>(4, grain / 2), [&](i64 a0, i64 a1) {
     std::vector<i32> slot(static_cast<size_t>(na), -1);
     for (i64 I = a0; I < a1; ++I) {
       auto& out = crow[size_t(I)];
@@ -469,7 +488,7 @@ bool Amg::coarsen(size_t l) {
     }
   crow.clear();
   C.A = B.finish();
-  if (!opt_.smoothed && opt_.coarse_scale != 1.0) {
+  if (!smoothed && opt_.coarse_scale != 1.0) {
     // scale the coarse operator (unsmoothed aggregation is over-stiff); the diagonal too
     for (f64& v : C.A.val) v *= opt_.coarse_scale;
   }
@@ -488,6 +507,7 @@ void Amg::factor_coarsest() {
   }
   const i32 m = 6 * L.A.n;
   chol_n_ = m;
+  build_work_ += static_cast<i64>(m) * m * m / 108;  // (m^3 / 3 flops, 36 a block)
   chol_.assign(size_t(m) * size_t(m), 0.0);
   for (i32 i = 0; i < L.A.n; ++i)
     for (i32 k = L.A.rowptr[size_t(i)]; k < L.A.rowptr[size_t(i) + 1]; ++k) {
@@ -505,11 +525,16 @@ void Amg::factor_coarsest() {
     if (!(d > 1e-12 * dmax)) d = std::max(1e-12 * dmax, 1e-300);
     const f64 s = std::sqrt(d);
     chol_[size_t(j) * size_t(m) + size_t(j)] = s;
-    for (i32 i = j + 1; i < m; ++i) {
-      f64 v = 0.5 * (chol_[size_t(i) * size_t(m) + size_t(j)] + chol_[size_t(j) * size_t(m) + size_t(i)]);
-      for (i32 k = 0; k < j; ++k) v -= chol_[size_t(i) * size_t(m) + size_t(k)] * chol_[size_t(j) * size_t(m) + size_t(k)];
-      chol_[size_t(i) * size_t(m) + size_t(j)] = v / s;
-    }
+    // (the rows below, each on its own: in parallel, the same for any thread count - chunks of
+    // some 64k flops)
+    parallel_for(m - j - 1, std::max<i64>(8, 65536 / std::max(1, j)), [&](i64 i0, i64 i1) {
+      for (i64 ii = i0; ii < i1; ++ii) {
+        const i32 i = j + 1 + static_cast<i32>(ii);
+        f64 v = 0.5 * (chol_[size_t(i) * size_t(m) + size_t(j)] + chol_[size_t(j) * size_t(m) + size_t(i)]);
+        for (i32 k = 0; k < j; ++k) v -= chol_[size_t(i) * size_t(m) + size_t(k)] * chol_[size_t(j) * size_t(m) + size_t(k)];
+        chol_[size_t(i) * size_t(m) + size_t(j)] = v / s;
+      }
+    });
   }
 }
 
@@ -666,16 +691,17 @@ void Amg::apply(const f64* r, f64* z) const {
     for (int q = 0; q < 6; ++q) z[6 * size_t(i) + q] = x[8 * size_t(i) + q];
 }
 
-i64 Bsr6::memory_bytes() const { return vec_bytes(rowptr) + vec_bytes(col) + vec_bytes(val); }
+i64 Bsr6::memory_bytes(Bytes kind) const { return vec_bytes(rowptr, kind) + vec_bytes(col, kind) + vec_bytes(val, kind); }
 
-i64 Amg::memory_bytes() const {
-  i64 b = vec_bytes(chol_) + static_cast<i64>(lv_.capacity() * sizeof(Level));
+i64 Amg::memory_bytes(Bytes kind) const {
+  // (a level's own record - of pointer-sized containers - as a fixed size in what is used)
+  i64 b = vec_bytes(chol_, kind) + (kind == Bytes::Held ? static_cast<i64>(lv_.capacity() * sizeof(Level)) : static_cast<i64>(lv_.size()) * 1024);
   for (const Level& L : lv_) {
-    b += L.A.memory_bytes() + vec_bytes(L.Dinv) + vec_bytes(L.pos) + vec_bytes(L.parent) + vec_bytes(L.off);
-    b += vec_bytes(L.Prow) + vec_bytes(L.Pcol) + vec_bytes(L.Pval) + vec_bytes(L.Rrow) + vec_bytes(L.Rent);
-    b += vec_bytes(L.x) + vec_bytes(L.b) + vec_bytes(L.r) + vec_bytes(L.t) + vec_bytes(L.xc) + vec_bytes(L.xold);
-    b += vec_bytes(L.Af) + vec_bytes(L.Df) + vec_bytes(L.Pf) + vec_bytes(L.Rf);
-    b += vec_bytes(L.xf) + vec_bytes(L.bf) + vec_bytes(L.rf) + vec_bytes(L.of) + vec_bytes(L.cf);
+    b += L.A.memory_bytes(kind) + vec_bytes(L.Dinv, kind) + vec_bytes(L.pos, kind) + vec_bytes(L.parent, kind) + vec_bytes(L.off, kind);
+    b += vec_bytes(L.Prow, kind) + vec_bytes(L.Pcol, kind) + vec_bytes(L.Pval, kind) + vec_bytes(L.Rrow, kind) + vec_bytes(L.Rent, kind);
+    b += vec_bytes(L.x, kind) + vec_bytes(L.b, kind) + vec_bytes(L.r, kind) + vec_bytes(L.t, kind) + vec_bytes(L.xc, kind) + vec_bytes(L.xold, kind);
+    b += vec_bytes(L.Af, kind) + vec_bytes(L.Df, kind) + vec_bytes(L.Pf, kind) + vec_bytes(L.Rf, kind);
+    b += vec_bytes(L.xf, kind) + vec_bytes(L.bf, kind) + vec_bytes(L.rf, kind) + vec_bytes(L.of, kind) + vec_bytes(L.cf, kind);
   }
   return b;
 }

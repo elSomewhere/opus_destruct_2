@@ -126,7 +126,7 @@ struct WorldParams {
 struct MemoryBudget {
   f64 fragment_cache_mb = 128.0;  // fragment caches of chunks no structure holds: least recently used dropped beyond
   f64 structure_mb = 256.0;       // registered structures: idle ones dropped beyond, the longest idle first
-  f64 piece_mb = 256.0;           // rigid pieces: beyond (as beyond max_bodies) the smallest are culled, sleeping first
+  f64 piece_mb = 256.0;           // rigid pieces: beyond, awake pieces' fracture solvers are released, then (as beyond max_bodies) the smallest pieces culled, sleeping first
   f64 cache_mb = 48.0;            // warm starts and reference loads (beyond: those of registered structures only)
   i32 max_events = 65536;         // events not taken (beyond: the oldest cosmetic ones are dropped)
 };
@@ -183,8 +183,8 @@ struct WorldConfig {
   f64 hinge_shape = 1.3;
   bool spread_contacts = true;     // stress checks share a piece's contact force over its contacts (least squares)
   // What changed since the structural reference (docs/BASELINE.md), each a switch - on, the engine
-  // as it is; all off (with plastic_hinges and rigid.piece_ccd, load_trigger_gap 0 and
-  // evict_scan_ticks 1), the reference bit for bit:
+  // as it is; all off (with plastic_hinges, rigid.piece_ccd, rigid.busy_hold and
+  // rigid.warm_to_step, load_trigger_gap 0 and evict_scan_ticks 1), the reference bit for bit:
   //   impact_penetration: impacts remove material by energy density against its penetration
   //     resistance, and a cut (a carve of no energy) cuts steel and bars too; off: carves and
   //     craters never remove ductile material.
@@ -202,12 +202,40 @@ struct WorldConfig {
   //   evict_scan_ticks (streaming): the scan for what to evict - it walks every resident chunk -
   //     runs every this many ticks, at once when a focus point moved 8 m since, and every 30
   //     ticks; 1: every tick.
+  //   release_solvers: a piece's fracture solver (its stiffness matrix and multigrid: most of a
+  //     piece's memory) is released when the piece falls asleep - and beyond the pieces' memory
+  //     budget, the awake ones' too, the largest first, before any piece is culled - and assembled
+  //     afresh at its next stress check; off: kept while it lives, and the budget culls pieces.
+  //   recheck_vacated: where material leaves a grid (a piece comes loose, a shard turns to dust),
+  //     what was next to it - edge to edge and corner to corner too - is checked for support again:
+  //     what held on to nothing else falls; off: only what a carve or a blast cut is checked.
+  //   true_solve_work: the structures' solver work is counted at its cost against stress_work - a
+  //     multigrid's coarsest level solved densely by its blocks (the reference counted it by its
+  //     unknowns, 36 times over: a large structure got an iteration or two a tick), an assembly
+  //     by the products and the factorization that build its multigrid; off: as the reference.
+  //   rebuild_stale_only: a structure solve slow to converge, or whose residual grows, has its
+  //     preconditioner rebuilt only if that makes another (a stale one: bonds broke since it was
+  //     built; a small structure's block-Jacobi one) - else its solve restarts on it - and a
+  //     diverged iterate is never kept as the next solve's start; off: rebuilt in any case (a
+  //     large structure's assembly every tick, the solve never getting anywhere), the iterate kept.
+  //   coarsen_dense_levels: a stress solve's multigrid level grown dense (more than 80 blocks a
+  //     row: a large damaged structure's third or fourth) too large to solve densely is coarsened
+  //     once more, by its aggregates' rigid motions, and that solved densely; off: it is the
+  //     coarsest, smoothed - eight sweeps of its dense rows a cycle, and slow to converge.
+  //   rigid.busy_hold, rigid.warm_to_step (RigidParams): busy mode decided once a tick, and held
+  //     until a collapse is well under its thresholds; the solver's warm starts scaled to the
+  //     substep's length; off: decided every substep, warm starts as they were.
   bool impact_penetration = true;
   bool restart_diverging_solves = true;
   bool jointed_keep_identity = true;
   bool spread_per_partner = true;
   bool design_in_place = true;
   bool patch_cut_structures = true;
+  bool release_solvers = true;
+  bool recheck_vacated = true;
+  bool true_solve_work = true;
+  bool rebuild_stale_only = true;
+  bool coarsen_dense_levels = true;
   i32 evict_scan_ticks = 10;
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
   f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)
@@ -369,6 +397,7 @@ struct WorldStats {
   i64 archived_articulations = 0, forgotten_articulations = 0;  // (the same for articulations)
   // memory budgets (MemoryBudget): what they removed
   i64 culled_pieces = 0, dropped_structures = 0, dropped_fragment_caches = 0, dropped_events = 0;
+  i64 released_solvers = 0;  // awake pieces' fracture solvers released over the pieces' budget (release_solvers)
   // design (bake)
   f64 design_max_utilization = 0.0;
   i64 strengthened_voxels = 0, floating_voxels = 0;

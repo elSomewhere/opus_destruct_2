@@ -250,6 +250,8 @@ void RigidWorld::cast_wheels(const std::vector<StaticGrid>& statics) {
 
 void RigidWorld::prepare_wheels(f64 dt, const std::vector<M3>& Iw) {
   wprep_.assign(wheels.size(), WheelPrep{});
+  // (the last substep's impulses, scaled to this one's length: RigidParams::warm_to_step)
+  const f64 warm = kWarm * (par.warm_to_step && wheel_dt_ > 0.0 ? dt / wheel_dt_ : 1.0);
   wheel_dt_ = dt;
   if (wheels.empty()) return;
   const MaterialTable& mt = mats ? *mats : default_materials();
@@ -342,11 +344,11 @@ void RigidWorld::prepare_wheels(f64 dt, const std::vector<M3>& Iw) {
     // the brake (and rolling resistance) on the spin: a row of at most this torque impulse
     P.brake = (std::max(0.0, w.brake) + kRollingResistance * load * r) * dt;
     // warm start
-    w.ls *= kWarm;
-    w.lbump *= kWarm;
-    w.lx *= kWarm;
-    w.ly *= kWarm;
-    w.lb *= kWarm;
+    w.ls *= warm;
+    w.lbump *= warm;
+    w.lx *= warm;
+    w.ly *= warm;
+    w.lb *= warm;
     const V3 J = P.u * (w.ls + w.lbump) + P.fx * w.lx + P.fy * w.ly;
     A.v += J * P.ma;
     A.w += P.Ia * cross(P.ra, J);

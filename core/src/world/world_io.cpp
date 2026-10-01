@@ -79,7 +79,7 @@ bool World::Impl::bake(f64* ms) {
       }
       for (const FragKey& m : s->frags)
         if (m.idx >= 0) mark(m);
-      StressOptions so;
+      StressOptions so = solver_options();
       so.rtol = 1e-6;
       if (!s->P.assemble(so)) {
         drop_structure(s->id);
@@ -1083,7 +1083,7 @@ int World::Impl::stream_update() {
   if (!out.empty()) unload_joints();
   if (strm_.config.max_resident_mb > 0.0 && st_.ticks % 30 == 0) {
     const i64 budget_b = static_cast<i64>(strm_.config.max_resident_mb * 1048576.0);
-    i64 bytes = grid_.memory_bytes();
+    i64 bytes = grid_.memory_bytes(Bytes::Used);  // (by what is used: the same on every platform)
     if (bytes > budget_b) {
       std::vector<std::pair<f64, u64>> far;
       for (u64 k : strm_.generated) {
@@ -1097,7 +1097,7 @@ int World::Impl::stream_update() {
       for (const auto& [nd, k] : far) {
         if (bytes <= budget_b) break;
         const Chunk* ch = grid_.chunk(unkey3(k));
-        bytes -= ch ? static_cast<i64>(sizeof(Chunk) + ch->v.size() + ch->broken.size() + ch->strength.size()) : 0;
+        bytes -= ch ? ch->memory_bytes(Bytes::Used) : 0;
         go.push_back(k);
       }
       unload_sleepers(go, chunks_of_body);
@@ -1289,7 +1289,7 @@ MemoryReport World::Impl::memory() const {
   m.piece_count = static_cast<i32>(rigid_.bodies.size());
   m.archive = strm_.archive->memory_bytes() + hash_bytes(strm_.region_resident);
   m.archived_chunks = static_cast<i32>(strm_.archive->size());
-  m.caches = hash_bytes(warm_u_) + hash_bytes(judged_) + hash_bytes(dead_loads_);
+  m.caches += hash_bytes(warm_u_) + hash_bytes(judged_) + hash_bytes(dead_loads_);
   for (const auto& [id, l] : dead_loads_) m.caches += vec_bytes(l);
   m.caches += hash_bytes(strm_.generated) + hash_bytes(strm_.column_count) + hash_bytes(strm_.home_grids);
   m.queues = vec_bytes(events_) + vec_bytes(strm_.evicted_chunks) + vec_bytes(queue_) + vec_bytes(seeds_) + grid_.dirty_bytes() + vec_bytes(grid_dirty_) +
@@ -1858,7 +1858,7 @@ void World::Impl::design_structure(Structure& s, bool dry) {
       if (f.idx >= 0) gs(f.grid).undesigned.erase(f.chunk);
   };
   if (!s.P.assembled()) {
-    StressOptions so;
+    StressOptions so = solver_options();
     so.rtol = 1e-5;
     if (!s.P.assemble(so)) {
       designed();  // (given up: never tried again, or extract and design would recurse)
@@ -1873,7 +1873,7 @@ void World::Impl::design_structure(Structure& s, bool dry) {
   PcgResult r = s.P.solve(F, u, 1e-5, 2000, false);
   if (!r.converged && !r.breakdown) {
     // (a near-mechanism a block-Jacobi preconditioned solve stagnates on: with the multigrid)
-    StressOptions so;
+    StressOptions so = solver_options();
     so.rtol = 1e-5;
     so.amg_min_nodes = 0;
     std::fill(u.begin(), u.end(), 0.0);

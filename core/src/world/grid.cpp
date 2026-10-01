@@ -345,12 +345,9 @@ i64 VoxelGrid::solid_count() const {
   return s;
 }
 
-i64 VoxelGrid::memory_bytes() const {
+i64 VoxelGrid::memory_bytes(Bytes kind) const {
   i64 b = 0;
-  for (const auto& [k, c] : chunks_) {
-    b += sizeof(Chunk) + i64(c.v.size()) + i64(c.broken.size()) + i64(c.strength.size()) + 4 * i64(c.jbroken.capacity());
-    for (const auto& l : c.layer) b += i64(l.size());
-  }
+  for (const auto& [k, c] : chunks_) b += c.memory_bytes(kind);
   return b;
 }
 

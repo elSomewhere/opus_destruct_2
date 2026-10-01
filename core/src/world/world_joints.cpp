@@ -218,9 +218,8 @@ bool World::Impl::joint(JointId id, JointState* out) const {
     if (j.id != id || j.broken) continue;
     auto world_of = [&](const JointEnd& e) {
       if (e.body == 0) return e.p;
-      for (const auto& bp : rigid_.bodies)
-        if (bp->id == e.body) return bp->x + rotate(bp->q, e.p);
-      return e.p;
+      const Body* b = rigid_.find(e.body);  // (bodies in id order: a search, not a walk)
+      return b ? b->x + rotate(b->q, e.p) : e.p;
     };
     out->type = j.type;
     out->a = world_of(j.a);

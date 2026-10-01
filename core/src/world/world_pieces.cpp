@@ -155,6 +155,9 @@ Body* World::Impl::make_body_from_world(const std::vector<FragKey>& frags, const
   }
   for (size_t k = 0; k < grids.size(); ++k)
     for (const IVec3& p : vox[k]) vg(grids[k]).set(p, kAir);
+  // (what held on to them alone - edge to edge, corner to corner - is checked for support again)
+  if (cfg_.recheck_vacated)
+    for (size_t k = 0; k < grids.size(); ++k) recheck_vacated(grids[k], b->shapes[k]);
   for (const FragKey& f : frags) {
     if (!current[GKey{f.grid, f.chunk}]) continue;
     FragChunk* fc = frag_chunk_if(f);
@@ -267,9 +270,9 @@ void body_junctions(const Body& b, i32 S, f64 reach, std::vector<JSample>& out) 
 
 void World::Impl::rebuild_body_graph(Body& b) {
   const f64 h = grid_.h;
-  if (!b.graph) b.graph = std::make_shared<BodyGraph>();
+  // (made anew: a graph takes what its piece needs now, however large it was before a split)
+  b.graph = std::make_shared<BodyGraph>();
   BodyGraph& G = *b.graph;
-  G.P = StressProblem{};
   G.P.mats = mats_.get();
   const i32 nf = static_cast<i32>(b.frags.size());
   // fragment-level bonds from the shapes
@@ -460,6 +463,18 @@ void World::Impl::rebuild_body_graph(Body& b) {
     if (n > 0) seed[0] = 1;
     G.components = n > 0 ? graph_components(n, G.P.bonds, seed, &comp) : 0;
   }
+  // (what grew by appending, at its size: pieces are many, and each keeps its graph)
+  G.P.nodes.shrink_to_fit();
+  G.P.bonds.shrink_to_fit();
+  G.node_com.shrink_to_fit();
+  G.node_mass.shrink_to_fit();
+  G.node_inertia.shrink_to_fit();
+  G.face_start.shrink_to_fit();
+  G.face_p.shrink_to_fit();
+  G.face_axis.shrink_to_fit();
+  G.face_shape.shrink_to_fit();
+  G.jstart.shrink_to_fit();
+  G.jref.shrink_to_fit();
   b.graph_dirty = false;
 }
 
@@ -587,7 +602,7 @@ void World::Impl::body_stress_run(Body& b, const std::vector<PointForce>& forces
   }
   if (!G.P.assembled()) {
     const auto a0 = std::chrono::steady_clock::now();
-    StressOptions so;
+    StressOptions so = solver_options();
     so.rtol = cfg_.body_stress_rtol;
     so.amg_min_nodes = 0;  // (small pieces: the coarsest level is the whole graph, solved exactly)
     const bool ok = G.P.assemble(so);
@@ -618,7 +633,7 @@ void World::Impl::body_stress_run(Body& b, const std::vector<PointForce>& forces
       // rebuilt once for the damaged piece)
       rebuilt = true;
       G.P.invalidate();
-      StressOptions so;
+      StressOptions so = solver_options();
       so.rtol = cfg_.body_stress_rtol;
       so.amg_min_nodes = 0;
       if (G.P.assemble(so)) r = G.P.solve(f, G.u, cfg_.body_stress_rtol, cfg_.body_stress_maxit, true);
@@ -1598,19 +1613,22 @@ void World::Impl::blast_bodies(const PendingEvent& e) {
   flush_body_changes();
 }
 
-i64 World::Impl::body_bytes(const Body& b) {
-  i64 n = sizeof(Body) + vec_bytes(b.frags) + vec_bytes(b.pts) + vec_bytes(b.pt_vox) + vec_bytes(b.pt_shape) + vec_bytes(b.pt_area) + vec_bytes(b.wpts) +
-          vec_bytes(b.shapes);
-  if (b.link) n += static_cast<i64>(sizeof(LinkData)) + vec_bytes(b.link->spheres);
+i64 World::Impl::body_bytes(const Body& b, Bytes kind) {
+  // (the records themselves - of pointer-sized containers - as fixed sizes in what is used: the
+  // same on every platform)
+  const i64 shapes = kind == Bytes::Held ? static_cast<i64>(b.shapes.capacity() * sizeof(BodyShape)) : static_cast<i64>(b.shapes.size()) * 552;
+  i64 n = record_bytes<Body>(kind, 832) + shapes + vec_bytes(b.frags, kind) + vec_bytes(b.pts, kind) + vec_bytes(b.pt_vox, kind) +
+          vec_bytes(b.pt_shape, kind) + vec_bytes(b.pt_area, kind) + vec_bytes(b.wpts, kind);
+  if (b.link) n += record_bytes<LinkData>(kind, 176) + vec_bytes(b.link->spheres, kind);
   for (const BodyShape& S : b.shapes) {
-    n += vec_bytes(S.vox) + vec_bytes(S.frag) + vec_bytes(S.brk) + vec_bytes(S.jbrk);
-    for (const auto& l : S.layer) n += vec_bytes(l);
+    n += vec_bytes(S.vox, kind) + vec_bytes(S.frag, kind) + vec_bytes(S.brk, kind) + vec_bytes(S.jbrk, kind);
+    for (const auto& l : S.layer) n += vec_bytes(l, kind);
   }
   if (b.graph) {
     const BodyGraph& G = *b.graph;
-    n += sizeof(BodyGraph) + G.P.memory_bytes() + vec_bytes(G.frag_node) + vec_bytes(G.node_com) + vec_bytes(G.node_mass) +
-         vec_bytes(G.node_inertia) + vec_bytes(G.face_start) + vec_bytes(G.face_p) + vec_bytes(G.face_axis) + vec_bytes(G.face_shape) +
-         vec_bytes(G.jstart) + vec_bytes(G.jref) + vec_bytes(G.u);
+    n += record_bytes<BodyGraph>(kind, 944) + G.P.memory_bytes(kind) + vec_bytes(G.frag_node, kind) + vec_bytes(G.node_com, kind) +
+         vec_bytes(G.node_mass, kind) + vec_bytes(G.node_inertia, kind) + vec_bytes(G.face_start, kind) + vec_bytes(G.face_p, kind) +
+         vec_bytes(G.face_axis, kind) + vec_bytes(G.face_shape, kind) + vec_bytes(G.jstart, kind) + vec_bytes(G.jref, kind) + vec_bytes(G.u, kind);
   }
   return n;
 }
@@ -1669,14 +1687,33 @@ void World::Impl::remove_bodies(std::vector<i64> ids, PieceEnd end) {
 }
 
 void World::Impl::limit_bodies() {
-  // Beyond max_bodies, or beyond the pieces' memory budget, the smallest pieces are culled:
-  // sleeping ones first (rubble at rest), then moving ones (the finest debris of a collapse).
-  // Kept pieces are not: the host's, and a joint's (a machine's parts, what hangs on it).
+  // Beyond max_bodies, or beyond the pieces' memory budget, what is least missed goes:
+  //   - beyond the budget, first the fracture solvers of awake pieces, the largest first
+  //     (release_solvers; sleeping pieces hold none): assembled again at their next stress check,
+  //     nothing leaves the world;
+  //   - then the smallest pieces are culled, sleeping ones first (rubble at rest), then moving
+  //     ones (the finest debris of a collapse). Kept pieces are not: the host's, a joint's (a
+  //     machine's parts, what hangs on it), a carrier on wheels.
+  // (By what the pieces use - Bytes::Used: the same decisions on every platform.)
   const i64 budget = static_cast<i64>(cfg_.memory.piece_mb * 1048576.0);
   i64 bytes = 0;
-  for (const auto& bp : rigid_.bodies) bytes += body_bytes(*bp);
+  for (const auto& bp : rigid_.bodies) bytes += body_bytes(*bp, Bytes::Used);
   i32 excess = static_cast<i32>(rigid_.bodies.size()) - cfg_.max_bodies;
   if (excess <= 0 && bytes <= budget) return;
+  if (bytes > budget && cfg_.release_solvers) {
+    std::vector<std::pair<i64, i64>> solvers;  // (- the bytes it frees, id)
+    for (const auto& bp : rigid_.bodies)
+      if (bp->graph)
+        if (const i64 s = bp->graph->P.solver_bytes(Bytes::Used); s > 0) solvers.push_back({-s, bp->id});
+    std::sort(solvers.begin(), solvers.end());
+    for (const auto& [freed, id] : solvers) {
+      if (bytes <= budget) break;
+      rigid_.find(id)->graph->P.release();
+      bytes += freed;
+      ++st_.released_solvers;
+    }
+    if (excess <= 0 && bytes <= budget) return;
+  }
   std::vector<i64> jointed;
   for (const Joint& j : rigid_.joints)
     if (!j.broken)
@@ -1693,7 +1730,7 @@ void World::Impl::limit_bodies() {
   for (const auto& [awake, voxels, id] : cand) {
     if (excess <= 0 && bytes <= budget) break;
     const Body* b = rigid_.find(id);
-    bytes -= body_bytes(*b);
+    bytes -= body_bytes(*b, Bytes::Used);
     --excess;
     ids.push_back(id);
   }

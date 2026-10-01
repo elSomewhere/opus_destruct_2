@@ -303,3 +303,62 @@ TEST_CASE("stress: a solve reports no answer for non-finite loads, and u = 0 for
   CHECK_FALSE(r1.converged);
   CHECK(r1.breakdown);
 }
+
+TEST_CASE("stress: unsmoothed aggregation, and a dense coarse level coarsened once more, solve as the smoothed hierarchy does") {
+  // a block of n^3 cubes bonded face to face, standing on supports: its third multigrid level
+  // grows dense (some 200 blocks a row) at n = 16
+  auto block = [](int n) {
+    const f64 L = 0.4;
+    StressProblem P;
+    auto id = [&](int x, int y, int z) { return (x * n + y) * n + z; };
+    for (int x = 0; x < n; ++x)
+      for (int y = 0; y < n; ++y)
+        for (int z = 0; z < n; ++z) {
+          SNode nd;
+          nd.c = V3{(x + 0.5) * L, (y + 0.5) * L, (z + 0.5) * L};
+          nd.mass = 400.0;
+          P.nodes.push_back(nd);
+        }
+    for (int x = 0; x < n; ++x)
+      for (int y = 0; y < n; ++y)
+        for (int z = 0; z < n; ++z) {
+          const V3 c = P.nodes[size_t(id(x, y, z))].c;
+          if (z == 0) P.bonds.push_back(bond(P, id(x, y, z), -1, V3{0, 0, -1}, c - V3{0, 0, 0.5 * L}, L));
+          if (x + 1 < n) P.bonds.push_back(bond(P, id(x, y, z), id(x + 1, y, z), V3{1, 0, 0}, c + V3{0.5 * L, 0, 0}, L));
+          if (y + 1 < n) P.bonds.push_back(bond(P, id(x, y, z), id(x, y + 1, z), V3{0, 1, 0}, c + V3{0, 0.5 * L, 0}, L));
+          if (z + 1 < n) P.bonds.push_back(bond(P, id(x, y, z), id(x, y, z + 1), V3{0, 0, 1}, c + V3{0, 0, 0.5 * L}, L));
+        }
+    return P;
+  };
+  auto solve = [&](int n, const StressOptions& so, i64* work) {
+    StressProblem P = block(n);
+    REQUIRE(P.assemble(so));
+    std::vector<f64> u;
+    const PcgResult r = P.solve(gravity(P), u, 1e-8, 500, false);
+    CHECK(r.converged);
+    if (work) *work = P.work_per_iteration();
+    return u;
+  };
+  auto close = [](const std::vector<f64>& a, const std::vector<f64>& b) {
+    f64 err = 0.0, mag = 0.0;
+    for (size_t k = 0; k < a.size(); ++k) {
+      err = std::max(err, std::abs(a[k] - b[k]));
+      mag = std::max(mag, std::abs(a[k]));
+    }
+    return err <= 1e-5 * mag;
+  };
+  // unsmoothed: the aggregates' rigid motions alone (every row of the prolongation, its own)
+  {
+    StressOptions s, us;
+    us.amg.smoothed = false;
+    CHECK(close(solve(8, s, nullptr), solve(8, us, nullptr)));
+  }
+  // the dense level: smoothed as the coarsest, or coarsened once more and solved exactly
+  StressOptions off, on;
+  off.amg.coarsen_dense = false;
+  i64 w_off = 0, w_on = 0;
+  const std::vector<f64> a = solve(16, off, &w_off), b = solve(16, on, &w_on);
+  MESSAGE("work an iteration: " << w_off << " with the dense level smoothed, " << w_on << " coarsened once more");
+  CHECK(close(a, b));
+  CHECK(w_on < w_off);
+}

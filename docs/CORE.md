@@ -303,8 +303,11 @@ Things that break it:
 - Inputs are validated. Non-finite or out-of-range positions (beyond about ±2²⁰ voxels), radii,
   energies, rays, sweeps, edits and parameters are refused or clamped. Carves and blasts are
   clamped to `max_event_radius`.
-- Work per tick is bounded by `stress_work` (structures) and the busy mode of the rigid solver
-  (violent collapses step once per tick with fewer iterations). Memory is bounded as in §4.
+- Work per tick is bounded by `stress_work` (structures: solver iterations, and assemblies at
+  the cost of the products and the factorization that build their multigrids) and the busy mode
+  of the rigid solver (violent collapses step once per tick with fewer iterations). A solve
+  slow to converge rebuilds its preconditioner only when it is stale (bonds broke since): a
+  large structure is never assembled again tick after tick. Memory is bounded as in §4.
 
 ## 4. Memory: bounded by construction
 
@@ -317,7 +320,7 @@ however long it runs, and nothing lives on after what it belongs to:
 | **Change archive** (streamed chunks changed and out of range, and the pieces out of range with them) | `StreamConfig::archive_mb`: one arena allocated once, pages of 1 KB | Whole regions are forgotten, least recently seen first, their pieces with them; they come back as generated |
 | Fragment caches (derived from the grid) | `MemoryBudget::fragment_cache_mb` | Unheld ones dropped, least recently used first (rebuilt identically on demand) |
 | Registered structures (graphs, matrices, preconditioners) | `MemoryBudget::structure_mb` | Idle ones dropped, longest idle first (extracted again when touched) |
-| Rigid pieces | `max_bodies` and `MemoryBudget::piece_mb` | The smallest culled, sleeping first (`PieceRemoved`, `Culled`); never a joint's, nor one the host keeps |
+| Rigid pieces | `max_bodies` and `MemoryBudget::piece_mb` | Over the bytes: first the awake pieces' fracture solvers released, the largest first (a sleeping piece holds none: assembled again at its next check); then, as over the count, the smallest culled, sleeping first (`PieceRemoved`, `Culled`); never a joint's, nor one the host keeps |
 | Warm starts, reference loads | `MemoryBudget::cache_mb`; streamed: resident chunks only | Only the registered structures' kept |
 | Output the host does not take | `MemoryBudget::max_events`; changed chunks deduplicated | The oldest cosmetic events go |
 
@@ -350,8 +353,12 @@ the level's state; `save_delta` persists them).
 ### Determinism under budgets
 
 Budgets that bound derived data change no result: fragment caches and warm starts are rebuilt
-identically, and events are output only. A test checks that a session gives the same hash under
-tight and loose budgets. Culling pieces and forgetting regions do change the world. Both are
+identically, and events are output only. Every budget weighs what it bounds by what it uses -
+its elements and a fixed size per record (`Bytes::Used`, `svx/base/mem.hpp`), never a
+container's capacity or a hash table's buckets, which differ between standard libraries - so
+its decisions are the same on every platform; `memory()` reports what is held (`Bytes::Held`).
+A test checks that a session gives the same hash under tight and loose budgets. Culling pieces
+and forgetting regions do change the world. Both are
 deterministic functions of the configuration and the commands, so replays and lockstep stay
 exact as long as every peer uses the same configuration.
 
@@ -488,7 +495,7 @@ choices, where they differ, are in [`BASELINE.md`](BASELINE.md) §2.
 
 | What is traded | Default | Back towards quality |
 | --- | --- | --- |
-| A collapse's violent part: more than `rigid.busy_bodies` (150) pieces faster than `rigid.busy_speed` (2 m/s), or more than `rigid.busy_contacts` (6000) contacts, is stepped once a tick with `rigid.busy_iterations` (6) velocity and 2 position iterations | busy | raise `rigid.busy_bodies` / `rigid.busy_contacts` (never busy), or `rigid.busy_iterations` |
+| A collapse's violent part: more than `rigid.busy_bodies` (150) pieces faster than `rigid.busy_speed` (2 m/s), or more than `rigid.busy_contacts` (6000) contacts, is stepped once a tick with `rigid.busy_iterations` (6) velocity and 2 position iterations - decided once a tick and held until both are under two thirds (`rigid.busy_hold`), the solver's warm starts scaled to the substep's length across the switch (`rigid.warm_to_step`) | busy | raise `rigid.busy_bodies` / `rigid.busy_contacts` (never busy), or `rigid.busy_iterations` |
 | The pieces' step: `rigid.substeps` (2 a tick: 1/120 s), `rigid.iterations` (10), `rigid.position_iterations` (4) | 2, 10, 4 | raise them |
 | An articulation solved with the pieces (it touches an awake one): their substep, not its fine steps - its muscles damped more than they were tuned for ([`MOTION.md`](MOTION.md) §5) | `rigid.mixed_substeps` 0 | 8: such a tick at the fine steps' rate, everything in it |
 | An articulation on its own: `rigid.link_substeps` fine steps a substep (4: 1/480 s) of `rigid.link_iterations` (2) and `rigid.link_position_iterations` (1) passes | 4, 2, 1 | raise them |

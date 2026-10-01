@@ -891,6 +891,15 @@ std::vector<f64> World::Impl::load_vector(const Structure& s) const {
   return f;
 }
 
+StressOptions World::Impl::solver_options() const {
+  // (what the configuration asks of every stress solve: WorldConfig::true_solve_work,
+  // coarsen_dense_levels)
+  StressOptions so;
+  so.amg.dense_work_per_unknown = !cfg_.true_solve_work;
+  so.amg.coarsen_dense = cfg_.coarsen_dense_levels;
+  return so;
+}
+
 void World::Impl::step_structures() {
   static const bool prof = diag("SVX_PROFILE");
   i64 budget = cfg_.stress_work;
@@ -927,21 +936,22 @@ void World::Impl::step_structures() {
     static const bool prof = diag("SVX_PROFILE");
     const auto tp = Clock::now();
     if (!s.P.assembled()) {
-      StressOptions so;
+      StressOptions so = solver_options();
       so.rtol = cfg_.stress_rtol;
       if (s.multigrid) so.amg_min_nodes = 0;
       if (!s.P.assemble(so)) {
         s.solving = false;
         continue;
       }
-      budget -= 30 * s.P.matrix_blocks();  // (assembly and hierarchy: counted as work)
+      // (assembly and hierarchy: counted as work - at their cost, WorldConfig::true_solve_work)
+      budget -= cfg_.true_solve_work ? s.P.assembly_work() : 30 * s.P.matrix_blocks();
       if (prof)
         std::printf("  [prof] assemble s%lld: %zu nodes %lld blocks: %.1f ms\n", static_cast<long long>(s.id), s.P.nodes.size(),
                     static_cast<long long>(s.P.matrix_blocks()), ms_since(tp));
     }
     if (!s.P.running()) {
       s.P.begin(load_vector(s), s.u);
-      budget -= 2 * s.P.matrix_blocks();
+      budget -= cfg_.true_solve_work ? s.P.work_per_iteration() : 2 * s.P.matrix_blocks();
     }
     const i64 per = std::max<i64>(1, s.P.work_per_iteration());
     const int maxit = static_cast<int>(std::clamp<i64>(budget / per, 1, 400));
@@ -961,17 +971,28 @@ void World::Impl::step_structures() {
       detach_unsupported(s);
       continue;
     }
-    if (!r.converged && (s.run_iters + r.iters > 120 || (cfg_.restart_diverging_solves && !(r.rel_res < 10.0)))) {
+    // (a preconditioner rebuilt is another only if it is stale - built before bonds broke - or a
+    // small structure's block-Jacobi one, which becomes its multigrid: a current one would be
+    // built the same again, its solve restarts on it. WorldConfig::rebuild_stale_only)
+    const bool rebuild = !cfg_.rebuild_stale_only || !s.P.preconditioner_current() || s.P.block_jacobi();
+    const bool diverging = !(r.rel_res < 10.0);
+    if (!r.converged && (s.run_iters + r.iters > 120 || (cfg_.restart_diverging_solves && diverging && rebuild))) {
       // a stale preconditioner (after many breaks; diverging: a crash's breaks at once): rebuild
       // it, and restart from here. A small
       // structure's block-Jacobi one that did not converge meets a near-mechanism (a frame left
       // hanging by one face, a member held by a sliver of junction): its multigrid from now on
       // (rigid-body coarse spaces, the coarsest level solved exactly). What converges in neither
       // is no longer solved - never judged, it would take its iterations every tick for good.
-      s.P.current(s.u);
-      s.P.invalidate();
+      // (A diverged iterate is no start for the next solve - nor what a judgement of it as it
+      // stands would read: that starts from where this one did.)
+      if (!cfg_.rebuild_stale_only || !diverging) s.P.current(s.u);
+      if (rebuild) {
+        s.P.invalidate();
+        s.multigrid = true;
+      } else {
+        s.P.stop();
+      }
       s.run_iters = 0;
-      s.multigrid = true;
       if (++s.restarts >= cfg_.solve_restarts) {
         s.P.stop();
         s.solving = false;
@@ -987,7 +1008,7 @@ void World::Impl::step_structures() {
       ++st_.solves;
       s.solved_at = st_.ticks;
       // a stale preconditioner (many changes since it was built): rebuild it for the next solve
-      if (s.P.running() == false && s.run_iters + r.iters > 60) s.P.invalidate();
+      if (s.P.running() == false && s.run_iters + r.iters > 60 && rebuild) s.P.invalidate();
       s.run_iters = 0;
       judge(s);
     } else {
@@ -1026,7 +1047,7 @@ void World::Impl::prune_caches() {
       it = resident_key(it->second.chunk) ? std::next(it) : warm_u_.erase(it);
   }
   const i64 budget = static_cast<i64>(cfg_.memory.cache_mb * 1048576.0);
-  if (hash_bytes(judged_) + hash_bytes(warm_u_) <= budget) return;
+  if (hash_bytes(judged_, Bytes::Used) + hash_bytes(warm_u_, Bytes::Used) <= budget) return;
   std::unordered_map<u64, Judged> keep_j;
   std::unordered_map<u64, WarmStart> keep_w;
   for (const auto& s : structures_) {
@@ -1037,7 +1058,7 @@ void World::Impl::prune_caches() {
   }
   judged_.swap(keep_j);
   warm_u_.swap(keep_w);
-  if (hash_bytes(judged_) + hash_bytes(warm_u_) > budget) std::unordered_map<u64, WarmStart>().swap(warm_u_);  // (only a speed-up)
+  if (hash_bytes(judged_, Bytes::Used) + hash_bytes(warm_u_, Bytes::Used) > budget) std::unordered_map<u64, WarmStart>().swap(warm_u_);  // (only a speed-up)
 }
 
 void World::Impl::judge(Structure& s) {
@@ -1703,6 +1724,9 @@ void World::Impl::structure_loads(f64 dt_sub) {
           dl.push_back({gv, w.point, w.force * -1.0});
           seeds_.push_back(gv);
         }
+      // (asleep, it needs no fracture solver until it is checked again: its operator and
+      // multigrid, most of its memory, go - assembled afresh from its bonds at its next check)
+      if (cfg_.release_solvers && b.graph) b.graph->P.release();
     } else if (!b.asleep && b.was_asleep) {
       dead_loads_.erase(b.id);
     }
@@ -1804,7 +1828,7 @@ f64 World::Impl::probe_utilization(GridId grid, const IVec3& voxel, i32* over) {
   if (!s) return -1.0;
   const std::vector<f64> F = load_vector(*s);
   if (!s->P.assembled()) {
-    StressOptions so;
+    StressOptions so = solver_options();
     so.rtol = cfg_.stress_rtol;
     s->P.assemble(so);
   }
@@ -2112,6 +2136,50 @@ void World::Impl::seed_fragments_near(u16 g, const V3& centre, f64 r) {
       }
 }
 
+void World::Impl::recheck_vacated(u16 g, const BodyShape& S) {
+  // (the neighbours outside the shape - the piece's own cells are gone from the grid - that are
+  // free voxels of the grid; seeded unless their fragment is known to belong to a structure)
+  const VoxelGrid& G = vg(g);
+  IVec3 cached{INT32_MIN, 0, 0};
+  const Chunk* ch = nullptr;
+  const FragChunk* fc = nullptr;
+  u64 ck = 0;
+  u64 last_ck = ~0ull;  // (the fragment seeded last: runs of voxels of one fragment seed it once)
+  i32 last_f = -1;
+  const i32 cells = static_cast<i32>(S.vox.size());
+  for (i32 i = 0; i < cells; ++i) {
+    if (!vox_solid(S.vox[size_t(i)])) continue;
+    const IVec3 p = S.voxel(i);
+    for (i32 dx = -1; dx <= 1; ++dx)
+      for (i32 dy = -1; dy <= 1; ++dy)
+        for (i32 dz = -1; dz <= 1; ++dz) {
+          if (dx == 0 && dy == 0 && dz == 0) continue;
+          const IVec3 q{p[0] + dx, p[1] + dy, p[2] + dz};
+          if (vox_solid(S.get(q))) continue;
+          const IVec3 cc = chunk_of(q);
+          if (cc != cached) {
+            cached = cc;
+            ch = G.chunk(cc);
+            ck = key3(cc[0], cc[1], cc[2]);
+            const auto it = gs(g).frags.find(ck);
+            fc = it != gs(g).frags.end() && ch && it->second.vox_version == ch->vox_version ? &it->second : nullptr;
+          }
+          if (!ch) continue;
+          const i32 li = chunk_index(q);
+          if (!vox_free(ch->uniform ? ch->value : ch->v[size_t(li)])) continue;
+          if (fc) {
+            const i32 f = fc->at(li);
+            if (f < 0) continue;
+            if (owner_of(FragKey{ck, f, g}) != 0) continue;  // (a structure's: it holds on)
+            if (ck == last_ck && f == last_f) continue;
+            last_ck = ck;
+            last_f = f;
+          }
+          seeds_.push_back(GVox{q, g});
+        }
+  }
+}
+
 void World::Impl::process(const PendingEvent& e) {
   ++st_.events;
   design_near(e.pos, (e.blast ? cfg_.blast_reach : 1.0) * e.radius + 1.0);
@@ -2278,11 +2346,12 @@ void World::Impl::enforce_budgets() {
 void World::Impl::trim_fragment_caches() {
   // Fragment caches are derived from the grid: those of chunks no structure holds are dropped,
   // least recently used first, beyond the budget (rebuilt, identical, when needed again).
+  // (The budgets decide by what is used - Bytes::Used: the same on every platform.)
   const i64 budget = static_cast<i64>(cfg_.memory.fragment_cache_mb * 1048576.0);
   i64 bytes = 0;
   for (const auto& gp : grids_)
     if (gp)
-      for (const auto& [k, fc] : gp->frags) bytes += fc.memory_bytes();
+      for (const auto& [k, fc] : gp->frags) bytes += fc.memory_bytes(Bytes::Used);
   if (bytes <= budget) return;
   std::vector<std::tuple<i64, u16, u64>> cand;  // (last use, grid, chunk)
   for (size_t g = 0; g < grids_.size(); ++g) {
@@ -2301,21 +2370,22 @@ void World::Impl::trim_fragment_caches() {
     if (bytes <= budget) break;
     GridState& st = gs(g);
     const auto it = st.frags.find(k);
-    bytes -= it->second.memory_bytes();
+    bytes -= it->second.memory_bytes(Bytes::Used);
     st.frags.erase(it);
     st.owner.erase(k);
     ++st_.dropped_fragment_caches;
   }
 }
 
-i64 World::Impl::structure_bytes(const Structure& s) const {
-  i64 b = sizeof(Structure) + s.P.memory_bytes() + vec_bytes(s.fstart) + vec_bytes(s.frags) + vec_bytes(s.ident) + vec_bytes(s.nmat) +
-          vec_bytes(s.nstrength) + vec_bytes(s.vox0) + vec_bytes(s.weight) + vec_bytes(s.face_start) + vec_bytes(s.face_p) +
-          vec_bytes(s.face_axis) + vec_bytes(s.bgrid) + vec_bytes(s.jstart) + vec_bytes(s.jref) + vec_bytes(s.bid) + vec_bytes(s.phi) +
-          vec_bytes(s.u) + vec_bytes(s.ext) + vec_bytes(s.ext_solved) +
-          vec_bytes(s.acc) + vec_bytes(s.peak) + vec_bytes(s.pending) + vec_bytes(s.peak_mag) + vec_bytes(s.changed) +
-          hash_bytes(s.nodemap);
-  for (const auto& [k, v] : s.nodemap) b += vec_bytes(v);
+i64 World::Impl::structure_bytes(const Structure& s, Bytes k) const {
+  i64 b = record_bytes<Structure>(k, 2048) + s.P.memory_bytes(k) + vec_bytes(s.fstart, k) + vec_bytes(s.frags, k) +
+          vec_bytes(s.ident, k) + vec_bytes(s.nmat, k) + vec_bytes(s.nstrength, k) + vec_bytes(s.vox0, k) + vec_bytes(s.weight, k) +
+          vec_bytes(s.face_start, k) + vec_bytes(s.face_p, k) + vec_bytes(s.face_axis, k) + vec_bytes(s.bgrid, k) + vec_bytes(s.jstart, k) +
+          vec_bytes(s.jref, k) + vec_bytes(s.bid, k) + vec_bytes(s.phi, k) + vec_bytes(s.u, k) + vec_bytes(s.ext, k) + vec_bytes(s.ext_solved, k) +
+          vec_bytes(s.acc, k) + vec_bytes(s.peak, k) + vec_bytes(s.pending, k) + vec_bytes(s.peak_mag, k) + vec_bytes(s.changed, k);
+  // (its node maps: one per chunk it reaches)
+  b += k == Bytes::Held ? hash_bytes(s.nodemap) : static_cast<i64>(s.nodemap.size()) * 64;
+  for (const auto& [key, v] : s.nodemap) b += vec_bytes(v, k);
   return b;
 }
 
@@ -2326,7 +2396,7 @@ void World::Impl::trim_structures() {
   i64 bytes = 0;
   std::vector<std::tuple<i32, i64, i64>> cand;  // (-idle, id, bytes)
   for (const auto& sp : structures_) {
-    const i64 b = structure_bytes(*sp);
+    const i64 b = structure_bytes(*sp, Bytes::Used);
     bytes += b;
     if (!sp->solving && !sp->stale) cand.push_back({-sp->idle, sp->id, b});
   }
@@ -2413,8 +2483,20 @@ void World::Impl::tick() {
   }
   rigid_.begin_tick();
   if (!arts_.empty()) apply_articulation_controls();
-  // (the violent part of a collapse, or a large pile settling: one substep a tick)
-  const bool busy = rigid_.busy() || static_cast<i64>(rigid_.piece_contacts()) > cfg_.rigid.busy_contacts;
+  // (the violent part of a collapse, or a large pile settling: one substep a tick - decided once
+  // for the tick's substeps and held until the collapse is under two thirds of both thresholds,
+  // RigidParams::busy_hold)
+  bool busy;
+  if (cfg_.rigid.busy_hold) {
+    const f64 k = busy_ ? 2.0 / 3.0 : 1.0;
+    const i32 bodies = static_cast<i32>(k * cfg_.rigid.busy_bodies);
+    busy = rigid_.fast_bodies(bodies) > bodies || static_cast<f64>(rigid_.piece_contacts()) > k * static_cast<f64>(cfg_.rigid.busy_contacts);
+    busy_ = busy;
+    rigid_.hold_busy(true, busy);
+  } else {
+    busy = rigid_.busy() || static_cast<i64>(rigid_.piece_contacts()) > cfg_.rigid.busy_contacts;
+    rigid_.hold_busy(false, busy);
+  }
   int ns = busy ? 1 : std::max(1, cfg_.rigid.substeps);
   // (an articulation solved with the pieces - it touches an awake one: the tick in finer substeps
   // where quality asks for it, RigidParams::mixed_substeps - and the articulations on their own in

@@ -36,15 +36,17 @@ class Pool {
 
   explicit Pool(int threads) : nthreads_(kThreadsAvailable ? std::max(1, threads) : 1) {}
 
-  int threads() const { return nthreads_; }
+  int threads() const { return nthreads_.load(std::memory_order_relaxed); }
 
   void set_threads(int n) {
+    // (never under a job: a host stepping a world on another thread finishes its job first)
+    std::lock_guard<std::mutex> one(run_mu_);
     stop_workers();
-    nthreads_ = std::max(1, n);
+    nthreads_.store(std::max(1, n), std::memory_order_relaxed);
   }
 
   void run(i64 nchunks, const std::function<void(i64)>& chunk_fn) {
-    if (nthreads_ <= 1 || nchunks <= 1 || !kThreadsAvailable) {
+    if (threads() <= 1 || nchunks <= 1 || !kThreadsAvailable) {
       for (i64 c = 0; c < nchunks; ++c) chunk_fn(c);
       return;
     }
@@ -74,7 +76,7 @@ class Pool {
  private:
   Pool() {
     const unsigned hw = std::thread::hardware_concurrency();
-    nthreads_ = kThreadsAvailable ? std::max(1u, std::min(hw, 16u)) : 1;
+    nthreads_.store(kThreadsAvailable ? static_cast<int>(std::max(1u, std::min(hw, 16u))) : 1);
   }
 
   void work() {
@@ -88,13 +90,14 @@ class Pool {
   }
 
   void ensure_workers() {
-    if (static_cast<int>(workers_.size()) == nthreads_ - 1) return;
+    const int n = threads();
+    if (static_cast<int>(workers_.size()) == n - 1) return;
     stop_workers();
     quit_.store(false);
     // Workers start from the generation current *before* the next dispatch, or a
     // late-starting thread could skip the job the caller is about to wait on.
     const u64 g = gen_.load();
-    for (int i = 0; i < nthreads_ - 1; ++i) workers_.emplace_back([this, g] { loop(g); });
+    for (int i = 0; i < n - 1; ++i) workers_.emplace_back([this, g] { loop(g); });
   }
 
   void stop_workers() {
@@ -131,7 +134,7 @@ class Pool {
     }
   }
 
-  int nthreads_ = 1;
+  std::atomic<int> nthreads_{1};
   std::vector<std::thread> workers_;
   std::mutex run_mu_;
   std::mutex mu_;

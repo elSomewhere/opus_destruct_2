@@ -11,6 +11,7 @@
 #include <array>
 #include <vector>
 
+#include "svx/base/mem.hpp"
 #include "svx/base/vec.hpp"
 #include "svx/world/grid.hpp"
 
@@ -36,9 +37,9 @@ struct FragChunk {
   std::vector<i32> vox_start;      // ... fragment f: vox[vox_start[f] .. vox_start[f + 1])
   bool empty() const { return frags.empty(); }
   i32 at(int local_index) const { return id.empty() ? -1 : static_cast<i32>(id[local_index]) - 1; }
-  i64 memory_bytes() const {
-    return static_cast<i64>(sizeof(FragChunk) + id.capacity() * 2 + frags.capacity() * sizeof(FragInfo) + vox.capacity() * 2 +
-                            vox_start.capacity() * 4);
+  i64 memory_bytes(Bytes kind = Bytes::Held) const {
+    return record_bytes<FragChunk>(kind, 112) + vec_bytes(id, kind) + vec_bytes(frags, kind) + vec_bytes(vox, kind) +
+           vec_bytes(vox_start, kind);
   }
 };
 

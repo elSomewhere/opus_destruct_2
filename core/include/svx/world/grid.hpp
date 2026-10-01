@@ -18,6 +18,7 @@
 #include <unordered_set>
 #include <vector>
 
+#include "svx/base/mem.hpp"
 #include "svx/base/types.hpp"
 #include "svx/material/material.hpp"
 
@@ -100,6 +101,13 @@ struct Chunk {
   std::array<u16, kMaxLayers> layer_count{};      // nonzero values per layer
   std::vector<u32> jbroken;     // broken junction samples of its voxels (junction_code), sorted
   i32 free_count() const { return uniform ? (vox_free(value) ? kChunkVox : 0) : free; }
+  // Its bytes (what the grid's memory_bytes counts for it): its own record - of pointer-sized
+  // containers: in what is used a fixed size, about its size on a 64-bit platform - and its arrays.
+  i64 memory_bytes(Bytes kind = Bytes::Held) const {
+    i64 b = record_bytes<Chunk>(kind, 328) + vec_bytes(v, kind) + vec_bytes(broken, kind) + vec_bytes(strength, kind) + vec_bytes(jbroken, kind);
+    for (const auto& l : layer) b += vec_bytes(l, kind);
+    return b;
+  }
   bool has_layers() const {
     for (const auto& l : layer)
       if (!l.empty()) return true;
@@ -166,7 +174,7 @@ class VoxelGrid {
   void release_buffer(std::vector<u8>&& b);
 
   i64 solid_count() const;
-  i64 memory_bytes() const;                  // the chunks' voxel arrays
+  i64 memory_bytes(Bytes kind = Bytes::Held) const;  // the chunks' voxel arrays
   i64 bookkeeping_bytes() const;             // change tracking
   i64 dirty_bytes() const;
 

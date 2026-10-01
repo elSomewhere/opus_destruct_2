@@ -63,19 +63,62 @@ class Sink {
     }
     fill(a, b, v, static_cast<u8>(paint));
   }
-  // a rough ball of voxels (a tree's crown): a share `density` of those within r of c
-  void ball(const IVec3& c, i32 r, Vox v, Paint paint, f64 density, u64 seed) {
-    for (int k = 0; k < 3; ++k)
+  // A tree's crown on its trunk: a rough ball of voxels about c - a share `density` of those
+  // within r - on a leader, the trunk going on from its top (base_z, the first voxel above it)
+  // up to c, and four limbs out from there. Only what holds on to them (face to face, as the
+  // engine bonds voxels) is kept: a crown is one piece with its tree, with no voxel standing in
+  // the air (a cloud this thin falls apart into many). The whole crown is made (in world
+  // coordinates: every chunk it reaches makes the same one), then what lies in the region drawn.
+  void crown(const IVec3& c, i32 r, i32 base_z, Vox v, Paint paint, f64 density, u64 seed) {
+    const i32 z0 = std::min(base_z, c[2] - r);
+    for (int k = 0; k < 2; ++k)
       if (c[k] + r < lo[k] || c[k] - r >= hi[k]) return;
-    for (i32 x = std::max(lo[0], c[0] - r); x <= std::min(hi[0] - 1, c[0] + r); ++x)
-      for (i32 y = std::max(lo[1], c[1] - r); y <= std::min(hi[1] - 1, c[1] + r); ++y)
-        for (i32 z = std::max(lo[2], c[2] - r); z <= std::min(hi[2] - 1, c[2] + r); ++z) {
+    if (c[2] + r < lo[2] || z0 >= hi[2]) return;
+    const i32 n = 2 * r + 1, nz = c[2] + r - z0 + 1;
+    auto at = [&](i32 x, i32 y, i32 z) { return (static_cast<size_t>(x - (c[0] - r)) * size_t(n) + size_t(y - (c[1] - r))) * size_t(nz) + size_t(z - z0); };
+    // 0 air, 1 the cloud, 2 the leader and limbs (bare wood), | 4: holds on
+    std::vector<u8> m(size_t(n) * size_t(n) * size_t(nz), 0);
+    for (i32 x = c[0] - r; x <= c[0] + r; ++x)
+      for (i32 y = c[1] - r; y <= c[1] + r; ++y)
+        for (i32 z = c[2] - r; z <= c[2] + r; ++z) {
           const i32 dx = x - c[0], dy = y - c[1], dz = z - c[2];
           if (dx * dx + dy * dy + dz * dz > r * r) continue;
           if (unit(mix(seed ^ (static_cast<u64>(static_cast<u32>(x)) * 73856093ull) ^ (static_cast<u64>(static_cast<u32>(y)) * 19349663ull) ^
                        (static_cast<u64>(static_cast<u32>(z)) * 83492791ull))) > density)
             continue;
-          cell({x, y, z}, v, static_cast<u8>(paint));
+          m[at(x, y, z)] = 1;
+        }
+    std::vector<IVec3> stack;
+    auto hold = [&](i32 x, i32 y, i32 z, u8 kind) {
+      u8& q = m[at(x, y, z)];
+      if (q & 4) return;
+      q = static_cast<u8>(std::max<u8>(q & 3, kind) | 4);
+      stack.push_back({x, y, z});
+    };
+    for (i32 z = base_z; z <= c[2]; ++z) hold(c[0], c[1], z, 2);
+    for (i32 d = 1; d <= r / 2; ++d) {
+      hold(c[0] + d, c[1], c[2], 2);
+      hold(c[0] - d, c[1], c[2], 2);
+      hold(c[0], c[1] + d, c[2], 2);
+      hold(c[0], c[1] - d, c[2], 2);
+    }
+    while (!stack.empty()) {
+      const IVec3 p = stack.back();
+      stack.pop_back();
+      for (int a = 0; a < 3; ++a)
+        for (int sg = -1; sg <= 1; sg += 2) {
+          IVec3 q = p;
+          q[a] += sg;
+          if (q[0] < c[0] - r || q[0] > c[0] + r || q[1] < c[1] - r || q[1] > c[1] + r || q[2] < z0 || q[2] > c[2] + r) continue;
+          if (m[at(q[0], q[1], q[2])] == 1) hold(q[0], q[1], q[2], 1);
+        }
+    }
+    for (i32 x = std::max(lo[0], c[0] - r); x <= std::min(hi[0] - 1, c[0] + r); ++x)
+      for (i32 y = std::max(lo[1], c[1] - r); y <= std::min(hi[1] - 1, c[1] + r); ++y)
+        for (i32 z = std::max(lo[2], z0); z <= std::min(hi[2] - 1, c[2] + r); ++z) {
+          const u8 q = m[at(x, y, z)];
+          if (!(q & 4)) continue;
+          cell({x, y, z}, v, static_cast<u8>((q & 3) == 2 ? Paint::None : paint));
         }
   }
 
@@ -565,7 +608,7 @@ class DriveCity final : public GameSource, public RoadNetwork {
           const i32 tc = kerb + sg * 6;
           boxw(tc, tc + 2, b, b + 2, 1, 22, kWoodV, Paint::None);
           const i32 r = 6 + static_cast<i32>(hh >> 8 & 3);
-          s.ball(at(tc + 1, b + 1, 22 + r), r, kWoodV, Paint::Green, 0.42, hh);
+          s.crown(at(tc + 1, b + 1, 22 + r), r, 22, kWoodV, Paint::Green, 0.42, hh);
         }
       }
     }
@@ -831,7 +874,7 @@ class DriveCity final : public GameSource, public RoadNetwork {
       const i32 y = L.y0 + 24 + static_cast<i32>((t >> 20) % u64(std::max(1, L.y1 - L.y0 - 48)));
       if (std::abs(x - mx) < 16 || std::abs(y - my) < 16) continue;
       s.box({x, y, 1}, {x + 3, y + 3, 30}, kWoodV);
-      s.ball({x + 1, y + 1, 36}, 10, kWoodV, Paint::Green, 0.38, t);
+      s.crown({x + 1, y + 1, 36}, 10, 30, kWoodV, Paint::Green, 0.38, t);
     }
     auto wall = [&](i32 a0, i32 a1, i32 b0, i32 b1) { s.box({a0, b0, 1}, {a1, b1, 5}, kBrickV, Paint::None); };
     wall(L.x0, mx - 12, L.y0, L.y0 + 2);

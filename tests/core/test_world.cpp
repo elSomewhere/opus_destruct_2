@@ -201,6 +201,69 @@ class PillarSource final : public ChunkSource {
 
 }  // namespace
 
+// A tree as a generator might make one: a post, a block on it, and two clusters of 27 voxels
+// that touch the block along an edge and at a corner only - no face: they hold on to nothing.
+class TreeSource final : public ChunkSource {
+ public:
+  static bool edge_cluster(const IVec3& p) { return p[0] >= 22 && p[0] < 25 && p[1] >= 14 && p[1] < 17 && p[2] >= 28 && p[2] < 31; }
+  static bool corner_cluster(const IVec3& p) { return p[0] >= 22 && p[0] < 25 && p[1] >= 22 && p[1] < 25 && p[2] >= 28 && p[2] < 31; }
+  bool generate(const IVec3& cc, std::vector<Vox>& out) const override {
+    out.assign(kChunkVox, kAir);
+    bool any = false;
+    for (int x = 0; x < kChunk; ++x)
+      for (int y = 0; y < kChunk; ++y)
+        for (int z = 0; z < kChunk; ++z) {
+          const IVec3 p{cc[0] * kChunk + x, cc[1] * kChunk + y, cc[2] * kChunk + z};
+          Vox v = kAir;
+          if (p[2] < 0 && p[2] >= -8) v = kRock;
+          const bool post = p[0] >= 16 && p[0] < 18 && p[1] >= 16 && p[1] < 18 && p[2] >= 0 && p[2] < 24;
+          const bool block = p[0] >= 12 && p[0] < 22 && p[1] >= 12 && p[1] < 22 && p[2] >= 24 && p[2] < 28;
+          if (post || block || edge_cluster(p) || corner_cluster(p)) v = kConcrete;
+          if (v != kAir) {
+            out[size_t(chunk_index(p))] = v;
+            any = true;
+          }
+        }
+    return any;
+  }
+  IVec3 chunk_lo() const override { return {-2, -2, -1}; }
+  IVec3 chunk_hi() const override { return {3, 3, 2}; }
+};
+
+TEST_CASE("world: what held on to a piece that came loose only edge to edge, corner to corner, is checked for support: it falls") {
+  auto session = [](bool recheck) {
+    WorldConfig cfg;
+    cfg.recheck_vacated = recheck;
+    World w;
+    w.configure(cfg);
+    VoxelGrid g;
+    g.h = kH;
+    w.load(std::move(g));
+    StreamConfig sc;
+    sc.load_radius = 12.0;
+    sc.evict_radius = 20.0;
+    sc.chunks_per_tick = 400;
+    w.enable_streaming(std::make_shared<TreeSource>(), sc);
+    w.set_focus(V3{kH * 17, kH * 17, 0.0});
+    Run r;
+    run(w, 5, &r);
+    REQUIRE(vox_solid(w.grid().get({23, 15, 29})));
+    REQUIRE(vox_solid(w.grid().get({23, 23, 29})));
+    w.carve(V3{kH * 17, kH * 17, kH * 8}, 0.3);  // (the post, under the block)
+    run(w, 120, &r);
+    i32 left = 0;  // (the clusters' voxels still in the grid)
+    for (i32 x = 22; x < 25; ++x)
+      for (i32 y = 12; y < 25; ++y)
+        for (i32 z = 28; z < 31; ++z) left += vox_solid(w.grid().get({x, y, z})) ? 1 : 0;
+    CHECK(!vox_solid(w.grid().get({17, 17, 25})));  // (the block fell either way)
+    return left;
+  };
+  const i32 with = session(true), without = session(false);
+  MESSAGE("voxels of the clusters left in the air: " << with << " (re-checked), " << without << " (not)");
+  CHECK(with == 0);
+  CHECK(without == 54);  // (the reference's way: nothing ever looked at them)
+}
+
 TEST_CASE("world: removing the ground under a registered structure drops it") {
   World w;
   w.load(column_world());
@@ -707,24 +770,37 @@ TEST_CASE("memory: budgets bound what a bounded level keeps, however long it run
   CHECK(h_tight == h_loose);  // (fragment caches and warm starts are rebuilt identically; events are output only)
 }
 
-TEST_CASE("memory: the pieces' budget culls the smallest pieces, sleeping ones first") {
-  WorldConfig cfg;
-  cfg.memory.piece_mb = 0.1;
-  World w;
-  w.configure(cfg);
-  w.load(table_world());
-  w.bake();
-  for (i32 lx : {0, 30})
-    for (i32 ly : {0, 30}) w.carve(leg_centre(lx, ly, 1.5), 0.3);
-  Run r;
-  i64 peak = 0;
-  for (int t = 0; t < 300; ++t) {
-    w.tick();
-    peak = std::max(peak, w.memory().pieces);
-  }
-  CHECK(w.stats().culled_pieces > 0);
-  MESSAGE("pieces: peak " << peak / 1024 << " KB, " << w.stats().culled_pieces << " culled");
-  CHECK(peak <= static_cast<i64>(0.1 * 1048576.0) + 64 * 1024);  // (checked every tick; contacts count too)
+TEST_CASE("memory: the pieces' budget releases awake pieces' solvers, then culls the smallest pieces, sleeping ones first") {
+  auto session = [](bool release, i64* peak, WorldStats* st) {
+    WorldConfig cfg;
+    cfg.memory.piece_mb = 0.1;
+    cfg.release_solvers = release;
+    World w;
+    w.configure(cfg);
+    w.load(table_world());
+    w.bake();
+    for (i32 lx : {0, 30})
+      for (i32 ly : {0, 30}) w.carve(leg_centre(lx, ly, 1.5), 0.3);
+    for (int t = 0; t < 300; ++t) {
+      w.tick();
+      // (the pieces' own data: the contacts - the solver's scratch of each substep - aside)
+      const i64 own = w.memory().pieces - static_cast<i64>(w.rigid().contacts().capacity() * sizeof(Contact));
+      *peak = std::max(*peak, own);
+    }
+    *st = w.stats();
+  };
+  i64 peak = 0, peak_kept = 0;
+  WorldStats st, st_kept;
+  session(true, &peak, &st);
+  session(false, &peak_kept, &st_kept);
+  MESSAGE("pieces: peak " << peak / 1024 << " KB, " << st.released_solvers << " solvers released, " << st.culled_pieces << " culled (solvers kept: "
+                          << st_kept.culled_pieces << " culled)");
+  CHECK(st.culled_pieces > 0);
+  CHECK(st.released_solvers > 0);
+  CHECK(st.culled_pieces < st_kept.culled_pieces);  // (what a solver's release saves, no piece pays for)
+  // (checked every tick, by what the pieces use: what the allocator holds for them is a little more)
+  CHECK(peak <= static_cast<i64>(1.2 * 0.1 * 1048576.0) + 16 * 1024);
+  CHECK(peak_kept <= static_cast<i64>(1.2 * 0.1 * 1048576.0) + 16 * 1024);
 }
 
 TEST_CASE("world: a later extraction takes a registered structure over whole (no frontier next to what happens)") {

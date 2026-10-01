@@ -86,6 +86,17 @@ class StressProblem {
     assembled_ = false;
     run_.active = false;
   }
+  // The preconditioner is K's as it is (no bond broken, no node retired since assemble() - a
+  // block-Jacobi one is kept so through those): assembling again would build the same.
+  bool preconditioner_current() const { return assembled_ && pc_current_; }
+  bool block_jacobi() const { return jacobi_only_; }
+  // The last assemble()'s work, in work_per_iteration's block operations: K's products and the
+  // preconditioner's build.
+  i64 assembly_work() const { return assembly_work_; }
+  // Frees the assembled operator, its preconditioner and the solve's scratch - most of what a
+  // problem holds - for a solver not needed for a while (a piece asleep). Nodes and bonds stay:
+  // assemble() makes the rest again, from the bonds as they are then.
+  void release();
   // Incremental changes that keep the preconditioner (a stale one still converges; callers
   // rebuild it with assemble() when solves slow down or much has changed):
   //   remove_bond: the bond breaks, its stiffness leaves K in place;
@@ -103,7 +114,8 @@ class StressProblem {
   i32 appended() const { return nfree_ - pc_n_; }   // free nodes the preconditioner does not cover
   i32 free_nodes() const { return nfree_; }
   i64 matrix_blocks() const { return K_.blocks(); }
-  i64 memory_bytes() const;
+  i64 memory_bytes(Bytes kind = Bytes::Held) const;
+  i64 solver_bytes(Bytes kind = Bytes::Held) const;  // (of those: what release() frees)
   i64 work_per_iteration() const { return 2 * K_.blocks() + amg_.work_per_apply(); }
 
   // f, u: 6 per node (u: warm start in, solution out; fixed nodes stay 0). maxit < 0: no cap.
@@ -127,7 +139,9 @@ class StressProblem {
   void precondition(const f64* r, f64* z) const;
   f64* block(i32 r, i32 c);  // K's block (nullptr if absent)
   bool assembled_ = false;
+  bool pc_current_ = false;   // (preconditioner_current)
   bool jacobi_only_ = false;  // small graph: block Jacobi for every node
+  i64 assembly_work_ = 0;
   i32 pc_n_ = 0;          // free nodes covered by the multigrid (the first ones)
   f64 id_scale_ = 1.0;    // diagonal of retired rows
   std::vector<f64> jinv_; // appended nodes: inverse diagonal blocks

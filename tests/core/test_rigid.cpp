@@ -204,3 +204,30 @@ TEST_CASE("rigid: a fast block does not pass through a thin wall (continuous col
   CHECK(x0 > 2.0);  // (it went through)
   CHECK(x1 < 2.0 - 0.0625);
 }
+
+TEST_CASE("rigid: a stack stays put through busy mode's switch between two substeps and one (warm starts scaled to the step)") {
+  // (a stack of four blocks kept awake, solved with busy mode's iterations, its tick switched
+  // between two substeps and one every half second: how fast its top moves after the switches,
+  // the warm starts scaled to the step's length or not)
+  const VoxelGrid g = ground();
+  auto jitter = [&](bool warm_to_step) {
+    RigidWorld w;
+    w.par.warm_to_step = warm_to_step;
+    w.par.iterations = w.par.busy_iterations;
+    w.par.position_iterations = 2;
+    w.par.sleep_substeps = 1 << 30;  // (awake throughout: a pile in a collapse)
+    for (int k = 0; k < 4; ++k) w.add(box(1 + k, {10, 10, 4 * k}, {6, 6, 4}, g.h));
+    for (int s = 0; s < 2 * 60 * 2; ++s) w.substep(1.0 / 120.0, g, nullptr);  // (settled)
+    f64 worst = 0.0;
+    for (int t = 0; t < 240; ++t) {
+      const int per_tick = (t / 30) % 2 == 0 ? 1 : 2;
+      w.begin_tick();
+      for (int s = 0; s < per_tick; ++s) w.substep(1.0 / (60.0 * per_tick), g, nullptr);
+      for (const auto& b : w.bodies) worst = std::max(worst, norm(b->v));
+    }
+    return worst;
+  };
+  const f64 scaled = jitter(true), raw = jitter(false);
+  MESSAGE("the stack's fastest block across the switches: " << scaled << " m/s scaled, " << raw << " m/s not");
+  CHECK(scaled < raw);
+}
