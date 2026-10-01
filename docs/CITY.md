@@ -352,3 +352,31 @@ so that it stays the oracle.
   over the lattice cells they probe and the sites and links those reach (`warmBasesIn`); a stage of
   the reference's own site kinds must reach as far as their placement samples (a stronghold's
   service road runs up to 5 km from its apron).
+
+## 7. In the engine
+
+The generator reaches the game through a `GameSource` (`svx/game/source.hpp`) in `svx_procgen`
+(PROCGEN_MERGE_PLAN.md §10; `svx_level` after the restructuring), built from these pieces:
+
+- **The world**: `make_world(spec)` (`include/svx/city/world.hpp`) - a voxel_city preset, its size
+  and season, a seed and config overrides - is the world the export makes (`svx/source.js`:
+  makeConfig, the angled world's parts as grids of their own). The game's presets name it
+  (`data/presets/city/*.json`, generator `city`: `params.preset`, `size`, `season`, `config`);
+  their parts budget holds in a disc of the 144 m evict radius (`world.angles.residentRadius`).
+- **Materials**: the city's own physics classes (21: roofing, partition, soft, ice, snow,
+  foliage) registered at their ids, foliage decorative and passable (`register_city_materials`,
+  `svx/procgen/city_materials.hpp`); their fire facets (`set_city_fire_materials`, set when the
+  game loads the source: `GameSource::fire_materials`); the 454 looks as the game's appearance
+  table, keyed (class, 1 + look): the world's regenerable "look" layer holds 1 + a voxel's look
+  within its class, 0 none (`city_appearances`; `svx/game/appearance.hpp`, `docs/API.md`).
+- **Props and furniture by attachment** (§7.3's change of the export): `data/city/props.json`
+  classes every street prop, piece of furniture and civic fitting (`svx/props.hpp`): fixed ones
+  are structure bonded to what holds them; loose ones rest where they stand with seams on every
+  outer face (`svx/seams.hpp` `export_seams`, from the objects the chunk writer marks:
+  `ChunkBuffer::begin_object` / `end_object`, `track_objects`); entities are left out of the
+  voxels and come as the game's vehicles (`GameSource::spawns_in`); plants are decorative.
+- **What the world means**: buildings with their entrances, furniture with its uses, zones and
+  entities, from the plans (`svx/game/semantics.hpp`, `GameSource::semantics`, the C ABI's
+  `svx_buildings_in`, `svx_furniture_in`, `svx_zone_at`).
+- **Far tier**: the export's coarse view, and its open water as a flat surface at its level
+  (`GameSource::coarse_water`).
