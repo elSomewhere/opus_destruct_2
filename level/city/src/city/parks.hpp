@@ -52,9 +52,9 @@ struct ParkLayout {
   std::optional<ParkPond> pond;  // (null: none)
   std::vector<ParkSeg> segs;     // the paths (those through the pond dropped)
   // The lookup grid (8 m buckets): key floor(u / G) * 4096 + floor(v / G) -> the segments within
-  // 2 m of the bucket (indices into segs, in order). JS's key: two buckets whose keys meet share
-  // their list.
-  std::unordered_map<int64_t, std::vector<uint32_t>> grid;
+  // 2 m of the bucket (indices into segs, in order). JS's key (a number, -0 as +0): two buckets
+  // whose keys meet share their list.
+  std::unordered_map<double, std::vector<uint32_t>> grid;
   double G = 0;       // the grid's bucket (voxels)
   double path_w = 0;  // the paths' half width (voxels)
 };

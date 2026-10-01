@@ -43,12 +43,9 @@ double pond_radius(const ParkPond& pond, double t) {
   return pond.r * (1 + pond.a[0] * js::sin(t + pond.p[0]) + pond.a[1] * js::sin(2 * t + pond.p[1]) + pond.a[2] * js::sin(3 * t + pond.p[2]));
 }
 
-// A grid key as JS's Map holds it (an integer-valued number; a key no segment can have: none).
-bool grid_key(double k, int64_t& key) {
-  if (!(std::fabs(k) < 9007199254740992.0)) return false;
-  key = static_cast<int64_t>(k);
-  return true;
-}
+// A grid key as JS's Map compares it (SameValueZero: -0 is +0; a NaN key, which no segment of a
+// finite park has, finds nothing).
+inline double grid_key(double k) { return k == 0 ? 0.0 : k; }
 
 }  // namespace
 
@@ -168,10 +165,7 @@ ParkLayout plan_park_layout(const std::string& id, const Rect& r) {
     const double j0 = std::floor((js::min(s[1], s[3]) - vx(2)) / G);
     const double j1 = std::floor((js::max(s[1], s[3]) + vx(2)) / G);
     for (double j = j0; j <= j1; j += 1)
-      for (double i = i0; i <= i1; i += 1) {
-        int64_t key = 0;
-        if (grid_key(i * 4096 + j, key)) L.grid[key].push_back(static_cast<uint32_t>(idx));
-      }
+      for (double i = i0; i <= i1; i += 1) L.grid[grid_key(i * 4096 + j)].push_back(static_cast<uint32_t>(idx));
   }
   L.W = W;
   L.H = H;
@@ -201,9 +195,7 @@ double pond_dist(const ParkPond& pond, double u, double v) {
 
 double path_dist(const ParkLayout& L, double u, double v) {
   double best = js::kInf;
-  int64_t key = 0;
-  if (!grid_key(std::floor(u / L.G) * 4096 + std::floor(v / L.G), key)) return best;
-  const auto it = L.grid.find(key);
+  const auto it = L.grid.find(grid_key(std::floor(u / L.G) * 4096 + std::floor(v / L.G)));
   if (it == L.grid.end()) return best;
   for (const uint32_t idx : it->second) {
     const ParkSeg& s = L.segs[idx];

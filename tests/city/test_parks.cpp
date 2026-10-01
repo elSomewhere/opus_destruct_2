@@ -59,7 +59,7 @@ TEST_CASE("city parks: park layouts conform to the reference (stage parks)") {
       out << (Line() << "segs" << s);
     }
     // the lookup grid, by key
-    std::vector<int64_t> keys;
+    std::vector<double> keys;
     for (const auto& kv : L.grid) keys.push_back(kv.first);
     std::sort(keys.begin(), keys.end());
     for (size_t q = 0; q < keys.size(); q += 40) {
@@ -68,7 +68,7 @@ TEST_CASE("city parks: park layouts conform to the reference (stage parks)") {
         std::string list;
         const std::vector<uint32_t>& segs = L.grid.at(keys[n]);
         for (size_t m = 0; m < segs.size(); ++m) list += js::cat(m ? "." : "", segs[m]);
-        s += js::cat(n > q ? " " : "", static_cast<double>(keys[n]), ":", list);
+        s += js::cat(n > q ? " " : "", keys[n], ":", list);
       }
       out << (Line() << "grid" << s);
     }
