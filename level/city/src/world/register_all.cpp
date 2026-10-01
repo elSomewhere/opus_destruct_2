@@ -8,6 +8,8 @@
 #include "buildings/styles.hpp"
 #include "city/districts.hpp"
 #include "city/flavors.hpp"
+#include "nature/biomes.hpp"
+#include "terrain/landforms.hpp"
 
 namespace svx::city {
 
@@ -15,6 +17,8 @@ void register_all() {
   static std::once_flag once;
   std::call_once(once, [] {
     // (each ported module adds its call here, in the order of docs/CITY.md §2.2)
+    register_biomes();     // BIOMES (nature/biomes.js)
+    register_landforms();  // LANDFORMS (terrain/landforms.js)
     register_districts();  // DISTRICTS (city/districts.js)
     register_flavors();    // FLAVORS (city/flavors.js)
     register_styles();     // STYLES (buildings/styles.js)
