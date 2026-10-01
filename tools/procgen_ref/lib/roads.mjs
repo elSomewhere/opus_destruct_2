@@ -118,9 +118,10 @@ export function junctionFields(j) {
  * terrain without the port lakes' grading (the port's World has none until lakes are ported), and
  * every cache unbounded (one object per road, as the port's road views share them; nothing a
  * reference cache evicts is made again in another order). A stage makes the base heights a region
- * reads first (warmAround; docs/CITY.md §6).
+ * reads first (warmAround; docs/CITY.md §6). `wet(x, y, m, v)` may alter the waters' answers (a
+ * branch no water reaches; the port replays what was recorded).
  */
-export function recordingWorld(overrides) {
+export function recordingWorld(overrides, { wet: alter = null } = {}) {
   const w = createWorld(overrides);
   w.terrain.portGrade = null;
   w.cellNets = new LRU(Infinity);
@@ -137,7 +138,8 @@ export function recordingWorld(overrides) {
   const wet = new Map();
   const isWet = w.isWet;
   w.isWet = (x, y, m = 2) => {
-    const v = isWet(x, y, m);
+    let v = isWet(x, y, m);
+    if (alter) v = alter(x, y, m, v);
     wet.set(`${x},${y},${m}`, [x, y, m, v ? 1 : 0]);
     return v;
   };
