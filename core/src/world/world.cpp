@@ -1714,14 +1714,13 @@ bool World::Impl::patch_structure(Structure& s) {
     });
   }
   append_nodes(s, members, fine, s.cell, nullptr);
-  // 4. the new nodes start from their neighbours' motion; the solver keeps its preconditioner
-  // (appended nodes: their own small multigrid) unless much changed
+  // 4. the new nodes start from their neighbours' motion, on a fresh preconditioner. (Keeping the
+  // old multigrid, the new nodes with their own - StressProblem::reassemble - saves the build on
+  // a building shot at, a third of a shot's cost; but where a patch cut a load path it stalls - a
+  // blast through a tower's core: no convergence in 90 iterations - and the judgement comes
+  // ticks late, after what loaded it has eased: the tower stood.)
   s.P.extend_warm_start(s.u, n0);
-  const i32 active = static_cast<i32>(s.P.nodes.size()) - s.gone;
-  const i32 added = static_cast<i32>(s.P.nodes.size()) - n0;
-  (void)active;
-  (void)added;
-  s.P.invalidate();  // (a fresh preconditioner: a stale one converges far slower than it saves)
+  s.P.invalidate();
   s.solving = true;
   s.shock = true;
   detach_unsupported(s);
