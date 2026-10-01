@@ -38,6 +38,14 @@ const ChunkSource* World::source() const { return impl_->source(); }
 void World::set_focus(const std::vector<V3>& points) { impl_->set_focus(points); }
 void World::ensure_resident(const IVec3& lo, const IVec3& hi) { impl_->ensure_resident(lo, hi); }
 bool World::chunk_resident(const IVec3& chunk) const { return impl_->chunk_resident(chunk); }
+bool World::column_range(i32 cx, i32 cy, i32* z_lo, i32* z_hi, Vox* below) const {
+  const auto* c = impl_->column_if(cx, cy);
+  if (!impl_->streaming() || !c) return false;
+  if (z_lo) *z_lo = c->z_lo;
+  if (z_hi) *z_hi = c->z_hi;
+  if (below) *below = c->below;
+  return true;
+}
 std::vector<u8> World::save_delta() const { return impl_->save_delta(); }
 bool World::load_delta(const std::vector<u8>& bytes) { return impl_->load_delta(bytes); }
 bool World::modified() const { return impl_->modified(); }

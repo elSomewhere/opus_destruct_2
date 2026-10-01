@@ -538,7 +538,15 @@ class World {
   void set_focus(const std::vector<V3>& points);
   // Generates the chunks overlapping the voxel box [lo, hi) now (e.g. before placing a player).
   void ensure_resident(const IVec3& lo, const IVec3& hi);
+  // Whether a chunk is there to read: generated, outside the world (air), or the implicit air above
+  // its column's content (ChunkSource::column_range). False: not generated yet, or the implicit
+  // fill under a column's content where it is solid - rock that is not stored (both hold what
+  // reaches into them: treat them as closed).
   bool chunk_resident(const IVec3& chunk) const;
+  // A streamed column's content range, as the world asked it of the source (false: the column is
+  // not in use, or not streaming): chunks below z_lo are *below (the chunk just under z_lo stored
+  // as a floor where it is solid), from z_hi up air - neither stored unless something changed them.
+  bool column_range(i32 cx, i32 cy, i32* z_lo, i32* z_hi, Vox* below) const;
 
   // Persistence: the changes since load() as a binary delta against the regenerable base
   // world (a level file, a generator, and the level's oriented grids); load_delta() applies one

@@ -235,6 +235,18 @@ Large worlds are generated on demand. Implement `ChunkSource`:
 
 - `generate(chunk, out)` is a pure function of the chunk, called from several threads.
 - `chunk_lo()` and `chunk_hi()` give the extent in chunks.
+- `column_range(cx, cy, &z_lo, &z_hi, &below)` (optional) says which chunks of a column hold
+  content. The world generates only those, and under them a floor: one chunk of the column's
+  fill `below` (where it is solid), made without asking the source. The rest stays implicit and
+  costs nothing: the fill below the floor (anchored rock, say: solid to what reaches into it,
+  as the unknown world is, and closed to water and smoke) and the air above the content. A
+  carve, a blast or an edit that reaches an implicit chunk makes it first from the fill (its
+  crater's floor and walls are stored); changed, it is archived and comes back like any chunk.
+  An extent can then span kilometres of height (an island's sea floor 600 m down under 6 km
+  peaks) while each column streams the few chunks it holds; a column's content is at most
+  `kMaxColumnChunks` (1024) tall. Without it, every chunk of the extent's height is generated.
+  `World::column_range` reports a column's range; `chunk_resident` is false for the solid
+  implicit fill (it is rock that is not stored).
 
 Then call `enable_streaming(source, StreamConfig)`. `set_focus(points)` tells the world where it
 must be resident: one point per player, camera or AI of interest.
@@ -312,7 +324,7 @@ Things that break it:
   default. Counts that drive loops are held where a tick stays bounded: at most 64 substeps and
   256 solver iterations, 4096 chunks generated a tick, 256 threads. Memory budgets of any value
   are byte counts, and an infinite one is no bound. A source's extent is held within the key
-  range, never inverted, and at most `kMaxColumnChunks` (1024) chunks tall; the load radius is
+  range and never inverted, a column's content at most `kMaxColumnChunks` (1024) chunks tall; the load radius is
   at most 256 chunks, the change archive at most 4096 MB (1024 on a 32-bit build), and the
   world's voxel size 1 mm to 100 m. Callbacks (`ChunkSource`, `WorldSystem`) must not throw:
   the core is built without exceptions and does not contain one.

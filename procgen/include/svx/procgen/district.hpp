@@ -87,6 +87,8 @@ class DistrictSource : public GameSource {
   bool generate(const IVec3& chunk, std::vector<Vox>& out) const override;
   IVec3 chunk_lo() const override { return d_->lo; }
   IVec3 chunk_hi() const override { return d_->hi; }
+  // The dumped content of a column (rock below it); a column the district does not hold has none.
+  void column_range(i32 cx, i32 cy, i32* z_lo, i32* z_hi, Vox* below) const override;
   u64 region(const IVec3& chunk) const override;
   bool generate_layer(const IVec3& chunk, const std::string& layer, std::vector<u8>& out) const override;
   std::vector<SourceGrid> grids(const IVec3& chunk) const override;

@@ -21,3 +21,10 @@ origin of the infinite city, 270 chunks with content, 36,598 prop voxels; 7.5 s 
   plus the look layer: plan §8.4);
 - a first shot (0.25 m, 2 kJ) at the building with the most free voxels within 30 m: its tick
   152 ms (25,183 nodes extracted, 63,416 voxels strengthened by the design; plan §8.5).
+
+## After phase 1a (column content ranges, plan §8.1)
+
+The same district and shot: 353 resident chunks (the content, each column's floor and the
+known air above it: the fill below stays implicit), the same voxel count; the first shot's tick
+160 ms (unchanged within noise: the design on first touch is §8.5's). Golden hashes and ctest
+unchanged.

@@ -226,6 +226,19 @@ bool DistrictSource::generate(const IVec3& c, std::vector<Vox>& out) const {
   return any;
 }
 
+void DistrictSource::column_range(i32 cx, i32 cy, i32* z_lo, i32* z_hi, Vox* below) const {
+  auto it = columns_.find(key3(cx, cy, 0));
+  if (it == columns_.end()) {
+    *z_lo = *z_hi = d_->lo[2];
+    *below = kAir;
+    return;
+  }
+  const District::Column& c = d_->columns[it->second];
+  *z_lo = c.z_lo;
+  *z_hi = c.z_hi + 1;
+  *below = make_vox(MaterialId::Rock, true);
+}
+
 u64 DistrictSource::region(const IVec3& c) const {
   auto it = columns_.find(key3(c[0], c[1], 0));
   if (it == columns_.end()) return ChunkSource::region(c);

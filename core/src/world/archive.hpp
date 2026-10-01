@@ -34,6 +34,7 @@ class ChangeArchive {
     for (size_t p = pages; p-- > 0;) free_.push_back(static_cast<i32>(p));
     records_.clear();
     regions_.clear();
+    columns_.clear();
   }
   bool bounded() const { return bounded_; }
   size_t capacity() const { return next_.size() * kPage; }
@@ -64,6 +65,11 @@ class ChangeArchive {
       if (n) std::copy(rec.begin() + static_cast<long>(off), rec.begin() + static_cast<long>(off + n), data_.get() + size_t(p) * kPage);
     }
     records_[key] = {first, static_cast<u32>(rec.size()), region};
+    if (!(key >> 63)) {  // (a chunk's: indexed by its column)
+      std::vector<i32>& zs = columns_[column_key(key)];
+      const i32 z = z_of(key);
+      zs.insert(std::lower_bound(zs.begin(), zs.end(), z), z);
+    }
     Region& r = regions_[region];
     r.chunks.push_back(key);
     r.pages += static_cast<u32>(need);
@@ -107,6 +113,21 @@ class ChangeArchive {
       if (c.empty()) regions_.erase(rt);
     }
     records_.erase(it);
+    if (!(key >> 63)) {
+      const auto ct = columns_.find(column_key(key));
+      if (ct != columns_.end()) {
+        auto& zs = ct->second;
+        const auto zt = std::lower_bound(zs.begin(), zs.end(), z_of(key));
+        if (zt != zs.end() && *zt == z_of(key)) zs.erase(zt);
+        if (zs.empty()) columns_.erase(ct);
+      }
+    }
+  }
+
+  // The z of the chunks of a column (key3(cx, cy, 0)) that have records, ascending (nullptr: none).
+  const std::vector<i32>* column(u64 col) const {
+    const auto ct = columns_.find(col);
+    return ct == columns_.end() ? nullptr : &ct->second;
   }
 
   // Forgets every record of a region; returns the chunks it held.
@@ -139,8 +160,9 @@ class ChangeArchive {
   size_t size() const { return records_.size(); }
   i64 memory_bytes() const {
     // (the arena's pages reached so far: the rest is reserved, not committed)
-    i64 b = static_cast<i64>(touched_ * kPage) + vec_bytes(next_) + vec_bytes(free_) + hash_bytes(records_) + hash_bytes(regions_);
+    i64 b = static_cast<i64>(touched_ * kPage) + vec_bytes(next_) + vec_bytes(free_) + hash_bytes(records_) + hash_bytes(regions_) + hash_bytes(columns_);
     for (const auto& [k, r] : regions_) b += vec_bytes(r.chunks);
+    for (const auto& [k, z] : columns_) b += vec_bytes(z);
     return b;
   }
 
@@ -159,6 +181,9 @@ class ChangeArchive {
     next_.resize(pages, -1);
     for (size_t p = pages; p-- > old;) free_.push_back(static_cast<i32>(p));
   }
+  // (a chunk key's column, and its z: key3's packing)
+  static u64 column_key(u64 key) { return (key & ~0x1FFFFFull) | (u64(1) << 20); }
+  static i32 z_of(u64 key) { return static_cast<i32>(static_cast<i64>(key & 0x1FFFFF) - (i64(1) << 20)); }
   bool bounded_ = false;
   std::unique_ptr<u8[]> data_;
   size_t touched_ = 0;  // pages below this were used at some point (committed)
@@ -166,6 +191,7 @@ class ChangeArchive {
   std::vector<i32> free_;  // free pages (a stack)
   std::unordered_map<u64, Rec> records_;
   std::unordered_map<u64, Region> regions_;
+  std::unordered_map<u64, std::vector<i32>> columns_;  // column -> z of its chunks' records
 };
 
 }  // namespace svx::world_detail

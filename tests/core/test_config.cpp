@@ -186,7 +186,7 @@ TEST_CASE("config: memory budgets of any value - an infinite one is no bound, on
   CHECK(none.dropped_fragment_caches > 0);
 }
 
-TEST_CASE("config: a source's extent is held within the key range, never inverted, and at most kMaxColumnChunks tall") {
+TEST_CASE("config: a source's extent is held within the key range, never inverted, a column's content at most kMaxColumnChunks tall") {
   StreamConfig sc;
   sc.load_radius = 1e300;  // (held to 1024 chunks)
   sc.evict_radius = INFINITY;
@@ -202,9 +202,16 @@ TEST_CASE("config: a source's extent is held within the key range, never inverte
     CHECK(in_voxel_range(lo));
     CHECK(in_voxel_range({hi[0] - 1, hi[1] - 1, hi[2] - 1}));
     CHECK(lo[2] == -kChunk);
-    CHECK(hi[2] == (kMaxColumnChunks - 1) * kChunk);
+    CHECK(hi[2] == (kVoxelLimit / kChunk - 1) * kChunk);  // (the extent: the key range)
     w.set_focus(V3{0.0, 0.0, 1.0});
     CHECK(w.grid().get({0, 0, -2}) == kRock);  // (the ground around the first focus, at once)
+    // (a column's content - the whole extent, as the source says nothing - is held to kMaxColumnChunks)
+    i32 z_lo = 0, z_hi = 0;
+    Vox below = kRock;
+    REQUIRE(w.column_range(0, 0, &z_lo, &z_hi, &below));
+    CHECK(z_lo == -1);
+    CHECK(z_hi == -1 + kMaxColumnChunks);
+    CHECK(below == kAir);
     // (beyond it, as the budget allows - a budget of INT_MAX chunks a tick is 4096: streaming goes on)
     for (int t = 0; t < 2; ++t) w.tick();
     CHECK(w.grid().chunk({7, 0, -1}) != nullptr);

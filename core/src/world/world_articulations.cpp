@@ -783,7 +783,7 @@ void World::Impl::restore_articulations() {
   if (strm_.archived_arts.empty()) return;
   std::vector<u64> ready;
   for (const auto& [key, chunks] : strm_.archived_arts)
-    if (std::all_of(chunks.begin(), chunks.end(), [&](u64 c) { return strm_.generated.count(c) > 0; })) ready.push_back(key);
+    if (std::all_of(chunks.begin(), chunks.end(), [&](u64 c) { return chunk_known(c); })) ready.push_back(key);
   for (u64 key : ready) {
     strm_.archived_arts.erase(key);
     --st_.archived_articulations;

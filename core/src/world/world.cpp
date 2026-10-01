@@ -152,7 +152,7 @@ void World::Impl::load(VoxelGrid&& g) {
   ext_.sys_evicted.clear();
   strm_.source.reset();
   strm_.generated.clear();
-  strm_.column_count.clear();
+  strm_.columns.clear();
   strm_.region_resident.clear();
   reset_archive(0);
   strm_.evicted_chunks.clear();  // (the last level's: the host has dropped its chunks)
@@ -2022,7 +2022,8 @@ i32 World::Impl::world_set_voxels(u16 g, const std::vector<VoxelEdit>& in, u32 f
           for (i32 z = (e.p[2] - 1) >> kChunkBits; z <= (e.p[2] + 1) >> kChunkBits; ++z) keys.push_back(key3(x, y, z));
     std::sort(keys.begin(), keys.end());
     keys.erase(std::unique(keys.begin(), keys.end()), keys.end());
-    for (u64 k : keys) generate_chunk(k);
+    // (an implicit chunk - a column's fill under its content, the air above - is made from its fill)
+    for (u64 k : keys) materialize_chunk(k);
   }
   VoxelGrid& G = vg(g);
   const bool tracked = G.tracking();
@@ -2280,6 +2281,9 @@ void World::Impl::recheck_vacated(u16 g, const BodyShape& S) {
 
 void World::Impl::process(const PendingEvent& e) {
   ++st_.events;
+  // (a streamed column's implicit fill the crater reaches: made first, so the carve removes it and
+  // the crater's floor and walls are stored)
+  if (strm_.source) materialize_sphere(e.pos, e.radius);
   design_near(e.pos, (e.blast ? cfg_.blast_reach : 1.0) * e.radius + 1.0);
   std::vector<GVox> removed;
   // (a blast craters as an impact of its energy; a carve is a cut or a shot)

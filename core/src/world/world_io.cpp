@@ -506,22 +506,21 @@ void World::Impl::enable_streaming(std::shared_ptr<const ChunkSource> src, const
   C.archive_mb = std::isfinite(C.archive_mb) ? std::clamp(C.archive_mb, 0.0, kMaxArchiveMb) : 64.0;
   C.forget_after_s = std::isfinite(C.forget_after_s) ? std::clamp(C.forget_after_s, 0.0, 1e9) : 0.0;
   strm_.generated.clear();
-  strm_.column_count.clear();
+  strm_.columns.clear();
   strm_.region_resident.clear();
   strm_.evict_scan_tick = -1000000;
   strm_.evict_scan_focus.clear();
   // (a bounded archive: its arena, once; an unbounded one grows)
   reset_archive(strm_.source ? static_cast<size_t>(C.archive_mb * 1048576.0) : 0);
   if (!strm_.source) return;
-  // the source's extent, held within the voxel key range, never inverted, and at most
-  // kMaxColumnChunks tall (its columns are resident whole)
+  // the source's extent, held within the voxel key range and never inverted (a column's content
+  // within it is at most kMaxColumnChunks tall: column_info)
   constexpr i32 kLim = kVoxelLimit / kChunk - 1;
   IVec3 lo = strm_.source->chunk_lo(), hi = strm_.source->chunk_hi();
   for (int q = 0; q < 3; ++q) {
     lo[q] = std::clamp(lo[q], -kLim, kLim);
     hi[q] = std::clamp(hi[q], lo[q], kLim);
   }
-  hi[2] = std::min(hi[2], lo[2] + kMaxColumnChunks);
   strm_.lo = lo;
   strm_.hi = hi;
   grid_.lo = {lo[0] * kChunk, lo[1] * kChunk, lo[2] * kChunk};
@@ -538,7 +537,18 @@ void World::Impl::set_focus(const std::vector<V3>& points) {
   const i32 r = static_cast<i32>(std::ceil(24.0 / grid_.h));
   for (const V3& p : strm_.focus) {
     const IVec3 c = voxel_of(p, grid_.h);
-    ensure_chunks({c[0] - r, c[1] - r, grid_.lo[2]}, {c[0] + r, c[1] + r, grid_.hi[2]});
+    // (each column's content, bottom up: what ensure_chunks over the extent's height does, without
+    // walking the implicit chunks of a tall extent one by one)
+    const IVec3 vlo{std::max(c[0] - r, grid_.lo[0]), std::max(c[1] - r, grid_.lo[1]), 0};
+    const IVec3 vhi{std::min(c[0] + r, grid_.hi[0]), std::min(c[1] + r, grid_.hi[1]), 0};
+    for (i32 x = vlo[0] >> kChunkBits; vlo[0] < vhi[0] && x <= (vhi[0] - 1) >> kChunkBits; ++x)
+      for (i32 y = vlo[1] >> kChunkBits; vlo[1] < vhi[1] && y <= (vhi[1] - 1) >> kChunkBits; ++y) {
+        const StreamColumn& col = column_info(x, y);
+        const i32 z0 = col.base, z1 = col.z_hi;
+        for (i32 z = z0; z < z1; ++z) generate_chunk(key3(x, y, z));
+        if (const std::vector<i32>* xs = strm_.archive->column(key3(x, y, 0)))
+          for (const i32 z : std::vector<i32>(*xs)) generate_chunk(key3(x, y, z));
+      }
   }
 }
 
@@ -559,18 +569,95 @@ bool World::Impl::generate_chunk(u64 key) {
   const IVec3 cc = unkey3(key);
   const IVec3 lo = strm_.lo, hi = strm_.hi;
   if (cc[0] < lo[0] || cc[1] < lo[1] || cc[2] < lo[2] || cc[0] >= hi[0] || cc[1] >= hi[1] || cc[2] >= hi[2]) return false;
+  const StreamColumn& col = column_info(cc[0], cc[1]);
+  if (cc[2] < col.base || cc[2] >= col.z_hi) {
+    // implicit (its column's fill, or the air above it): made only when something changed it
+    // (and archived: it comes back) or changes it now (materialize_chunk)
+    if (!strm_.archive->has(key)) return false;
+    return materialize_chunk(key);
+  }
   std::vector<Vox> v;
+  if (cc[2] < col.z_lo) {
+    // the floor: a chunk of the fill under the content (what is below it is never seen)
+    v = grid_.acquire_buffer(col.below);
+    insert_generated(key, vox_solid(col.below), std::move(v), false);
+    return true;
+  }
   const bool any = strm_.source->generate(cc, v);
   insert_generated(key, any, std::move(v));
   return true;
 }
 
-void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
+bool World::Impl::materialize_chunk(u64 key) {
+  if (!strm_.source) return false;
+  if (strm_.generated.count(key)) return true;
+  const IVec3 cc = unkey3(key);
+  const IVec3 lo = strm_.lo, hi = strm_.hi;
+  if (cc[0] < lo[0] || cc[1] < lo[1] || cc[2] < lo[2] || cc[0] >= hi[0] || cc[1] >= hi[1] || cc[2] >= hi[2]) return false;
+  const StreamColumn& col = column_info(cc[0], cc[1]);
+  if (cc[2] >= col.base && cc[2] < col.z_hi) return generate_chunk(key);
+  // (the fill below the floor, the air above the content)
+  const Vox fill = cc[2] < col.base ? col.below : kAir;
+  std::vector<Vox> v = grid_.acquire_buffer(fill);
+  insert_generated(key, vox_solid(fill), std::move(v), false);
+  return true;
+}
+
+void World::Impl::materialize_sphere(const V3& c, f64 r) {
+  if (!strm_.source) return;
+  // (the box a carve walks, a voxel more: the crater's floor and walls are stored voxels)
+  const i32 R = static_cast<i32>(std::ceil(r / grid_.h)) + 2;
+  const IVec3 cv = voxel_of(c, grid_.h);
+  for (i32 x = (cv[0] - R) >> kChunkBits; x <= (cv[0] + R) >> kChunkBits; ++x)
+    for (i32 y = (cv[1] - R) >> kChunkBits; y <= (cv[1] + R) >> kChunkBits; ++y) {
+      const StreamColumn* col = column_if(x, y);
+      if (!col) continue;  // (a column not streamed in: the carve finds nothing there, as before)
+      for (i32 z = (cv[2] - R) >> kChunkBits; z <= (cv[2] + R) >> kChunkBits; ++z)
+        if (z < col->base && vox_solid(col->below)) materialize_chunk(key3(x, y, z));
+    }
+}
+
+const World::Impl::StreamColumn* World::Impl::column_if(i32 cx, i32 cy) const {
+  const auto it = strm_.columns.find(key3(cx, cy, 0));
+  return it == strm_.columns.end() ? nullptr : &it->second;
+}
+
+const World::Impl::StreamColumn& World::Impl::column_info(i32 cx, i32 cy) {
+  const auto [it, fresh] = strm_.columns.try_emplace(key3(cx, cy, 0));
+  StreamColumn& c = it->second;
+  if (fresh) {
+    i32 z_lo = strm_.lo[2], z_hi = strm_.hi[2];
+    Vox below = kAir;
+    strm_.source->column_range(cx, cy, &z_lo, &z_hi, &below);
+    // (held within the extent, never inverted, at most kMaxColumnChunks tall)
+    z_lo = std::clamp(z_lo, strm_.lo[2], strm_.hi[2]);
+    z_hi = std::clamp(z_hi, z_lo, strm_.hi[2]);
+    z_hi = std::min(z_hi, z_lo + kMaxColumnChunks);
+    if (!vox_valid(below)) below = kAir;
+    c.z_lo = z_lo;
+    c.z_hi = z_hi;
+    c.below = below;
+    c.base = vox_solid(below) && z_lo > strm_.lo[2] ? z_lo - 1 : z_lo;
+  }
+  return c;
+}
+
+bool World::Impl::chunk_known(u64 key) const {
+  if (strm_.generated.count(key)) return true;
+  const IVec3 cc = unkey3(key);
+  const StreamColumn* col = column_if(cc[0], cc[1]);
+  return col && (cc[2] < col->base || cc[2] >= col->z_hi) && cc[2] >= strm_.lo[2] && cc[2] < strm_.hi[2];
+}
+
+void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v, bool from_source) {
   struct GridsAfter {  // (the source's grids at home here come once the chunk is in)
     Impl& w;
     u64 k;
-    ~GridsAfter() { w.generate_grids(k); }
-  } grids_after{*this, key};
+    bool on;
+    ~GridsAfter() {
+      if (on) w.generate_grids(k);
+    }
+  } grids_after{*this, key, from_source};
   const IVec3 cc = unkey3(key);
   // (what the source returned, on every path here: a chunk it did not fill is air, its invalid
   // values air)
@@ -580,7 +667,10 @@ void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
       if (!vox_valid(x)) x = kAir;
   strm_.generated.insert(key);
   ext_.sys_generated.push_back(key);
-  ++strm_.column_count[key3(cc[0], cc[1], 0)];
+  {
+    StreamColumn& col = strm_.columns[key3(cc[0], cc[1], 0)];  // (column_info made it)
+    ++(cc[2] >= col.base && cc[2] < col.z_hi ? col.in_range : col.extra);
+  }
   ++strm_.region_resident[region_of(key)];
   ++st_.generated_total;
   bool changed = false;
@@ -591,7 +681,7 @@ void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
     grid_.release_buffer(std::move(v));
   }
   // (the source's layers: water of a lake, ...)
-  for (int L = 0; L < static_cast<int>(ext_.layers.size()); ++L) {
+  for (int L = 0; from_source && L < static_cast<int>(ext_.layers.size()); ++L) {
     std::vector<u8> lv;
     if (!strm_.source->generate_layer(cc, ext_.layers[size_t(L)].name, lv) || lv.size() != size_t(kChunkVox)) continue;
     const IVec3 b{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
@@ -621,6 +711,24 @@ void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v) {
     else if (same) same = ch->uniform ? ch->value == generated_value : std::all_of(ch->v.begin(), ch->v.end(), [&](Vox x) { return x == generated_value; });
     if (!same) grid_.note_voxels_modified(key);
     else if (ch->free_count() > 0) gs(0).undesigned.insert(key);
+    // (a change of play in a column's implicit fill - a crater dug under its floor - comes back
+    // with the fill around it stored: its walls and floor, wherever the carve did not reach)
+    if (!from_source) {
+      const StreamColumn& col = strm_.columns[key3(cc[0], cc[1], 0)];
+      if (cc[2] < col.base && vox_solid(col.below))
+        for (int d = 0; d < 6; ++d) {
+          IVec3 q = cc;
+          q[d / 2] += (d & 1) ? -1 : 1;
+          const u64 qk = key3(q[0], q[1], q[2]);
+          if (strm_.generated.count(qk)) continue;
+          const StreamColumn* qc = column_if(q[0], q[1]);
+          if (qc && q[2] < qc->base && vox_solid(qc->below)) materialize_chunk(qk);
+          else if (!qc && q[0] >= strm_.lo[0] && q[0] < strm_.hi[0] && q[1] >= strm_.lo[1] && q[1] < strm_.hi[1]) {
+            const StreamColumn& nc = column_info(q[0], q[1]);
+            if (q[2] < nc.base && vox_solid(nc.below)) materialize_chunk(qk);
+          }
+        }
+    }
   } else if (any) {
     // (fresh from the generator: designed when first touched; an archived chunk was designed
     // before it was changed)
@@ -816,7 +924,11 @@ void World::Impl::evict_chunk(u64 k) {
   gs(0).frags.erase(k);
   grid_.remove_chunk(cc);
   strm_.generated.erase(k);
-  if (--strm_.column_count[key3(cc[0], cc[1], 0)] <= 0) strm_.column_count.erase(key3(cc[0], cc[1], 0));
+  if (const auto ct = strm_.columns.find(key3(cc[0], cc[1], 0)); ct != strm_.columns.end()) {
+    StreamColumn& col = ct->second;
+    --(cc[2] >= col.base && cc[2] < col.z_hi ? col.in_range : col.extra);
+    if (col.in_range <= 0 && col.extra <= 0) strm_.columns.erase(ct);
+  }
   ++st_.evicted_total;
   if (resident) strm_.evicted_chunks.push_back(k);
 }
@@ -1008,7 +1120,13 @@ bool World::Impl::chunk_resident(const IVec3& cc) const {
   const IVec3 lo = strm_.lo, hi = strm_.hi;
   for (int q = 0; q < 3; ++q)
     if (cc[q] < lo[q] || cc[q] >= hi[q]) return true;  // outside the world: air
-  return strm_.generated.count(key3(cc[0], cc[1], cc[2])) > 0;
+  if (strm_.generated.count(key3(cc[0], cc[1], cc[2]))) return true;
+  // (implicit: the air above a column's content is known; its fill below holds what reaches into
+  // it where it is solid - as the unknown world does)
+  const StreamColumn* col = column_if(cc[0], cc[1]);
+  if (!col) return false;
+  if (cc[2] >= col->z_hi) return true;
+  return cc[2] < col->base && !vox_solid(col->below);
 }
 
 // Ticks between the scans of the resident chunks for eviction (while the focus stays near).
@@ -1034,24 +1152,41 @@ int World::Impl::stream_update() {
         if (!columns.insert(key3(x, y, 0)).second) continue;
         const f64 d = hdist({x, y, 0});
         if (d > strm_.config.load_radius) continue;
-        const auto cit = strm_.column_count.find(key3(x, y, 0));
-        if (cit != strm_.column_count.end() && cit->second >= hi[2] - lo[2]) continue;
+        const StreamColumn& col = column_info(x, y);
+        if (col.in_range >= col.z_hi - col.base && !strm_.archive->column(key3(x, y, 0))) continue;
         cols.push_back({d, key3(x, y, 0)});
       }
   }
   std::sort(cols.begin(), cols.end());
   size_t ci = 0;
-  i32 cz = lo[2];
+  // (a column's chunks bottom up: its content and the floor under it, and any implicit chunk of it
+  // a change of play keeps in the archive)
+  std::vector<i32> zs;
+  size_t zi = 0;
+  auto column_zs = [&](size_t i) {
+    const IVec3 c = unkey3(cols[i].second);
+    const StreamColumn& col = column_info(c[0], c[1]);
+    zs.clear();
+    const std::vector<i32>* xs = strm_.archive->column(cols[i].second);
+    for (i32 z = col.base; z < col.z_hi; ++z) zs.push_back(z);
+    if (xs) {
+      for (i32 z : *xs)
+        if (z < col.base || z >= col.z_hi) zs.push_back(z);
+      std::sort(zs.begin(), zs.end());
+    }
+    zi = 0;
+  };
+  if (!cols.empty()) column_zs(0);
   std::vector<u64> want;
   auto take = [&](size_t n) {  // (the next n missing chunks, in (distance, key) order)
     want.clear();
     while (want.size() < n && ci < cols.size()) {
       const IVec3 c = unkey3(cols[ci].second);
-      for (; cz < hi[2] && want.size() < n; ++cz)
-        if (const u64 k = key3(c[0], c[1], cz); !strm_.generated.count(k)) want.push_back(k);
-      if (cz >= hi[2]) {
+      for (; zi < zs.size() && want.size() < n; ++zi)
+        if (const u64 k = key3(c[0], c[1], zs[zi]); !strm_.generated.count(k)) want.push_back(k);
+      if (zi >= zs.size()) {
         ++ci;
-        cz = lo[2];
+        if (ci < cols.size()) column_zs(ci);
       }
     }
   };
@@ -1067,11 +1202,33 @@ int World::Impl::stream_update() {
       if (v.capacity() < size_t(kChunkVox)) v = grid_.acquire_buffer(kAir);  // (recycled arrays)
     any.assign(n, 0);
     const ChunkSource* src = strm_.source.get();
+    // (what the source makes: a column's content; its floor and its implicit chunks are its fill)
+    std::vector<u8> fill(n, 0);
+    for (size_t j = 0; j < n; ++j) {
+      const IVec3 c = unkey3(want[j]);
+      const StreamColumn& col = strm_.columns[key3(c[0], c[1], 0)];
+      if (c[2] < col.z_lo || c[2] >= col.z_hi) fill[j] = 1;
+    }
     parallel_for(static_cast<i64>(n), 1, [&](i64 b0, i64 e0) {
-      for (i64 j = b0; j < e0; ++j) any[size_t(j)] = src->generate(unkey3(want[size_t(j)]), vox[size_t(j)]) ? 1 : 0;
+      for (i64 j = b0; j < e0; ++j)
+        if (!fill[size_t(j)]) any[size_t(j)] = src->generate(unkey3(want[size_t(j)]), vox[size_t(j)]) ? 1 : 0;
     });
     for (size_t j = 0; j < n && budget > 0 && empty_budget > 0; ++j) {
       const u64 k = want[j];
+      // (made meanwhile: a change of play under a column's floor brings back the fill around it)
+      if (strm_.generated.count(k)) continue;
+      if (fill[j]) {
+        const IVec3 c = unkey3(k);
+        const StreamColumn& col = strm_.columns[key3(c[0], c[1], 0)];
+        const Vox f = c[2] < col.z_lo ? col.below : kAir;  // (the floor, the fill under it, or the air above)
+        std::fill(vox[j].begin(), vox[j].end(), f);
+        insert_generated(k, vox_solid(f), std::move(vox[j]), false);
+        vox[j] = {};
+        ++generated;
+        if (grid_.chunk(c)) --budget;
+        else --empty_budget;
+        continue;
+      }
       insert_generated(k, any[j] != 0, std::move(vox[j]));
       vox[j] = {};
       ++generated;
@@ -1158,6 +1315,13 @@ int World::Impl::stream_update() {
   unload_sleepers(out, chunks_of_body);
   for (u64 k : out) evict_chunk(k);
   if (!out.empty()) unload_joints();
+  // (columns asked about but holding no chunk - out of range, or of no content - are forgotten)
+  for (auto it = strm_.columns.begin(); it != strm_.columns.end();) {
+    if (it->second.in_range <= 0 && it->second.extra <= 0 && hdist(unkey3(it->first)) > strm_.config.evict_radius)
+      it = strm_.columns.erase(it);
+    else
+      ++it;
+  }
   if (strm_.config.max_resident_mb > 0.0 && st_.ticks % 30 == 0) {
     const i64 budget_b = budget_bytes(strm_.config.max_resident_mb);
     i64 bytes = grid_.memory_bytes(Bytes::Used);  // (by what is used: the same on every platform)
@@ -1368,7 +1532,7 @@ MemoryReport World::Impl::memory() const {
   m.archived_chunks = static_cast<i32>(strm_.archive->size());
   m.caches += hash_bytes(warm_u_) + hash_bytes(judged_) + hash_bytes(dead_loads_);
   for (const auto& [id, l] : dead_loads_) m.caches += vec_bytes(l);
-  m.caches += hash_bytes(strm_.generated) + hash_bytes(strm_.column_count) + hash_bytes(strm_.home_grids);
+  m.caches += hash_bytes(strm_.generated) + hash_bytes(strm_.columns) + hash_bytes(strm_.home_grids);
   // (the fragment labelling's memo: kinds of chunk seen, their labels - a few dozen at most)
   for (const auto& [k, fm] : frag_memo_) m.caches += vec_bytes(fm.v) + vec_bytes(fm.broken) + fm.frags.memory_bytes();
   m.caches += hash_bytes(frag_memo_) + hash_bytes(solids_) + vec_bytes(touching_);

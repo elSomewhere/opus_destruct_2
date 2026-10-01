@@ -766,7 +766,7 @@ void World::Impl::apply_session(SessionDelta&& s) {
     std::vector<JointId> held;
     for (const auto& [r, j] : s.joints)
       if (strm_.archived_joints.insert(r.id).second) held.push_back(r.id);
-    for (u64 k : need) generate_chunk(k);
+    for (u64 k : need) materialize_chunk(k);
     for (JointId id : held) strm_.archived_joints.erase(id);
   }
   add_group(s);
@@ -859,7 +859,7 @@ void World::Impl::restore_groups() {
   if (strm_.archived_groups.empty()) return;
   std::vector<u64> ready;
   for (const auto& [key, g] : strm_.archived_groups)
-    if (std::all_of(g.chunks.begin(), g.chunks.end(), [&](u64 c) { return strm_.generated.count(c) > 0; })) ready.push_back(key);
+    if (std::all_of(g.chunks.begin(), g.chunks.end(), [&](u64 c) { return chunk_known(c); })) ready.push_back(key);
   for (u64 key : ready) {
     const auto it = strm_.archived_groups.find(key);
     for (JointId j : it->second.joints) strm_.archived_joints.erase(j);

@@ -51,7 +51,30 @@ struct World::Impl {
   void set_focus(const V3& p) { set_focus(std::vector<V3>{p}); }
   void set_focus(const std::vector<V3>& points);
   void ensure_resident(const IVec3& lo, const IVec3& hi);
+  // A column of a streamed world (ChunkSource::column_range), asked once while it is in use:
+  // [base, z_hi) is generated (base: z_lo, or the floor under it - a chunk of its fill - where the
+  // fill is solid); below base the fill and above z_hi the air are implicit, made only when
+  // something changes them (its extra chunks).
+  struct StreamColumn {
+    i32 z_lo = 0, z_hi = 0, base = 0;
+    Vox below = kAir;
+    i32 in_range = 0;  // generated chunks in [base, z_hi)
+    i32 extra = 0;     // generated (made) chunks outside it
+  };
+  // The chunk is in the world as the extraction sees it: generated, outside the extent, or
+  // implicit air above its column's content (false: not generated yet - the unknown world - or
+  // the implicit solid fill under a column's content: either holds what reaches into it).
   bool chunk_resident(const IVec3& chunk) const;
+  // Its voxels are known: generated, or implicit (its column's fill or the air above it).
+  bool chunk_known(u64 key) const;
+  // (streaming) the column's content range, asked of the source the first time
+  const StreamColumn& column_info(i32 cx, i32 cy);
+  const StreamColumn* column_if(i32 cx, i32 cy) const;
+  // (streaming) a chunk generated, or made from its column's fill if it is implicit: before
+  // something changes it (an edit, a carve). False: outside the extent, or not streaming.
+  bool materialize_chunk(u64 key);
+  // (streaming) the implicit chunks a carve or blast of radius r at c reaches, made first
+  void materialize_sphere(const V3& c, f64 r);
 
   std::vector<u8> save_delta() const;
   bool load_delta(const std::vector<u8>& bytes);
@@ -532,7 +555,8 @@ struct World::Impl {
   void evict_chunk(u64 key);
   void reset_archive(size_t bytes);  // (empty, bounded to bytes - 0: unbounded - with nothing listed as in it)
   void tear_fragment(const FragKey& f, const std::vector<IVec3>& vox);  // (torn out whole: WorldConfig::shards_hold_together)
-  void insert_generated(u64 key, bool any, std::vector<Vox>&& voxels);
+  // (from_source false: a chunk of its column's fill or air - no layers or grids asked of the source)
+  void insert_generated(u64 key, bool any, std::vector<Vox>&& voxels, bool from_source = true);
   f64 focus_distance(const IVec3& chunk) const;  // horizontal, m (to the nearest focus point)
   void generate_grids(u64 key);              // (the source's grids at home in a chunk just generated)
   void evict_grid(u16 g, u64 home_region);   // (a streamed grid out of range: its changes archived)
@@ -568,7 +592,7 @@ struct World::Impl {
     StreamConfig config{};
     IVec3 lo{}, hi{};  // the source's extent in chunks, held within range (enable_streaming)
     std::unordered_set<u64> generated;
-    std::unordered_map<u64, i32> column_count;
+    std::unordered_map<u64, StreamColumn> columns;  // key3(cx, cy, 0) -> its content
     // (the eviction scan: every few ticks, or at once when the focus moved far - it walks every
     // resident chunk; eviction has the radii's hysteresis to spare)
     i64 evict_scan_tick = -1000000;

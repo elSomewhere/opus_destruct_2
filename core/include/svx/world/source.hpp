@@ -30,7 +30,7 @@ struct SourceJoint {
   JointDesc desc;
 };
 
-// The tallest extent a streamed world keeps (chunks): its columns are resident whole.
+// The tallest content a column of a streamed world has (chunks: ChunkSource::column_range).
 constexpr i32 kMaxColumnChunks = 1024;
 
 // (Its calls must not throw: the core is built without exceptions, so one escaping into it is
@@ -44,9 +44,23 @@ class ChunkSource {
   // the members that do not when it first touches them.
   virtual bool generate(const IVec3& chunk, std::vector<Vox>& out) const = 0;
   // World extent in chunks: [lo, hi). Outside it the world is air. (The world holds it within
-  // the voxel key range - kVoxelLimit - and at most kMaxColumnChunks tall: beyond, it is cut.)
+  // the voxel key range - kVoxelLimit.)
   virtual IVec3 chunk_lo() const = 0;
   virtual IVec3 chunk_hi() const = 0;
+  // The chunks of column (cx, cy) that hold content: [*z_lo, *z_hi) (at most kMaxColumnChunks; the
+  // world holds them within the extent). Below z_lo the column is uniformly *below (anchored rock,
+  // say), above z_hi it is air: the world generates only the content, and the chunk under it as
+  // its fill (a floor, where below is solid), and keeps the rest implicit - solid below (a support
+  // to what reaches into it, as the unknown world is), air above - until something changes it
+  // there (a carve, an edit: it is made then from the fill). Default: the whole extent, air below
+  // (every chunk of the column generated). A pure function of the column, called from the world's
+  // thread; generate() is never asked for a chunk outside the range.
+  virtual void column_range(i32 cx, i32 cy, i32* z_lo, i32* z_hi, Vox* below) const {
+    (void)cx, (void)cy;
+    *z_lo = chunk_lo()[2];
+    *z_hi = chunk_hi()[2];
+    *below = kAir;
+  }
   // The region a chunk's changes are remembered and forgotten with (StreamConfig::archive_mb):
   // a unit that should come back whole, like a city block, so that no building returns in half.
   // Default: 8 x 8 chunk columns (32 m at the default voxel size), all heights.
