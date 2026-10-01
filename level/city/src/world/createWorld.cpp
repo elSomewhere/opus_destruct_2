@@ -14,6 +14,7 @@
 #include "world/World.hpp"
 #include "world/fields.hpp"
 #include "world/island.hpp"
+#include "world/landmarks.hpp"
 
 namespace svx::city {
 
@@ -48,7 +49,9 @@ std::shared_ptr<World> create_world(const Value& config) {
   w.caves = std::make_shared<Caves>(w);
   // (seaAt, isWet, seaHitsRect, seaShare, seaHitsSeg, openWaterAt, shoreNear, waterHitsRect: the
   // World methods below; streetLevel: network/roadLevel)
-  // (world/landmarks: island landmarks - lighthouse, boathouses, fish racks, cairns - on islands)
+  // island landmarks: lighthouse, boathouses, fish racks, cairns (world/landmarks; their open-ground
+  // test needs the cell plan: Landmarks::plan_occupied)
+  if (w.fields->island) w.landmarks = std::make_shared<Landmarks>(w);
   // (nature/forest: the forest)
   // (nature/boulders: the boulders)
   // small places (islands) go without elevated highways
@@ -67,8 +70,13 @@ std::shared_ptr<World> create_world(const Value& config) {
   // once voxel/compose's GroundTile exists), sewers, subway
   // (with a subway), site links, sites, highways (with highways: network/highways, id "highways",
   // order kHighwaySourceOrder, max_lod kHighwaySourceMaxLod; highway_z_range and
-  // rasterize_highways over the tile's z, wrapped likewise), buildings, dressing, skybridges,
-  // forest, boulders, ground cover, landmarks (with landmarks))
+  // rasterize_highways over the tile's z, wrapped likewise), buildings (buildings/source, id
+  // kBuildingSourceId, order kBuildingSourceOrder, max_lod kBuildingSourceMaxLod; building_z_range and
+  // rasterize_buildings over World::envelopes_in, World::voxelize_building at LOD 0), dressing,
+  // skybridges (city/skybridges, id kSkybridgeSourceId, order kSkybridgeSourceOrder, max_lod
+  // kSkybridgeSourceMaxLod; skybridge_z_range and rasterize_skybridges over the cell plans' bridges,
+  // skybridges_in), forest, boulders, ground cover, landmarks (with landmarks: world/landmarks, id kLandmarkSourceId,
+  // order kLandmarkSourceOrder, max_lod kLandmarkSourceMaxLod; landmark_z_range, rasterize_landmarks))
   return world;
 }
 
