@@ -14,6 +14,11 @@ const D = await import(REF + "city/diagonals.js");
 const { Rng, hashFloat, hashString } = await import(REF + "core/hash.js");
 const { DISTRICTS } = await import(REF + "world/registry.js");
 await import(REF + "city/districts.js");
+// (the site kinds register their districts too, as the port does: world/register_all.cpp)
+await import(REF + "sites/complex.js");
+await import(REF + "sites/militaryBase.js");
+await import(REF + "sites/researchComplex.js");
+await import(REF + "sites/mountainBase.js");
 const { makeConfig } = await import(REF + "config/defaults.js");
 
 const CLS = ["local", "collector", "arterial", "village", "rural"];

@@ -11,6 +11,9 @@
 #include "city/flavors.hpp"
 #include "nature/biomes.hpp"
 #include "sites/complex.hpp"
+#include "sites/militaryBase.hpp"
+#include "sites/mountainBase.hpp"
+#include "sites/researchComplex.hpp"
 #include "terrain/landforms.hpp"
 
 namespace svx::city {
@@ -27,6 +30,9 @@ void register_all() {
     register_civic();      // ARCHETYPES and STYLES (buildings/civic.js), before archetypes.js's
     register_archetypes();      // ARCHETYPES (buildings/archetypes.js)
     register_complex_themes();  // COMPLEX_THEMES (sites/complex.js)
+    register_military_base();     // DISTRICTS and SITES (sites/militaryBase.js)
+    register_research_complex();  // DISTRICTS and SITES (sites/researchComplex.js)
+    register_mountain_base();     // DISTRICTS and SITES (sites/mountainBase.js)
   });
 }
 

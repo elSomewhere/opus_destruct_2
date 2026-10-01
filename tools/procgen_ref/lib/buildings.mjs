@@ -13,6 +13,11 @@ const FL = await import(REF + "city/flavors.js");
 await import(REF + "buildings/styles.js");
 await import(REF + "buildings/civic.js");
 await import(REF + "buildings/archetypes.js");
+// (the site kinds register their districts after the complex themes: docs/CITY.md §2.2)
+await import(REF + "sites/complex.js");
+await import(REF + "sites/militaryBase.js");
+await import(REF + "sites/researchComplex.js");
+await import(REF + "sites/mountainBase.js");
 const F = await import(REF + "buildings/frame.js");
 const { makeConfig } = await import(REF + "config/defaults.js");
 

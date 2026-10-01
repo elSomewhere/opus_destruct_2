@@ -8,12 +8,17 @@
 //                            steep ground)
 //   plan(world, site)        the site's plan, made with the site (its bounds, if any, are what
 //                            sitesNear tests)
+//   surface(world, site)     the buildings it adds to its arterial cell's plan: lots and their
+//                            envelopes (optional; the cell plan merges them)
 //   structure(world, site)   its geometry as boxes and custom volumes (sites/kit), made once
 //   ground(site, x, y, out)  the surface material inside its pads (optional)
 //   port(world, site, to)    where a link tunnel may start (optional; sites/links)
 //
-// (The kinds' surface(world, site), the envelopes a cell plan merges, and pois come with the
-// kinds and the cell plan.)
+// (The kinds' pois, the viewer's points of interest, are not ported.) The kinds:
+// sites/militaryBase, sites/researchComplex, sites/mountainBase (register_all registers them).
+//
+// On a World of create_world, a site keeps off the highways' corridors and the water (the sea,
+// rivers and lakes) within its margin round its footprint; a World of World.js has neither.
 //
 // Sites are products of the layer's cache (a pure function of the world and the lattice cell):
 // any thread may ask for any site; a site's structure is made once, by the first to ask. A
@@ -29,6 +34,8 @@
 #include <string>
 #include <vector>
 
+#include "buildings/archetypes.hpp"
+#include "city/lots.hpp"
 #include "core/cache.hpp"
 #include "core/rect.hpp"
 #include "sites/kit.hpp"
@@ -93,10 +100,23 @@ struct SitePlaced {
   virtual ~SitePlaced() = default;
 };
 
-// def.plan's product (a kind derives its own): the bounds the site covers (none: its blend rect).
+// def.plan's product (a kind derives its own): the bounds the site covers (none: its blend rect),
+// and what the forest keeps clear of trees (nature/forest.js: `s.plan.clear ?? [s.blend,
+// s.plan.drive]`): the areas a kind names (clear), else its blend rect and its driveway (drive,
+// if any).
 struct SitePlan {
   std::optional<Rect> bounds;
+  std::optional<std::vector<Rect>> clear;
+  std::optional<Rect> drive;
   virtual ~SitePlan() = default;
+};
+
+// def.surface's product: a lot of the site's arterial cell (its id `C{i}_{j}/<kind><a>_<b>/l<k>`,
+// its block the site's id) and the envelope planned on it; the cell plan sets lot.building and
+// lot.site and keeps both.
+struct SiteSurface {
+  Lot lot;
+  Envelope env;
 };
 
 // A link tunnel's port (def.port): a point and floor level deep inside the site's complex (d: the
@@ -130,6 +150,7 @@ struct SiteDef {
   std::optional<double> margin, max_relief;
   std::function<std::shared_ptr<const SitePlaced>(const World& w, const SiteCandidate& cand)> place;
   std::function<std::shared_ptr<const SitePlan>(const World& w, const Site& site)> plan;
+  std::function<std::vector<SiteSurface>(const World& w, const Site& site)> surface;
   std::function<SiteStructure(const World& w, const Site& site)> structure;
   std::function<void(const Site& site, double x, double y, SiteGround& out)> ground;
   std::function<std::optional<SitePort>(const World& w, const Site& site, const Point2* toward)> port;

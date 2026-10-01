@@ -4,6 +4,7 @@
 #include "core/hash.hpp"
 #include "core/math.hpp"
 #include "network/arterials.hpp"
+#include "network/highways.hpp"
 #include "terrain/terrain.hpp"
 #include "voxel/chunk.hpp"
 #include "world/caches.hpp"
@@ -167,10 +168,15 @@ std::shared_ptr<const Site> SiteLayer::build(double a, double b) const {
     p->footprint = rect;
     placed = std::move(p);
   }
-  // (createWorld's world keeps sites off its highways' corridors and its water, within the margin
-  // round the footprint: `w.highways.corridorsNear(fpm).some((c) => c.hitsRect(fpm))` and
-  // `w.waterHitsRect(fpm, 10)` reject the site here. A bare World (World.js) has neither - nor
-  // has the port until network/highways and the water of createWorld come: they add both tests.)
+  // createWorld's world keeps sites off its highways' corridors and its water within the margin
+  // round the footprint (a World of World.js has neither: no highways, and no waterHitsRect - its
+  // rivers and lakes, which create_world installs with it)
+  const Rect& fp = placed->footprint;
+  const Rect fpm{fp.x0 - margin, fp.y0 - margin, fp.x1 + margin, fp.y1 + margin};
+  if (w.highways)
+    for (const HighwayCorridor& hc : w.highways->corridors_near(fpm))
+      if (hc.hits_rect(fpm)) return nullptr;
+  if (w.rivers && w.lakes && w.water_hits_rect(fpm, 10)) return nullptr;
   auto site = std::make_shared<Site>();
   site->id = js::cat("site:", def->id, ":", ca, "_", cb);
   site->type = def->id;
