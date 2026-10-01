@@ -536,6 +536,10 @@ void Amg::factor_coarsest() {
       }
     });
   }
+  // (the factor's transpose into the upper triangle - A's, used by the factorization alone - so
+  // the backward pass reads rows, not columns a row apart: the same products in the same order)
+  for (i32 i = 0; i < m; ++i)
+    for (i32 k = i + 1; k < m; ++k) chol_[size_t(i) * size_t(m) + size_t(k)] = chol_[size_t(k) * size_t(m) + size_t(i)];
 }
 
 void Amg::solve_coarsest(const f64* b, f64* x) const {
@@ -547,7 +551,7 @@ void Amg::solve_coarsest(const f64* b, f64* x) const {
   }
   for (i32 i = m - 1; i >= 0; --i) {
     f64 v = x[i];
-    for (i32 k = i + 1; k < m; ++k) v -= chol_[size_t(k) * size_t(m) + size_t(i)] * x[k];
+    for (i32 k = i + 1; k < m; ++k) v -= chol_[size_t(i) * size_t(m) + size_t(k)] * x[k];
     x[i] = v / chol_[size_t(i) * size_t(m) + size_t(i)];
   }
 }
