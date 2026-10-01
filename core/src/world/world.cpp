@@ -692,7 +692,11 @@ void World::Impl::append_nodes(Structure& s, const std::vector<FragKey>& frags, 
     }
     const FragInfo& fi = frag_chunk_if(frags[size_t(f)])->frags[size_t(frags[size_t(f)].idx)];
     const IVec3 l = local_of(fi.first);
-    key[size_t(f)] = mix64(frags[size_t(f)].chunk ^ (static_cast<u64>((l[0] / cell) * 64 + (l[1] / cell) * 8 + l[2] / cell) << 58));
+    // (the cell in its chunk, two bits an axis - the reference's packing lost the x cell above the
+    // key's six bits: cells a chunk long in x. WorldConfig::cluster_cubes)
+    const u64 c = cfg_.cluster_cubes ? static_cast<u64>(((l[0] / cell) << 4) | ((l[1] / cell) << 2) | (l[2] / cell))
+                                     : static_cast<u64>((l[0] / cell) * 64 + (l[1] / cell) * 8 + l[2] / cell);
+    key[size_t(f)] = mix64(frags[size_t(f)].chunk ^ (c << 58));
   }
   std::vector<std::pair<i32, i32>> links;
   for (const SecAcc& A : fine)
@@ -938,7 +942,7 @@ void World::Impl::step_structures() {
       // (its strengths changed - damage - and its loads did not: judged again as it stands; the
       // judgement reads the bonds and the solution only, not the preconditioner)
       s.rejudge = false;
-      if (!s.solving && !s.stale && s.u.size() == 6 * s.P.nodes.size()) {
+      if (!s.solving && !s.stale && s.converged && s.u.size() == 6 * s.P.nodes.size()) {
         s.shock = false;
         judge(s);
         continue;
@@ -972,6 +976,7 @@ void World::Impl::step_structures() {
                     static_cast<long long>(s.P.matrix_blocks()), ms_since(tp));
     }
     if (!s.P.running()) {
+      s.converged = false;
       s.P.begin(load_vector(s), s.u);
       budget -= cfg_.true_solve_work ? s.P.work_per_iteration() : 2 * s.P.matrix_blocks();
     }
@@ -987,9 +992,13 @@ void World::Impl::step_structures() {
     st_.pcg_iters += r.iters;
     if (r.breakdown) {
       // (not positive definite: a mechanism the connectivity pass has not split off yet, or a
-      // stale operator) re-assemble from scratch and restart
+      // stale operator) re-assemble from scratch and restart - from what is finite of its start
+      // and loads: a value that is not would break every solve down again, tick after tick
       s.P.invalidate();
       s.run_iters = 0;
+      for (std::vector<f64>* v : {&s.u, &s.ext, &s.ext_solved})
+        for (f64& x : *v)
+          if (!std::isfinite(x)) x = 0.0;
       detach_unsupported(s);
       continue;
     }
@@ -1013,6 +1022,9 @@ void World::Impl::step_structures() {
         s.multigrid = true;
       } else {
         s.P.stop();
+        // (diverged on the operator it would have again: from where it started, it would go the
+        // same way - it starts from rest)
+        if (cfg_.rebuild_stale_only && diverging) std::fill(s.u.begin(), s.u.end(), 0.0);
       }
       s.run_iters = 0;
       if (++s.restarts >= cfg_.solve_restarts) {
@@ -1027,6 +1039,7 @@ void World::Impl::step_structures() {
       s.restarts = 0;
       s.P.current(s.u);
       s.P.stop();
+      s.converged = true;
       ++st_.solves;
       s.solved_at = st_.ticks;
       // a stale preconditioner (many changes since it was built): rebuild it for the next solve
@@ -1195,6 +1208,7 @@ void World::Impl::judge(Structure& s) {
     crack_event(B.p, B.n, phi);
   }
   s.shock = true;
+  s.solving = true;  // (what the broken bonds carried goes elsewhere: solved again - after a re-judgement too)
   ++s.rounds;
   detach_unsupported(s, hinges.empty() ? nullptr : &hinges);
 }
@@ -1793,7 +1807,10 @@ void World::Impl::finish_loads(int substeps) {
     for (size_t i = 0; i < n; ++i) {
       f64* e = &s.ext[6 * i];
       const f64* a = &s.acc[6 * i];
-      for (int q = 0; q < 6; ++q) e[q] += ema * (a[q] - e[q]);
+      for (int q = 0; q < 6; ++q) {
+        e[q] += ema * (a[q] - e[q]);
+        if (!std::isfinite(e[q])) e[q] = std::isfinite(a[q]) ? a[q] : 0.0;  // (an overflow is not kept)
+      }
       const f64 thr = cfg_.load_trigger * s.weight[i] + cfg_.load_trigger_abs;
       if (a[0] == 0.0 && a[1] == 0.0 && a[2] == 0.0 && std::abs(e[0]) + std::abs(e[1]) + std::abs(e[2]) < 0.01 * thr)
         for (int q = 0; q < 6; ++q) e[q] = 0.0;  // (unloaded)

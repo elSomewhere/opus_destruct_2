@@ -1318,6 +1318,10 @@ MemoryReport World::Impl::memory() const {
   m.caches += hash_bytes(warm_u_) + hash_bytes(judged_) + hash_bytes(dead_loads_);
   for (const auto& [id, l] : dead_loads_) m.caches += vec_bytes(l);
   m.caches += hash_bytes(strm_.generated) + hash_bytes(strm_.column_count) + hash_bytes(strm_.home_grids);
+  // (the fragment labelling's memo: kinds of chunk seen, their labels - a few dozen at most)
+  for (const auto& [k, fm] : frag_memo_) m.caches += vec_bytes(fm.v) + vec_bytes(fm.broken) + fm.frags.memory_bytes();
+  m.caches += hash_bytes(frag_memo_) + hash_bytes(solids_) + vec_bytes(touching_);
+  for (const auto& [k, c] : solids_) m.caches += vec_bytes(c.bits) + vec_bytes(c.from);
   m.queues = vec_bytes(events_) + vec_bytes(strm_.evicted_chunks) + vec_bytes(queue_) + vec_bytes(seeds_) + grid_.dirty_bytes() + vec_bytes(grid_dirty_) +
              hash_bytes(ext_.host_dirty) + vec_bytes(ext_.sys_changed) + vec_bytes(ext_.sys_generated) + vec_bytes(ext_.sys_evicted);
   for (const auto& [g, l] : ext_.loads) m.caches += vec_bytes(l) + 48;

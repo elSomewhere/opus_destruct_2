@@ -466,7 +466,7 @@ PcgResult StressProblem::iterate(int maxit, f64 rtol) {
 void StressProblem::current(std::vector<f64>& u) const {
   const size_t n = nodes.size();
   u.assign(6 * n, 0.0);
-  if (run_.x.size() != 6 * size_t(nfree_)) return;
+  if (run_.x.size() != 6 * size_t(nfree_) || dof_.size() != n) return;  // (no solve: released, or never assembled)
   for (size_t i = 0; i < n; ++i) {
     const i32 d = dof_[i];
     if (d < 0) continue;

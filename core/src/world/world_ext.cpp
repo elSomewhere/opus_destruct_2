@@ -241,8 +241,14 @@ u64 load_hash(const VoxelLoad& l) {
 void World::Impl::set_loads(u64 group, std::vector<VoxelLoad> loads) {
   std::vector<VoxelLoad> ok;
   ok.reserve(loads.size());
-  for (const VoxelLoad& l : loads)
-    if (finite3(l.force) && in_voxel_range(l.voxel)) ok.push_back(l);
+  // (a load of up to 1e12 N each - a hundred million tonnes' weight: sums of them stay finite)
+  constexpr f64 kMaxLoad = 1e12;
+  for (VoxelLoad l : loads) {
+    if (!finite3(l.force) || !in_voxel_range(l.voxel)) continue;
+    const f64 F = norm(l.force);
+    if (F > kMaxLoad) l.force *= kMaxLoad / F;
+    ok.push_back(l);
+  }
   // (the structures under loads that are new or changed are extracted, if they are not
   // registered: loads on a structure nobody touched would go unnoticed; registered structures
   // see the current loads every tick)

@@ -664,6 +664,7 @@ struct World::Impl::Structure {
   std::vector<f64> peak_mag;
   bool solving = true, stale = false, shock = true, dead = false;
   bool rejudge = false;            // strengths changed (damage): judged again at the current solution
+  bool converged = false;          // its last solve converged: u is a solution (what a re-judgement reads)
   std::vector<GKey> changed;       // chunks re-fragmented since the structure was made (stale)
   i32 gone = 0;                    // retired nodes (detached / carved away)
   i32 run_iters = 0;               // PCG iterations of the solve in progress

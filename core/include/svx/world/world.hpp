@@ -231,6 +231,13 @@ struct WorldConfig {
   //   shards_hold_together: a fragment a blast or a punch tears out whole has its faces with the
   //     rest torn, and keeps its own: a later cut breaks the shard as a piece; off: every face of
   //     its voxels is torn - a shard of loose voxels, all dust at the next cut or shot.
+  //   cluster_cubes (OFF by default - a choice for the quality pass, not a fix to take silently):
+  //     a structure of more than cluster_nodes fragments has them clustered in 1 m (2 m) cubes of
+  //     its chunks, as was meant; off: the reference's cell key, which loses the cell along x -
+  //     clusters a chunk (4 m) long in x: cracks along x only at chunk edges, a building's
+  //     strength by its orientation. On, large structures fail differently (the tower's side
+  //     blast brings it down: 7966 bonds broken, not 32) and a damaged building's solve costs
+  //     some 2.5 times as much.
   //   rigid.busy_hold, rigid.warm_to_step (RigidParams): busy mode decided once a tick, and held
   //     until a collapse is well under its thresholds; the solver's warm starts scaled to the
   //     substep's length; off: decided every substep, warm starts as they were.
@@ -247,6 +254,7 @@ struct WorldConfig {
   bool coarsen_dense_levels = true;
   bool reaggregate_levels = true;
   bool shards_hold_together = true;
+  bool cluster_cubes = false;  // (off: see above - a choice of the structural model's resolution)
   i32 evict_scan_ticks = 10;
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
   f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)

@@ -1121,6 +1121,33 @@ TEST_CASE("world: a piece cut down to fewer voxels than a piece has turns to dus
   CHECK(dust);
 }
 
+TEST_CASE("world: a large structure's fragments cluster in cubes, alike along every axis (cluster_cubes)") {
+  // a concrete slab of some 4000 fragments - past cluster_nodes - lying along x, or along y
+  auto nodes = [](bool cubes, bool along_x) {
+    WorldConfig cfg;
+    cfg.cluster_cubes = cubes;
+    World w;
+    w.configure(cfg);
+    VoxelGrid g;
+    g.h = kH;
+    box(g, {-4, -4, -2}, {140, 140, 0}, kRock);
+    box(g, {0, 0, 0}, along_x ? IVec3{128, 56, 24} : IVec3{56, 128, 24}, kConcrete);
+    g.compact();
+    g.lo = {-4, -4, -2};
+    g.hi = {140, 140, 24};
+    w.load(std::move(g));
+    REQUIRE(w.bake());
+    w.carve(V3{kH * 4, kH * 4, kH * 20}, 0.2);  // (a nick at a corner: the slab is solved again)
+    w.tick();
+    return w.stats().solve_nodes;
+  };
+  const i64 x = nodes(true, true), y = nodes(true, false), xr = nodes(false, true), yr = nodes(false, false);
+  MESSAGE("nodes: in cubes " << x << " (along x) " << y << " (along y); the reference's " << xr << " " << yr);
+  CHECK(std::abs(x - y) <= x / 50);  // (the same slab, turned: as many clusters - its fragments are not quite the same)
+  CHECK(x > 2 * xr);                 // (1 m cubes, not cells a chunk long)
+  CHECK(std::abs(xr - yr) > xr / 10);  // (the reference's: by its orientation)
+}
+
 TEST_CASE("world: a blast in the air loads what is around it by its energy") {
   // (nothing within its shatter radius: the kinetic energy it has goes to what it loads)
   auto run = [](f64 energy) {
@@ -1172,6 +1199,52 @@ TEST_CASE("world: what a blast's load breaks off flies off with the momentum it 
   MESSAGE("blast 2.2 m in front of a wall: its parts moved off at up to " << best << " m/s on average (" << m_best << " kg)");
   CHECK(m_best > 100.0);
   CHECK(best > 1.0);
+}
+
+TEST_CASE("world: a structure judged again for damage, that breaks there, is solved again: the cascade goes on") {
+  // a slab cantilevered 2 m from an anchored wall, its root's left half then damaged through
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-8, -2, 0}, {0, 18, 40}, kRock);
+  box(g, {0, 0, 24}, {16, 16, 28}, kConcrete);
+  g.compact();
+  g.lo = {-8, -2, 0};
+  g.hi = {16, 18, 40};
+  World w;
+  w.load(std::move(g));
+  i32 over = 0;
+  w.probe_utilization({8, 8, 26}, &over);
+  REQUIRE(over == 0);
+  for (int t = 0; t < 120; ++t) w.tick();
+  const i64 solves = w.stats().solves;
+  std::vector<LayerEdit> ed;
+  for (i32 x = 0; x < 2; ++x)
+    for (i32 y = 0; y < 8; ++y)
+      for (i32 z = 24; z < 28; ++z) ed.push_back(LayerEdit{{x, y, z}, 255});
+  w.set_layer(World::kDamageLayer, ed);
+  for (int t = 0; t < 300; ++t) w.tick();
+  CHECK(w.stats().bonds_broken > 0);
+  CHECK(w.stats().solves > solves);  // (what the broken bonds carried, carried again: solved)
+  // nothing left standing over its strength (where the slab still stands)
+  over = 0;
+  if (vox_solid(w.grid().get(IVec3{14, 12, 26}))) w.probe_utilization({14, 12, 26}, &over);
+  CHECK(over == 0);
+}
+
+TEST_CASE("world: loads past all reason on a structure leave it judged again once they go (no rebuild every tick)") {
+  World w;
+  w.load(table_world());
+  REQUIRE(w.bake());
+  for (int t = 0; t < 30; ++t) w.tick();
+  w.set_loads(7, {VoxelLoad{{16, 16, 25}, V3{0, 0, -1e308}}, VoxelLoad{{16, 17, 25}, V3{0, 0, -1e308}}});
+  for (int t = 0; t < 4; ++t) w.tick();
+  w.set_loads(7, {});
+  for (int t = 0; t < 300; ++t) w.tick();
+  CHECK(w.stats().solving == 0);  // (at rest: nothing being solved, tick after tick)
+  for (const PieceState& p : w.pieces()) {
+    CHECK(std::isfinite(p.pos.x + p.pos.y + p.pos.z));
+    CHECK(std::isfinite(p.vel.x + p.vel.y + p.vel.z));
+  }
 }
 
 TEST_CASE("world: every cascade gets its own break rounds, however long a structure lives") {
