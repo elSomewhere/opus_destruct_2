@@ -43,6 +43,7 @@ exports, natively and in WASM, on any thread count.
 | prop prefabs, industry | `city/{propPrefabs,industry}.js` | `city/propPrefabs.*`, `city/industry.*` | stages `propprefabs`, `industry` |
 | polygon blocks, chamfers | `city/blockPoly.js`, `buildings/chamfer.js` | `city/blockPoly.*`, `buildings/chamfer.*` | stages `blockpoly`, `chamfer` |
 | site complexes | `sites/complex.js`, `sites/kit.js` (`box`, `finishStructure`) | `sites/complex.*`, `sites/kit.*` (the kit's surface structures and `planGate` come with the site kinds) | stage `complex` |
+| site layer | `world/sites.js` | `world/sites.*` (SITES, the layer, pads, the ground override, the site source's z range and rasterizer; the kinds, and the highway and water tests of a site's placement, come later) | stage `sites` (stand-in kinds: `tools/procgen_ref/lib/sitekinds.mjs`, `tests/city/site_kinds.hpp`) |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -237,7 +238,10 @@ so that it stays the oracle.
   order (`tools/procgen_ref/lib/worlds.mjs` `warmBasesAt` / `warmBasesIn`); the reference's
   samples are then the same in any order, and the port's. A stage that samples the terrain near
   settlements, directly or through any plan, must do the same, and plan the port lakes first once
-  lakes are ported (`lakes.portLakeOf`). The reference's golden digests (`test/golden/*.json`)
+  lakes are ported (`lakes.portLakeOf`). (The stages `sites` and `sitelinks` warm every base over
+  the lattice cells they probe and the sites and links those reach, `warmBasesIn`; a stage of the
+  real site kinds must reach as far as their placement samples: a stronghold's service road runs
+  up to 5 km from its apron.) The reference's golden digests (`test/golden/*.json`)
   were recorded with the shared context: a golden sample that was such a first touch may differ
   (to be measured when the golden stage is ported).
 - **The gullies' kernel cache** (`terrain/landforms.js`) is keyed `i * 1000003 + j` in the
