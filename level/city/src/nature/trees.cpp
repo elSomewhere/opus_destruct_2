@@ -1107,10 +1107,11 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
       // out; the hollow within, a voxel short of it, is skipped)
       int h0 = i1 + 1, h1 = i1;
       if (bare) {
-        const double hin = std::sqrt(((fine ? 0.38 : 0.68) - qz) / irx - dy2) - 1;
-        if (hin > 0) {
+        const double w2 = ((fine ? 0.38 : 0.68) - qz) / irx - dy2;
+        if (w2 > 1) {
           h0 = i0;
           h1 = i1;
+          const double hin = std::sqrt(w2) - 1;
           clip(base_x, s, p.x - 0.5 - hin, p.x - 0.5 + hin, h0, h1);
         }
       }
@@ -1118,11 +1119,10 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
       const uint32_t yi = g.y0[j];
       BlockCache::Entry* brow = blocks.e[g.bk[1][j]];
       const uint32_t gen = blocks.gen;
-      for (int i = i0; i <= i1; ++i) {
-        if (i == h0 && h0 <= h1) {
-          i = h1;
-          continue;
-        }
+      // (the row's voxels before its hollow and after it)
+      const int segs[2][2] = {{i0, h0 <= h1 ? h0 - 1 : i1}, {h0 <= h1 ? h1 + 1 : i1 + 1, i1}};
+      for (const auto& seg : segs)
+      for (int i = seg[0]; i <= seg[1]; ++i) {
         const int idx = i + j * kP + k * kP2;
         if (d[idx] != 0) continue;
         const double x = g.w[0][i];
@@ -1355,7 +1355,7 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
       row[k] = false;
       continue;
     }
-    W2[k] = whorl_at(p, H, s, fine, zz + s);
+    if (snow > 0) W2[k] = whorl_at(p, H, s, fine, zz + s);  // (read for the snow only)
     pts[k] = fine ? std::fmod((zz - p.z0) / p.tier, 1) : 0.5;
     // (a cone that leans: the axis at this height)
     ox[k] = part.lean ? p.x + p.lx * ((zz - p.zf) / p.hh) : p.x;
