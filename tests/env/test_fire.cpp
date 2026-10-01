@@ -444,3 +444,45 @@ TEST_CASE("fire: a burning floor of the world sets a turned crate of a grid on i
   MESSAGE("a crate of a turned grid on a burning floor: " << caught << " voxels caught");
   CHECK(caught > 0);
 }
+
+TEST_CASE("fire: a tree's leaves (decorative) burn away; they never held anything") {
+  World w;
+  Material leaves;
+  leaves.name = "leaves";
+  leaves.rho = 80.0;
+  leaves.decorative = true;
+  leaves.passable = true;
+  MaterialId lid{};
+  REQUIRE(w.register_material(leaves, &lid));
+  auto fire = std::make_shared<FireSystem>();
+  FireMaterial burns = fire->fire_material(MaterialId::Wood);
+  burns.burn_s = 3.0;
+  burns.ignition_c = 200.0;
+  fire->set_material(lid, burns);
+  FireMaterial post = fire->fire_material(MaterialId::Wood);
+  post.combustible = false;  // (the trunk does not burn here: what burns is the crown)
+  fire->set_material(MaterialId::Wood, post);
+  w.add_system(fire);
+  VoxelGrid g;
+  g.h = kH;
+  box(g, {-16, -16, -4}, {32, 32, 0}, kRock);
+  box(g, {10, 10, 0}, {12, 12, 24}, kWood);                       // a trunk
+  box(g, {6, 6, 24}, {16, 16, 30}, make_vox(lid, false));         // its crown
+  g.compact();
+  w.load(std::move(g));
+  w.bake();
+  auto leaves_left = [&] {
+    i32 n = 0;
+    for (i32 x = 6; x < 16; ++x)
+      for (i32 y = 6; y < 16; ++y)
+        for (i32 z = 24; z < 30; ++z) n += w.grid().get(x, y, z) == make_vox(lid, false);
+    return n;
+  };
+  REQUIRE(leaves_left() == 600);
+  fire->ignite(w, at({11, 11, 26}), 0.6);
+  for (int t = 0; t < 30 * 60 && leaves_left() > 0; ++t) w.tick();
+  CHECK(leaves_left() < 60);
+  CHECK(fire->stats().burnt_out > 0);
+  CHECK(w.pieces().empty());                         // (no structure lost: leaves held nothing)
+  CHECK(w.grid().get(11, 11, 20) == make_vox(MaterialId::Wood, false));  // (the trunk stands)
+}

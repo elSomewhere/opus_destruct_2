@@ -18,6 +18,8 @@ add_executable(svx_core_tests
   core/test_columns.cpp
   core/test_seams.cpp
   core/test_decorative.cpp
+  core/test_layer_kinds.cpp
+  core/test_pretouch.cpp
   core/test_config.cpp)
 target_include_directories(svx_core_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
 target_link_libraries(svx_core_tests PRIVATE svx_core)
@@ -77,7 +79,8 @@ add_executable(svx_game_tests
   game/test_vehicles.cpp
   game/test_drive_city.cpp
   game/test_pedestrians.cpp
-  game/test_api_people.cpp)
+  game/test_api_people.cpp
+  game/test_presets.cpp)
 target_include_directories(svx_game_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
 target_link_libraries(svx_game_tests PRIVATE svx_game svx_procgen svx_api)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

@@ -3,6 +3,7 @@
 
 #include <unordered_map>
 
+#include "city/cellNetwork.hpp"
 #include "core/js.hpp"
 #include "network/roadClasses.hpp"
 #include "world/World.hpp"
@@ -71,10 +72,10 @@ std::vector<RoadSeg> build_segments(const RoadList& roads) {
   std::vector<RoadSeg> segs;
   for (const RoadPtr& road : roads) {
     double acc = 0;
-    const std::vector<PPoint>& pts = road->pts;
+    const std::vector<RoadPt>& pts = road->pts;
     for (size_t k = 0; k + 1 < pts.size(); ++k) {
-      const PPoint& a = pts[k];
-      const PPoint& b = pts[k + 1];
+      const RoadPt& a = pts[k];
+      const RoadPt& b = pts[k + 1];
       const double len = js::hypot(b.x - a.x, b.y - a.y);
       if (len < 1e-6) continue;
       const double pad = road->hr + road->corner + 2;
@@ -85,8 +86,7 @@ std::vector<RoadSeg> build_segments(const RoadList& roads) {
       s.ay = a.y;
       s.bx = b.x;
       s.by = b.y;
-      s.az = a.z;
-      s.bz = b.z;
+      // (az, bz: a.z, b.z - undefined, no road's points have one)
       s.len = len;
       s.dx = (b.x - a.x) / len;
       s.dy = (b.y - a.y) / len;
@@ -210,15 +210,20 @@ std::vector<const RoadSeg*> RoadView::near(const Rect& rect) const {
   return out;
 }
 
-// World.js roadView: the roads of cell (i, j) and its eight neighbours, with junction annotations.
+// World.js roadView: the roads of cell (i, j) and its eight neighbours, with junction annotations
+// (the cell networks' roads, or those a test serves: World::cell_roads).
 std::shared_ptr<const RoadView> World::road_view(double i, double j) const {
   return caches().road_views.get(cell_key(i, j), [&]() -> std::shared_ptr<const RoadView> {
-    if (!cell_roads) SVX_FAIL("World::road_view: no cell networks (World::cell_roads unset)");
     RoadList roads;
     for (double dj = -1; dj <= 1; dj += 1)
       for (double di = -1; di <= 1; di += 1) {
-        const RoadList cell = cell_roads(i + di, j + dj);
-        roads.insert(roads.end(), cell.begin(), cell.end());
+        if (cell_roads) {
+          const RoadList cell = cell_roads(i + di, j + dj);
+          roads.insert(roads.end(), cell.begin(), cell.end());
+        } else {
+          const std::shared_ptr<const CellNet> net = cell_net(i + di, j + dj);
+          roads.insert(roads.end(), net->roads.begin(), net->roads.end());
+        }
       }
     return std::make_shared<const RoadView>(std::move(roads));
   });

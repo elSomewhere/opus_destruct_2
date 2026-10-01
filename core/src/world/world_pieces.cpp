@@ -96,7 +96,8 @@ Body* World::Impl::make_body_from_world(const std::vector<FragKey>& frags, const
         if (!lv) continue;
         if (S.layer[size_t(L)].empty()) S.layer[size_t(L)].assign(cells, 0);
         S.layer[size_t(L)][size_t(S.index(p))] = lv;
-        G.set_layer(L, p, 0);
+        // (a regenerable solid-bound layer's base value stays under the air: nothing reads it)
+        if (!G.layer_regenerable(L) || ext_.layers[size_t(L)].bind != LayerBind::Solid) G.set_layer(L, p, 0);
       }
     for (const IVec3& p : vox[k]) {
       const i32 i = S.index(p);

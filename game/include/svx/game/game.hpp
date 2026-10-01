@@ -252,6 +252,10 @@ class Game {
   bool load_delta(const std::vector<u8>& bytes);  // (movers keep their state; a played session's drops are not dropped again)
   V3 spawn_pos() const { return spawn_pos_; }
   V3 spawn_dir() const { return spawn_dir_; }
+  void set_spawn(const V3& pos, const V3& dir) {  // (a preset's: where the player starts)
+    spawn_pos_ = pos;
+    spawn_dir_ = dir;
+  }
 
   // Player commands (logged when recording).
   void set_viewer(const V3& eye);

@@ -12,8 +12,9 @@
 // Identity: JS compares roads by object identity. Within a view each road is one object (a view
 // gathers nine distinct cells), and the port compares pointers there. Across views (a road level
 // asking another cell's view about a road) the reference's objects are the same only while its
-// cell-network cache keeps them; the port compares ids there (same_road), which is what JS gives
-// when nothing is evicted, whatever the cache sizes (docs/CITY.md §6).
+// cell-network cache keeps them; the port compares roads there as network/road.hpp's same_road
+// does (the same id, made by the same cell), which is what JS gives when nothing is dropped,
+// whatever the cache sizes (docs/CITY.md §6).
 #pragma once
 
 #include <memory>
@@ -27,6 +28,10 @@
 #include "network/road.hpp"
 
 namespace svx::city {
+
+// A cell network's roads, as road views hold them (city/cellNetwork.hpp CellNet::roads).
+using RoadPtr = std::shared_ptr<const Road>;
+using RoadList = std::vector<RoadPtr>;
 
 struct RoadSeg;
 
@@ -72,7 +77,7 @@ struct RoadSeg {
   RoadPtr road;
   double idx = 0;  // the index of its first point in road.pts
   double ax = 0, ay = 0, bx = 0, by = 0;
-  double az = js::kNaN, bz = js::kNaN;  // (NaN: the points have none)
+  double az = js::kNaN, bz = js::kNaN;  // (the points' z: undefined, NaN - no road's points have one)
   double len = 0, dx = 0, dy = 0;       // length and unit direction
   double s0 = 0;                        // arc along the road where it starts
   double hc = 0, hr = 0, sidewalk = 0, parking = 0, median = 0, lanes = 0, lane = 0, shoulder = 0;
@@ -87,10 +92,6 @@ struct RoadSeg {
   // cell's view - the angled world - cached as its index there, -1 none: views are remade alike)
   Lazy<int> own;
 };
-
-// Does a and b denote the same road (JS: the same object)? Within a view, pointers; across views,
-// ids (see above).
-inline bool same_road(const Road& a, const Road& b) { return &a == &b || a.id == b.id; }
 
 // buildSegments(roads): the straight pieces of the roads, in order (degenerate pieces left out).
 std::vector<RoadSeg> build_segments(const RoadList& roads);

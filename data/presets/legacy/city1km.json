@@ -1,0 +1,8 @@
+{
+  "id": "legacy/city1km",
+  "label": "1 km city (legacy)",
+  "group": "legacy",
+  "description": "A 1 km square city streamed around the viewer, some of its buildings turned.",
+  "generator": "city1km",
+  "seed": 1
+}

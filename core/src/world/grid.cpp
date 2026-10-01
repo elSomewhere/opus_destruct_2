@@ -1,5 +1,7 @@
 #include "svx/world/grid.hpp"
 
+#include <atomic>
+
 #include <algorithm>
 #include <cstring>
 
@@ -71,14 +73,15 @@ void VoxelGrid::set(i32 x, i32 y, i32 z, Vox v) {
   c.free += (vox_free(v) ? 1 : 0) - (vox_free(slot) ? 1 : 0);
   slot = v;
   note_voxels_modified(key3(cc[0], cc[1], cc[2]));
-  // values bound to the voxel that was there, or to the air a solid took
-  if (c.has_layers())
+  // values bound to the voxel that was there, or to the air a solid took (a regenerable layer's
+  // base value under a voxel that went stays - nothing reads it - until a voxel is placed there)
+  if (c.has_layers() || any_regen_)
     for (int L = 0; L < static_cast<int>(layers_.size()); ++L) {
-      const LayerBind b = layers_[size_t(L)].bind;
-      if ((b == LayerBind::Solid && vox_solid(old)) || (b == LayerBind::Air && vox_solid(v))) {
-        const std::vector<u8>& a = c.layer[size_t(L)];
-        if (!a.empty() && a[size_t(chunk_index(p))]) set_layer(L, p, 0);
-      }
+      const LayerSpec& spec = layers_[size_t(L)];
+      const LayerBind b = spec.bind;
+      bool clear = (b == LayerBind::Solid && vox_solid(old)) || (b == LayerBind::Air && vox_solid(v));
+      if (spec.regenerable && b == LayerBind::Solid) clear = vox_solid(v);
+      if (clear && layer(L, p)) set_layer(L, p, 0);
     }
   c.vox_version = ++vox_seq_;
   note_modified(cc);
@@ -311,10 +314,11 @@ int VoxelGrid::add_layer(const LayerSpec& spec) {
   if (existing >= 0) {
     // (the same layer again; a different one under the same name is refused)
     const LayerSpec& l = layers_[size_t(existing)];
-    return l.persistent == spec.persistent && l.bind == spec.bind ? existing : -1;
+    return l.persistent == spec.persistent && l.bind == spec.bind && l.regenerable == spec.regenerable ? existing : -1;
   }
   if (static_cast<int>(layers_.size()) >= kMaxLayers || spec.name.empty() || spec.name.size() > 255) return -1;
   layers_.push_back(spec);
+  any_regen_ = any_regen_ || spec.regenerable;
   return static_cast<int>(layers_.size()) - 1;
 }
 
@@ -334,28 +338,127 @@ void VoxelGrid::adopt_layers(const std::vector<LayerSpec>& specs) {
   for (size_t i = 0; i < layers_.size() && identity; ++i) identity = to[i] == static_cast<int>(i);
   if (!identity)
     for (auto& [k, c] : chunks_) {
-      std::array<std::vector<u8>, kMaxLayers> nl;
+      std::array<LayerValues, kMaxLayers> nl;
       std::array<u16, kMaxLayers> nc{};
       for (size_t i = 0; i < kMaxLayers; ++i) {
-        if (c.layer[i].empty()) continue;
+        if (c.layer[i].empty() && !c.layer[i].own_) continue;
         if (i < layers_.size() && to[i] >= 0) {
           nl[size_t(to[i])] = std::move(c.layer[i]);
           nc[size_t(to[i])] = c.layer_count[i];
         } else {
-          release_buffer(std::move(c.layer[i]));
+          release_buffer(std::move(c.layer[i].v_));
         }
       }
       c.layer = std::move(nl);
       c.layer_count = nc;
     }
   layers_ = specs;
+  any_regen_ = false;
+  for (const LayerSpec& l : layers_) any_regen_ = any_regen_ || l.regenerable;
+}
+
+namespace {
+// (a uniform layer's values: a shared array per value, made once - at most 255 of them)
+const u8* uniform_array(u8 v) {
+  static std::array<std::atomic<const u8*>, 256> arrays{};
+  const u8* a = arrays[v].load(std::memory_order_acquire);
+  if (a) return a;
+  u8* made = new u8[size_t(kChunkVox)];
+  std::fill(made, made + kChunkVox, v);
+  const u8* expected = nullptr;
+  if (!arrays[v].compare_exchange_strong(expected, made, std::memory_order_acq_rel)) {
+    delete[] made;
+    return expected;
+  }
+  return made;
+}
+std::atomic<u64> g_base_epochs{0};
+}  // namespace
+
+const u8* LayerValues::data() const {
+  if (one_) return uniform_array(one_);
+  return v_.empty() ? nullptr : v_.data();
+}
+
+void VoxelGrid::set_layer_base(const LayerBase* b) {
+  base_ = b;
+  base_epoch_ = ++g_base_epochs;
+}
+
+const u8* VoxelGrid::base_values(int L, const IVec3& cc) const {
+  struct Memo {
+    u64 epoch = 0, key = 0;
+    int L = -1;
+    std::shared_ptr<const void> hold;
+    const u8* p = nullptr;
+  };
+  thread_local Memo m;
+  const u64 key = key3(cc[0], cc[1], cc[2]);
+  if (m.epoch == base_epoch_ && m.L == L && m.key == key) return m.p;
+  std::shared_ptr<const void> hold;
+  const u8* p = base_->base(L, cc, &hold);
+  m.epoch = base_epoch_;
+  m.key = key;
+  m.L = L;
+  m.hold = std::move(hold);
+  m.p = p;
+  return p;
+}
+
+const u8* VoxelGrid::layer_values(int L, const IVec3& cc, std::shared_ptr<const void>* hold) const {
+  if (L < 0 || L >= static_cast<int>(layers_.size())) return nullptr;
+  const Chunk* c = chunk(cc);
+  if (!c) return nullptr;
+  const LayerValues& a = c->layer[size_t(L)];
+  if (!a.empty()) return a.data();
+  if (a.own_ || !base_ || !layers_[size_t(L)].regenerable) return nullptr;
+  return base_->base(L, cc, hold);
+}
+
+void VoxelGrid::set_layer_values(int L, const IVec3& cc, const u8* values) {
+  if (L < 0 || L >= static_cast<int>(layers_.size()) || !values) return;
+  u32 n = 0;
+  bool same = true;
+  for (i32 i = 0; i < kChunkVox; ++i) {
+    n += values[i] != 0;
+    same = same && values[i] == values[0];
+  }
+  const u64 key = key3(cc[0], cc[1], cc[2]);
+  auto it = chunks_.find(key);
+  if (it == chunks_.end()) {
+    if (n == 0) return;
+    it = chunks_.emplace(key, Chunk{}).first;
+  }
+  Chunk& c = it->second;
+  LayerValues& a = c.layer[size_t(L)];
+  if (a.empty() && n == 0 && (a.own_ || !layers_[size_t(L)].regenerable)) return;
+  release_buffer(std::move(a.v_));
+  a.v_ = {};
+  a.one_ = 0;
+  a.own_ = layers_[size_t(L)].regenerable;
+  if (n == static_cast<u32>(kChunkVox) && same) {
+    a.one_ = values[0];
+  } else if (n > 0) {
+    a.v_ = acquire_buffer(0);
+    std::copy(values, values + kChunkVox, a.v_.data());
+  }
+  c.layer_count[size_t(L)] = static_cast<u16>(std::min<u32>(n, 0xFFFF));
+  std::unordered_set<u64>& d = layer_dirty_[size_t(L)];
+  d.insert(key);
+  if (d.size() > std::max<size_t>(65536, 4 * chunks_.size())) d.clear();  // (nobody takes them)
+  if (layers_[size_t(L)].persistent) note_modified(cc);
 }
 
 u8 VoxelGrid::layer(int L, const IVec3& p) const {
   if (L < 0 || L >= kMaxLayers) return 0;
-  const Chunk* c = chunk(chunk_of(p));
-  if (!c || c->layer[size_t(L)].empty()) return 0;
-  return c->layer[size_t(L)][size_t(chunk_index(p))];
+  const IVec3 cc = chunk_of(p);
+  const Chunk* c = chunk(cc);
+  if (!c) return 0;
+  const LayerValues& a = c->layer[size_t(L)];
+  if (!a.empty()) return a[size_t(chunk_index(p))];
+  if (a.own_ || !base_ || L >= static_cast<int>(layers_.size()) || !layers_[size_t(L)].regenerable) return 0;
+  const u8* b = base_values(L, cc);  // (a regenerable layer's base value)
+  return b ? b[size_t(chunk_index(p))] : 0;
 }
 
 bool VoxelGrid::set_layer(int L, const IVec3& p, u8 v) {
@@ -368,19 +471,40 @@ bool VoxelGrid::set_layer(int L, const IVec3& p, u8 v) {
     it = chunks_.emplace(key, Chunk{}).first;
   }
   Chunk& c = it->second;
-  std::vector<u8>& a = c.layer[size_t(L)];
-  if (a.empty()) {
-    if (v == 0) return false;
-    a = acquire_buffer(0);
+  LayerValues& a = c.layer[size_t(L)];
+  if (layers_[size_t(L)].regenerable && !a.own_) {
+    // (written in play: the base values become the chunk's own)
+    const u8* b = base_ ? base_values(L, cc) : nullptr;
+    if (b && b[size_t(chunk_index(p))] == v) return false;
+    if (b) {
+      a.v_ = acquire_buffer(0);
+      std::copy(b, b + kChunkVox, a.v_.data());
+      u32 n = 0;
+      for (u8 x : a.v_) n += x != 0;
+      c.layer_count[size_t(L)] = static_cast<u16>(n);
+      if (n == 0) {
+        release_buffer(std::move(a.v_));
+        a.v_ = {};
+      }
+    }
+    a.own_ = true;
   }
-  u8& slot = a[size_t(chunk_index(p))];
+  if (a.one_) {  // (one value over the chunk: an array now)
+    a.v_ = acquire_buffer(a.one_);
+    a.one_ = 0;
+  }
+  if (a.v_.empty()) {
+    if (v == 0) return false;
+    a.v_ = acquire_buffer(0);
+  }
+  u8& slot = a.v_[size_t(chunk_index(p))];
   if (slot == v) return false;
   if (slot == 0) ++c.layer_count[size_t(L)];
   if (v == 0) --c.layer_count[size_t(L)];
   slot = v;
   if (c.layer_count[size_t(L)] == 0) {
-    release_buffer(std::move(a));
-    a = {};
+    release_buffer(std::move(a.v_));
+    a.v_ = {};
   }
   std::unordered_set<u64>& d = layer_dirty_[size_t(L)];
   d.insert(key);
@@ -614,13 +738,17 @@ std::vector<u8> VoxelGrid::chunk_record(u64 k) const {
   // persistent layers with values here, by name
   std::vector<int> ls;
   for (size_t L = 0; L < layers_.size(); ++L)
-    if (layers_[L].persistent && c && !c->layer[L].empty()) ls.push_back(static_cast<int>(L));
+    if (layers_[L].persistent && c && (!c->layer[L].empty() || c->layer[L].own_)) ls.push_back(static_cast<int>(L));
   o.u8_(static_cast<u8>(ls.size()));
   for (int L : ls) {
     const std::string& name = layers_[size_t(L)].name;
     o.u8_(static_cast<u8>(name.size()));
     for (char ch : name) o.u8_(static_cast<u8>(ch));
-    o.rle(c->layer[size_t(L)]);
+    // (a regenerable layer's own values: zeros too, over its base)
+    const LayerValues& lv = c->layer[size_t(L)];
+    std::vector<u8> vals(kChunkVox, 0);
+    if (!lv.empty()) std::copy(lv.begin(), lv.end(), vals.begin());
+    o.rle(vals);
   }
   // broken junction samples
   const u32 nj = c ? static_cast<u32>(c->jbroken.size()) : 0u;
@@ -768,16 +896,27 @@ bool VoxelGrid::apply_record(const std::vector<u8>& rec, u64* key_out) {
     for (auto& [name, d] : cd.layers)
       if (name == layers_[L].name) data = &d;
     // (a layer cleared by the record is a change too)
-    if (c.layer_count[L]) layer_dirty_[L].insert(cd.key);
-    release_buffer(std::move(c.layer[L]));
-    c.layer[L] = {};
+    LayerValues& a = c.layer[L];
+    if (c.layer_count[L] || a.own_) layer_dirty_[L].insert(cd.key);
+    release_buffer(std::move(a.v_));
+    a.v_ = {};
+    a.one_ = 0;
+    a.own_ = false;
     c.layer_count[L] = 0;
     if (!data) continue;
+    // (a regenerable layer the record holds: the chunk's own values, over its base)
+    a.own_ = layers_[L].regenerable;
+    if (a.own_) layer_dirty_[L].insert(cd.key);
     u32 n = 0;
-    for (u8 x : *data) n += x != 0;
+    bool same = true;
+    for (u8 x : *data) {
+      n += x != 0;
+      same = same && x == (*data)[0];
+    }
     if (n == 0) continue;
-    c.layer[L] = std::move(*data);
-    c.layer_count[L] = static_cast<u16>(n);
+    if (n == static_cast<u32>(kChunkVox) && same) a.one_ = (*data)[0];
+    else a.v_ = std::move(*data);
+    c.layer_count[L] = static_cast<u16>(std::min<u32>(n, 0xFFFF));
     layer_dirty_[L].insert(cd.key);
   }
   if (c.solid == 0) compact_.push_back(cd.key);  // (an emptied chunk restored: compacted after the tick)
@@ -817,7 +956,7 @@ void VoxelGrid::insert_chunk(const IVec3& cc, std::vector<Vox>&& voxels) {
   release_buffer(std::move(c.broken));
   release_buffer(std::move(c.strength));
   for (size_t L = 0; L < kMaxLayers; ++L) {
-    release_buffer(std::move(c.layer[L]));
+    release_buffer(std::move(c.layer[L].v_));
     c.layer[L] = {};
     c.layer_count[L] = 0;
   }
@@ -856,7 +995,7 @@ void VoxelGrid::remove_chunk(const IVec3& cc) {
     release_buffer(std::move(it->second.v));
     release_buffer(std::move(it->second.broken));
     release_buffer(std::move(it->second.strength));
-    for (auto& l : it->second.layer) release_buffer(std::move(l));
+    for (auto& l : it->second.layer) release_buffer(std::move(l.v_));
     chunks_.erase(it);
   }
   dirty_.erase(k);  // (gone: the host hears of it as evicted)

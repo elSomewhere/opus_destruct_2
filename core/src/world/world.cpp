@@ -147,6 +147,8 @@ void World::Impl::load(VoxelGrid&& g) {
   // (a voxel size the world can work with: a NaN, zero or negative one is the default's)
   g.h = g.h > 0.0 && std::isfinite(g.h) ? std::clamp(g.h, 1e-3, 1e2) : VoxelGrid{}.h;
   grid_ = std::move(g);
+  grid_.set_layer_base(nullptr);  // (a streamed world's: enable_streaming sets it)
+  layer_cache_.clear();
   for (u64 k : old_keys) grid_.mark_dirty(unkey3(k));
   grid_.mark_all_dirty();
   ext_.loads.clear();
@@ -633,7 +635,9 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
   st_.extractions++;
   st_.extracted_nodes += static_cast<i64>(members.size());
   if (!any_support) {
-    if (detach_free) {
+    if (pretouching_) {
+      // (pre-touch: what stands on nothing - a resting object - is left as it rests)
+    } else if (detach_free) {
       // a free piece: it falls
       make_body_from_world(members, V3{}, V3{});
     } else if (jointed(members)) {
@@ -2898,6 +2902,7 @@ void World::Impl::tick() {
   const auto ts = Clock::now();
   step_structures();
   if (!deco_check_.empty()) shed_orphans();  // (leaves on what came loose, was cut)
+  if (cfg_.pretouch_radius > 0.0 && strm_.source) pretouch();
   st_.structural_ms = ms_since(ts);
   static const bool tprof = diag("SVX_PROFILE_TICK");
   if (tprof && st_.ticks % 30 == 0)

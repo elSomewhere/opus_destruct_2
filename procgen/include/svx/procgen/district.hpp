@@ -93,6 +93,7 @@ class DistrictSource : public GameSource {
   bool generate_layer(const IVec3& chunk, const std::string& layer, std::vector<u8>& out) const override;
   std::vector<SourceGrid> grids(const IVec3& chunk) const override;
   bool generate_grid(u32 id, VoxelGrid& out) const override;
+  i64 memory_bytes() const override;  // (the district it streams from: its chunks' arrays)
   V3 spawn_pos() const override { return d_->focus; }
   V3 spawn_dir() const override { return V3{1, 0, 0}; }
   const District& district() const { return *d_; }

@@ -239,6 +239,14 @@ void DistrictSource::column_range(i32 cx, i32 cy, i32* z_lo, i32* z_hi, Vox* bel
   *below = make_vox(MaterialId::Rock, true);
 }
 
+i64 DistrictSource::memory_bytes() const {
+  i64 b = 0;
+  for (const auto& [k, r] : d_->chunks) b += vec_bytes(r.vox) + vec_bytes(r.look) + vec_bytes(r.flora) + vec_bytes(r.water) + vec_bytes(r.props);
+  for (const District::Grid& g : d_->grids)
+    for (const District::GridChunk& c : g.chunks) b += vec_bytes(c.vox) + vec_bytes(c.look) + vec_bytes(c.flora);
+  return b;
+}
+
 u64 DistrictSource::region(const IVec3& c) const {
   auto it = columns_.find(key3(c[0], c[1], 0));
   if (it == columns_.end()) return ChunkSource::region(c);

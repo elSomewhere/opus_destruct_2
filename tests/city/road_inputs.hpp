@@ -1,7 +1,7 @@
 // svx_city tests — the road network's inputs (tools/procgen_ref/lib/roads.mjs is the Node twin):
 // scripted road sets drawn from rec::Samples, and the reference's own roads and waters recorded
-// by a stage (tools/procgen_ref/data/<stage>.json), served to a World through World::cell_roads
-// and World::wet_source while the cell networks and the waters are later stages of the port.
+// by a stage (tools/procgen_ref/data/<stage>.json), served to a World through its overrides
+// World::cell_roads and World::wet_source (docs/CITY.md §6).
 #pragma once
 
 #include <cmath>
@@ -47,6 +47,8 @@ inline RoadList scripted_roads(rec::Samples& r, int k, double ox = 0, double oy 
     const double walk = std::floor(r() * 44) - 4;
     road->id = js::cat("S", k, "/r", q);
     road->cell = js::cat("S", k);
+    // (a field left out: undefined, NaN - the road view's defaults)
+    road->corner = road->median = road->parking = road->lanes = road->lane = road->sidewalk = road->shoulder = js::kNaN;
     road->hc = hc0;
     road->hr = hc0 + js::max(0.0, walk);
     const double corner = std::floor(r() * 70);
@@ -74,8 +76,8 @@ inline RoadList scripted_roads(rec::Samples& r, int k, double ox = 0, double oy 
     double x, y;
     if (q > 0 && r() < 0.35) {
       const Road& o = *roads[static_cast<size_t>(std::floor(r() * q))];
-      const PPoint& p = o.pts.front();
-      const PPoint& e = o.pts.back();
+      const RoadPt& p = o.pts.front();
+      const RoadPt& e = o.pts.back();
       const double t = r();
       const double lat = (r() - 0.5) * 2 * (o.hc + 4);
       const double L = js::or_(js::hypot(e.x - p.x, e.y - p.y), 1);
@@ -228,6 +230,8 @@ inline std::map<std::string, std::shared_ptr<const RecordedWorld>> load_recorded
         auto road = std::make_shared<Road>();
         road->id = js::cat(cell, "/r", rv[size_t{0}].to_number());
         road->cell = cell;
+        road->ci = i;
+        road->cj = j;
         const size_t cls = static_cast<size_t>(rv[size_t{1}].to_number());
         road->cls = classes[cls].str();
         const Value& pts = rv[size_t{2}];

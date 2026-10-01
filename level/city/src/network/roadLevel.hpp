@@ -20,6 +20,7 @@
 #pragma once
 
 #include <optional>
+#include <vector>
 
 #include "network/road.hpp"
 #include "network/roadView.hpp"
@@ -28,7 +29,19 @@ namespace svx::city {
 
 class World;
 
-// roadProfile(world, road): the road's profile, pinned at its ends (cached on the road).
+// A road's vertical profile (roadProfile; network/road.hpp's Road::prof, prof0): its levels z
+// (voxels, as a Float32Array keeps them) every 8 m of its arc and at its end, its length L and the
+// number of samples n; in the angled world with pitched roads, knots of its own (ks arc, kz level:
+// the profile pitched to the grade table; knots false: none).
+struct RoadProfile {
+  std::vector<float> z;
+  double L = 0;
+  int n = 0;
+  bool knots = false;
+  std::vector<double> ks, kz;
+};
+
+// roadProfile(world, road): the road's profile, pinned at its ends (cached on the road: Road::prof).
 const RoadProfile& road_profile(const World& world, const Road& road);
 
 // The level (voxels) of a profile at arc s (profileAt: the knots where it has them, else the

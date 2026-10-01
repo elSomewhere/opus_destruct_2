@@ -6,7 +6,7 @@
 // keeps growing - with --check, the exit status says so (1: the second half of the session held
 // more than the first half's peak allows).
 //
-// usage: svx_soak [--world city|drive|tower|rooms|yard] [--wad F --map M] [--minutes M] [--report S]
+// usage: svx_soak [--world city|drive|tower|rooms|yard] [--preset ID] [--wad F --map M] [--minutes M] [--report S]
 //          [--speed M/S] [--extent KM] [--archive-mb MB] [--forget-s S] [--threads T] [--no-shoot]
 //          [--no-env] [--people N] [--check]
 #include <algorithm>
@@ -27,6 +27,7 @@
 #include "svx/procgen/city.hpp"
 #include "svx/procgen/drive_city.hpp"
 #include "svx/procgen/levels.hpp"
+#include "svx/procgen/presets.hpp"
 
 #if defined(__APPLE__)
 #include <mach/mach.h>
@@ -75,13 +76,14 @@ struct Rng {
 
 int main(int argc, char** argv) {
   std::setvbuf(stdout, nullptr, _IOLBF, 0);  // (line by line, also into a pipe or a file)
-  std::string world = "city", wad_path, map_name = "MAP01";
+  std::string world = "city", wad_path, map_name = "MAP01", preset;
   f64 minutes = 10.0, report_s = 30.0, speed = 12.0, extent_km = 16.0, archive_mb = -1.0, forget_s = -1.0;
   int threads = 0, people = 24;
   bool shoot = true, env = true, check = false;
   for (int i = 1; i < argc; ++i) {
     auto arg = [&](const char* n) { return std::strcmp(argv[i], n) == 0 && i + 1 < argc; };
     if (arg("--world")) world = argv[++i];
+    else if (arg("--preset")) preset = argv[++i];
     else if (arg("--wad")) wad_path = argv[++i];
     else if (arg("--map")) map_name = argv[++i];
     else if (arg("--minutes")) minutes = std::atof(argv[++i]);
@@ -101,7 +103,28 @@ int main(int argc, char** argv) {
   Game game;
   std::unique_ptr<doom::DoomWorld> dw;
   bool streamed = false;
-  if (!wad_path.empty()) {
+  bool people_world = false;  // (characters about the viewer: the drive city's, a city preset's)
+  if (!preset.empty()) {
+    // a preset (docs/PRESETS.md): its world, streaming, tunables and population
+    const Preset* p = find_preset(preset);
+    std::string err;
+    if (!p || !load_preset(game, *p, 0, h, &err)) {
+      std::fprintf(stderr, "%s\n", p ? err.c_str() : ("unknown preset " + preset).c_str());
+      return 1;
+    }
+    world = preset;
+    streamed = p->generator != "level";
+    people_world = p->generator == "drive" || p->generator == "city";
+    if (people_world) {
+      TrafficConfig tc = game.traffic();
+      tc.enabled = true;
+      game.set_traffic(tc);
+      PedestrianConfig pc = game.pedestrians();
+      pc.enabled = people > 0;
+      pc.count = std::max(0, people);
+      game.set_pedestrians(pc);
+    }
+  } else if (!wad_path.empty()) {
     std::ifstream in(wad_path, std::ios::binary);
     std::vector<u8> bytes((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
     doom::Wad wad;
@@ -134,6 +157,7 @@ int main(int argc, char** argv) {
     pc.count = std::max(0, people);
     game.set_pedestrians(pc);
     streamed = true;
+    people_world = true;
   } else {
     Level w = make_procedural(world, 1, h);
     game.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
@@ -166,7 +190,7 @@ int main(int argc, char** argv) {
     }
     // destruction: a blast or a burst of carves every two seconds at what is in front (and in
     // the drive city a round into someone near now and then)
-    if (shoot && world == "drive" && t % 120 == 60) {
+    if (shoot && people_world && t % 120 == 60) {
       for (const CharacterView& v : game.character_views()) {
         if (!(v.flags & CharacterView::kAlive) || std::hypot(v.centre.x - eye.x, v.centre.y - eye.y) > 30.0) continue;
         const V3 d{v.centre.x - eye.x, v.centre.y - eye.y, v.centre.z + 0.3 - eye.z};
@@ -197,7 +221,7 @@ int main(int argc, char** argv) {
       }
     }
     // a bounded level is reloaded now and then (a level restart)
-    if (!streamed && t > 0 && t % (60 * 60 * 3) == 0) {
+    if (!streamed && preset.empty() && t > 0 && t % (60 * 60 * 3) == 0) {
       if (dw) {
         // (the voxelized grid was moved into the world: re-running the load is the harness's job)
       } else {
@@ -218,7 +242,7 @@ int main(int argc, char** argv) {
     game.take_water_removed();
     game.flames(4096);
     game.smoke(4096);
-    if (world == "drive") {
+    if (people_world) {
       game.take_character_meshes();
       game.take_removed_character_meshes();
       game.take_character_palettes();

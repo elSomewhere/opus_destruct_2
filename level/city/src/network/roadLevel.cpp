@@ -147,7 +147,7 @@ void quantize_profile(RoadProfile& prof, const std::vector<double>& at) {
 
 // A road's profile between end levels z0 and z1 (none: the node levels).
 RoadProfile fit_profile(const World& world, const Road& road, std::optional<double> z0, std::optional<double> z1) {
-  const std::vector<PPoint>& pts = road.pts;
+  const std::vector<RoadPt>& pts = road.pts;
   std::vector<double> acc{0.0};
   for (size_t k = 1; k < pts.size(); ++k) acc.push_back(acc[k - 1] + js::hypot(pts[k].x - pts[k - 1].x, pts[k].y - pts[k - 1].y));
   const double L = acc.back();
@@ -162,8 +162,8 @@ RoadProfile fit_profile(const World& world, const Road& road, std::optional<doub
     while (k < last_seg && acc[static_cast<size_t>(k + 1)] < s) k += 1;
     const double seg_l = js::or_(acc[static_cast<size_t>(k + 1)] - acc[static_cast<size_t>(k)], 1);
     const double t = js::max(0.0, js::min(1.0, (s - acc[static_cast<size_t>(k)]) / seg_l));
-    const PPoint& p = pts[static_cast<size_t>(k)];
-    const PPoint& q = pts[static_cast<size_t>(k + 1)];
+    const RoadPt& p = pts[static_cast<size_t>(k)];
+    const RoadPt& q = pts[static_cast<size_t>(k + 1)];
     const double x = p.x + (q.x - p.x) * t;
     const double y = p.y + (q.y - p.y) * t;
     raw[static_cast<size_t>(i)] = world.terrain->sample(x, y).h;
@@ -237,9 +237,9 @@ RoadProfile fit_profile(const World& world, const Road& road, std::optional<doub
   return prof;
 }
 
-// The plain profile (between the node levels), cached on the road.
+// The plain profile (between the node levels), cached on the road (Road::prof0).
 const RoadProfile& plain_profile(const World& world, const Road& road) {
-  return road.prof0.get([&] { return fit_profile(world, road, std::nullopt, std::nullopt); });
+  return *road.prof0.get([&] { return std::make_shared<const RoadProfile>(fit_profile(world, road, std::nullopt, std::nullopt)); });
 }
 
 // The road a node of `road` lies on without ending there (a T), with the arc position.
@@ -247,7 +247,7 @@ struct Through {
   RoadPtr road;
   double s = 0, rank = 0;
 };
-std::optional<Through> through_at(const World& world, const Road& road, const PPoint& p) {
+std::optional<Through> through_at(const World& world, const Road& road, const RoadPt& p) {
   const CellIJ c = world.cell_at(p.x, p.y);
   const std::shared_ptr<const RoadView> view = world.road_view(c.i, c.j);
   std::optional<Through> best;
@@ -257,7 +257,7 @@ std::optional<Through> through_at(const World& world, const Road& road, const PP
     const double t = js::max(0.0, js::min(s.len, (p.x - s.ax) * s.dx + (p.y - s.ay) * s.dy));
     const double d = js::hypot(p.x - (s.ax + s.dx * t), p.y - (s.ay + s.dy * t));
     if (d > 4) continue;
-    const std::vector<PPoint>& q = s.road->pts;
+    const std::vector<RoadPt>& q = s.road->pts;
     const bool at_end = js::hypot(p.x - q.front().x, p.y - q.front().y) < 6 || js::hypot(p.x - q.back().x, p.y - q.back().y) < 6;
     if (at_end) return std::nullopt;  // a corner or a crossing of road ends: the node level
     if (!best || s.rank > best->rank || (s.rank == best->rank && js::compare(s.road->id, best->road->id) < 0)) best = Through{s.road, s.s0 + t, s.rank};
@@ -395,16 +395,16 @@ double junction_level_at(const World& world, const RoadSeg& seg, const RoadJunct
 }  // namespace
 
 const RoadProfile& road_profile(const World& world, const Road& road) {
-  return road.prof.get([&] {
+  return *road.prof.get([&] {
     // An end that meets a through road (a T) is pinned to that road's own level there (its
     // profile fitted between plain node levels: no chains, no cycles); other ends to the node level.
-    auto end_level = [&](const PPoint& p) {
+    auto end_level = [&](const RoadPt& p) {
       const std::optional<Through> t = through_at(world, road, p);
       return t ? profile_at(plain_profile(world, *t->road), t->s) : node_level(world, p.x, p.y);
     };
     const double z0 = end_level(road.pts.front());
     const double z1 = end_level(road.pts.back());
-    return fit_profile(world, road, z0, z1);
+    return std::make_shared<const RoadProfile>(fit_profile(world, road, z0, z1));
   });
 }
 

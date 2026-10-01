@@ -146,6 +146,21 @@ export const DEBUG_VIEW_NAMES: Readonly<Record<DebugView, string>> = {
 export type ProceduralKind = 'drive' | 'city' | 'rooms' | 'tower' | 'yard' | 'angles' | 'machines';
 export const PROCEDURAL_KINDS: readonly ProceduralKind[] = ['drive', 'rooms', 'city', 'tower', 'yard', 'angles', 'machines'];
 
+/** A world as data (docs/PRESETS.md): the engine lists its presets (`presets` message). */
+export interface PresetInfo {
+  /** "<group>/<name>": "city/angledInfiniteCity", "legacy/drive". */
+  id: string;
+  label: string;
+  /** "city" or "legacy". */
+  group: string;
+  description: string;
+  /** drive | city1km | level | city */
+  generator: string;
+  experimental: boolean;
+  /** Loadable by this engine build (a city preset needs the city generator). */
+  available: boolean;
+}
+
 // ---------------------------------------------------------------------------------------
 // Chunk mesh vertex format (28 bytes, interleaved, little-endian)
 // ---------------------------------------------------------------------------------------
@@ -239,6 +254,13 @@ export interface LoadProceduralCommand {
   type: 'loadProcedural';
   seed: number;
   kind: ProceduralKind;
+}
+
+/** Loads a preset by id (`seed` 0: the preset's own). */
+export interface LoadPresetCommand {
+  type: 'loadPreset';
+  id: string;
+  seed: number;
 }
 
 export interface WadOptions {
@@ -499,6 +521,7 @@ export interface WoundCharacterCommand {
 export type EngineCommand =
   | InitCommand
   | LoadProceduralCommand
+  | LoadPresetCommand
   | LoadWadCommand
   | ViewerCommand
   | BlastCommand
@@ -1168,6 +1191,13 @@ export interface ErrorMessage {
   command?: EngineCommandType;
 }
 
+/** (front-end extension) The engine's presets and its default world, sent once after `init`. */
+export interface PresetsMessage {
+  type: 'presets';
+  presets: PresetInfo[];
+  defaultId: string;
+}
+
 /** (front-end extension) Load progress for the loading screen. */
 export interface ProgressMessage {
   type: 'progress';
@@ -1188,6 +1218,7 @@ export type WorkerMessage =
   | StatsMessage
   | ErrorMessage
   | ProgressMessage
+  | PresetsMessage
   | DebrisMessage
   | OccupancyMessage
   | EnvMessage
@@ -1219,6 +1250,7 @@ const WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set<WorkerMessageType>([
   'stats',
   'error',
   'progress',
+  'presets',
   'debris',
   'occupancy',
   'env',
@@ -1234,6 +1266,7 @@ const WORKER_MESSAGE_TYPES: ReadonlySet<string> = new Set<WorkerMessageType>([
 const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set<EngineCommandType>([
   'init',
   'loadProcedural',
+  'loadPreset',
   'loadWad',
   'viewer',
   'blast',

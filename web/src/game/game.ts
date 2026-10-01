@@ -31,7 +31,8 @@ export interface GameOptions {
   overlay: Overlay;
   renderer: Renderer;
   engine: EngineClient;
-  world: { kind: ProceduralKind; seed: number };
+  /** The world at start: a preset by id (docs/PRESETS.md), else a procedural kind. */
+  world: { kind: ProceduralKind; seed: number; preset?: string };
   params: EngineParams;
   voxelSize: number;
   /** Pedestrians settings for the engine at start (URL parameters); absent: its defaults. */
@@ -80,7 +81,7 @@ export class Game {
   private ackedSeq = 0;
   private readonly settings: SettingsPanel;
   private readonly voxelSize: number;
-  private readonly world: { kind: ProceduralKind; seed: number };
+  private readonly world: { kind: ProceduralKind; seed: number; preset?: string };
   private params: EngineParams;
   private info: WorldInfo | null = null;
   private engineStats: EngineStats | null = null;
@@ -122,6 +123,7 @@ export class Game {
         else this.engine.setTunable(name, value);
       },
       onLoadProcedural: (kind, seed) => this.loadProcedural(kind, seed),
+      onLoadPreset: (id, seed) => this.loadPreset(id, seed),
       onTraffic: (t) => {
         this.traffic = { ...t };
         this.engine.setTraffic(t);
@@ -161,7 +163,8 @@ export class Game {
     });
     // (the engine keeps them across loads: set before the first)
     if (this.pedestriansAtStart) this.engine.setPedestrians(this.pedestrians);
-    this.loadProcedural(this.world.kind, this.world.seed);
+    if (this.world.preset) this.loadPreset(this.world.preset, this.world.seed);
+    else this.loadProcedural(this.world.kind, this.world.seed);
     this.running = true;
     requestAnimationFrame(this.frame);
   }
@@ -200,12 +203,21 @@ export class Game {
   private loadProcedural(kind: ProceduralKind, seed: number): void {
     this.world.kind = kind;
     this.world.seed = seed;
+    delete this.world.preset;
     this.beginLoad(`Generating ${kind} #${seed}`);
     this.engine.loadProcedural(kind, seed);
   }
 
+  private loadPreset(id: string, seed: number): void {
+    this.world.preset = id;
+    this.world.seed = seed;
+    this.beginLoad(seed ? `Generating ${id} #${seed}` : `Generating ${id}`);
+    this.engine.loadPreset(id, seed);
+  }
+
   private wireEngine(): void {
     const e = this.engine;
+    e.on('presets', (msg) => this.settings.setPresets(msg.presets, this.world.preset ?? msg.defaultId));
     e.on('textures', (msg) => {
       try {
         this.renderer.setTextures(msg.list);

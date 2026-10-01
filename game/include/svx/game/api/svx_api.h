@@ -27,6 +27,16 @@ void svx_set_params(svx_engine* e, double fragility, double impact, double dif, 
 
 /* Worlds. Return 0 on success. */
 int svx_load_procedural(svx_engine* e, const char* kind, double seed);
+/* Presets (docs/PRESETS.md): a world as data - its generator and parameters, streaming, world
+ * tunables, environment, population, atmosphere, spawn. svx_load_preset loads one by id (seed 0:
+ * the preset's own; non-zero on failure: svx_last_error says why). svx_presets lists them as a JSON
+ * array of {id, label, group, description, generator, experimental, available} (valid until the
+ * next call); svx_default_preset is the default world's id; svx_preset_atmosphere is the loaded
+ * preset's atmosphere for the front end (a JSON object, "{}" when it has none). */
+int svx_load_preset(svx_engine* e, const char* id, double seed);
+const char* svx_presets(svx_engine* e);
+const char* svx_default_preset(void);
+const char* svx_preset_atmosphere(svx_engine* e);
 /* Doom map from an in-memory WAD; mode 0 = rock, 1 = air. */
 int svx_load_wad(svx_engine* e, const uint8_t* data, size_t size, const char* map, int mode, int shell_voxels);
 const char* svx_last_error(svx_engine* e);

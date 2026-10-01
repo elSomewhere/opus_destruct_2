@@ -147,7 +147,7 @@ TEST_CASE("city roadlevel: road levels conform to the reference (stage roadlevel
       if (road->prof0.ready()) {
         Line l;
         l << "prof0" << road->id;
-        prof_fields(l, road->prof0.get([]() -> RoadProfile { SVX_FAIL("prof0: not made"); }));
+        prof_fields(l, *road->prof0.get([]() -> std::shared_ptr<const RoadProfile> { SVX_FAIL("prof0: not made"); }));
         out << l;
       }
   }

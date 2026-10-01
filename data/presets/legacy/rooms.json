@@ -1,0 +1,9 @@
+{
+  "id": "legacy/rooms",
+  "label": "Rooms (test level)",
+  "group": "legacy",
+  "description": "Rooms: a small house to take apart.",
+  "generator": "level",
+  "level": "rooms",
+  "seed": 1
+}

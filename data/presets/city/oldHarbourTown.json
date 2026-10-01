@@ -1,0 +1,23 @@
+{
+  "id": "city/oldHarbourTown",
+  "label": "Old harbour town",
+  "group": "city",
+  "description": "A Bergen-like harbour town on a steep hillside.",
+  "generator": "city",
+  "params": {
+    "preset": "oldHarbourTown"
+  },
+  "seed": 1337,
+  "streaming": {
+    "load_radius": 112,
+    "evict_radius": 144,
+    "chunks_per_tick": 48,
+    "archive_mb": 128
+  },
+  "far": {
+    "radius": 520
+  },
+  "tunables": {
+    "pretouch_radius": 48
+  }
+}
