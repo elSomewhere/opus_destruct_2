@@ -45,6 +45,7 @@ exports, natively and in WASM, on any thread count.
 | building archetypes and envelopes | `buildings/archetypes.js` | `buildings/archetypes.*` (the 17 after civic's; `plan_building_envelope`, its finalize), `city/lots.hpp` (the lot record, what the archetypes read) | stages `archetypes`, `registries` |
 | house, cabin and unit planners | `buildings/interior/{houses,cabins,units}.js`, plan.js's `PlanBuilder` | `buildings/interior/{houses,cabins,units}.*`, `buildings/interior/plan.*` (the builder's floors, grids and stairs: the rest of plan.js comes with the interior planners) | stages `houses`, `units` |
 | facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
+| sample buildings | `buildings/sample.js` | `buildings/sample.*` (`stage_archetype` reads a world through `StageWorld`, `StagedEnvelopes`, until the cell plan is ported) | stage `sample` |
 
 (The table grows with the port; §5 lists the order.)
 
