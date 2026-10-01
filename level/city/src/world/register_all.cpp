@@ -5,6 +5,7 @@
 #include <mutex>
 
 #include "nature/biomes.hpp"
+#include "terrain/landforms.hpp"
 
 namespace svx::city {
 
@@ -13,6 +14,7 @@ void register_all() {
   std::call_once(once, [] {
     // (each ported module adds its call here, in the order of docs/CITY.md §2.2)
     register_biomes();     // BIOMES (nature/biomes.js)
+    register_landforms();  // LANDFORMS (terrain/landforms.js)
   });
 }
 
