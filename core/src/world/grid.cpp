@@ -5,21 +5,23 @@
 
 namespace svx {
 
-namespace {
-
-inline u64 brick_key(const IVec3& p) { return key3(p[0] >> kBrickBits, p[1] >> kBrickBits, p[2] >> kBrickBits); }
-inline int brick_index(const IVec3& p) {
-  return ((p[0] & (kBrick - 1)) * kBrick + (p[1] & (kBrick - 1))) * kBrick + (p[2] & (kBrick - 1));
-}
-
-}  // namespace
-
 const Chunk* VoxelGrid::chunk(const IVec3& c) const {
   const auto it = chunks_.find(key3(c[0], c[1], c[2]));
   return it == chunks_.end() ? nullptr : &it->second;
 }
 
 Chunk& VoxelGrid::chunk_mut(const IVec3& c) { return chunks_[key3(c[0], c[1], c[2])]; }
+
+void VoxelGrid::sanitize() {
+  for (auto& [k, c] : chunks_) {
+    if (c.uniform) {
+      if (!vox_valid(c.value)) c.value = kAir;
+      continue;
+    }
+    for (Vox& v : c.v)
+      if (!vox_valid(v)) v = kAir;
+  }
+}
 
 Vox VoxelGrid::get(i32 x, i32 y, i32 z) const {
   const IVec3 p{x, y, z};
@@ -34,33 +36,114 @@ void VoxelGrid::set(i32 x, i32 y, i32 z, Vox v) {
   Chunk& c = chunk_mut(cc);
   if (c.uniform) {
     if (c.value == v) return;
-    c.v.assign(kChunkVox, c.value);
+    c.v = acquire_buffer(c.value);
     c.solid = vox_solid(c.value) ? kChunkVox : 0;
     c.free = vox_free(c.value) ? kChunkVox : 0;
     c.uniform = false;
   }
   Vox& slot = c.v[chunk_index(p)];
   if (slot == v) return;
+  const Vox old = slot;
   c.solid += (vox_solid(v) ? 1 : 0) - (vox_solid(slot) ? 1 : 0);
   c.free += (vox_free(v) ? 1 : 0) - (vox_free(slot) ? 1 : 0);
   slot = v;
-  ++c.version;
+  note_voxels_modified(key3(cc[0], cc[1], cc[2]));
+  // values bound to the voxel that was there, or to the air a solid took
+  if (c.has_layers())
+    for (int L = 0; L < static_cast<int>(layers_.size()); ++L) {
+      const LayerBind b = layers_[size_t(L)].bind;
+      if ((b == LayerBind::Solid && vox_solid(old)) || (b == LayerBind::Air && vox_solid(v))) {
+        const std::vector<u8>& a = c.layer[size_t(L)];
+        if (!a.empty() && a[size_t(chunk_index(p))]) set_layer(L, p, 0);
+      }
+    }
   c.vox_version = ++vox_seq_;
   note_modified(cc);
-  dirty_.push_back(key3(cc[0], cc[1], cc[2]));
+  const u64 key = key3(cc[0], cc[1], cc[2]);
+  touch_dirty(key);
+  if (c.solid == 0) compact_.push_back(key);
   // a changed voxel also changes the faces of its neighbours in adjacent chunks
   for (int a = 0; a < 3; ++a) {
     IVec3 q = p;
     if ((p[a] & (kChunk - 1)) == 0) {
       q[a] -= 1;
       const IVec3 nc = chunk_of(q);
-      dirty_.push_back(key3(nc[0], nc[1], nc[2]));
+      touch_dirty(key3(nc[0], nc[1], nc[2]));
     } else if ((p[a] & (kChunk - 1)) == kChunk - 1) {
       q[a] += 1;
       const IVec3 nc = chunk_of(q);
-      dirty_.push_back(key3(nc[0], nc[1], nc[2]));
+      touch_dirty(key3(nc[0], nc[1], nc[2]));
     }
   }
+}
+
+void VoxelGrid::touch_dirty(u64 k) {
+  if (k == last_dirty_ || dirty_all_) return;
+  last_dirty_ = k;
+  dirty_.insert(k);
+  if (dirty_.size() > std::max<size_t>(65536, 4 * chunks_.size())) {
+    dirty_all_ = true;  // (nobody takes them: report everything next time, keep nothing now)
+    std::unordered_set<u64>().swap(dirty_);
+  }
+}
+
+i64 VoxelGrid::dirty_bytes() const {
+  return static_cast<i64>(dirty_.size() * (sizeof(u64) + 2 * sizeof(void*)) + dirty_.bucket_count() * sizeof(void*) +
+                          compact_.capacity() * sizeof(u64));
+}
+
+std::vector<u8> VoxelGrid::acquire_buffer(u8 fill) {
+  std::vector<u8> b;
+  if (!spare_.empty()) {
+    b = std::move(spare_.back());
+    spare_.pop_back();
+  }
+  b.assign(kChunkVox, fill);
+  return b;
+}
+
+void VoxelGrid::release_buffer(std::vector<u8>&& b) {
+  if (b.capacity() >= size_t(kChunkVox) && b.capacity() <= 2 * size_t(kChunkVox) && spare_.size() < kMaxSpare) {
+    spare_.push_back(std::move(b));
+    return;
+  }
+  std::vector<u8>().swap(b);
+}
+
+void VoxelGrid::compact_changed() {
+  std::sort(compact_.begin(), compact_.end());
+  compact_.erase(std::unique(compact_.begin(), compact_.end()), compact_.end());
+  for (u64 k : compact_) {
+    const auto it = chunks_.find(k);
+    if (it == chunks_.end()) continue;
+    Chunk& c = it->second;
+    if (c.uniform || c.solid != 0) continue;
+    // all air: no voxels, no bonds, no design classes to keep (the content is unchanged)
+    release_buffer(std::move(c.v));
+    release_buffer(std::move(c.broken));
+    release_buffer(std::move(c.strength));
+    c.v = {};
+    c.broken = {};
+    c.strength = {};
+    std::vector<u32>().swap(c.jbroken);
+    c.uniform = true;
+    c.value = kAir;
+    c.free = 0;
+  }
+  compact_.clear();
+  if (compact_.capacity() > 4096) std::vector<u64>().swap(compact_);
+}
+
+void VoxelGrid::forget_modified(u64 k) {
+  voxel_modified_.erase(k);
+  const auto it = modified_.find(k);
+  if (it == modified_.end()) return;
+  const u32 i = it->second;
+  const u64 last = modified_list_.back();
+  modified_list_[i] = last;
+  modified_[last] = i;
+  modified_list_.pop_back();
+  modified_.erase(k);
 }
 
 bool VoxelGrid::broken(const IVec3& p, int axis) const {
@@ -80,28 +163,55 @@ bool VoxelGrid::bond(const IVec3& p, int axis) const {
   return !broken(p, axis);
 }
 
-bool VoxelGrid::cracked(const IVec3& p, int axis) const {
-  const Chunk* c = chunk(chunk_of(p));
-  if (!c || c->broken.empty()) return false;
-  return (c->broken[chunk_index(p)] >> (3 + axis)) & 1;
-}
-
-void VoxelGrid::crack_bond(const IVec3& p, int axis) {
-  Chunk& c = chunk_mut(chunk_of(p));
-  if (c.broken.empty()) c.broken.assign(kChunkVox, 0);
-  c.broken[chunk_index(p)] |= static_cast<u8>(1u << (3 + axis));
-  ++c.version;
-  const IVec3 cc = chunk_of(p);
-  note_modified(cc);
-}
-
 void VoxelGrid::break_bond(const IVec3& p, int axis) {
-  Chunk& c = chunk_mut(chunk_of(p));
-  if (c.broken.empty()) c.broken.assign(kChunkVox, 0);
+  // (a voxel in no chunk is air: it has no bond to break, and no chunk is made for it)
+  const auto it = chunks_.find(key3(p[0] >> kChunkBits, p[1] >> kChunkBits, p[2] >> kChunkBits));
+  if (it == chunks_.end()) return;
+  Chunk& c = it->second;
+  if (c.uniform && !vox_solid(c.value)) return;
+  if (c.broken.empty()) c.broken = acquire_buffer(0);
   u8& b = c.broken[chunk_index(p)];
-  b = static_cast<u8>((b | (1u << axis)) & ~(1u << (3 + axis)));
-  // (v2: a broken bond between fragments changes no surface: no remesh)
+  if (b & (1u << axis)) return;
+  b = static_cast<u8>(b | (1u << axis));
+  // (a broken bond changes no surface: the chunk is not reported changed)
   note_modified(chunk_of(p));
+  const IVec3 bc = chunk_of(p);
+  note_voxels_modified(key3(bc[0], bc[1], bc[2]));
+}
+
+bool VoxelGrid::junction_broken(const IVec3& p, int face, int sub) const {
+  const Chunk* c = chunk(chunk_of(p));
+  if (!c || c->jbroken.empty()) return false;
+  const int li = chunk_index(p);
+  const u32 whole = junction_code(li, face, kJunctionFace);
+  const u32 one = junction_code(li, face, sub);
+  return std::binary_search(c->jbroken.begin(), c->jbroken.end(), one) ||
+         (sub != kJunctionFace && std::binary_search(c->jbroken.begin(), c->jbroken.end(), whole));
+}
+
+void VoxelGrid::clear_junction_breaks() {
+  for (auto& [k, c] : chunks_) {
+    if (c.jbroken.empty()) continue;
+    c.jbroken.clear();
+    c.jbroken.shrink_to_fit();
+    note_modified(unkey3(k));
+    note_voxels_modified(k);
+  }
+}
+
+void VoxelGrid::break_junction(const IVec3& p, int face, int sub) {
+  // (like a broken bond: a voxel in no chunk, or in an all-air one, has no junction to break)
+  const auto it = chunks_.find(key3(p[0] >> kChunkBits, p[1] >> kChunkBits, p[2] >> kChunkBits));
+  if (it == chunks_.end()) return;
+  Chunk& c = it->second;
+  if (c.uniform && !vox_solid(c.value)) return;
+  const u32 code = junction_code(chunk_index(p), face, sub);
+  const auto at = std::lower_bound(c.jbroken.begin(), c.jbroken.end(), code);
+  if (at != c.jbroken.end() && *at == code) return;
+  c.jbroken.insert(at, code);
+  const IVec3 bc = chunk_of(p);
+  note_modified(bc);
+  note_voxels_modified(key3(bc[0], bc[1], bc[2]));
 }
 
 u8 VoxelGrid::strength(const IVec3& p) const {
@@ -111,156 +221,122 @@ u8 VoxelGrid::strength(const IVec3& p) const {
 }
 
 void VoxelGrid::set_strength(const IVec3& p, u8 cls) {
-  Chunk& c = chunk_mut(chunk_of(p));
+  const auto it = chunks_.find(key3(p[0] >> kChunkBits, p[1] >> kChunkBits, p[2] >> kChunkBits));
+  if (it == chunks_.end()) return;  // (air: nothing to strengthen)
+  Chunk& c = it->second;
   if (c.strength.empty()) {
     if (cls == 0) return;
-    c.strength.assign(kChunkVox, 0);
+    c.strength = acquire_buffer(0);
   }
   c.strength[chunk_index(p)] = cls;
 }
 
-f32 VoxelGrid::damage(const IVec3& p, int axis) const {
-  const auto& m = damage_[axis];
-  const auto it = m.find(key3(p[0], p[1], p[2]));
-  return it == m.end() ? 0.0f : it->second;
-}
-
-void VoxelGrid::set_damage(const IVec3& p, int axis, f32 d) {
-  const u64 k = key3(p[0], p[1], p[2]);
-  auto& m = damage_[axis];
-  const auto it = m.find(k);
-  if (d <= 0.0f) {
-    if (it == m.end()) return;  // unchanged: not a modification (persistence deltas stay small)
-    m.erase(it);
-  } else {
-    if (it != m.end() && it->second == d) return;
-    m[k] = d;
-  }
-  touch(chunk_of(p));
-  note_modified(chunk_of(p));
-}
-
-void VoxelGrid::touch(const IVec3& cc) {
-  const auto it = chunks_.find(key3(cc[0], cc[1], cc[2]));
-  if (it != chunks_.end()) ++it->second.version;
-}
-
-bool VoxelGrid::baseline(const IVec3& p, f32 out[6]) const {
-  const auto it = baseline_.find(brick_key(p));
-  if (it == baseline_.end()) return false;
-  const int i = brick_index(p);
-  const BaselineBrick& b = *it->second;
-  if (!b.valid[i]) return false;
-  for (int q = 0; q < 6; ++q) out[q] = b.u[6 * size_t(i) + q];
-  return true;
-}
-
-void VoxelGrid::set_baseline(const IVec3& p, const f32 u[6]) {
-  std::shared_ptr<BaselineBrick>& sp = baseline_[brick_key(p)];
-  if (!sp) {
-    sp = std::make_shared<BaselineBrick>();
-    sp->u.assign(6 * kBrick * kBrick * kBrick, 0.0f);
-    sp->valid.assign(kBrick * kBrick * kBrick, 0);
-  } else if (sp.use_count() > 1) {
-    sp = std::make_shared<BaselineBrick>(*sp);  // a snapshot still reads the old copy
-  }
-  const int i = brick_index(p);
-  for (int q = 0; q < 6; ++q) sp->u[6 * size_t(i) + q] = u[q];
-  sp->valid[i] = 1;
-}
-
-void VoxelGrid::clear_baseline(const IVec3& p) {
-  const auto it = baseline_.find(brick_key(p));
-  if (it == baseline_.end()) return;
-  const int i = brick_index(p);
-  if (!it->second->valid[i]) return;
-  if (it->second.use_count() > 1) it->second = std::make_shared<BaselineBrick>(*it->second);
-  it->second->valid[i] = 0;
-}
-
-VoxelGrid VoxelGrid::snapshot(std::span<const u64> keys) const {
-  VoxelGrid s;
-  s.h = h;
-  s.lo = lo;
-  s.hi = hi;
-  s.partial_ = true;
-  s.chunks_.reserve(keys.size());
-  s.known_.insert(keys.begin(), keys.end());
-  for (u64 k : keys) {
-    const auto it = chunks_.find(k);
-    if (it == chunks_.end()) continue;
-    s.chunks_.emplace(k, it->second);
-    const IVec3 cc = unkey3(k);
-    const IVec3 b{cc[0] << (kChunkBits - kBrickBits), cc[1] << (kChunkBits - kBrickBits), cc[2] << (kChunkBits - kBrickBits)};
-    for (int bx = 0; bx < kChunk / kBrick; ++bx)
-      for (int by = 0; by < kChunk / kBrick; ++by)
-        for (int bz = 0; bz < kChunk / kBrick; ++bz) {
-          const u64 bk = key3(b[0] + bx, b[1] + by, b[2] + bz);
-          const auto bt = baseline_.find(bk);
-          if (bt != baseline_.end()) s.baseline_.emplace(bk, bt->second);
-        }
-  }
-  for (int a = 0; a < 3; ++a)
-    for (const auto& [vk, d] : damage_[a]) {
-      const IVec3 p = unkey3(vk);
-      const IVec3 cc = chunk_of(p);
-      if (s.chunks_.count(key3(cc[0], cc[1], cc[2]))) s.damage_[a].emplace(vk, d);
-    }
-  return s;
-}
-
-bool VoxelGrid::offset(const IVec3& p, f32 out[3]) const {
-  const auto it = offset_.find(key3(p[0], p[1], p[2]));
-  if (it == offset_.end()) return false;
-  for (int q = 0; q < 3; ++q) out[q] = it->second[q];
-  return true;
-}
-
-void VoxelGrid::set_offset(const IVec3& p, const f32 d[3]) {
-  const u64 k = key3(p[0], p[1], p[2]);
-  if (offset_.count(k) || d[0] != 0.0f || d[1] != 0.0f || d[2] != 0.0f) note_modified(chunk_of(p));
-  if (d[0] == 0.0f && d[1] == 0.0f && d[2] == 0.0f) {
-    offset_.erase(k);
-  } else {
-    offset_[k] = {d[0], d[1], d[2]};
-  }
-  mark_dirty(chunk_of(p));
-}
-
-void VoxelGrid::mark_dirty(const IVec3& c) { dirty_.push_back(key3(c[0], c[1], c[2])); }
+void VoxelGrid::mark_dirty(const IVec3& c) { touch_dirty(key3(c[0], c[1], c[2])); }
 
 std::vector<u64> VoxelGrid::take_dirty() {
   std::vector<u64> out;
-  out.swap(dirty_);
+  if (dirty_all_) {
+    for (const auto& [k, c] : chunks_) out.push_back(k);
+    dirty_all_ = false;
+  } else {
+    out.assign(dirty_.begin(), dirty_.end());
+  }
+  std::unordered_set<u64>().swap(dirty_);
+  last_dirty_ = ~0ull;
   std::sort(out.begin(), out.end());
-  out.erase(std::unique(out.begin(), out.end()), out.end());
   return out;
 }
 
-u64 VoxelGrid::overlay_hash() const {
-  u64 h = 1469598103934665603ull;
-  auto mix = [&](u64 v) { h = (h ^ v) * 1099511628211ull; };
-  for (int a = 0; a < 3; ++a) {
-    std::vector<std::pair<u64, f32>> d(damage_[a].begin(), damage_[a].end());
-    std::sort(d.begin(), d.end());
-    for (const auto& [k, v] : d) {
-      u32 bits;
-      std::memcpy(&bits, &v, 4);
-      mix(k * 3 + u64(a));
-      mix(bits);
-    }
+int VoxelGrid::add_layer(const LayerSpec& spec) {
+  const int existing = layer_index(spec.name);
+  if (existing >= 0) {
+    // (the same layer again; a different one under the same name is refused)
+    const LayerSpec& l = layers_[size_t(existing)];
+    return l.persistent == spec.persistent && l.bind == spec.bind ? existing : -1;
   }
-  std::vector<std::pair<u64, std::array<f32, 3>>> o(offset_.begin(), offset_.end());
-  std::sort(o.begin(), o.end(), [](const auto& x, const auto& y) { return x.first < y.first; });
-  for (const auto& [k, v] : o) {
-    mix(k);
-    for (f32 x : v) {
-      u32 bits;
-      std::memcpy(&bits, &x, 4);
-      mix(bits);
+  if (static_cast<int>(layers_.size()) >= kMaxLayers || spec.name.empty() || spec.name.size() > 255) return -1;
+  layers_.push_back(spec);
+  return static_cast<int>(layers_.size()) - 1;
+}
+
+int VoxelGrid::layer_index(const std::string& name) const {
+  for (size_t i = 0; i < layers_.size(); ++i)
+    if (layers_[i].name == name) return static_cast<int>(i);
+  return -1;
+}
+
+void VoxelGrid::adopt_layers(const std::vector<LayerSpec>& specs) {
+  std::array<int, kMaxLayers> to{};  // old index -> new (-1: dropped)
+  to.fill(-1);
+  for (size_t i = 0; i < layers_.size(); ++i)
+    for (size_t j = 0; j < specs.size(); ++j)
+      if (specs[j].name == layers_[i].name) to[i] = static_cast<int>(j);
+  bool identity = layers_.size() <= specs.size();
+  for (size_t i = 0; i < layers_.size() && identity; ++i) identity = to[i] == static_cast<int>(i);
+  if (!identity)
+    for (auto& [k, c] : chunks_) {
+      std::array<std::vector<u8>, kMaxLayers> nl;
+      std::array<u16, kMaxLayers> nc{};
+      for (size_t i = 0; i < kMaxLayers; ++i) {
+        if (c.layer[i].empty()) continue;
+        if (i < layers_.size() && to[i] >= 0) {
+          nl[size_t(to[i])] = std::move(c.layer[i]);
+          nc[size_t(to[i])] = c.layer_count[i];
+        } else {
+          release_buffer(std::move(c.layer[i]));
+        }
+      }
+      c.layer = std::move(nl);
+      c.layer_count = nc;
     }
+  layers_ = specs;
+}
+
+u8 VoxelGrid::layer(int L, const IVec3& p) const {
+  if (L < 0 || L >= kMaxLayers) return 0;
+  const Chunk* c = chunk(chunk_of(p));
+  if (!c || c->layer[size_t(L)].empty()) return 0;
+  return c->layer[size_t(L)][size_t(chunk_index(p))];
+}
+
+bool VoxelGrid::set_layer(int L, const IVec3& p, u8 v) {
+  if (L < 0 || L >= static_cast<int>(layers_.size())) return false;
+  const IVec3 cc = chunk_of(p);
+  const u64 key = key3(cc[0], cc[1], cc[2]);
+  auto it = chunks_.find(key);
+  if (it == chunks_.end()) {
+    if (v == 0) return false;
+    it = chunks_.emplace(key, Chunk{}).first;
   }
-  return h;
+  Chunk& c = it->second;
+  std::vector<u8>& a = c.layer[size_t(L)];
+  if (a.empty()) {
+    if (v == 0) return false;
+    a = acquire_buffer(0);
+  }
+  u8& slot = a[size_t(chunk_index(p))];
+  if (slot == v) return false;
+  if (slot == 0) ++c.layer_count[size_t(L)];
+  if (v == 0) --c.layer_count[size_t(L)];
+  slot = v;
+  if (c.layer_count[size_t(L)] == 0) {
+    release_buffer(std::move(a));
+    a = {};
+  }
+  std::unordered_set<u64>& d = layer_dirty_[size_t(L)];
+  d.insert(key);
+  if (d.size() > std::max<size_t>(65536, 4 * chunks_.size())) d.clear();  // (nobody takes them)
+  if (layers_[size_t(L)].persistent) note_modified(cc);
+  return true;
+}
+
+std::vector<u64> VoxelGrid::take_layer_dirty(int L) {
+  std::vector<u64> out;
+  if (L < 0 || L >= kMaxLayers) return out;
+  out.assign(layer_dirty_[size_t(L)].begin(), layer_dirty_[size_t(L)].end());
+  std::unordered_set<u64>().swap(layer_dirty_[size_t(L)]);
+  std::sort(out.begin(), out.end());
+  return out;
 }
 
 i64 VoxelGrid::solid_count() const {
@@ -269,13 +345,15 @@ i64 VoxelGrid::solid_count() const {
   return s;
 }
 
-i64 VoxelGrid::memory_bytes() const {
+i64 VoxelGrid::memory_bytes(Bytes kind) const {
   i64 b = 0;
-  for (const auto& [k, c] : chunks_) b += sizeof(Chunk) + i64(c.v.size()) + i64(c.broken.size()) + i64(c.strength.size());
-  for (const auto& m : damage_) b += i64(m.size()) * 24;
-  b += i64(baseline_.size()) * (kBrick * kBrick * kBrick * 25 + 64);
-  b += i64(offset_.size()) * 32;
+  for (const auto& [k, c] : chunks_) b += c.memory_bytes(kind);
   return b;
+}
+
+i64 VoxelGrid::bookkeeping_bytes() const {
+  return static_cast<i64>(modified_.size() * (sizeof(u64) + 4 + 2 * sizeof(void*)) + modified_.bucket_count() * sizeof(void*) +
+                          modified_list_.capacity() * sizeof(u64) + spare_.size() * kChunkVox);
 }
 
 void VoxelGrid::fill_column(i32 x, i32 y, i32 z0, i32 z1, Vox v) {
@@ -297,8 +375,7 @@ void VoxelGrid::fill_column(i32 x, i32 y, i32 z0, i32 z1, Vox v) {
         c.free += (vox_free(v) ? 1 : 0) - (vox_free(slot) ? 1 : 0);
         slot = v;
       }
-      ++c.version;
-      c.vox_version = ++vox_seq_;
+            c.vox_version = ++vox_seq_;
     }
     z = zend;
   }
@@ -308,7 +385,7 @@ void VoxelGrid::compact() {
   // mixed chunks whose voxels are all equal (and carry no broken bonds) become uniform
   for (auto it = chunks_.begin(); it != chunks_.end();) {
     Chunk& c = it->second;
-    if (!c.uniform && c.broken.empty() && c.strength.empty()) {
+    if (!c.uniform && c.broken.empty() && c.strength.empty() && c.jbroken.empty()) {
       const Vox v0 = c.v[0];
       bool same = true;
       for (Vox v : c.v)
@@ -319,18 +396,19 @@ void VoxelGrid::compact() {
       if (same) {
         c.uniform = true;
         c.value = v0;
-        std::vector<Vox>().swap(c.v);
+        release_buffer(std::move(c.v));
+        c.v = {};
         c.solid = vox_solid(v0) ? kChunkVox : 0;
         c.free = vox_free(v0) ? kChunkVox : 0;
       }
     }
-    if (c.uniform && c.value == kAir && c.broken.empty() && c.strength.empty()) it = chunks_.erase(it);
+    if (c.uniform && c.value == kAir && c.broken.empty() && c.strength.empty() && c.jbroken.empty() && !c.has_layers()) it = chunks_.erase(it);
     else ++it;
   }
 }
 
 void VoxelGrid::mark_all_dirty() {
-  for (const auto& [k, c] : chunks_) dirty_.push_back(k);
+  for (const auto& [k, c] : chunks_) touch_dirty(k);
 }
 
 namespace {
@@ -374,7 +452,7 @@ struct In {
   size_t p = 0;
   bool ok = true;
   bool need(size_t n) {
-    if (p + n > b.size()) ok = false;
+    if (n > b.size() - p) ok = false;  // (p <= size always; no overflow on 32-bit size_t)
     return ok;
   }
   u8 u8_() { return need(1) ? b[p++] : 0; }
@@ -396,9 +474,14 @@ struct In {
     std::memcpy(&v, &x, 4);
     return v;
   }
-  bool rle(std::vector<u8>& v, size_t n) {
+  // allow_empty: no runs at all is valid (v left empty)
+  bool rle(std::vector<u8>& v, size_t n, bool allow_empty = false) {
     v.assign(n, 0);
     const u32 runs = u32_();
+    if (runs == 0 && allow_empty && ok) {
+      v.clear();
+      return true;
+    }
     size_t o = 0;
     for (u32 r = 0; r < runs && ok; ++r) {
       if (!need(3)) return false;
@@ -413,8 +496,44 @@ struct In {
   }
 };
 
+// A v1 record (voxels, broken bonds, damage and offset lists) as a v2 record (no strength
+// classes: the chunk keeps the ones it has).
+bool upgrade_v1(std::vector<u8>* rec) {
+  In in{*rec};
+  const u64 key = in.u64_();
+  std::vector<u8> vox, brk;
+  if (!in.rle(vox, kChunkVox) || !in.rle(brk, kChunkVox)) return false;
+  for (int list = 0; list < 2; ++list) {
+    const u32 n = in.u32_();
+    if (!in.ok || u64(n) * 16 > rec->size()) return false;
+    for (u32 i = 0; i < n && in.ok; ++i) {
+      if (in.u32_() >= u32(kChunkVox)) return false;
+      in.f32_();
+      in.f32_();
+      in.f32_();
+    }
+  }
+  if (!in.ok || in.p != rec->size()) return false;
+  Out o;
+  o.u64_(key);
+  o.rle(vox);
+  o.rle(brk);
+  o.u32_(0);  // (strength: no runs = keep the chunk's)
+  o.u8_(0);   // (no layers)
+  *rec = std::move(o.b);
+  return true;
+}
+
+// A v2 record (voxels, broken bonds, strength classes) as a v3 record (no layers).
+void upgrade_v2(std::vector<u8>* rec) { rec->push_back(0); }
+// A v3 record as a v4 record (no broken junctions).
+void upgrade_v3(std::vector<u8>* rec) { rec->insert(rec->end(), 4, u8(0)); }
+
 constexpr u32 kDeltaMagic = 0x44585653;  // "SVXD"
-constexpr u32 kDeltaVersion = 1;
+// v1: per chunk voxels, broken bonds, (unused) damage and offset lists; v2: voxels, broken
+// bonds, strength classes; v3: and the persistent layers by name; v4: and the broken junction
+// samples (bonds to other grids). Records are written as v4; v1 to v3 deltas are read.
+constexpr u32 kDeltaVersion = 4;
 
 }  // namespace
 
@@ -423,43 +542,31 @@ std::vector<u8> VoxelGrid::chunk_record(u64 k) const {
   o.u64_(k);
   const IVec3 cc = unkey3(k);
   const Chunk* c = chunk(cc);
-  std::vector<u8> vox(kChunkVox, kAir), brk(kChunkVox, 0);
+  std::vector<u8> vox(kChunkVox, kAir), brk(kChunkVox, 0), str(kChunkVox, 0);
   if (c) {
     if (c->uniform) std::fill(vox.begin(), vox.end(), c->value);
     else vox = c->v;
     if (!c->broken.empty()) brk = c->broken;
+    if (!c->strength.empty()) str = c->strength;
   }
   o.rle(vox);
   o.rle(brk);
-  // damage and render offsets of the chunk's voxels
-  const IVec3 b{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
-  std::vector<std::pair<u32, std::array<f32, 3>>> dmg, off;
-  for (int i = 0; i < kChunkVox; ++i) {
-    const IVec3 p{b[0] + i / (kChunk * kChunk), b[1] + (i / kChunk) % kChunk, b[2] + i % kChunk};
-    const u64 pk = key3(p[0], p[1], p[2]);
-    std::array<f32, 3> d{0, 0, 0};
-    bool any = false;
-    for (int a = 0; a < 3; ++a) {
-      const auto it = damage_[a].find(pk);
-      if (it != damage_[a].end()) {
-        d[a] = it->second;
-        any = true;
-      }
-    }
-    if (any) dmg.push_back({static_cast<u32>(i), d});
-    const auto it = offset_.find(pk);
-    if (it != offset_.end()) off.push_back({static_cast<u32>(i), it->second});
+  o.rle(str);
+  // persistent layers with values here, by name
+  std::vector<int> ls;
+  for (size_t L = 0; L < layers_.size(); ++L)
+    if (layers_[L].persistent && c && !c->layer[L].empty()) ls.push_back(static_cast<int>(L));
+  o.u8_(static_cast<u8>(ls.size()));
+  for (int L : ls) {
+    const std::string& name = layers_[size_t(L)].name;
+    o.u8_(static_cast<u8>(name.size()));
+    for (char ch : name) o.u8_(static_cast<u8>(ch));
+    o.rle(c->layer[size_t(L)]);
   }
-  o.u32_(static_cast<u32>(dmg.size()));
-  for (const auto& [i, d] : dmg) {
-    o.u32_(i);
-    for (f32 v : d) o.f32_(v);
-  }
-  o.u32_(static_cast<u32>(off.size()));
-  for (const auto& [i, d] : off) {
-    o.u32_(i);
-    for (f32 v : d) o.f32_(v);
-  }
+  // broken junction samples
+  const u32 nj = c ? static_cast<u32>(c->jbroken.size()) : 0u;
+  o.u32_(nj);
+  for (u32 k = 0; k < nj; ++k) o.u32_(c->jbroken[k]);
   return std::move(o.b);
 }
 
@@ -477,7 +584,9 @@ std::vector<u8> VoxelGrid::pack_delta(const std::vector<std::vector<u8>>& record
 
 bool VoxelGrid::unpack_delta(const std::vector<u8>& bytes, std::vector<std::pair<u64, std::vector<u8>>>* records) {
   In in{bytes};
-  if (in.u32_() != kDeltaMagic || in.u32_() != kDeltaVersion) return false;
+  if (in.u32_() != kDeltaMagic) return false;
+  const u32 version = in.u32_();
+  if (version < 1 || version > kDeltaVersion) return false;
   const u32 n = in.u32_();
   std::vector<std::pair<u64, std::vector<u8>>> out;
   for (u32 k = 0; k < n; ++k) {
@@ -487,6 +596,9 @@ bool VoxelGrid::unpack_delta(const std::vector<u8>& bytes, std::vector<std::pair
     in.p += sz;
     u64 key = 0;
     for (int i = 0; i < 8; ++i) key |= u64(rec[i]) << (8 * i);
+    if (version == 1 && !upgrade_v1(&rec)) return false;
+    if (version == 2) upgrade_v2(&rec);
+    if (version <= 3) upgrade_v3(&rec);
     out.emplace_back(key, std::move(rec));
   }
   if (!in.ok) return false;
@@ -506,32 +618,52 @@ namespace {
 
 struct ChunkDelta {
   u64 key = 0;
-  std::vector<u8> vox, brk;
-  std::vector<std::pair<u32, std::array<f32, 3>>> dmg, off;
+  std::vector<u8> vox, brk, str;
+  std::vector<std::pair<std::string, std::vector<u8>>> layers;
+  std::vector<u32> jbroken;
 };
 
 bool parse_record(const std::vector<u8>& rec, ChunkDelta* cd) {
   In in{rec};
   cd->key = in.u64_();
-  if (!in.rle(cd->vox, kChunkVox) || !in.rle(cd->brk, kChunkVox)) return false;
-  const u32 nd = in.u32_();
-  for (u32 i = 0; i < nd && in.ok; ++i) {
-    const u32 idx = in.u32_();
-    std::array<f32, 3> d{in.f32_(), in.f32_(), in.f32_()};
-    if (idx >= u32(kChunkVox)) return false;
-    cd->dmg.push_back({idx, d});
+  // a canonical chunk key (21 bits per axis), of a chunk within +-2^19 chunks of the origin
+  const IVec3 cc = unkey3(cd->key);
+  if (!in.ok || key3(cc[0], cc[1], cc[2]) != cd->key) return false;
+  for (int a = 0; a < 3; ++a)
+    if (cc[a] < -(1 << 19) || cc[a] >= (1 << 19)) return false;
+  if (!in.rle(cd->vox, kChunkVox) || !in.rle(cd->brk, kChunkVox) || !in.rle(cd->str, kChunkVox, true)) return false;
+  const u32 nl = in.u8_();
+  for (u32 k = 0; k < nl && in.ok; ++k) {
+    const u32 len = in.u8_();
+    if (!in.need(len)) return false;
+    std::string name(rec.begin() + static_cast<long>(in.p), rec.begin() + static_cast<long>(in.p + len));
+    in.p += len;
+    std::vector<u8> data;
+    if (!in.rle(data, kChunkVox)) return false;
+    cd->layers.emplace_back(std::move(name), std::move(data));
   }
-  const u32 no = in.u32_();
-  for (u32 i = 0; i < no && in.ok; ++i) {
-    const u32 idx = in.u32_();
-    std::array<f32, 3> d{in.f32_(), in.f32_(), in.f32_()};
-    if (idx >= u32(kChunkVox)) return false;
-    cd->off.push_back({idx, d});
+  // broken junction samples: sorted, of voxels of the chunk, faces 0..5
+  const u32 nj = in.u32_();
+  if (!in.ok || u64(nj) * 4 > rec.size() - in.p) return false;
+  cd->jbroken.resize(nj);
+  for (u32 k = 0; k < nj && in.ok; ++k) {
+    const u32 c = in.u32_();
+    if ((c >> 9) >= u32(kChunkVox) || ((c >> 6) & 7) >= 6 || (k > 0 && c <= cd->jbroken[k - 1])) return false;
+    cd->jbroken[k] = c;
   }
-  return in.ok && in.p == rec.size();
+  if (!in.ok || in.p != rec.size()) return false;
+  // valid voxel values only (air, or a material; not "anchored air")
+  for (u8 v : cd->vox)
+    if (!vox_valid(v)) return false;
+  return true;
 }
 
 }  // namespace
+
+bool VoxelGrid::check_record(const std::vector<u8>& rec) {
+  ChunkDelta cd;
+  return parse_record(rec, &cd);
+}
 
 bool VoxelGrid::apply_record(const std::vector<u8>& rec, u64* key_out) {
   ChunkDelta cd;
@@ -539,6 +671,7 @@ bool VoxelGrid::apply_record(const std::vector<u8>& rec, u64* key_out) {
   const IVec3 cc = unkey3(cd.key);
   Chunk& c = chunk_mut(cc);
   c.uniform = false;
+  release_buffer(std::move(c.v));  // (the old array goes back to the pool)
   c.v = std::move(cd.vox);
   c.solid = 0;
   c.free = 0;
@@ -548,35 +681,50 @@ bool VoxelGrid::apply_record(const std::vector<u8>& rec, u64* key_out) {
   }
   bool anyb = false;
   for (u8 x : cd.brk) anyb = anyb || x != 0;
-  if (anyb) c.broken = std::move(cd.brk);
-  else std::vector<u8>().swap(c.broken);
-  ++c.version;
+  if (anyb) {
+    release_buffer(std::move(c.broken));
+    c.broken = std::move(cd.brk);
+  } else {
+    release_buffer(std::move(c.broken));
+    c.broken = {};
+  }
+  if (!cd.str.empty()) {  // (empty: a v1 record, the chunk keeps its classes)
+    bool anys = false;
+    for (u8 x : cd.str) anys = anys || x != 0;
+    release_buffer(std::move(c.strength));
+    if (anys) c.strength = std::move(cd.str);
+    else c.strength = {};
+  }
+  c.jbroken = std::move(cd.jbroken);
+  // persistent layers: the record's (those it does not hold are zero); transient ones stay
+  for (size_t L = 0; L < layers_.size(); ++L) {
+    if (!layers_[L].persistent) continue;
+    std::vector<u8>* data = nullptr;
+    for (auto& [name, d] : cd.layers)
+      if (name == layers_[L].name) data = &d;
+    // (a layer cleared by the record is a change too)
+    if (c.layer_count[L]) layer_dirty_[L].insert(cd.key);
+    release_buffer(std::move(c.layer[L]));
+    c.layer[L] = {};
+    c.layer_count[L] = 0;
+    if (!data) continue;
+    u32 n = 0;
+    for (u8 x : *data) n += x != 0;
+    if (n == 0) continue;
+    c.layer[L] = std::move(*data);
+    c.layer_count[L] = static_cast<u16>(n);
+    layer_dirty_[L].insert(cd.key);
+  }
+  if (c.solid == 0) compact_.push_back(cd.key);  // (an emptied chunk restored: compacted after the tick)
   c.vox_version = ++vox_seq_;
-  const IVec3 b{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
-  for (int i = 0; i < kChunkVox; ++i) {
-    const IVec3 p{b[0] + i / (kChunk * kChunk), b[1] + (i / kChunk) % kChunk, b[2] + i % kChunk};
-    const u64 pk = key3(p[0], p[1], p[2]);
-    for (int a = 0; a < 3; ++a) damage_[a].erase(pk);
-    offset_.erase(pk);
-    clear_baseline(p);
-  }
-  for (const auto& [i, d] : cd.dmg) {
-    const IVec3 p{b[0] + int(i) / (kChunk * kChunk), b[1] + (int(i) / kChunk) % kChunk, b[2] + int(i) % kChunk};
-    for (int a = 0; a < 3; ++a)
-      if (d[a] > 0.0f) damage_[a][key3(p[0], p[1], p[2])] = d[a];
-  }
-  for (const auto& [i, d] : cd.off) {
-    const IVec3 p{b[0] + int(i) / (kChunk * kChunk), b[1] + (int(i) / kChunk) % kChunk, b[2] + int(i) % kChunk};
-    offset_[key3(p[0], p[1], p[2])] = d;
-  }
   note_modified(cc);
-  dirty_.push_back(cd.key);
+  touch_dirty(cd.key);
   for (int d = 0; d < 3; ++d) {  // neighbour faces may change
     IVec3 q = cc;
     q[d] -= 1;
-    dirty_.push_back(key3(q[0], q[1], q[2]));
+    touch_dirty(key3(q[0], q[1], q[2]));
     q[d] += 2;
-    dirty_.push_back(key3(q[0], q[1], q[2]));
+    touch_dirty(key3(q[0], q[1], q[2]));
   }
   if (key_out) *key_out = cd.key;
   return true;
@@ -592,7 +740,7 @@ bool VoxelGrid::load_delta(const std::vector<u8>& bytes, std::vector<u64>* touch
   }
   for (const auto& [k, r] : recs) {
     u64 key = 0;
-    apply_record(r, &key);
+    if (!apply_record(r, &key)) return false;  // (validated above: never)
     if (touched) touched->push_back(key);
   }
   return true;
@@ -600,10 +748,19 @@ bool VoxelGrid::load_delta(const std::vector<u8>& bytes, std::vector<u64>* touch
 
 void VoxelGrid::insert_chunk(const IVec3& cc, std::vector<Vox>&& voxels) {
   Chunk& c = chunk_mut(cc);
+  release_buffer(std::move(c.v));
+  release_buffer(std::move(c.broken));
+  release_buffer(std::move(c.strength));
+  for (size_t L = 0; L < kMaxLayers; ++L) {
+    release_buffer(std::move(c.layer[L]));
+    c.layer[L] = {};
+    c.layer_count[L] = 0;
+  }
   c.v = std::move(voxels);
+  c.broken = {};
+  c.strength = {};
+  std::vector<u32>().swap(c.jbroken);
   c.uniform = false;
-  c.broken.clear();
-  c.strength.clear();
   c.solid = 0;
   c.free = 0;
   for (Vox v : c.v) {
@@ -620,29 +777,25 @@ void VoxelGrid::insert_chunk(const IVec3& cc, std::vector<Vox>&& voxels) {
   if (same) {
     c.uniform = true;
     c.value = v0;
-    std::vector<Vox>().swap(c.v);
+    release_buffer(std::move(c.v));
+    c.v = {};
   }
-  ++c.version;
   c.vox_version = ++vox_seq_;
 }
 
 void VoxelGrid::remove_chunk(const IVec3& cc) {
   const u64 k = key3(cc[0], cc[1], cc[2]);
-  const IVec3 b{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
-  const bool overlays = !offset_.empty() || !damage_[0].empty() || !damage_[1].empty() || !damage_[2].empty();
-  for (int i = 0; overlays && i < kChunkVox; ++i) {
-    const IVec3 p{b[0] + i / (kChunk * kChunk), b[1] + (i / kChunk) % kChunk, b[2] + i % kChunk};
-    const u64 pk = key3(p[0], p[1], p[2]);
-    for (int a = 0; a < 3; ++a) damage_[a].erase(pk);
-    offset_.erase(pk);
+  const auto it = chunks_.find(k);
+  if (it != chunks_.end()) {
+    release_buffer(std::move(it->second.v));
+    release_buffer(std::move(it->second.broken));
+    release_buffer(std::move(it->second.strength));
+    for (auto& l : it->second.layer) release_buffer(std::move(l));
+    chunks_.erase(it);
   }
-  // baselines are stored per 8^3 brick: drop the chunk's 64 bricks
-  for (int bx = 0; bx < kChunk / kBrick; ++bx)
-    for (int by = 0; by < kChunk / kBrick; ++by)
-      for (int bz = 0; bz < kChunk / kBrick; ++bz)
-        baseline_.erase(key3((b[0] >> kBrickBits) + bx, (b[1] >> kBrickBits) + by, (b[2] >> kBrickBits) + bz));
-  chunks_.erase(k);
-  if (modified_.erase(k)) modified_list_.erase(std::remove(modified_list_.begin(), modified_list_.end(), k), modified_list_.end());
+  dirty_.erase(k);  // (gone: the host hears of it as evicted)
+  for (auto& d : layer_dirty_) d.erase(k);
+  forget_modified(k);
 }
 
 }  // namespace svx

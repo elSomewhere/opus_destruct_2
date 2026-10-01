@@ -11,8 +11,8 @@
 #include <vector>
 
 #include "svx/base/parallel.hpp"
-#include "svx/engine/engine.hpp"
-#include "svx/world/streaming.hpp"
+#include "svx/game/game.hpp"
+#include "svx/procgen/city.hpp"
 
 using namespace svx;
 
@@ -28,14 +28,14 @@ int main(int argc, char** argv) {
     else if (a == "--chunks-per-tick" && i + 1 < argc) cpt = std::atoi(argv[++i]);
     else if (a == "--threads" && i + 1 < argc) set_num_threads(std::atoi(argv[++i]));
   }
-  Engine eng;
+  Game eng;
   auto src = make_city_source(seed, 1000.0, 0.125);
   const auto sp = src->spawn_pos();
   VoxelGrid g;
   eng.load(std::move(g), sp, src->spawn_dir());
   StreamConfig sc;
   if (cpt > 0) sc.chunks_per_tick = cpt;
-  eng.enable_streaming(std::move(src), sc);
+  eng.load_streaming(std::move(src), eng.grid().h, sc);
   eng.set_viewer(sp);
   const MeshOptions mo{};
   for (int t = 0; t < 600; ++t) {  // the start area streams in and bakes (10 s)
@@ -70,7 +70,7 @@ int main(int argc, char** argv) {
   };
   std::printf("flight %.0f m at %.0f m/s: generated %lld chunks, evicted %lld; resident %lld\n", speed * seconds, speed,
               static_cast<long long>(eng.stats().generated_total - gen0), static_cast<long long>(eng.stats().evicted_total - ev0),
-              static_cast<long long>(eng.resident_chunks()));
+              static_cast<long long>(eng.world().stats().resident_chunks));
   report("stream (simulation thread)", ms);
   report("meshing (worker, after the tick)", mesh);
   std::printf("worst tick %.2f ms\n", worst_tick);

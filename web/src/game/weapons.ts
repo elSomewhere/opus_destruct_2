@@ -1,16 +1,22 @@
 /**
  * Weapons, mapped onto the engine's damage commands (docs/API.md):
- * - pistol and shotgun are hitscan: `raycast`, then `carve` a small sphere at the hit;
+ * - pistol and shotgun are hitscan: a shot's `raycast` (people's bodies are hit too), then a round
+ *   into the character hit (`woundCharacter`), or `shoot` a small sphere at the world's hit with
+ *   the round's energy (it holes what that gets through: brick, concrete, a car's sheet metal and
+ *   glass - not armour; docs/DAMAGE.md);
+ * - the flamethrower and the water hose are short-range hitscan streams: `ignite` a sphere at
+ *   the hit, or `pour` water there (and `extinguish` it) (the engine's environment, docs/ENV.md);
  * - the rocket launcher fires a visible projectile. It flies straight, so its path is
- *   verified with look-ahead `raycast`s along its line; when it reaches the first hit it
- *   explodes locally at once (effects within a frame) and sends `blast`.
+ *   verified with look-ahead `raycast`s along its line (people's bodies too: one in its way is
+ *   where it goes off, as in euphoria_3); when it reaches the first hit it explodes locally at
+ *   once (effects within a frame) and sends `blast`.
  */
 import type { EngineClient } from '../engine/client.ts';
 import type { RaycastHit, Vec3 } from '../engine/protocol.ts';
 import { cross, normalize } from '../render/math.ts';
 import type { Effects } from './effects.ts';
 
-export type WeaponId = 'pistol' | 'shotgun' | 'rocket';
+export type WeaponId = 'pistol' | 'shotgun' | 'rocket' | 'flamer' | 'hose';
 
 export interface WeaponDef {
   id: WeaponId;
@@ -27,18 +33,29 @@ export const WEAPONS: readonly WeaponDef[] = [
   { id: 'pistol', name: 'Pistol', key: 'Digit1', cooldown: 0.16, auto: false },
   { id: 'shotgun', name: 'Shotgun', key: 'Digit2', cooldown: 0.75, auto: false },
   { id: 'rocket', name: 'Rocket launcher', key: 'Digit3', cooldown: 0.7, auto: true },
+  { id: 'flamer', name: 'Flamethrower', key: 'Digit4', cooldown: 0.1, auto: true },
+  { id: 'hose', name: 'Water hose', key: 'Digit5', cooldown: 0.1, auto: true },
 ];
 
 export const HITSCAN_RANGE = 250;
 export const PISTOL_CARVE_RADIUS = 0.15;
+/** Joules of a pistol round (9 mm) and of a shotgun pellet (00 buck). */
+export const PISTOL_ENERGY_J = 500;
 export const SHOTGUN_PELLETS = 8;
 export const SHOTGUN_CARVE_RADIUS = 0.12;
+export const PELLET_ENERGY_J = 150;
 export const SHOTGUN_SPREAD = 0.065;
 export const ROCKET_SPEED = 25;
 export const ROCKET_BLAST_RADIUS = 1.0;
 /** Joules passed with `blast` (roughly a quarter kilogram of TNT). */
 export const ROCKET_ENERGY_J = 1.0e6;
 const ROCKET_LIFETIME = 6;
+export const FLAMER_RANGE = 7;
+export const FLAMER_RADIUS = 0.3;
+export const HOSE_RANGE = 12;
+/** Water per shot: a sphere this big, just in front of what it hits (it runs down from there). */
+export const HOSE_RADIUS = 0.2;
+export const HOSE_QUENCH_RADIUS = 0.6;
 /** Length of each look-ahead raycast and how far ahead the path is kept verified. */
 const ROCKET_SEGMENT = 8;
 const ROCKET_LOOKAHEAD = 3;
@@ -123,14 +140,18 @@ export class Weapons {
   fire(eye: Vec3, forward: Vec3): void {
     this.shots++;
     const muzzle: Vec3 = [eye[0] + forward[0] * 0.5, eye[1] + forward[1] * 0.5, eye[2] + forward[2] * 0.5 - 0.1];
+    if (this.current.id === 'flamer' || this.current.id === 'hose') {
+      this.stream(eye, forward, muzzle, this.current.id === 'flamer');
+      return;
+    }
     this.effects.muzzleFlash(muzzle);
     switch (this.current.id) {
       case 'pistol':
-        this.hitscan(eye, jitter(forward, 0.004), PISTOL_CARVE_RADIUS);
+        this.hitscan(eye, jitter(forward, 0.004), PISTOL_CARVE_RADIUS, PISTOL_ENERGY_J);
         this.effects.addTrauma(0.05);
         break;
       case 'shotgun':
-        for (let k = 0; k < SHOTGUN_PELLETS; k++) this.hitscan(eye, jitter(forward, SHOTGUN_SPREAD), SHOTGUN_CARVE_RADIUS);
+        for (let k = 0; k < SHOTGUN_PELLETS; k++) this.hitscan(eye, jitter(forward, SHOTGUN_SPREAD), SHOTGUN_CARVE_RADIUS, PELLET_ENERGY_J);
         this.effects.addTrauma(0.18);
         break;
       case 'rocket':
@@ -149,12 +170,38 @@ export class Weapons {
     }
   }
 
-  private hitscan(eye: Vec3, dir: Vec3, radius: number): void {
+  /** Flamethrower (ignite) or water hose (pour, extinguish): a spray, and the command where it lands. */
+  private stream(eye: Vec3, forward: Vec3, muzzle: Vec3, flame: boolean): void {
+    const dir = jitter(forward, 0.03);
+    this.effects.spray(muzzle, dir, flame);
     this.engine
-      .raycast(eye, dir, HITSCAN_RANGE)
+      .raycast(eye, dir, flame ? FLAMER_RANGE : HOSE_RANGE)
       .then((hit: RaycastHit | null) => {
         if (!hit) return;
-        this.engine.carve(hit.pos, radius);
+        if (flame) {
+          // (just in front of the surface: the sphere takes the voxels it touches)
+          const p: Vec3 = [hit.pos[0] + hit.normal[0] * 0.05, hit.pos[1] + hit.normal[1] * 0.05, hit.pos[2] + hit.normal[2] * 0.05];
+          this.engine.ignite(p, FLAMER_RADIUS);
+        } else {
+          const p: Vec3 = [hit.pos[0] + hit.normal[0] * 0.25, hit.pos[1] + hit.normal[1] * 0.25, hit.pos[2] + hit.normal[2] * 0.25];
+          this.engine.pour(p, HOSE_RADIUS);
+          this.engine.extinguish(hit.pos, HOSE_QUENCH_RADIUS);
+        }
+      })
+      .catch(() => undefined);
+  }
+
+  private hitscan(eye: Vec3, dir: Vec3, radius: number, energy: number): void {
+    this.engine
+      .raycast(eye, dir, HITSCAN_RANGE, true)
+      .then((hit: RaycastHit | null) => {
+        if (!hit) return;
+        if (hit.character) {
+          this.engine.woundCharacter(hit.character, hit.pos, radius, energy);
+          this.effects.bloodHit(hit.pos, dir);
+          return;
+        }
+        this.engine.shoot(hit.pos, radius, energy);
         this.effects.bulletImpact(hit);
       })
       .catch(() => undefined);
@@ -169,7 +216,7 @@ export class Weapons {
         const from = r.checked;
         r.pending = true;
         this.engine
-          .raycast(along(r, from), r.dir, ROCKET_SEGMENT)
+          .raycast(along(r, from), r.dir, ROCKET_SEGMENT, true)
           .then((hit) => {
             r.pending = false;
             if (hit) r.impact = from + hit.distance;

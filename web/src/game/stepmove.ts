@@ -15,6 +15,15 @@ import type { Vec3 } from '../engine/protocol.ts';
 export interface SweepResult {
   move: Vec3;
   onGround: boolean;
+  /**
+   * (onGround) What it stands on: the grid (0 the world grid; 0 too for a piece) or the piece
+   * (a lift's car, a turntable) and its motion there (its velocity under the box, and its
+   * angular velocity); a rider moves with it.
+   */
+  ground?: number;
+  groundPiece?: number;
+  groundVelocity?: Vec3;
+  groundAngular?: Vec3;
 }
 
 export type CollideFn = (min: Vec3, max: Vec3, move: Vec3) => Promise<SweepResult>;
@@ -57,7 +66,7 @@ function* stepMove(
   const raised = offset(up.move, across.move);
   const down = yield [offset(min, raised), offset(max, raised), [0, 0, -rise + Math.min(0, move[2])]];
   const total = offset(raised, down.move);
-  return { move: total, onGround: down.onGround, stepped: Math.max(0, total[2] - plain.move[2]) };
+  return { ...down, move: total, onGround: down.onGround, stepped: Math.max(0, total[2] - plain.move[2]) };
 }
 
 export async function moveWithStep(

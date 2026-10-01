@@ -5,10 +5,15 @@
 // render frames with a small CPU ray caster (world grid + rigid pieces) to PPM files, which
 // ffmpeg turns into a video: the collapse can be judged without a browser.
 //
-// usage: svx_engine_demo [--world rooms|city|tower] [--seed N] [--wad F --map M] [--threads T]
+// usage: svx_engine_demo [--world rooms|city|tower|yard|slab|chimney|bridge|angles|machines] [--seed N] [--wad F --map M] [--threads T]
 //          [--seconds S] [--scenario pillars|side|rockets|core|none] [--fragility F] [--impact I]
 //          [--dif D] [--frames DIR] [--fps F] [--res WxH] [--cam x,y,z] [--look x,y,z]
-//          [--report S] [--debug-view N]
+//          [--report S] [--debug-view N] [--turn DEG] [--turned-city] [--tune NAME=VALUE ...]
+//
+// --turned-city: the streamed city with some of its buildings turned in grids of their own.
+// --turn DEG: a procedural world's structure (everything above the ground) stands in a grid of
+// its own turned DEG degrees about the vertical through its centre (docs/GRIDS.md), on the world
+// grid's ground (bonded to it by junctions); the scenario's blasts and the camera turn with it.
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -20,12 +25,14 @@
 #include <string>
 #include <vector>
 
+#include "svx/anim/system.hpp"
 #include "svx/base/parallel.hpp"
-#include "svx/doom/movers.hpp"
-#include "svx/doom/world.hpp"
-#include "svx/engine/engine.hpp"
-#include "svx/world/procgen.hpp"
-#include "svx/world/streaming.hpp"
+#include "svx/game/doom/movers.hpp"
+#include "svx/game/doom/world.hpp"
+#include "svx/game/game.hpp"
+#include "svx/procgen/city.hpp"
+#include "svx/procgen/drive_city.hpp"
+#include "svx/procgen/levels.hpp"
 
 using namespace svx;
 
@@ -46,9 +53,9 @@ V3 parse3(const char* s) {
   return v;
 }
 
-// A simple renderer: pinhole camera, Engine::raycast per pixel (world and pieces), Lambert with a
+// A simple renderer: pinhole camera, Game::raycast per pixel (world and pieces), Lambert with a
 // shadow ray + ambient, material colours, pieces tinted per piece, distance fog.
-void render(const Engine& e, const V3& cam, const V3& look, int W, int H, const std::string& path) {
+void render(const Game& e, const V3& cam, const V3& look, int W, int H, const std::string& path) {
   const V3 fwd = normalized(look - cam);
   V3 right = normalized(cross(fwd, V3{0, 0, 1}));
   if (norm(right) < 0.5) right = V3{1, 0, 0};
@@ -56,14 +63,15 @@ void render(const Engine& e, const V3& cam, const V3& look, int W, int H, const 
   const f64 fov = 0.9;
   std::vector<u8> img(size_t(W) * size_t(H) * 3);
   const V3 sun = normalized(V3{-0.45, -0.3, 0.84});
-  static const f64 mat_col[7][3] = {{0.78, 0.74, 0.66}, {0.72, 0.7, 0.66}, {0.55, 0.57, 0.62}, {0.72, 0.45, 0.34},
-                                    {0.45, 0.36, 0.25}, {0.5, 0.48, 0.45}, {0.35, 0.33, 0.3}};
+  static const f64 mat_col[11][3] = {{0.78, 0.74, 0.66}, {0.72, 0.7, 0.66}, {0.55, 0.57, 0.62}, {0.72, 0.45, 0.34},
+                                    {0.45, 0.36, 0.25}, {0.5, 0.48, 0.45}, {0.35, 0.33, 0.3}, {0.62, 0.42, 0.22},
+                                    {0.68, 0.66, 0.6},  {0.7, 0.85, 0.9},  {0.3, 0.26, 0.22}};
   parallel_for(H, 4, [&](i64 y0, i64 y1) {
     for (i64 y = y0; y < y1; ++y)
       for (int x = 0; x < W; ++x) {
         const f64 u = (x + 0.5) / W - 0.5, v = 0.5 - (y + 0.5) / H;
         const V3 d = normalized(fwd + right * (u * fov * W / H) + up * (v * fov));
-        const RayHit hit = e.raycast(to_arr(cam), to_arr(d), 400.0);
+        const Game::ShotHit hit = e.raycast_shot(cam, d, 400.0);
         f64 c[3];
         if (!hit.hit) {
           const f64 s = 0.5 + 0.5 * std::max(0.0, d.z);
@@ -71,16 +79,15 @@ void render(const Engine& e, const V3& cam, const V3& look, int W, int H, const 
           c[1] = 0.72 * s + 0.2;
           c[2] = 0.86 * s + 0.12;
         } else {
-          const V3 n = to_v3(hit.normal);
-          const int m = std::clamp(hit.material, 0, 6);
+          const V3 n = hit.normal;
+          const int m = std::clamp(hit.material, 0, 10);
           f64 base[3] = {mat_col[m][0], mat_col[m][1], mat_col[m][2]};
-          if (hit.body) {
-            const u64 hsh = static_cast<u64>(hit.body) * 0x9E3779B97F4A7C15ull;
-            const f64 t = 0.8 + 0.35 * static_cast<f64>((hsh >> 40) & 0xFF) / 255.0;
-            for (f64& q : base) q *= t;
-          }
-          const V3 p = to_v3(hit.pos) + n * 0.02;
-          const RayHit sh = e.raycast(to_arr(p), to_arr(sun), 120.0);
+          // (a character: its voxel's colour, from its palette)
+          const anim::Character* ch = hit.character && e.characters() ? e.characters()->get(hit.character) : nullptr;
+          if (ch && hit.slot < ch->palette.size())
+            for (int q = 0; q < 3; ++q) base[q] = std::pow(std::clamp(static_cast<f64>(ch->palette[hit.slot][size_t(q)]), 0.0, 1.0), 1.0 / 1.6);
+          const V3 p = hit.pos + n * 0.02;
+          const Game::ShotHit sh = e.raycast_shot(p, sun, 120.0);
           const f64 lam = std::max(0.0, dot(n, sun)) * (sh.hit ? 0.0 : 1.0);
           const f64 sky = 0.35 + 0.15 * n.z;
           const f64 fog = std::exp(-hit.distance / 260.0);
@@ -110,10 +117,13 @@ int main(int argc, char** argv) {
   u64 seed = 1;
   f64 seconds = 12.0, fps = 15.0, report = 1.0, frame_start = 0.0;
   int W = 640, H = 360, debug_view = 0;
-  EngineParams par;
+  GameParams par;
   i64 work = 0;
   bool cam_set = false, look_set = false;
   V3 cam, look;
+  f64 turn = 0.0;
+  bool turned = false, turned_city = false;
+  std::vector<std::pair<std::string, f64>> tunes;  // (--tune name=value: the world's tunables, before its load)
   for (int i = 1; i < argc; ++i) {
     const std::string a = argv[i];
     auto next = [&]() -> const char* { return i + 1 < argc ? argv[++i] : ""; };
@@ -134,6 +144,16 @@ int main(int argc, char** argv) {
     else if (a == "--debug-view") debug_view = std::atoi(next());
     else if (a == "--work") work = std::atoll(next());
     else if (a == "--res") std::sscanf(next(), "%dx%d", &W, &H);
+    else if (a == "--turned-city") turned_city = true;
+    else if (a == "--tune") {
+      const std::string kv = next();
+      const size_t eq = kv.find('=');
+      if (eq != std::string::npos) tunes.emplace_back(kv.substr(0, eq), std::atof(kv.c_str() + eq + 1));
+    }
+    else if (a == "--turn") {
+      turn = std::atof(next());
+      turned = true;
+    }
     else if (a == "--cam") {
       cam = parse3(next());
       cam_set = true;
@@ -146,9 +166,13 @@ int main(int argc, char** argv) {
     }
   }
   par.debug_view = debug_view;
-  Engine eng;
-  if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC") || std::getenv("SVX_MIN_BODY") || std::getenv("SVX_RIGID") || std::getenv("SVX_ROUNDS") || std::getenv("SVX_REST")) {
-    EngineConfig c = eng.config();
+  Game eng;
+  for (const auto& [name, value] : tunes)
+    if (!eng.set_tunable(name.c_str(), value)) std::fprintf(stderr, "unknown tunable %s\n", name.c_str());
+  if (work > 0 || std::getenv("SVX_NO_BODY_FRACTURE") || std::getenv("SVX_MIN_FRAC") || std::getenv("SVX_MIN_BODY") || std::getenv("SVX_RIGID") || std::getenv("SVX_ROUNDS") || std::getenv("SVX_REST") ||
+      std::getenv("SVX_NO_CCD")) {
+    WorldConfig c = eng.config();
+    if (std::getenv("SVX_NO_CCD")) c.rigid.speculative = false;  // (experiments: no continuous collision)
     if (const char* e = std::getenv("SVX_RIGID")) {
       // (experiments) iterations,position_iterations,manifold,manifold_per_m,substeps
       int it, pit, man, sub;
@@ -177,6 +201,8 @@ int main(int argc, char** argv) {
     eng.configure(c);
   }
   const f64 h = 0.125;
+  IVec3 turn_pivot{0, 0, 0};
+  Quat turn_rot;
   std::unique_ptr<doom::DoomWorld> dw;
   if (!wad_path.empty()) {
     std::ifstream in(wad_path, std::ios::binary);
@@ -195,31 +221,88 @@ int main(int argc, char** argv) {
     VoxelGrid g = std::move(dw->grid);
     eng.load(std::move(g), dw->spawn_pos, dw->spawn_dir);
     world = map_name;
-  } else if (world == "city") {
-    auto src = make_city_source(seed, 1000.0, h);
+  } else if (world == "drive") {
+    // (the endless city to drive through: its traffic and its people)
+    auto src = make_drive_city(seed, h);
     VoxelGrid g;
     g.h = h;
     const auto sp = src->spawn_pos(), sd = src->spawn_dir();
     eng.load(std::move(g), sp, sd);
-    eng.enable_streaming(std::move(src), StreamConfig{});
+    eng.load_streaming(std::move(src), eng.grid().h);
+  } else if (world == "city") {
+    auto src = make_city_source(seed, 1000.0, h, turned_city);
+    VoxelGrid g;
+    g.h = h;
+    const auto sp = src->spawn_pos(), sd = src->spawn_dir();
+    eng.load(std::move(g), sp, sd);
+    eng.load_streaming(std::move(src), eng.grid().h);
   } else {
-    ProcWorld w = make_procedural(world, seed, h);
-    eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+    Level w = make_procedural(world, seed, h);
+    if (turned) {
+      // the structure (z >= 0) into a grid of its own, turned about the vertical through its
+      // centre; the ground (z < 0) stays, grown to reach under it
+      VoxelGrid& g = w.grid;
+      IVec3 lo{INT32_MAX, INT32_MAX, 0}, hi{INT32_MIN, INT32_MIN, 0};
+      for (const auto& [k, c] : g.chunks()) {
+        const IVec3 cc = unkey3(k);
+        if (cc[2] < 0) continue;
+        for (int i = 0; i < kChunkVox; ++i) {
+          if (!vox_solid(c.uniform ? c.value : c.v[size_t(i)])) continue;
+          const IVec3 l{i / (kChunk * kChunk), (i / kChunk) % kChunk, i % kChunk};
+          for (int a = 0; a < 2; ++a) {
+            lo[a] = std::min(lo[a], cc[a] * kChunk + l[a]);
+            hi[a] = std::max(hi[a], cc[a] * kChunk + l[a]);
+          }
+        }
+      }
+      turn_pivot = IVec3{(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, 0};
+      VoxelGrid t;
+      t.h = h;
+      std::vector<std::pair<IVec3, Vox>> moved;
+      for (const auto& [k, c] : g.chunks()) {
+        const IVec3 cc = unkey3(k);
+        if (cc[2] < 0) continue;
+        for (int i = 0; i < kChunkVox; ++i) {
+          const Vox v = c.uniform ? c.value : c.v[size_t(i)];
+          if (!vox_solid(v)) continue;
+          const IVec3 l{i / (kChunk * kChunk), (i / kChunk) % kChunk, i % kChunk};
+          moved.push_back({{cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]}, v});
+        }
+      }
+      for (const auto& [q, v] : moved) {
+        g.set(q, kAir);
+        t.set(q[0] - turn_pivot[0], q[1] - turn_pivot[1], q[2], v);
+      }
+      const i32 r = static_cast<i32>(std::ceil(0.75 * std::max(hi[0] - lo[0], hi[1] - lo[1]))) + 16;
+      for (i32 x = turn_pivot[0] - r; x < turn_pivot[0] + r; ++x)
+        for (i32 y = turn_pivot[1] - r; y < turn_pivot[1] + r; ++y)
+          if (!vox_solid(g.get(x, y, -1))) g.fill_column(x, y, -4, 0, make_vox(MaterialId::Rock, true));
+      g.compact();
+      t.compact();
+      eng.load(std::move(w.grid), w.spawn_pos, w.spawn_dir);
+      const f64 th = 0.5 * turn * 3.14159265358979323846 / 180.0;
+      turn_rot = Quat{0.0, 0.0, std::sin(th), std::cos(th)};
+      const GridId id = eng.world().add_grid(GridFrame{V3{h * turn_pivot[0], h * turn_pivot[1], 0.0}, turn_rot}, std::move(t));
+      std::printf("turned %.1f degrees: %zu voxels in grid %u about (%d %d)\n", turn, moved.size(), id, turn_pivot[0], turn_pivot[1]);
+      add_grids(eng.world(), std::move(w.grids));
+    } else {
+      load_level(eng, std::move(w));
+    }
   }
   eng.set_params(par);
   if (const char* wv = std::getenv("SVX_WATCH")) {
     int wx, wy, wz;
     if (std::sscanf(wv, "%d,%d,%d", &wx, &wy, &wz) == 3) {
       std::printf("[before bake] ");
-      eng.debug_voxel({wx, wy, wz});
+      eng.world().debug_voxel({wx, wy, wz});
     }
   }
   f64 bake_ms = 0.0;
   eng.bake(&bake_ms);
-  const auto& dr = eng.design_report();
+  const auto& dr = eng.world().design_report();
   std::printf("world %s: %lld voxels; design: %lld structures, %lld nodes, max utilization %.3f, %lld voxels strengthened, "
               "%lld floating removed, %.0f ms\n",
-              world.c_str(), static_cast<long long>(eng.grid().solid_count()), static_cast<long long>(dr.structures),
+              world.c_str(), static_cast<long long>(eng.stats().voxels), static_cast<long long>(dr.structures),
               static_cast<long long>(dr.nodes), dr.max_utilization, static_cast<long long>(dr.strengthened_voxels),
               static_cast<long long>(dr.floating_voxels), bake_ms);
   // scenario
@@ -291,6 +374,35 @@ int main(int argc, char** argv) {
     // from the street crossing south-west of the block
     if (!cam_set) cam = V3{ox - 3.0, oy - 3.0, 14.0};
     if (!look_set) look = V3{ox + 9.0, oy + 9.0, 5.0};
+  } else if (world == "yard") {
+    // a blast at each construction: a house post, the tower's foot, the greenhouse, a shed
+    // column, the reinforced wall
+    if (scenario != "none") {
+      shots.push_back({0.3, true, V3{h * 26, h * 26, 0.6}, 0.8, 5e5});
+      shots.push_back({0.6, true, V3{h * 150, h * 40, 0.8}, 1.0, 1e6});
+      shots.push_back({0.9, true, V3{h * 68, h * 139, 1.0}, 0.6, 3e5});
+      shots.push_back({1.2, true, V3{h * 151, h * 141, 1.0}, 0.8, 1e6});
+      shots.push_back({1.5, true, V3{h * 270, h * 39, 1.2}, 0.7, 1e6});
+    }
+    if (!cam_set) cam = V3{20.0, -12.0, 16.0};
+    if (!look_set) look = V3{20.0, 12.0, 2.0};
+  } else if (world == "angles") {
+    // structures in oriented grids: a pier of the diagonal bridge, the portal's left column (it
+    // hangs on the braces), the ramp's block, the turned tower's west columns, the 20 degree
+    // wall, the stacked crates and the monolith's foot
+    if (scenario != "none") {
+      const World& W = eng.world();
+      shots.push_back({0.3, true, V3{h * 224, h * 168, 1.0}, 1.2, 1e6});
+      shots.push_back({0.5, true, V3{h * 224, h * 168, 3.5}, 1.2, 1e6});
+      shots.push_back({0.7, true, V3{h * 161.5, h * 41, h * 14}, 0.7, 1e6});
+      shots.push_back({0.9, true, V3{h * 106, h * 60, 1.0}, 1.2, 1e6});
+      for (int k = 0; k < 3; ++k) shots.push_back({1.2 + 0.15 * k, true, W.grid_to_world(1, V3{h * -25.5, h * (-25.5 + 26 * k), 0.8}), 0.9, 1e6});
+      shots.push_back({1.8, true, W.grid_to_world(6, V3{h * 12, 0.0, 1.5}), 0.8, 5e5});
+      shots.push_back({2.0, true, V3{h * 170, h * 120, 1.2}, 0.6, 2e5});
+      shots.push_back({2.2, true, V3{h * 350, h * 140, 0.4}, 0.5, 5e5});
+    }
+    if (!cam_set) cam = V3{-6.0, -10.0, 18.0};
+    if (!look_set) look = V3{24.0, 16.0, 2.0};
   } else if (world == "rooms") {
     if (scenario != "none") {
       shots.push_back({0.3, true, V3{h * 51, h * 23, 1.5}, 1.0, 1e6});
@@ -309,6 +421,14 @@ int main(int argc, char** argv) {
     double px, py, pz, pt;
     if (std::sscanf(e, "%lf,%lf,%lf,%lf", &px, &py, &pz, &pt) == 4) shots.push_back({pt, false, V3{px, py, pz}, 0.06, 0.0});
   }
+  if (turned) {
+    // (the scenario turns with the structure)
+    const V3 pv{h * turn_pivot[0], h * turn_pivot[1], 0.0};
+    auto turned = [&](const V3& p) { return pv + rotate(turn_rot, p - pv); };
+    for (Shot& s : shots) s.pos = turned(s.pos);
+    cam = turned(cam);
+    look = turned(look);
+  }
   std::sort(shots.begin(), shots.end(), [](const Shot& a, const Shot& b) { return a.t < b.t; });
   const f64 dt = eng.config().dt;
   const i64 ticks = static_cast<i64>(std::llround(seconds / dt));
@@ -316,32 +436,45 @@ int main(int argc, char** argv) {
   int frame = 0;
   f64 next_frame = frame_start, next_report = report;
   f64 max_tick = 0.0, sum_tick = 0.0;
-  EngineStats prev = eng.stats();
+  GameStats prev = eng.stats();
   const auto wall0 = Clock::now();
   for (i64 t = 0; t < ticks; ++t) {
     const f64 time = t * dt;
     while (next_shot < shots.size() && shots[next_shot].t <= time) {
       const Shot& s = shots[next_shot++];
-      if (s.blast) eng.blast(to_arr(s.pos), s.radius, s.energy);
-      else eng.carve(to_arr(s.pos), s.radius);
+      if (s.blast) eng.blast(s.pos, s.radius, s.energy);
+      else eng.carve(s.pos, s.radius);
     }
-    if (world == "city") eng.set_viewer(to_arr(look));
+    if (world == "city") eng.set_viewer(look);
     eng.tick();
-    (void)eng.take_events();
+    {
+      const std::vector<GameEvent> evs = eng.take_events();
+      if (const char* te = std::getenv("SVX_TRACE_EVENTS"))  // (the cracks and pieces from tick te on)
+        if (t >= std::atoll(te))
+          for (const GameEvent& e : evs)
+            if (e.kind == GameEvent::Kind::Crack || e.kind == GameEvent::Kind::Detached)
+              std::printf("[t%lld] %s id %lld pos (%.4f %.4f %.4f) n (%.3f %.3f %.3f) strength %.6f voxels %d\n", static_cast<long long>(t),
+                          e.kind == GameEvent::Kind::Crack ? "crack" : "piece", static_cast<long long>(e.id), e.pos.x, e.pos.y, e.pos.z,
+                          e.normal.x, e.normal.y, e.normal.z, e.strength, e.voxels);
+    }
+    if (std::getenv("SVX_TRACE_HASH"))  // (each tick's world hash: where two builds part)
+      std::printf("[t%lld] world %016llx pieces %d broken %lld\n", static_cast<long long>(t),
+                  static_cast<unsigned long long>(eng.world().session_hash()), eng.stats().bodies,
+                  static_cast<long long>(eng.stats().bonds_broken));
     if (const char* wv = std::getenv("SVX_WATCH")) {
       int wx, wy, wz;
       if (std::sscanf(wv, "%d,%d,%d", &wx, &wy, &wz) == 3) {
         std::printf("[t%lld] ", static_cast<long long>(t));
-        eng.debug_voxel({wx, wy, wz});
+        eng.world().debug_voxel({wx, wy, wz});
       }
     }
     if (std::getenv("SVX_TRACK_FAST"))
-      for (const auto& bp : eng.rigid().bodies)
+      for (const auto& bp : eng.world().rigid().bodies)
         if (norm(bp->v) > 14.0)
           std::printf("  [fast t%lld] id %lld m %.0f r %.2f x (%.1f %.1f %.1f) v (%.1f %.1f %.1f) |w| %.2f asleep %d age %.2f\n",
                       static_cast<long long>(t), static_cast<long long>(bp->id), bp->mass, bp->radius, bp->x.x, bp->x.y, bp->x.z,
                       bp->v.x, bp->v.y, bp->v.z, norm(bp->w), bp->asleep ? 1 : 0, bp->age);
-    const EngineStats s = eng.stats();
+    const GameStats s = eng.stats();
     max_tick = std::max(max_tick, s.tick_ms);
     sum_tick += s.tick_ms;
     if (!frames.empty() && time + 1e-9 >= next_frame) {
@@ -354,7 +487,7 @@ int main(int argc, char** argv) {
       // fast pieces (ejections) and the highest piece
       int fast = 0;
       double vmax = 0.0, zmax = -1e9;
-      for (const auto& bp : eng.rigid().bodies) {
+      for (const auto& bp : eng.world().rigid().bodies) {
         const double v = norm(bp->v);
         vmax = std::max(vmax, v);
         fast += v > 12.0 ? 1 : 0;
@@ -362,7 +495,7 @@ int main(int argc, char** argv) {
       }
       {
         static double last[5] = {0, 0, 0, 0, 0};
-        const double* pm = eng.rigid().prof_ms;
+        const double* pm = eng.world().rigid().prof_ms;
         const double n = std::max(1.0, report / dt);
         std::printf("        rigid ms/tick: collide %.1f solve %.1f fracture %.1f rollback %.1f integrate %.1f\n", (pm[0] - last[0]) / n,
                     (pm[1] - last[1]) / n, (pm[2] - last[2]) / n, (pm[3] - last[3]) / n, (pm[4] - last[4]) / n);
@@ -370,7 +503,7 @@ int main(int argc, char** argv) {
       }
       {
         int hist[6] = {0, 0, 0, 0, 0, 0};
-        for (const auto& bp : eng.rigid().bodies) {
+        for (const auto& bp : eng.world().rigid().bodies) {
           if (bp->asleep) continue;
           const double sp = norm(bp->v) + bp->radius * norm(bp->w);
           hist[sp < 0.15 ? 0 : sp < 0.45 ? 1 : sp < 1.0 ? 2 : sp < 3.0 ? 3 : sp < 10.0 ? 4 : 5]++;
@@ -398,14 +531,14 @@ int main(int argc, char** argv) {
     int hist[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     const f64 edges[7] = {0.05, 0.15, 0.3, 1.0, 3.0, 10.0, 25.0};
     int small = 0, big = 0, below = 0;
-    for (const auto& b : eng.rigid().bodies) {
+    for (const auto& b : eng.world().rigid().bodies) {
       if (b->asleep) continue;
       if (b->x.z < -0.5) ++below;
       const f64 sp = norm(b->v) + b->radius * norm(b->w);
       int k = 0;
       while (k < 7 && sp > edges[k]) ++k;
       ++hist[k];
-      (b->shape.count < 100 ? small : big)++;
+      (b->count < 100 ? small : big)++;
     }
     std::printf("awake speed histogram (m/s: <0.05 <0.15 <0.3 <1 <3 <10 <25 more): %d %d %d %d %d %d %d %d; small %d big %d, below ground %d\n",
                 hist[0], hist[1], hist[2], hist[3], hist[4], hist[5], hist[6], hist[7], small, big, below);
@@ -424,24 +557,24 @@ int main(int argc, char** argv) {
         const double wz = G.h * (cc[2] * kChunk + z);
         if (wz > zmin && std::getenv("SVX_HIGH_DETAIL")) {
           static int shown = 0;
-          if (shown++ < 4) eng.debug_voxel({cc[0] * kChunk + x, cc[1] * kChunk + y, cc[2] * kChunk + z});
+          if (shown++ < 4) eng.world().debug_voxel({cc[0] * kChunk + x, cc[1] * kChunk + y, cc[2] * kChunk + z});
         }
         if (wz > zmin)
           std::printf("high voxel at (%.2f %.2f %.2f) mat %d free %d\n", G.h * (cc[0] * kChunk + x), G.h * (cc[1] * kChunk + y), wz, int(vox_mat(v)), vox_free(v) ? 1 : 0);
       }
     }
     // pieces resting high up (floating?)
-    for (const auto& bp : eng.rigid().bodies)
+    for (const auto& bp : eng.world().rigid().bodies)
       if (bp->x.z > std::atof(std::getenv("SVX_HIGH")))
-        std::printf("high piece %lld: %d voxels at (%.2f %.2f %.2f) asleep %d v %.2f age %.1f\n", static_cast<long long>(bp->id), bp->shape.count,
+        std::printf("high piece %lld: %d voxels at (%.2f %.2f %.2f) asleep %d v %.2f age %.1f\n", static_cast<long long>(bp->id), bp->count,
                     bp->x.x, bp->x.y, bp->x.z, bp->asleep ? 1 : 0, norm(bp->v), bp->age);
   }
   {
     // piece sizes (voxels)
     int hist[8] = {0, 0, 0, 0, 0, 0, 0, 0};
     long long vox[8] = {0, 0, 0, 0, 0, 0, 0, 0};
-    for (const auto& bp : eng.rigid().bodies) {
-      const int n = bp->shape.count;
+    for (const auto& bp : eng.world().rigid().bodies) {
+      const int n = bp->count;
       const int k = n < 8 ? 0 : n < 32 ? 1 : n < 64 ? 2 : n < 128 ? 3 : n < 512 ? 4 : n < 2048 ? 5 : n < 8192 ? 6 : 7;
       hist[k]++;
       vox[k] += n;
@@ -449,10 +582,12 @@ int main(int argc, char** argv) {
     std::printf("piece sizes (voxels): <8 %d (%lld) <32 %d (%lld) <64 %d (%lld) <128 %d (%lld) <512 %d (%lld) <2k %d (%lld) <8k %d (%lld) >8k %d (%lld)\n",
                 hist[0], vox[0], hist[1], vox[1], hist[2], vox[2], hist[3], vox[3], hist[4], vox[4], hist[5], vox[5], hist[6], vox[6], hist[7], vox[7]);
   }
-  const EngineStats s = eng.stats();
-  std::printf("done: %lld ticks in %.1f s wall; voxels %lld, pieces %d, broken %lld, detached %lld voxels, hash %016llx\n",
+  const GameStats s = eng.stats();
+  // (hash: the session's - the world's and the game's own state; world: the world's alone, what a
+  // reference build's hash is compared with - docs/BASELINE.md)
+  std::printf("done: %lld ticks in %.1f s wall; voxels %lld, pieces %d, broken %lld, detached %lld voxels, hash %016llx, world %016llx\n",
               static_cast<long long>(ticks), wall, static_cast<long long>(s.voxels), s.bodies,
               static_cast<long long>(s.bonds_broken), static_cast<long long>(s.detached_voxels),
-              static_cast<unsigned long long>(eng.session_hash()));
+              static_cast<unsigned long long>(eng.session_hash()), static_cast<unsigned long long>(eng.world().session_hash()));
   return 0;
 }

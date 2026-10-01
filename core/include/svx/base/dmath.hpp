@@ -1,4 +1,5 @@
-// structvox — bundled deterministic math (plan §B9 determinism rules).
+// structvox — bundled deterministic math (plan §B9 determinism rules): the core's simulation
+// (joint limits, kinematic drives) and the harness use it.
 //
 // Platform libms (Apple, glibc, musl in Emscripten, MSVC) may differ in the last bit of sin,
 // cos, atan2, exp, log and pow. The solver uses these few functions through this header

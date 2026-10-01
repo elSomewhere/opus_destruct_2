@@ -11,6 +11,7 @@
 #include <array>
 #include <vector>
 
+#include "svx/base/mem.hpp"
 #include "svx/base/vec.hpp"
 #include "svx/world/grid.hpp"
 
@@ -29,12 +30,17 @@ struct FragInfo {
 
 struct FragChunk {
   u32 vox_version = 0;             // the grid chunk's vox_version it was built from
+  mutable i64 used = 0;            // (its owner's bookkeeping: the tick it was last used)
   std::vector<u16> id;             // kChunkVox entries (index (x*32+y)*32+z): 0 = none, else fragment + 1
   std::vector<FragInfo> frags;
   std::vector<u16> vox;            // chunk-local voxel indices, grouped by fragment ...
   std::vector<i32> vox_start;      // ... fragment f: vox[vox_start[f] .. vox_start[f + 1])
   bool empty() const { return frags.empty(); }
   i32 at(int local_index) const { return id.empty() ? -1 : static_cast<i32>(id[local_index]) - 1; }
+  i64 memory_bytes(Bytes kind = Bytes::Held) const {
+    return record_bytes<FragChunk>(kind, 112) + vec_bytes(id, kind) + vec_bytes(frags, kind) + vec_bytes(vox, kind) +
+           vec_bytes(vox_start, kind);
+  }
 };
 
 struct FragParams {
@@ -42,6 +48,11 @@ struct FragParams {
   f64 jitter_lo = 0.25, jitter_span = 0.5;  // seed position within its lattice cell
   f64 noise_scale = 0.5;           // seam noise (x the material's)
   u64 salt = 0x5EEDF4A6ull;        // seam pattern
+  // The materials' rubble sizes (voxels of the world grid) in this grid's voxels: the world's voxel
+  // size / this grid's (1: the world grid, or a grid of its voxel size), so a grid's rubble has the
+  // world's size in metres. Small components merge by the same measure.
+  f64 scale = 1.0;
+  const MaterialTable* mats = nullptr;  // the materials (a world's; nullptr: the process's)
 };
 
 // Fragments of chunk cc of the grid (uses its voxels, broken faces and h).

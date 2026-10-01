@@ -1,0 +1,22 @@
+# Pinned world hashes (tools/baseline/golden.sh, docs/BASELINE.md).
+# parity: the structural reference (oriented_1, clang) - never rewritten.
+parity 640880863432ffb9 engine_demo --world tower --scenario side --seconds 5
+parity e397f365ce187a22 engine_demo --world tower --scenario core --seconds 5
+parity 28e0ebdbc1b812cc engine_demo --world tower --scenario pillars --seconds 5 --turn 30
+parity 96bbf9affb47490b engine_demo --world rooms --seconds 5
+parity 5bed2317fe01ebed engine_demo --world slab --seconds 5
+parity 4a2a3bdec467cf82 engine_demo --world bridge --seconds 5
+parity 075130665ee44277 engine_demo --world chimney --seconds 5
+# engine: the engine as it is - pinned again (--update) only with a deliberate change of behaviour.
+engine 8d5919785a39ccfd engine_demo --world tower --scenario side --seconds 5
+engine fe5ffafa80bf12a4 engine_demo --world tower --scenario core --seconds 5
+engine e333f931de87a852 engine_demo --world tower --scenario pillars --seconds 5 --turn 30
+engine 992365b3d689163a engine_demo --world rooms --seconds 5
+engine c26a57868fcd026d engine_demo --world slab --seconds 5
+engine 79332e543e28d89c engine_demo --world bridge --seconds 5
+engine 2b6e28ea23b08f2f engine_demo --world chimney --seconds 5
+engine f781705e6bc9c365 engine_demo --world yard --seconds 4
+engine cf51a8db8143feeb engine_demo --world machines --seconds 12
+engine 94a83a4f622d8e7e engine_demo --world angles --seconds 3
+engine 6c16bd69cc68b2f0 engine_demo --world drive --seconds 4
+engine fafa7ad0776ed86a env_bench --scenario flood

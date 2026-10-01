@@ -1,15 +1,17 @@
 /**
  * Detached islands: meshes of pieces that lost support. Engines that simulate rigid pieces
  * (DetachedEvent.rigid) send poses in `debris` messages: the piece follows them, interpolated
- * one engine tick behind, and fades with the engine-given opacity; it stays (as rubble) until
+ * one batch behind (engine/poseclock.ts), and fades with the engine-given opacity; it stays (as rubble) until
  * the engine drops it from the poses. Otherwise the piece flies ballistically (gravity, the
  * engine-given linear and angular velocity, no collision) and fades out with a dithered
  * dissolve (plan §B7, v1 "vanish" semantics).
  *
  * There can be thousands of pieces: islands live in a Map by id (insertion order = age), each
  * keeps a fixed object-uniform slot, and only islands whose transform or opacity changed are
- * marked for upload.
+ * marked for upload. The engine's `removed` events release them; over capacity, the least missed
+ * goes (a ballistic or fading one, else the smallest).
  */
+import { PoseClock } from '../engine/poseclock.ts';
 import type { DetachedEvent, Vec3 } from '../engine/protocol.ts';
 import { DEBRIS_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { mat4, mat4FromQuatAbout, mat4RotateAbout, sphereVisible, type Mat4 } from './math.ts';
@@ -17,10 +19,12 @@ import { mat4, mat4FromQuatAbout, mat4RotateAbout, sphereVisible, type Mat4 } fr
 export const ISLAND_LIFETIME_S = 1.5;
 const FADE_START_S = 0.25;
 const GRAVITY = 9.81;
-/** Engine tick; rigid pieces are drawn this far in the past to interpolate between poses. */
-const TICK_S = 1 / 60;
-/** A rigid piece whose first pose never arrives falls back to the ballistic path. */
-const POSE_TIMEOUT_S = 0.5;
+/**
+ * A rigid piece that pose messages keep leaving out, before its first pose, falls back to the
+ * ballistic path (a slow page gets its poses late: time alone says nothing - a car's body would
+ * fall away from its wheels).
+ */
+const POSE_MISSES = 3;
 
 type Quat = [number, number, number, number];
 
@@ -46,6 +50,8 @@ export interface GpuIsland {
   cur: PoseSample | null;
   /** Stamp of the last `debris` message that carried this piece. */
   seen: number;
+  /** Pose messages since it came that did not have it (while it has had none). */
+  missed: number;
   /** Updated by `update`. */
   model: Mat4;
   opacity: number;
@@ -71,6 +77,8 @@ export class IslandRenderer {
   private readonly scratch = mat4();
   private stamp = 0;
   readonly maxIslands: number;
+  /** When poses are drawn (the page's, shared with the vehicles and characters). */
+  clock = new PoseClock();
 
   constructor(device: GPUDevice, maxIslands: number) {
     this.device = device;
@@ -92,10 +100,11 @@ export class IslandRenderer {
     if (m.indexCount === 0) return null;
     const old = this.islands.get(ev.id);
     if (old) this.release(old);
-    // over capacity: the oldest island goes (Map order is insertion order)
+    // over capacity: what is least missed goes (never the oldest for its age: those are the
+    // parked cars' bodies, the standing rubble)
     if (this.freeSlots.length === 0) {
-      const oldest = this.islands.values().next();
-      if (!oldest.done) this.release(oldest.value);
+      const victim = this.leastMissed();
+      if (victim) this.release(victim);
     }
     const vbuf = this.device.createBuffer({
       label: `island ${ev.id} vertices`,
@@ -125,6 +134,7 @@ export class IslandRenderer {
       prev: null,
       cur: null,
       seen: 0,
+      missed: 0,
       model: mat4(), // the detachment pose: identity
       opacity: 1,
       position: [...ev.centroid],
@@ -134,6 +144,12 @@ export class IslandRenderer {
     };
     this.islands.set(ev.id, island);
     return island;
+  }
+
+  /** A piece the engine removed (a `removed` event): its mesh goes. */
+  remove(id: number): void {
+    const isl = this.islands.get(id);
+    if (isl) this.release(isl);
   }
 
   /**
@@ -150,12 +166,7 @@ export class IslandRenderer {
       const rot: Quat = [poses[o + 4]!, poses[o + 5]!, poses[o + 6]!, poses[o + 7]!];
       const last = isl.cur;
       // (resting pieces are not re-sent every tick: after a gap, interpolate from the old pose)
-      isl.prev =
-        last === null
-          ? { t: nowS - TICK_S, pos: [...isl.centroid], rot: [0, 0, 0, 1] }
-          : nowS - last.t > 2 * TICK_S
-            ? { t: nowS - TICK_S, pos: last.pos, rot: last.rot }
-            : last;
+      isl.prev = last === null ? { t: nowS - this.clock.interval, pos: [...isl.centroid], rot: [0, 0, 0, 1] } : this.clock.from(last, nowS);
       isl.cur = { t: nowS, pos, rot };
       const opacity = Math.max(0, Math.min(1, poses[o + 8]!));
       if (opacity !== isl.opacity) {
@@ -165,7 +176,9 @@ export class IslandRenderer {
       isl.seen = stamp;
     }
     for (const isl of this.islands.values()) {
-      if (isl.rigid && isl.cur !== null && isl.seen !== stamp) this.release(isl); // the engine removed it
+      if (!isl.rigid || isl.seen === stamp) continue;
+      if (isl.cur !== null) this.release(isl); // the engine removed it
+      else if (++isl.missed >= POSE_MISSES) isl.rigid = false; // never posed: fall back
     }
   }
 
@@ -173,7 +186,6 @@ export class IslandRenderer {
   update(nowS: number): void {
     for (const isl of this.islands.values()) {
       const t = nowS - isl.born;
-      if (isl.rigid && isl.cur === null && t > POSE_TIMEOUT_S) isl.rigid = false; // no poses: fall back
       if (isl.rigid) {
         this.poseRigid(isl, nowS);
         continue;
@@ -229,13 +241,12 @@ export class IslandRenderer {
     for (const isl of this.islands.values()) this.release(isl);
   }
 
-  /** Pose at `nowS - TICK_S`, interpolated between the last two engine poses (nlerp). */
+  /** Pose one batch interval before `nowS`, interpolated between the last two engine poses (nlerp). */
   private poseRigid(isl: GpuIsland, nowS: number): void {
     const a = isl.prev;
     const b = isl.cur;
     if (!a || !b) return; // still at the detachment pose
-    const span = Math.max(1e-6, b.t - a.t);
-    const s = Math.min(1, Math.max(0, (nowS - TICK_S - a.t) / span));
+    const s = this.clock.weight(a.t, b.t, nowS);
     const pos: Vec3 = [
       a.pos[0] + (b.pos[0] - a.pos[0]) * s,
       a.pos[1] + (b.pos[1] - a.pos[1]) * s,
@@ -258,6 +269,23 @@ export class IslandRenderer {
     isl.model.set(m);
     isl.position = pos;
     isl.dirty = true;
+  }
+
+  /**
+   * The island to give up for a new one: a ballistic one, then one fading out (the faintest
+   * first), then the one of fewest triangles - the oldest of equals.
+   */
+  private leastMissed(): GpuIsland | null {
+    let best: GpuIsland | null = null;
+    let key = Infinity;
+    for (const isl of this.islands.values()) {
+      const k = !isl.rigid ? isl.opacity - 2 : isl.opacity < 1 ? isl.opacity - 1 : isl.indexCount;
+      if (k < key) {
+        key = k;
+        best = isl;
+      }
+    }
+    return best;
   }
 
   private release(isl: GpuIsland): void {

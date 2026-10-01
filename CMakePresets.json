@@ -32,6 +32,26 @@
       }
     },
     {
+      "name": "native-asan",
+      "displayName": "Native, AddressSanitizer + UndefinedBehaviorSanitizer (leaks too: LeakSanitizer)",
+      "binaryDir": "${sourceDir}/build/native-asan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_FLAGS": "-fsanitize=address,undefined -fno-sanitize=vptr -fno-omit-frame-pointer -fno-sanitize-recover=undefined",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=address,undefined"
+      }
+    },
+    {
+      "name": "native-tsan",
+      "displayName": "Native, ThreadSanitizer",
+      "binaryDir": "${sourceDir}/build/native-tsan",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "RelWithDebInfo",
+        "CMAKE_CXX_FLAGS": "-fsanitize=thread -fno-omit-frame-pointer",
+        "CMAKE_EXE_LINKER_FLAGS": "-fsanitize=thread"
+      }
+    },
+    {
       "name": "wasm-release",
       "displayName": "WASM Release (Emscripten, SIMD128)",
       "binaryDir": "${sourceDir}/build/wasm-release",
@@ -73,6 +93,14 @@
       "configurePreset": "native-x86_64"
     },
     {
+      "name": "native-asan",
+      "configurePreset": "native-asan"
+    },
+    {
+      "name": "native-tsan",
+      "configurePreset": "native-tsan"
+    },
+    {
       "name": "wasm-release",
       "configurePreset": "wasm-release"
     },
@@ -103,6 +131,20 @@
     {
       "name": "native-x86_64",
       "configurePreset": "native-x86_64",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "native-asan",
+      "configurePreset": "native-asan",
+      "output": {
+        "outputOnFailure": true
+      }
+    },
+    {
+      "name": "native-tsan",
+      "configurePreset": "native-tsan",
       "output": {
         "outputOnFailure": true
       }

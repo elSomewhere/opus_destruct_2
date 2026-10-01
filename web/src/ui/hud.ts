@@ -20,6 +20,8 @@ export interface HudState {
   weapon: WeaponDef;
   weapons: readonly WeaponDef[];
   player: { pos: Vec3; onGround: boolean; noclip: boolean };
+  /** Vehicles in the world. */
+  vehicles: number;
   debugView: DebugView;
   rockets: number;
 }
@@ -76,6 +78,11 @@ export class Hud {
     this.flash.classList.toggle('on', on);
   }
 
+  /** Driving: no crosshair, no weapons. */
+  setDriving(on: boolean): void {
+    this.root.classList.toggle('driving', on);
+  }
+
   update(s: HudState): void {
     const r = s.render;
     const e = s.engine;
@@ -83,7 +90,7 @@ export class Hud {
       `${s.fps.toFixed(0).padStart(3)} fps  ${s.frameMs.toFixed(1)} ms   ${r.width}x${r.height}`,
       `gpu    ${s.gpu}`,
       `draw   ${r.chunksDrawn}/${r.chunksTotal} chunks  ${formatCount(r.triangles)} tris  ${r.gpuMB.toFixed(0)} MB`,
-      `fx     ${r.particles} particles  ${r.islandsDrawn}/${r.islands} pieces drawn  ${s.rockets} rockets`,
+      `fx     ${r.particles} particles  ${r.islandsDrawn}/${r.islands} pieces drawn  ${s.rockets} rockets  ${s.vehicles} vehicles  ${r.wheels} wheels  ${r.skidMarks} skid marks`,
       `engine ${s.engineKind}  ${s.pendingRequests} pending`,
     ];
     if (e) {
@@ -96,6 +103,9 @@ export class Hud {
         `pieces ${formatCount(e.pieces)} (${formatCount(e.awakePieces)} awake)  ${formatCount(e.contacts)} contacts  ${formatCount(e.pieceSplits)} splits  ${formatCount(e.pieceChecks)} checks  ${formatCount(e.impactLoads)} impacts`,
         `detach ${formatCount(e.detachedPieces)} pieces  ${formatCount(e.detachedVoxels)} voxels  (${formatCount(e.ticks)} ticks  ${e.movers} movers)`,
         `bake   ${formatCount(e.bakeMs)} ms  design util ${ms(e.designMaxUtilization)}  ${formatCount(e.strengthenedVoxels)} strengthened  ${formatCount(e.floatingVoxelsRemoved)} floating removed`,
+        `env    fire ${formatCount(e.fireBurning)} burning  ${formatCount(e.fireHot)} hot  smoke ${formatCount(e.smokeCells)} cells  water ${formatCount(e.waterActive)} moving  ${formatCount(e.waterLoads)} loads  ${e.floating} afloat  ${ms(e.envMs)} ms`,
+        `people ${e.characters} characters  ${e.charactersDeep} deep  ${e.charactersShallow} shallow  ${e.charactersPlanOnly} plan only  ${e.charactersAtRest} at rest  ${ms(e.charactersMs)} ms  (${r.charactersDrawn}/${r.characters} drawn)  blood ${r.bloodDrops} drops ${r.bloodStains} stains`,
+        `memory ${e.worldMemoryMB.toFixed(0)} MB  (frags ${e.fragmentCacheMB.toFixed(0)}  structs ${e.structureMemoryMB.toFixed(0)}  pieces ${e.pieceMemoryMB.toFixed(0)})  archive ${e.archiveMB.toFixed(1)}/${e.archiveCapacityMB.toFixed(0)} MB  forgot ${formatCount(e.forgottenRegions)} regions  culled ${formatCount(e.culledPieces)}`,
       );
       const extras = Object.entries(e).filter(([k]) => !KNOWN.has(k));
       for (let i = 0; i < extras.length; i += 3) {

@@ -53,7 +53,10 @@ f64 k_cos(f64 x, f64 y) {
 }
 
 // x = n pi/2 + (y0 + y1), |y0 + y1| <= pi/4 (Cody-Waite with a 3-part pi/2: exact enough for
-// |x| < 2^19 pi/2; larger arguments stay deterministic but lose accuracy)
+// |x| < 2^19 pi/2; larger arguments stay deterministic but lose accuracy). |x| < 2^31: n is an int.
+// (reduce_huge: an argument of 2^31 or more is first taken modulo the double nearest 2 pi - fmod
+// is exact, so deterministic; such a sine has no accuracy left, only its range)
+constexpr f64 kTwoPi = 6.283185307179586;
 int rem_pio2(f64 x, f64& y0, f64& y1) {
   constexpr f64 invpio2 = 6.36619772367581382433e-01, pio2_1 = 1.57079632673412561417e+00,
                 pio2_1t = 6.07710050650619224932e-11, pio2_2 = 6.07710050630396597660e-11,
@@ -99,6 +102,7 @@ f64 sin(f64 x) {
   const i32 ix = hi(x) & 0x7fffffff;
   if (ix <= 0x3fe921fb) return k_sin(x, 0.0, 0);
   if (ix >= 0x7ff00000) return x - x;  // inf or NaN
+  if (ix >= 0x41e00000) return sin(std::fmod(x, kTwoPi));  // |x| >= 2^31: reduce_huge
   f64 y0, y1;
   const int n = rem_pio2(x, y0, y1);
   switch (n & 3) {
@@ -113,6 +117,7 @@ f64 cos(f64 x) {
   const i32 ix = hi(x) & 0x7fffffff;
   if (ix <= 0x3fe921fb) return k_cos(x, 0.0);
   if (ix >= 0x7ff00000) return x - x;
+  if (ix >= 0x41e00000) return cos(std::fmod(x, kTwoPi));  // |x| >= 2^31: reduce_huge
   f64 y0, y1;
   const int n = rem_pio2(x, y0, y1);
   switch (n & 3) {

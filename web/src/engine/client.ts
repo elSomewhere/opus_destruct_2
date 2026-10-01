@@ -11,8 +11,10 @@ import type {
   EngineCommand,
   EngineParams,
   InitConfig,
+  PedestrianSettings,
   ProceduralKind,
   RaycastHit,
+  TrafficSettings,
   Vec3,
   WadOptions,
   WorkerMessage,
@@ -25,12 +27,19 @@ import type { EngineKind } from './select.ts';
 export interface CollideResult {
   move: Vec3;
   onGround: boolean;
+  /** (onGround) the grid it stands on (0 the world grid) or the piece, and its velocity under the box. */
+  ground?: number;
+  groundPiece?: number;
+  groundVelocity?: Vec3;
 }
 
 interface Pending<T> {
   resolve: (value: T) => void;
   reject: (reason: Error) => void;
 }
+
+/** Answers to the client's own requests, and its failures: these belong to no world. */
+const CROSSES_LOADS: ReadonlySet<WorkerMessageType> = new Set<WorkerMessageType>(['loading', 'error', 'raycastResult', 'collideResult']);
 
 type AnyHandler = (msg: WorkerMessage) => void;
 
@@ -42,6 +51,9 @@ export class EngineClient {
   private readonly collides = new Map<number, Pending<CollideResult>>();
   private nextId = 1;
   private dead: Error | null = null;
+  /** Loads asked for, and the last the engine reported starting (`loading`). */
+  private loadsSent = 0;
+  private loadsBegun = 0;
 
   constructor(worker: Worker, kind: EngineKind) {
     this.worker = worker;
@@ -90,11 +102,13 @@ export class EngineClient {
   }
 
   loadProcedural(kind: ProceduralKind, seed: number): void {
+    this.loadsSent++;
     this.send({ type: 'loadProcedural', kind, seed });
   }
 
   /** Transfers `buffer`: it is detached (unusable) afterwards. */
   loadWad(buffer: ArrayBuffer, map: string, options: WadOptions): void {
+    this.loadsSent++;
     this.send({ type: 'loadWad', buffer, map, options });
   }
 
@@ -115,16 +129,93 @@ export class EngineClient {
     this.send({ type: 'blast', pos, radius, energy });
   }
 
+  /** Sets fire to what burns in the sphere (engines without fire ignore it). */
+  ignite(pos: Vec3, radius: number): void {
+    this.send({ type: 'ignite', pos, radius });
+  }
+
+  /** Fills the air in the sphere with water (engines without water ignore it). */
+  pour(pos: Vec3, radius: number): void {
+    this.send({ type: 'pour', pos, radius });
+  }
+
+  /** Removes the water in the sphere. */
+  drain(pos: Vec3, radius: number): void {
+    this.send({ type: 'drain', pos, radius });
+  }
+
+  /** Brings the solids in the sphere to (at least) `celsius`. */
+  heat(pos: Vec3, radius: number, celsius: number): void {
+    this.send({ type: 'heat', pos, radius, celsius });
+  }
+
+  /** An environment setting by name ("fire.flame_reach", ...): recorded in replays. */
+  setEnv(name: string, value: number): void {
+    this.send({ type: 'setEnv', name, value });
+  }
+
+  /** A world tunable by name ("rigid.gravity", ...): recorded in replays. */
+  setTunable(name: string, value: number): void {
+    this.send({ type: 'setTunable', name, value });
+  }
+
+  /** Puts out and cools the sphere. */
+  extinguish(pos: Vec3, radius: number): void {
+    this.send({ type: 'extinguish', pos, radius });
+  }
+
   setParams(params: EngineParams): void {
     this.send({ type: 'setParams', params: { ...params } });
   }
 
-  raycast(origin: Vec3, dir: Vec3, maxDist: number): Promise<RaycastHit | null> {
+  /** A bullet's hit: holes what its energy (J) gets through (engines without it carve). */
+  shoot(pos: Vec3, radius: number, energy: number): void {
+    this.send({ type: 'shoot', pos, radius, energy });
+  }
+
+  /** A vehicle dropped into the world (kind: VEHICLE_KINDS index; paint: `Paint`). */
+  spawnVehicle(kind: number, paint: number, pos: Vec3, yaw: number): void {
+    this.send({ type: 'spawnVehicle', kind, paint, pos, yaw });
+  }
+
+  enterVehicle(id: number): void {
+    this.send({ type: 'enterVehicle', id });
+  }
+
+  exitVehicle(): void {
+    this.send({ type: 'exitVehicle' });
+  }
+
+  /** The player's vehicle's controls (until changed). */
+  drive(throttle: number, brake: number, steer: number, handbrake: boolean): void {
+    this.send({ type: 'drive', throttle, brake, steer, handbrake });
+  }
+
+  setTraffic(traffic: TrafficSettings): void {
+    this.send({ type: 'setTraffic', traffic: { ...traffic } });
+  }
+
+  setPedestrians(pedestrians: PedestrianSettings): void {
+    this.send({ type: 'setPedestrians', pedestrians: { ...pedestrians } });
+  }
+
+  /** A round into a character (its id from a raycast with `characters`), where the ray found it. */
+  woundCharacter(id: number, pos: Vec3, radius: number, energy: number): void {
+    this.send({ type: 'woundCharacter', id, pos, radius, energy });
+  }
+
+  /** The last pose message handled (once per frame). */
+  frameAck(seq: number): void {
+    this.send({ type: 'frameAck', seq });
+  }
+
+  /** `characters`: a shot's line - the characters' bodies are hit too (`RaycastHit.character`). */
+  raycast(origin: Vec3, dir: Vec3, maxDist: number, characters = false): Promise<RaycastHit | null> {
     return new Promise((resolve, reject) => {
       if (this.dead) return reject(this.dead);
       const id = this.nextId++;
       this.raycasts.set(id, { resolve, reject });
-      this.send({ type: 'raycast', id, origin, dir, maxDist });
+      this.send(characters ? { type: 'raycast', id, origin, dir, maxDist, characters } : { type: 'raycast', id, origin, dir, maxDist });
     });
   }
 
@@ -155,11 +246,20 @@ export class EngineClient {
     } else if (data.type === 'collideResult') {
       const p = this.collides.get(data.id);
       this.collides.delete(data.id);
-      p?.resolve({ move: data.move, onGround: data.onGround });
+      const r: CollideResult = { move: data.move, onGround: data.onGround };
+      if (data.ground !== undefined) r.ground = data.ground;
+      if (data.groundPiece) r.groundPiece = data.groundPiece;
+      if (data.groundVelocity) r.groundVelocity = data.groundVelocity;
+      p?.resolve(r);
     } else if (data.type === 'error' && data.fatal) {
       this.fail(new Error(data.message), data);
       return;
+    } else if (data.type === 'loading') {
+      this.loadsBegun = data.generation;
     }
+    // Between asking for a world and the engine starting it, what arrives describes the world
+    // being replaced: a piece detached then would outlive it (its poses never come).
+    if (this.loadsBegun !== this.loadsSent && !CROSSES_LOADS.has(data.type)) return;
     this.emit(data);
   }
 

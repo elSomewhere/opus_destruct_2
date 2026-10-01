@@ -10,6 +10,7 @@
 
 #include <vector>
 
+#include "svx/base/mem.hpp"
 #include "svx/base/vec.hpp"
 
 namespace svx {
@@ -22,6 +23,7 @@ struct Bsr6 {
   std::vector<f64> val;  // 36 per block
   void apply(const f64* x, f64* y) const;  // (rows in parallel: deterministic)
   i64 blocks() const { return static_cast<i64>(col.size()); }
+  i64 memory_bytes(Bytes kind = Bytes::Held) const;
 };
 
 // Rows per parallel chunk and Gauss-Seidel partition (fixed: results never depend on the thread
@@ -51,6 +53,19 @@ struct AmgOptions {
   bool sgs = true;           // symmetric block Gauss-Seidel (else block-Jacobi Chebyshev)
   int sweeps = 1;            // smoother sweeps (SGS: forward + backward each)
   int cheb_degree = 3;
+  // (the reference's count of the coarsest dense solve in work_per_apply: by its unknowns, 36
+  // times its cost - WorldConfig::true_solve_work off)
+  bool dense_work_per_unknown = false;
+  // A level grown dense (more than 80 blocks a row) is coarsened once more, unsmoothed, and its
+  // coarse level solved densely; false: it is the coarsest - solved densely if it has at most
+  // 4 coarse_max nodes, else smoothed (8 sweeps a cycle) - WorldConfig::coarsen_dense_levels off.
+  bool coarsen_dense = true;
+  // A level whose aggregates would hold fewer than two nodes on average - its couplings mostly
+  // under the strength threshold, as on a large irregular structure's second level - is
+  // aggregated again at half the threshold, up to three times: it would barely coarsen, and its
+  // smoothed coarse level fill in (a damaged building's: 180 blocks a row, most of an assembly's
+  // and of each cycle's work). false: aggregated once - WorldConfig::reaggregate_levels off.
+  bool reaggregate = true;
 };
 
 class Amg {
@@ -58,12 +73,13 @@ class Amg {
   // A: SPD (all rows free). pos: 3 per node (m). Returns false if a diagonal block is singular.
   bool build(const Bsr6& A, const std::vector<V3>& pos, const AmgOptions& opt = {});
   void apply(const f64* r, f64* z) const;  // z = M^{-1} r (one cycle from zero)
-  const Bsr6& matrix() const { return lv_.front().A; }
   i32 levels() const { return static_cast<i32>(lv_.size()); }
   std::vector<i32> level_sizes() const;
   std::vector<i64> level_blocks() const;  // matrix blocks per level, then prolongation blocks per level
   bool built() const { return !lv_.empty(); }
   i64 work_per_apply() const { return work_; }  // block operations per cycle (for budgets)
+  i64 build_work() const { return build_work_; }  // ... of the last build: its products, its dense factor
+  i64 memory_bytes(Bytes kind = Bytes::Held) const;
 
  private:
   struct Level {
@@ -86,10 +102,8 @@ class Amg {
     mutable std::vector<f32> xf, bf, rf, of, cf;
   };
   bool finalize(Level& L);
-  f64 estimate_lmax(const Level& L) const;
-  bool coarsen(size_t l);
-  void smooth(const Level& L, f64* x, const f64* b, bool zero) const;
-  void cycle(size_t l, const f64* b, f64* x) const;
+  f64 estimate_lmax(const Level& L);  // (its work counted in the build's)
+  bool coarsen(size_t l, bool smoothed);
   void make_fast();
   void cycle_f(size_t l, const f32* b, f32* x) const;
   void smooth_f(const Level& L, f32* x, const f32* b, bool fresh, bool backward) const;
@@ -99,8 +113,8 @@ class Amg {
   AmgOptions opt_;
   std::vector<Level> lv_;
   std::vector<f64> chol_;
-  i32 chol_n_ = 0;
-  i64 work_ = 0;
+  i32 chol_n_ = 0;  // (unknowns: 6 per node)
+  i64 work_ = 0, build_work_ = 0;
 };
 
 struct PcgResult {

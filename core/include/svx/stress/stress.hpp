@@ -13,7 +13,7 @@
 #include <vector>
 
 #include "svx/base/vec.hpp"
-#include "svx/mech/material.hpp"
+#include "svx/material/material.hpp"
 #include "svx/solve/amg.hpp"
 
 namespace svx {
@@ -27,7 +27,8 @@ struct SNode {
 
 struct SBond {
   i32 a = -1, b = -1;     // nodes; b < 0: a fixed support (anchored voxels, a frozen frontier)
-  bool broken = false;
+  bool broken = false;    // severed (the topology: connectivity reads this)
+  bool in_k = false;      // (its stiffness is in the assembled K; kept by StressProblem)
   MaterialId ma = MaterialId::Concrete, mb = MaterialId::Concrete;
   // Local frame: n from a towards b (supports: out of a into the support), t1, t2 in the section
   // plane. The section is the shared voxel faces projected onto the plane normal to n.
@@ -39,6 +40,12 @@ struct SBond {
   f64 rmax = 0.0;         // largest distance of the section from p (torsion)
   f64 la = 0.0, lb = 0.0; // lengths of the two sides along n (node to section, section to node)
   f64 strength = 1.0;     // design strength multiplier
+  // Section strengths (Pa) from the section's faces: each face as strong as the weaker material
+  // of the two voxels it joins, times their condition; the mean over the faces (a concrete
+  // section with a reinforcing bar in it is stronger in tension by the bar's share). Not
+  // sectioned: the weaker of ma and mb.
+  bool sectioned = false;
+  f32 ft = 0, fb = 0, fc = 0, coh = 0, mu = 0;
   i32 faces = 0;          // voxel faces in the section
   i32 tag = -1;           // owner's id (e.g. its face list)
 };
@@ -47,7 +54,7 @@ struct SBond {
 struct BondStrength {
   f64 ft, fb, fc, coh, mu;
 };
-BondStrength bond_strength(const SBond& b, f64 fragility);
+BondStrength bond_strength(const SBond& b, f64 fragility, const MaterialTable& mats);
 
 // Bond loads in bond terms: N (tension > 0), shear V along t1, t2, torsion T, bending (M1 about t1,
 // M2 about t2).
@@ -56,7 +63,7 @@ struct BondLoad {
 };
 enum class FailMode : u8 { None = 0, Tension, Crush, Shear };
 // Utilization (1 = at strength) and the governing mode.
-f64 bond_utilization(const SBond& b, const BondLoad& L, f64 fragility, FailMode* mode = nullptr);
+f64 bond_utilization(const SBond& b, const BondLoad& L, f64 fragility, const MaterialTable& mats, FailMode* mode = nullptr);
 
 struct StressOptions {
   f64 rtol = 2e-3;        // relative residual of a converged solve
@@ -68,6 +75,8 @@ class StressProblem {
  public:
   std::vector<SNode> nodes;
   std::vector<SBond> bonds;
+  const MaterialTable* mats = nullptr;  // the bonds' materials (a world's; nullptr: the process's)
+  const MaterialTable& materials() const { return mats ? *mats : default_materials(); }
 
   // Assembles K over the intact bonds and builds the preconditioner. Free nodes need a path to
   // a support or a pinned node (callers split graphs into components first).
@@ -77,10 +86,23 @@ class StressProblem {
     assembled_ = false;
     run_.active = false;
   }
+  // The preconditioner is K's as it is (no bond broken, no node retired since assemble() - a
+  // block-Jacobi one is kept so through those): assembling again would build the same.
+  bool preconditioner_current() const { return assembled_ && pc_current_; }
+  bool block_jacobi() const { return jacobi_only_; }
+  // The last assemble()'s work, in work_per_iteration's block operations: K's products and the
+  // preconditioner's build.
+  i64 assembly_work() const { return assembly_work_; }
+  // Frees the assembled operator, its preconditioner and the solve's scratch - most of what a
+  // problem holds - for a solver not needed for a while (a piece asleep). Nodes and bonds stay:
+  // assemble() makes the rest again, from the bonds as they are then.
+  void release();
   // Incremental changes that keep the preconditioner (a stale one still converges; callers
   // rebuild it with assemble() when solves slow down or much has changed):
   //   remove_bond: the bond breaks, its stiffness leaves K in place;
-  //   retire_nodes: the nodes leave (with all their bonds), their rows become identities;
+  //   retire_nodes: the nodes leave (with all their bonds), their rows become identities (a
+  //   caller may restore `broken = false` on bonds between retired nodes to keep their topology:
+  //   they stay out of K);
   //   reassemble: K again from nodes and bonds (nodes appended since the last assemble() are
   //   preconditioned by their diagonal blocks).
   void remove_bond(i32 b);
@@ -92,6 +114,8 @@ class StressProblem {
   i32 appended() const { return nfree_ - pc_n_; }   // free nodes the preconditioner does not cover
   i32 free_nodes() const { return nfree_; }
   i64 matrix_blocks() const { return K_.blocks(); }
+  i64 memory_bytes(Bytes kind = Bytes::Held) const;
+  i64 solver_bytes(Bytes kind = Bytes::Held) const;  // (of those: what release() frees)
   i64 work_per_iteration() const { return 2 * K_.blocks() + amg_.work_per_apply(); }
 
   // f, u: 6 per node (u: warm start in, solution out; fixed nodes stay 0). maxit < 0: no cap.
@@ -115,7 +139,9 @@ class StressProblem {
   void precondition(const f64* r, f64* z) const;
   f64* block(i32 r, i32 c);  // K's block (nullptr if absent)
   bool assembled_ = false;
+  bool pc_current_ = false;   // (preconditioner_current)
   bool jacobi_only_ = false;  // small graph: block Jacobi for every node
+  i64 assembly_work_ = 0;
   i32 pc_n_ = 0;          // free nodes covered by the multigrid (the first ones)
   f64 id_scale_ = 1.0;    // diagonal of retired rows
   std::vector<f64> jinv_; // appended nodes: inverse diagonal blocks

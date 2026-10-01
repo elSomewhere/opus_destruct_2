@@ -80,6 +80,7 @@ MassProps finish_mass(const f64* s, f64 h) {
 }
 
 FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& par) {
+  const MaterialTable& mats = par.mats ? *par.mats : default_materials();
   FragChunk out;
   const Chunk* ch = g.chunk(cc);
   if (!ch) return out;
@@ -90,44 +91,110 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
   auto broken_at = [&](int i) -> u8 { return ch->broken.empty() ? u8(0) : ch->broken[static_cast<size_t>(i)]; };
   constexpr int S = kChunk;
 
-  // 1. Voronoi label per free voxel: (material, seed cell) packed into a u64.
+  // 1. Voronoi label per free voxel: (material, seed cell) packed into a u64. A reinforcement
+  // voxel takes the label its host material (the first free non-reinforcement neighbour's, in
+  // the chunk) has at its place: bars belong to the fragments of the concrete around them.
   std::vector<u64> label(kChunkVox, 0);
+  constexpr int kStride[3] = {S * S, S, 1};
+  auto host_of = [&](int i, int x, int y, int z) -> MaterialId {
+    const MaterialId own = vox_mat(vox_at(i));
+    if (!mats[own].reinforcement) return own;
+    const int c[3] = {x, y, z};
+    for (int a = 0; a < 3; ++a)
+      for (int sg = -1; sg <= 1; sg += 2) {
+        if (c[a] + sg < 0 || c[a] + sg >= S) continue;
+        const Vox n = vox_at(i + sg * kStride[a]);
+        if (vox_free(n) && !mats[vox_mat(n)].reinforcement) return vox_mat(n);
+      }
+    return own;
+  };
+  // (the seeds of the cells about the chunk, per material, made once: a voxel reads its 27
+  // candidates instead of hashing them)
+  struct Seeds {
+    MaterialId mid{};
+    f64 sp[3] = {1, 1, 1};
+    f64 noise = 0.0;  // (the seams' perturbation scale)
+    i64 lo[3] = {0, 0, 0};
+    i32 n[3] = {0, 0, 0};
+    std::vector<f64> pos;  // 3 per cell
+    std::vector<u64> hs;
+    i64 off[27] = {};      // (kOrder's cells from the centre's, in the tables)
+  };
+  // (the centre cell first: the others are mostly farther than it before their seams' noise)
+  static constexpr int kOrder[27][3] = {{0, 0, 0},   {-1, 0, 0},  {1, 0, 0},   {0, -1, 0},  {0, 1, 0},   {0, 0, -1},  {0, 0, 1},
+                                        {-1, -1, 0}, {-1, 1, 0},  {1, -1, 0},  {1, 1, 0},   {-1, 0, -1}, {-1, 0, 1},  {1, 0, -1},
+                                        {1, 0, 1},   {0, -1, -1}, {0, -1, 1},  {0, 1, -1},  {0, 1, 1},   {-1, -1, -1}, {-1, -1, 1},
+                                        {-1, 1, -1}, {-1, 1, 1},  {1, -1, -1}, {1, -1, 1},  {1, 1, -1},  {1, 1, 1}};
+  std::vector<Seeds> seeds;
+  auto seeds_for = [&](MaterialId mid) -> const Seeds& {
+    for (const Seeds& sd : seeds)
+      if (sd.mid == mid) return sd;
+    const Material& M = mats[mid];
+    Seeds sd;
+    sd.mid = mid;
+    sd.sp[0] = M.frag_x, sd.sp[1] = M.frag_y, sd.sp[2] = M.frag_z;  // (the registry keeps them >= 1)
+    if (par.scale != 1.0)
+      for (f64& v : sd.sp) v = std::max(1.0, v * par.scale);
+    const f64 avg = (sd.sp[0] + sd.sp[1] + sd.sp[2]) / 3.0;
+    sd.noise = par.noise_scale * M.frag_noise * avg * avg;
+    for (int a = 0; a < 3; ++a) {
+      sd.lo[a] = floor_div(static_cast<f64>(base[a]) / sd.sp[a]) - 1;
+      sd.n[a] = static_cast<i32>(floor_div(static_cast<f64>(base[a] + S - 1) / sd.sp[a]) + 1 - sd.lo[a] + 1);
+    }
+    const u64 msalt = par.salt ^ (static_cast<u64>(mid) * 0x9E3779B97F4A7C15ull);
+    const size_t cells = size_t(sd.n[0]) * size_t(sd.n[1]) * size_t(sd.n[2]);
+    sd.pos.resize(3 * cells);
+    sd.hs.resize(cells);
+    size_t c = 0;
+    for (i32 ix = 0; ix < sd.n[0]; ++ix)
+      for (i32 iy = 0; iy < sd.n[1]; ++iy)
+        for (i32 iz = 0; iz < sd.n[2]; ++iz, ++c) {
+          const i64 cx = sd.lo[0] + ix, cy = sd.lo[1] + iy, cz = sd.lo[2] + iz;
+          const u64 hs = hash4(cx, cy, cz, msalt);
+          // seed inside the cell, kept away from its faces so cells stay compact
+          const f64 jx = par.jitter_lo + par.jitter_span * unit(hs), jy = par.jitter_lo + par.jitter_span * unit(mix64(hs ^ 1)),
+                    jz = par.jitter_lo + par.jitter_span * unit(mix64(hs ^ 2));
+          sd.pos[3 * c] = (static_cast<f64>(cx) + jx) * sd.sp[0];
+          sd.pos[3 * c + 1] = (static_cast<f64>(cy) + jy) * sd.sp[1];
+          sd.pos[3 * c + 2] = (static_cast<f64>(cz) + jz) * sd.sp[2];
+          sd.hs[c] = hs;
+        }
+    for (int k = 0; k < 27; ++k) sd.off[k] = (i64(kOrder[k][0]) * sd.n[1] + kOrder[k][1]) * sd.n[2] + kOrder[k][2];
+    seeds.push_back(std::move(sd));
+    return seeds.back();
+  };
   for (int x = 0; x < S; ++x)
     for (int y = 0; y < S; ++y)
       for (int z = 0; z < S; ++z) {
         const int i = (x * S + y) * S + z;
         const Vox v = vox_at(i);
         if (!vox_free(v)) continue;
-        const MaterialId mid = vox_mat(v);
-        const Material& M = material(mid);
+        const MaterialId mid = host_of(i, x, y, z);
+        const Seeds& sd = seeds_for(mid);
         const i64 gx = base[0] + x, gy = base[1] + y, gz = base[2] + z;
-        static const f64 fscale = std::getenv("SVX_FRAG_SCALE") ? std::atof(std::getenv("SVX_FRAG_SCALE")) : 1.0;
-        const f64 sp[3] = {M.frag_x * fscale, M.frag_y * fscale, M.frag_z * fscale};
-        const f64 q[3] = {gx / sp[0], gy / sp[1], gz / sp[2]};
+        const f64 q[3] = {gx / sd.sp[0], gy / sd.sp[1], gz / sd.sp[2]};
         const i64 c0[3] = {floor_div(q[0]), floor_div(q[1]), floor_div(q[2])};
-        const u64 msalt = par.salt ^ (static_cast<u64>(mid) * 0x9E3779B97F4A7C15ull);
+        // The nearest seed of the 27 cells about it, by distance perturbed per (voxel, seed) for
+        // jagged seams (ties: the lower hash) - the pairs' minimum, in any order. The
+        // perturbation is never negative: a seed already farther needs none.
         f64 best = 1e300;
         u64 best_h = ~0ull;
-        const f64 avg = (sp[0] + sp[1] + sp[2]) / 3.0;
-        for (int dx = -1; dx <= 1; ++dx)
-          for (int dy = -1; dy <= 1; ++dy)
-            for (int dz = -1; dz <= 1; ++dz) {
-              const i64 cx = c0[0] + dx, cy = c0[1] + dy, cz = c0[2] + dz;
-              const u64 hs = hash4(cx, cy, cz, msalt);
-              // seed inside the cell, kept away from its faces so cells stay compact
-              const f64 jx = par.jitter_lo + par.jitter_span * unit(hs), jy = par.jitter_lo + par.jitter_span * unit(mix64(hs ^ 1)),
-                        jz = par.jitter_lo + par.jitter_span * unit(mix64(hs ^ 2));
-              const f64 ex = (static_cast<f64>(cx) + jx) * sp[0] - static_cast<f64>(gx);
-              const f64 ey = (static_cast<f64>(cy) + jy) * sp[1] - static_cast<f64>(gy);
-              const f64 ez = (static_cast<f64>(cz) + jz) * sp[2] - static_cast<f64>(gz);
-              // jagged seams: a per-(voxel, seed) perturbation of the distance
-              const f64 n = par.noise_scale * M.frag_noise * avg * avg * unit(hash4(gx * 3 + dx, gy * 3 + dy, gz * 3 + dz, hs));
-              const f64 d = ex * ex + ey * ey + ez * ez + n;
-              if (d < best || (d == best && hs < best_h)) {
-                best = d;
-                best_h = hs;
-              }
-            }
+        const i64 c00 = ((c0[0] - sd.lo[0]) * sd.n[1] + (c0[1] - sd.lo[1])) * sd.n[2] + (c0[2] - sd.lo[2]);
+        for (int k = 0; k < 27; ++k) {
+          const int dx = kOrder[k][0], dy = kOrder[k][1], dz = kOrder[k][2];
+          const size_t c = static_cast<size_t>(c00 + sd.off[k]);
+          const f64 ex = sd.pos[3 * c] - static_cast<f64>(gx);
+          const f64 ey = sd.pos[3 * c + 1] - static_cast<f64>(gy);
+          const f64 ez = sd.pos[3 * c + 2] - static_cast<f64>(gz);
+          const f64 e2 = ex * ex + ey * ey + ez * ez;
+          if (e2 > best) continue;
+          const u64 hs = sd.hs[c];
+          const f64 d = e2 + sd.noise * unit(hash4(gx * 3 + dx, gy * 3 + dy, gz * 3 + dz, hs));
+          if (d < best || (d == best && hs < best_h)) {
+            best = d;
+            best_h = hs;
+          }
+        }
         label[static_cast<size_t>(i)] = best_h | 1ull;  // never 0
       }
 
@@ -168,7 +235,9 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
 
   // 3. merge tiny components into the same-material neighbour they share the most faces with
   UF uf(ncomp);
-  if (par.min_voxels > 1) {
+  const i32 min_voxels =
+      par.scale == 1.0 ? par.min_voxels : std::max<i32>(1, static_cast<i32>(std::lround(par.min_voxels * par.scale * par.scale * par.scale)));
+  if (min_voxels > 1) {
     std::vector<std::vector<std::pair<i32, i32>>> nb(static_cast<size_t>(ncomp));  // (other comp, faces)
     for (int i = 0; i < kChunkVox; ++i) {
       const i32 ci = comp[static_cast<size_t>(i)];
@@ -180,13 +249,14 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
         const i32 cj = comp[static_cast<size_t>(j)];
         if (cj < 0 || cj == ci) continue;
         if ((broken_at(i) >> a) & 1) continue;
-        if (vox_mat(vox_at(i)) != vox_mat(vox_at(j))) continue;
-        if (comp_count[static_cast<size_t>(ci)] < par.min_voxels) nb[static_cast<size_t>(ci)].push_back({cj, 1});
-        if (comp_count[static_cast<size_t>(cj)] < par.min_voxels) nb[static_cast<size_t>(cj)].push_back({ci, 1});
+        const MaterialId mi = vox_mat(vox_at(i)), mj = vox_mat(vox_at(j));
+        if (mi != mj && !mats[mi].reinforcement && !mats[mj].reinforcement) continue;
+        if (comp_count[static_cast<size_t>(ci)] < min_voxels) nb[static_cast<size_t>(ci)].push_back({cj, 1});
+        if (comp_count[static_cast<size_t>(cj)] < min_voxels) nb[static_cast<size_t>(cj)].push_back({ci, 1});
       }
     }
     for (i32 c = 0; c < ncomp; ++c) {
-      if (comp_count[static_cast<size_t>(c)] >= par.min_voxels) continue;
+      if (comp_count[static_cast<size_t>(c)] >= min_voxels) continue;
       auto& list = nb[static_cast<size_t>(c)];
       if (list.empty()) continue;
       std::sort(list.begin(), list.end());
@@ -240,9 +310,18 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
       fi.lo[a] = std::min<i8>(fi.lo[a], static_cast<i8>(kc[a]));
       fi.hi[a] = std::max<i8>(fi.hi[a], static_cast<i8>(kc[a]));
     }
-    const f64 m = material(vox_mat(vox_at(i))).rho * vol;
+    const f64 m = mats[vox_mat(vox_at(i))].rho * vol;
     // accumulate relative to the chunk origin (small numbers), shifted to world below
     accumulate_voxel(m, V3{h * kc[0], h * kc[1], h * kc[2]}, h, sums[static_cast<size_t>(f)].data());
+  }
+  // (a fragment's material: its first voxel's that is not reinforcement, if any)
+  for (int i = 0; i < kChunkVox; ++i) {
+    const u16 id = out.id[static_cast<size_t>(i)];
+    if (!id) continue;
+    FragInfo& fi = out.frags[static_cast<size_t>(id - 1)];
+    if (!mats[fi.mat].reinforcement) continue;
+    const MaterialId m = vox_mat(vox_at(i));
+    if (!mats[m].reinforcement) fi.mat = m;
   }
   // voxel lists per fragment (counting sort by fragment, scan order within)
   out.vox_start.assign(out.frags.size() + 1, 0);

@@ -17,8 +17,8 @@
 #include <string>
 #include <vector>
 
-#include "svx/doom/textures.hpp"
-#include "svx/doom/wad.hpp"
+#include "svx/game/doom/textures.hpp"
+#include "svx/game/doom/wad.hpp"
 
 using namespace svx;
 

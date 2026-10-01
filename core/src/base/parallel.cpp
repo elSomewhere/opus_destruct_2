@@ -16,6 +16,10 @@ constexpr bool kThreadsAvailable = false;
 constexpr bool kThreadsAvailable = true;
 #endif
 
+// (more than any machine has cores: a host's count is held to it - a thread it cannot create
+// would end the process)
+constexpr int kMaxThreads = 256;
+
 inline void cpu_relax() {
 #if defined(__aarch64__) || defined(__arm__)
   asm volatile("yield" ::: "memory");
@@ -34,20 +38,24 @@ class Pool {
     return p;
   }
 
-  explicit Pool(int threads) : nthreads_(kThreadsAvailable ? std::max(1, threads) : 1) {}
+  explicit Pool(int threads) : nthreads_(kThreadsAvailable ? std::clamp(threads, 1, kMaxThreads) : 1) {}
 
-  int threads() const { return nthreads_; }
+  int threads() const { return nthreads_.load(std::memory_order_relaxed); }
 
   void set_threads(int n) {
+    // (never under a job: a host stepping a world on another thread finishes its job first)
+    std::lock_guard<std::mutex> one(run_mu_);
     stop_workers();
-    nthreads_ = std::max(1, n);
+    nthreads_.store(std::clamp(n, 1, kMaxThreads), std::memory_order_relaxed);
   }
 
   void run(i64 nchunks, const std::function<void(i64)>& chunk_fn) {
-    if (nthreads_ <= 1 || nchunks <= 1 || !kThreadsAvailable) {
+    if (threads() <= 1 || nchunks <= 1 || !kThreadsAvailable) {
       for (i64 c = 0; c < nchunks; ++c) chunk_fn(c);
       return;
     }
+    // one job at a time (hosts stepping several worlds on several threads share the pool)
+    std::lock_guard<std::mutex> one(run_mu_);
     ensure_workers();
     job_ = &chunk_fn;
     nchunks_ = nchunks;
@@ -72,7 +80,7 @@ class Pool {
  private:
   Pool() {
     const unsigned hw = std::thread::hardware_concurrency();
-    nthreads_ = kThreadsAvailable ? std::max(1u, std::min(hw, 16u)) : 1;
+    nthreads_.store(kThreadsAvailable ? static_cast<int>(std::max(1u, std::min(hw, 16u))) : 1);
   }
 
   void work() {
@@ -86,13 +94,14 @@ class Pool {
   }
 
   void ensure_workers() {
-    if (static_cast<int>(workers_.size()) == nthreads_ - 1) return;
+    const int n = threads();
+    if (static_cast<int>(workers_.size()) == n - 1) return;
     stop_workers();
     quit_.store(false);
     // Workers start from the generation current *before* the next dispatch, or a
     // late-starting thread could skip the job the caller is about to wait on.
     const u64 g = gen_.load();
-    for (int i = 0; i < nthreads_ - 1; ++i) workers_.emplace_back([this, g] { loop(g); });
+    for (int i = 0; i < n - 1; ++i) workers_.emplace_back([this, g] { loop(g); });
   }
 
   void stop_workers() {
@@ -129,8 +138,9 @@ class Pool {
     }
   }
 
-  int nthreads_ = 1;
+  std::atomic<int> nthreads_{1};
   std::vector<std::thread> workers_;
+  std::mutex run_mu_;
   std::mutex mu_;
   std::condition_variable cv_;
   int sleepers_ = 0;
@@ -146,8 +156,13 @@ class Pool {
 
 namespace {
 thread_local int t_serial = 0;
+thread_local int t_in_job = 0;         // inside a chunk of a pool job: nested calls run inline
 thread_local Pool* t_pool = nullptr;  // a ThreadTeam's pool (TeamScope), else the shared one
 inline Pool& pool() { return t_pool ? *t_pool : Pool::get(); }
+struct InJob {
+  InJob() { ++t_in_job; }
+  ~InJob() { --t_in_job; }
+};
 }  // namespace
 
 SerialScope::SerialScope() { ++t_serial; }
@@ -177,11 +192,14 @@ void parallel_for(i64 n, i64 grain, const std::function<void(i64, i64)>& f) {
     f(0, n);
     return;
   }
-  if (t_serial) {
+  // (inline: in a SerialScope, or nested in a chunk of another job - the pool runs one job at a
+  // time, and a nested dispatch would wait on the workers busy with the outer one)
+  if (t_serial || t_in_job) {
     for (i64 c = 0; c < nchunks; ++c) f(c * grain, std::min(n, (c + 1) * grain));
     return;
   }
   pool().run(nchunks, [&](i64 c) {
+    InJob in;
     const i64 b = c * grain;
     f(b, std::min(n, b + grain));
   });
@@ -194,10 +212,11 @@ f64 parallel_sum(i64 n, i64 grain, const std::function<f64(i64, i64)>& f) {
   if (nchunks == 1) return f(0, n);
   std::vector<f64> part(static_cast<size_t>(nchunks), 0.0);
   auto chunk = [&](i64 c) {
+    InJob in;
     const i64 b = c * grain;
     part[static_cast<size_t>(c)] = f(b, std::min(n, b + grain));
   };
-  if (t_serial) {
+  if (t_serial || t_in_job) {
     for (i64 c = 0; c < nchunks; ++c) chunk(c);
   } else {
     pool().run(nchunks, chunk);

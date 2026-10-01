@@ -327,3 +327,134 @@ button:hover {
   color: var(--error);
   white-space: pre-wrap;
 }
+
+/* Driving HUD */
+.drive-hud {
+  position: absolute;
+  inset: 0;
+}
+
+.dash {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  width: 260px;
+  padding: 10px 14px 10px;
+  background: rgba(0, 0, 0, 0.5);
+  border: 1px solid var(--panel-border);
+  border-radius: 8px;
+  font-family: var(--mono);
+}
+
+.dash-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+}
+
+.dash-speed {
+  font-size: 44px;
+  font-weight: 600;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.dash-unit {
+  margin-left: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.dash-gear {
+  font-size: 34px;
+  font-weight: 600;
+  color: var(--accent);
+}
+
+.dash-bar {
+  position: relative;
+  height: 6px;
+  margin: 8px 0 6px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  overflow: hidden;
+}
+
+.dash-bar-fill {
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, #5fd38d, #e8d45a);
+  border-radius: 3px;
+}
+
+.dash-revs.high .dash-bar-fill {
+  background: linear-gradient(90deg, #e8d45a, #ff5b4a);
+}
+
+.dash-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+
+.dash-label {
+  color: var(--muted);
+}
+
+.dash-damage {
+  flex: 1;
+  margin: 0;
+  height: 5px;
+}
+
+.dash-damage .dash-bar-fill {
+  background: linear-gradient(90deg, #e8a33a, #ff4a3a);
+}
+
+.dash-wheels {
+  letter-spacing: 1px;
+  color: var(--text);
+}
+
+.dash-wheels.lost {
+  color: var(--error);
+}
+
+.dash-brake {
+  padding: 0 5px;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  color: var(--muted);
+  font-weight: 700;
+  opacity: 0.35;
+}
+
+.dash-brake.on {
+  color: #ff5b4a;
+  border-color: #ff5b4a;
+  opacity: 1;
+}
+
+.dash-hint {
+  margin-top: 8px;
+  color: var(--muted);
+  font: 10px/1.35 system-ui, sans-serif;
+}
+
+.drive-prompt {
+  position: absolute;
+  left: 50%;
+  top: 62%;
+  transform: translateX(-50%);
+  padding: 6px 14px;
+  background: rgba(0, 0, 0, 0.55);
+  border-radius: 4px;
+  font-size: 14px;
+  letter-spacing: 0.03em;
+}
+
+.hud.driving .crosshair,
+.hud.driving .hud-weapons {
+  display: none;
+}

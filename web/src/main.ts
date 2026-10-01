@@ -2,15 +2,18 @@
  * structvox front end bootstrap.
  *
  * URL parameters:
- *   ?engine=mock|wasm         engine worker (default mock; wasm needs src/worker/wasm-worker.ts)
- *   ?world=rooms|city|tower   procedural world loaded at start (default rooms)
+ *   ?engine=mock|wasm         engine worker (default wasm when it is built, else mock)
+ *   ?world=drive|rooms|city|tower|...   procedural world loaded at start (default: the drive
+ *                             city with the WASM engine, rooms with the mock)
  *   ?seed=N                   world seed (default 1)
  *   ?debug=none|utilization|fragments   initial debug view ('bubbles', from v1 links, = fragments)
+ *   ?people=N                 pedestrians about the player in the drive city (0: none)
+ *   ?bodies=deep|shallow|hybrid   their bodies (default hybrid)
  */
 import './styles.css';
 import { EngineClient } from './engine/client.ts';
-import type { ProceduralKind } from './engine/protocol.ts';
-import { DEFAULT_PARAMS, DebugView, PROCEDURAL_KINDS } from './engine/protocol.ts';
+import type { PedestrianSettings, ProceduralKind } from './engine/protocol.ts';
+import { DEFAULT_PARAMS, DEFAULT_PEDESTRIANS, DebugView, PEDESTRIAN_BODY_NAMES, PedestrianBodies, PROCEDURAL_KINDS } from './engine/protocol.ts';
 import { createEngineWorker, engineKindFromUrl, EngineUnavailableError } from './engine/select.ts';
 import { Game, type StructvoxDebugApi } from './game/game.ts';
 import { WebGpuUnavailableError } from './render/gpu.ts';
@@ -26,14 +29,32 @@ declare global {
 
 const VOXEL_SIZE = 0.125;
 
-function parseWorld(v: string | null): ProceduralKind {
-  return PROCEDURAL_KINDS.find((k) => k === v) ?? 'rooms';
+function parseWorld(v: string | null, engine: string): ProceduralKind {
+  return PROCEDURAL_KINDS.find((k) => k === v) ?? (engine === 'wasm' ? 'drive' : 'rooms');
 }
 
 function parseDebug(v: string | null): DebugView {
   if (v === 'utilization') return DebugView.Utilization;
   if (v === 'fragments' || v === 'fragment' || v === 'bubbles' || v === 'bubble') return DebugView.Fragments;
   return DebugView.None;
+}
+
+/** Pedestrians from ?people= and ?bodies= (null: neither given - the engine's defaults). */
+function parsePedestrians(url: URL): PedestrianSettings | null {
+  const count = url.searchParams.get('people');
+  const bodies = url.searchParams.get('bodies');
+  if (count === null && bodies === null) return null;
+  const p = { ...DEFAULT_PEDESTRIANS };
+  if (count !== null) {
+    const n = Math.floor(Number(count));
+    if (Number.isFinite(n)) {
+      p.count = Math.max(0, Math.min(256, n));
+      p.enabled = p.count > 0;
+    }
+  }
+  const b = Object.values(PedestrianBodies).find((v) => PEDESTRIAN_BODY_NAMES[v] === bodies);
+  if (b !== undefined) p.bodies = b;
+  return p;
 }
 
 function message(err: unknown): string {
@@ -47,8 +68,9 @@ async function main(): Promise<void> {
   const overlay = new Overlay(uiRoot);
   const url = new URL(window.location.href);
   const kind = engineKindFromUrl(url);
-  const world = { kind: parseWorld(url.searchParams.get('world')), seed: Math.max(0, Math.floor(Number(url.searchParams.get('seed') ?? 1) || 0)) };
+  const world = { kind: parseWorld(url.searchParams.get('world'), kind), seed: Math.max(0, Math.floor(Number(url.searchParams.get('seed') ?? 1) || 0)) };
   const params = { ...DEFAULT_PARAMS, debugView: parseDebug(url.searchParams.get('debug')) };
+  const pedestrians = parsePedestrians(url);
 
   overlay.setLoading('Initializing WebGPU', 0.02);
   let game: Game | null = null;
@@ -80,7 +102,7 @@ async function main(): Promise<void> {
   }
 
   const engine = new EngineClient(worker, kind);
-  game = new Game({ canvas, uiRoot, overlay, renderer, engine, world, params, voxelSize: VOXEL_SIZE });
+  game = new Game({ canvas, uiRoot, overlay, renderer, engine, world, params, voxelSize: VOXEL_SIZE, ...(pedestrians ? { pedestrians } : {}) });
   game.start();
   window.__structvox = { ...game.debugApi(), engine, renderer };
 }

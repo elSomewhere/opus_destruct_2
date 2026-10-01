@@ -2,12 +2,14 @@
  * WASM engine worker: serves the engine protocol (docs/API.md) with the structvox C++ core
  * compiled to WebAssembly. The module (web/src/wasm/svx_web.{js,wasm}) is produced by
  *   cmake --preset wasm-release-threads && cmake --build --preset wasm-release-threads --target svx_web
- * and exposes the flat C ABI of core/include/svx/api/svx_api.h. Selected with ?engine=wasm.
+ * and exposes the flat C ABI of game/include/svx/game/api/svx_api.h. Selected with ?engine=wasm.
  *
  * The worker owns the simulation clock (fixed 60 Hz tick). After every tick it forwards
  * changed chunk meshes, removed chunks and events; stats go out at ~4 Hz.
  */
 import type {
+  CharacterMesh,
+  CharacterPalette,
   ChunkMesh,
   ChunkOccupancy,
   DisplacementField,
@@ -17,12 +19,30 @@ import type {
   EngineStats,
   InitConfig,
   ProceduralKind,
+  RaycastHit,
   TextureInfo,
   Vec3,
   WadOptions,
   WorldInfo,
 } from '../engine/protocol.ts';
-import { DEBRIS_STRIDE, DEFAULT_PARAMS, TIMELINE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
+import {
+  BLOOD_DROP_STRIDE,
+  BLOOD_STAIN_STRIDE,
+  CHAR_VERTEX_STRIDE,
+  CHARACTER_PALETTE_SLOTS,
+  CHARACTER_SKIN_FLOATS,
+  CHARACTER_STRIDE,
+  DEBRIS_STRIDE,
+  DEFAULT_PARAMS,
+  FLAME_STRIDE,
+  GRID_STRIDE,
+  JOINT_STRIDE,
+  SMOKE_STRIDE,
+  TIMELINE_STRIDE,
+  VEHICLE_STRIDE,
+  VERTEX_STRIDE,
+  WHEEL_STRIDE,
+} from '../engine/protocol.ts';
 import { postToMain, reportError, serveCommands } from './host.ts';
 // Generated Emscripten ES module (see the header comment); typed by SvxModule below.
 import createSvxModule from '../wasm/svx_web.js';
@@ -30,6 +50,7 @@ import createSvxModule from '../wasm/svx_web.js';
 interface SvxModule {
   HEAPU8: Uint8Array;
   HEAP32: Int32Array;
+  HEAPF32: Float32Array;
   HEAPF64: Float64Array;
   UTF8ToString(ptr: number): string;
   stringToUTF8(str: string, ptr: number, max: number): void;
@@ -56,6 +77,24 @@ interface SvxModule {
   _svx_viewer(e: number, x: number, y: number, z: number): void;
   _svx_carve(e: number, x: number, y: number, z: number, r: number): void;
   _svx_blast(e: number, x: number, y: number, z: number, r: number, energy: number): void;
+  _svx_ignite(e: number, x: number, y: number, z: number, r: number): void;
+  _svx_extinguish(e: number, x: number, y: number, z: number, r: number): void;
+  _svx_pour(e: number, x: number, y: number, z: number, r: number): void;
+  _svx_drain(e: number, x: number, y: number, z: number, r: number): void;
+  _svx_heat(e: number, x: number, y: number, z: number, r: number, celsius: number): void;
+  _svx_set_env(e: number, name: number, value: number): number;
+  _svx_set_tunable(e: number, name: number, value: number): number;
+  _svx_stats_count(): number;
+  _svx_poll_water(e: number): number;
+  _svx_water_info(e: number, i: number, out: number): void;
+  _svx_water_vertices(e: number, i: number): number;
+  _svx_water_indices(e: number, i: number): number;
+  _svx_poll_water_removed(e: number): number;
+  _svx_water_removed(e: number, i: number, out3: number): void;
+  _svx_poll_env(e: number, maxFlames: number, maxSmoke: number): number;
+  _svx_env_flames(e: number): number;
+  _svx_env_smoke_count(e: number): number;
+  _svx_env_smoke(e: number): number;
   _svx_use(e: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number): number;
   _svx_raycast(e: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number, out: number): number;
   _svx_collide(e: number, a: number, b: number, c: number, d: number, f: number, g: number, mx: number, my: number, mz: number, out: number): void;
@@ -65,7 +104,16 @@ interface SvxModule {
   _svx_mesh_indices(e: number, i: number): number;
   _svx_poll_removed(e: number): number;
   _svx_removed_chunk(e: number, i: number, out3: number): void;
+  _svx_poll_removed_grid(e: number): number;
+  _svx_removed_grid_chunk(e: number, i: number, out4: number): void;
   _svx_chunk_occupancy(e: number, cx: number, cy: number, cz: number, out: number): number;
+  _svx_grid_chunk_occupancy(e: number, grid: number, cx: number, cy: number, cz: number, out: number): number;
+  _svx_poll_grids(e: number): number;
+  _svx_grid_info(e: number, i: number, out19: number): void;
+  _svx_poll_grids_removed(e: number): number;
+  _svx_grid_removed(e: number, i: number): number;
+  _svx_poll_joints(e: number): number;
+  _svx_joint_info(e: number, i: number, out8: number): void;
   _svx_poll_far(e: number): number;
   _svx_far_info(e: number, i: number, out: number): void;
   _svx_far_vertices(e: number, i: number): number;
@@ -76,6 +124,7 @@ interface SvxModule {
   _svx_event_info(e: number, i: number, out: number): void;
   _svx_event_vertices(e: number, i: number): number;
   _svx_event_indices(e: number, i: number): number;
+  _svx_event_occupancy(e: number, i: number, outSize: number): number;
   _svx_stats(e: number, out: number): void;
   _svx_debris(e: number): number;
   _svx_debris_data(e: number): number;
@@ -84,6 +133,39 @@ interface SvxModule {
   _svx_poll_fields(e: number): number;
   _svx_field_info(e: number, i: number, out: number): void;
   _svx_field_data(e: number, i: number): number;
+  _svx_spawn_vehicle(e: number, kind: number, paint: number, x: number, y: number, z: number, yaw: number): number;
+  _svx_remove_vehicle(e: number, id: number): number;
+  _svx_enter_vehicle(e: number, id: number): number;
+  _svx_exit_vehicle(e: number): void;
+  _svx_player_vehicle(e: number): number;
+  _svx_drive(e: number, throttle: number, brake: number, steer: number, handbrake: number): void;
+  _svx_vehicle_near(e: number, x: number, y: number, z: number, reach: number): number;
+  _svx_vehicles(e: number): number;
+  _svx_vehicles_data(e: number): number;
+  _svx_wheels(e: number): number;
+  _svx_wheels_data(e: number): number;
+  _svx_shoot(e: number, x: number, y: number, z: number, r: number, energy: number): void;
+  _svx_set_traffic(e: number, enabled: number, cars: number, parked: number, near: number, radius: number, speedScale: number): void;
+  _svx_set_pedestrians(e: number, enabled: number, count: number, near: number, radius: number, bodies: number, maxDeep: number): void;
+  _svx_poll_character_meshes(e: number): number;
+  _svx_character_mesh_info(e: number, i: number, out3: number): void;
+  _svx_character_mesh_vertices(e: number, i: number): number;
+  _svx_character_mesh_indices(e: number, i: number): number;
+  _svx_poll_character_meshes_removed(e: number): number;
+  _svx_character_mesh_removed(e: number, i: number): number;
+  _svx_poll_character_palettes(e: number): number;
+  _svx_character_palette(e: number, i: number, out48: number): number;
+  _svx_characters(e: number): number;
+  _svx_characters_data(e: number): number;
+  _svx_characters_skin(e: number): number;
+  _svx_characters_prop(e: number): number;
+  _svx_raycast_shot(e: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number, out10: number): number;
+  _svx_wound_character(e: number, id: number, x: number, y: number, z: number, r: number, energy: number): number;
+  // (modules from before the people's gibs and blood have none of these)
+  _svx_blood?(e: number): number;
+  _svx_blood_drops?(e: number): number;
+  _svx_blood_stain_count?(e: number): number;
+  _svx_blood_stains?(e: number): number;
 }
 
 const TICK_MS = 1000 / 60;
@@ -91,15 +173,47 @@ const STATS_MS = 250;
 // job and budget timeline: per-tick samples since the last stats message (TIMELINE_FIELDS)
 let timeline: number[] = [];
 const AUTOSAVE_MS = 5000;
-/** svx_stats fills out[0..34]. */
-const STATS_COUNT = 35;
+/** svx_stats fills out[0..56] (svx_stats_count: checked when the module starts). */
+const STATS_COUNT = 57;
+/** Flames and smoke cells sent to the renderer at most, and how often (ticks: their step). */
+const MAX_FLAMES = 4096;
+const MAX_SMOKE = 4096;
+const ENV_TICKS = 6;
 
 let mod: SvxModule | null = null;
 let eng = 0;
 let scratch = 0; // 64 doubles of call scratch space
+let jointsLive = false; // (the last joints message had some: one empty follows when they are gone)
+let vehiclesLive = false; // (likewise the vehicles)
+let charactersLive = false; // (and the characters)
+let bloodLive = false; // (and their blood)
+/**
+ * Pose messages (debris, vehicles, characters) posted and the last the page handled (frameAck):
+ * while it is more than POSE_LAG behind, poses are held back (each message carries every pose: the
+ * next one sent brings the page up to date, and it never works through a backlog).
+ */
+let poseSeq = 0;
+let poseAcked = -1;
+const POSE_LAG = 6;
+/**
+ * This tick's pose batch: debris, vehicles and characters go together or not at all (a car's body
+ * and its wheels, its camera, the people it hits).
+ */
+let posesHeldNow = false;
+
+function posesHeld(): boolean {
+  return posesHeldNow;
+}
+
+/** Starts a tick's pose batch: its sequence number, unless the page is too far behind. */
+function beginPoses(): void {
+  posesHeldNow = poseAcked >= 0 && poseSeq - poseAcked > POSE_LAG;
+  if (!posesHeldNow) ++poseSeq;
+}
 let config: InitConfig = { voxelSize: 0.125, threads: 1, memoryMB: 1024, params: { ...DEFAULT_PARAMS } };
 let params: EngineParams = { ...DEFAULT_PARAMS };
 let loaded = false;
+let loads = 0;
 let lastStats = 0;
 let eventsSinceStats = 0;
 const knownChunks = new Set<string>();
@@ -108,6 +222,8 @@ let lastSave = 0;
 let saving = false;
 let debrisLive = 0;
 let debrisSent = new Float64Array(0); // poses of the last debris message (resting rubble is not re-sent)
+let envLive = false;
+let envTick = 0;
 let fieldsLive = 0;
 let fieldsKey = ''; // (id:version of each field last sent: an unchanged set is not sent again)
 let occBuf = 0; // 4096-byte scratch for chunk occupancy
@@ -162,17 +278,31 @@ function chunkKey(x: number, y: number, z: number): string {
   return `${x},${y},${z}`;
 }
 
-async function ensureModule(): Promise<SvxModule> {
-  if (mod) return mod;
-  const m = (await createSvxModule()) as unknown as SvxModule;
-  mod = m;
-  scratch = m._malloc(Math.max(64, STATS_COUNT) * 8);
-  occBuf = m._malloc(4096);
-  eng = m._svx_create(config.voxelSize);
-  m._svx_set_threads(1);
-  m._svx_set_gpu_displacement(eng, config.gpuDisplacement === false ? 0 : 1);
-  applyParams(params);
-  return m;
+/** An oriented grid's chunk (its mesh in the grid's lattice, placed by its frame: `grids`). */
+function gridChunkKey(grid: number, x: number, y: number, z: number): string {
+  return `g${grid}:${x},${y},${z}`;
+}
+
+/**
+ * The module and its engine, made once: commands are not serialized, and `init` and the first
+ * load arrive together - two instantiations would each make an engine, and the one finishing
+ * last would replace the engine the world was loaded into with an empty one.
+ */
+let modulePromise: Promise<SvxModule> | null = null;
+function ensureModule(): Promise<SvxModule> {
+  modulePromise ??= (async () => {
+    const m = (await createSvxModule()) as unknown as SvxModule;
+    // (call scratch: at least what svx_stats writes, whatever this build's count)
+    scratch = m._malloc(Math.max(64, STATS_COUNT, m._svx_stats_count()) * 8);
+    occBuf = m._malloc(4096);
+    eng = m._svx_create(config.voxelSize);
+    m._svx_set_threads(1);
+    m._svx_set_gpu_displacement(eng, config.gpuDisplacement === false ? 0 : 1);
+    mod = m;
+    applyParams(params);
+    return m;
+  })();
+  return modulePromise;
 }
 
 function f64(i: number): number {
@@ -231,10 +361,12 @@ function sendTextures(): boolean {
   return true;
 }
 
-function occupancyOf(cx: number, cy: number, cz: number): ChunkOccupancy {
+function occupancyOf(cx: number, cy: number, cz: number, grid = 0): ChunkOccupancy {
   const m = mod as SvxModule;
-  const state = m._svx_chunk_occupancy(eng, cx, cy, cz, occBuf) as 0 | 1 | 2;
-  return state === 2 ? { chunk: [cx, cy, cz], state, bits: copyOut(occBuf, 4096) } : { chunk: [cx, cy, cz], state };
+  const state = (grid === 0 ? m._svx_chunk_occupancy(eng, cx, cy, cz, occBuf) : m._svx_grid_chunk_occupancy(eng, grid, cx, cy, cz, occBuf)) as 0 | 1 | 2;
+  const o: ChunkOccupancy = state === 2 ? { chunk: [cx, cy, cz], state, bits: copyOut(occBuf, 4096) } : { chunk: [cx, cy, cz], state };
+  if (grid !== 0) o.grid = grid;
+  return o;
 }
 
 function flushMeshes(): void {
@@ -246,17 +378,21 @@ function flushMeshes(): void {
     m._svx_mesh_info(eng, i, scratch);
     const vc = f64(6);
     const ic = f64(7);
-    occupancy.push(occupancyOf(f64(0), f64(1), f64(2)));
-    const key = chunkKey(f64(0), f64(1), f64(2));
+    const grid = f64(9);
+    // (a decoration-only mesh - charring, glow - leaves the chunk's occupancy as it was)
+    if (f64(8) === 0) occupancy.push(occupancyOf(f64(0), f64(1), f64(2), grid));
+    const key = grid === 0 ? chunkKey(f64(0), f64(1), f64(2)) : gridChunkKey(grid, f64(0), f64(1), f64(2));
     knownChunks.add(key);
-    meshes.push({
+    const mesh: ChunkMesh = {
       key,
       origin: [f64(3), f64(4), f64(5)],
       vertices: copyOut(m._svx_mesh_vertices(eng, i), vc * VERTEX_STRIDE),
       vertexCount: vc,
       indices: copyOut(m._svx_mesh_indices(eng, i), ic * 4),
       indexCount: ic,
-    });
+    };
+    if (grid !== 0) mesh.grid = grid;
+    meshes.push(mesh);
   }
   // far render tier (streamed worlds): coarse tile meshes under "far:x,y" keys
   const nfar = m._svx_poll_far(eng);
@@ -335,7 +471,143 @@ function flushMeshes(): void {
     }
     if (keys.length > 0) postToMain({ type: 'chunkRemoved', keys });
   }
+  // oriented grids: their emptied chunks (their occupancy with them)
+  const rg = m._svx_poll_removed_grid(eng);
+  if (rg > 0) {
+    const keys: string[] = [];
+    for (let i = 0; i < rg; i++) {
+      m._svx_removed_grid_chunk(eng, i, scratch);
+      const b = scratch >> 2;
+      const g = m.HEAP32[b] ?? 0;
+      const c: [number, number, number] = [m.HEAP32[b + 1] ?? 0, m.HEAP32[b + 2] ?? 0, m.HEAP32[b + 3] ?? 0];
+      const key = gridChunkKey(g, c[0], c[1], c[2]);
+      if (knownChunks.delete(key)) keys.push(key);
+      occupancy.push({ chunk: c, state: 0, grid: g });
+    }
+    if (keys.length > 0) postToMain({ type: 'chunkRemoved', keys });
+  }
   if (occupancy.length > 0) postToMain({ type: 'occupancy', voxelSize: config.voxelSize, chunks: occupancy });
+}
+
+/** The oriented grids' places (the ones that came, moved or move) and the grids gone. */
+function flushGrids(): void {
+  const m = mod as SvxModule;
+  const n = m._svx_poll_grids(eng);
+  const nr = m._svx_poll_grids_removed(eng);
+  if (n === 0 && nr === 0) return;
+  const frames = new Float64Array(n * GRID_STRIDE);
+  for (let i = 0; i < n; i++) {
+    m._svx_grid_info(eng, i, scratch);
+    frames.set(m.HEAPF64.subarray(scratch >> 3, (scratch >> 3) + GRID_STRIDE), i * GRID_STRIDE);
+  }
+  const removed: number[] = [];
+  for (let i = 0; i < nr; i++) removed.push(m._svx_grid_removed(eng, i) >>> 0);
+  postToMain({ type: 'grids', frames, removed });
+}
+
+/** The joints (ropes to draw), while any exist (and once empty after the last). */
+function flushJoints(): void {
+  const m = mod as SvxModule;
+  const n = m._svx_poll_joints(eng);
+  if (n === 0 && !jointsLive) return;
+  jointsLive = n > 0;
+  const joints = new Float64Array(n * JOINT_STRIDE);
+  for (let i = 0; i < n; i++) {
+    m._svx_joint_info(eng, i, scratch);
+    joints.set(m.HEAPF64.subarray(scratch >> 3, (scratch >> 3) + JOINT_STRIDE), i * JOINT_STRIDE);
+  }
+  postToMain({ type: 'joints', joints });
+}
+
+/** The vehicles and their wheels, while any exist (and once empty after the last). */
+function flushVehicles(): void {
+  const m = mod as SvxModule;
+  const n = m._svx_vehicles(eng);
+  if (n === 0 && !vehiclesLive) return;
+  if (n > 0 && posesHeld()) return;
+  vehiclesLive = n > 0;
+  const b = m._svx_vehicles_data(eng) >> 3;
+  const vehicles = m.HEAPF64.slice(b, b + n * VEHICLE_STRIDE);
+  const nw = m._svx_wheels(eng);
+  const bw = m._svx_wheels_data(eng) >> 3;
+  const wheels = m.HEAPF64.slice(bw, bw + nw * WHEEL_STRIDE);
+  postToMain({ type: 'vehicles', vehicles, wheels, player: m._svx_player_vehicle(eng) >>> 0, seq: poseSeq });
+}
+
+/**
+ * The characters: their meshes, the meshes gone and their palettes as they come (never held back:
+ * each poll hands them over once), then the characters themselves - a pose message, while any
+ * exist (and once empty after the last).
+ */
+function flushCharacters(): void {
+  const m = mod as SvxModule;
+  const nm = m._svx_poll_character_meshes(eng);
+  const nr = m._svx_poll_character_meshes_removed(eng);
+  const np = m._svx_poll_character_palettes(eng);
+  if (nm > 0 || nr > 0 || np > 0) {
+    const meshes: CharacterMesh[] = [];
+    for (let i = 0; i < nm; i++) {
+      m._svx_character_mesh_info(eng, i, scratch);
+      const id = f64(0);
+      const vc = f64(1);
+      const ic = f64(2);
+      meshes.push({
+        id,
+        vertices: copyOut(m._svx_character_mesh_vertices(eng, i), vc * CHAR_VERTEX_STRIDE),
+        vertexCount: vc,
+        indices: copyOut(m._svx_character_mesh_indices(eng, i), ic * 4),
+        indexCount: ic,
+      });
+    }
+    const removed: number[] = [];
+    for (let i = 0; i < nr; i++) removed.push(m._svx_character_mesh_removed(eng, i) >>> 0);
+    const palettes: CharacterPalette[] = [];
+    for (let i = 0; i < np; i++) {
+      const id = m._svx_character_palette(eng, i, scratch) >>> 0;
+      palettes.push({ id, rgb: m.HEAPF32.slice(scratch >> 2, (scratch >> 2) + CHARACTER_PALETTE_SLOTS * 3) });
+    }
+    postToMain({ type: 'characterMeshes', meshes, removed, palettes });
+  }
+  const n = m._svx_characters(eng);
+  if (n === 0 && !charactersLive) return;
+  if (n > 0 && posesHeld()) return;
+  charactersLive = n > 0;
+  const b = m._svx_characters_data(eng) >> 3;
+  const characters = m.HEAPF64.slice(b, b + n * CHARACTER_STRIDE);
+  const bs = m._svx_characters_skin(eng) >> 2;
+  const skin = m.HEAPF32.slice(bs, bs + n * CHARACTER_SKIN_FLOATS);
+  // (a prop's matrix only when someone holds one)
+  let props: Float32Array<ArrayBuffer> | undefined;
+  for (let k = 0; k < n && !props; k++) {
+    if (characters[k * CHARACTER_STRIDE + 9]! > 0) {
+      const bp = m._svx_characters_prop(eng) >> 2;
+      props = m.HEAPF32.slice(bp, bp + n * 16);
+    }
+  }
+  postToMain(props ? { type: 'characters', characters, skin, props, seq: poseSeq } : { type: 'characters', characters, skin, seq: poseSeq });
+}
+
+/** The people's blood: its drops and stains while there are any (and once empty after), with the poses. */
+function flushBlood(): void {
+  const m = mod as SvxModule;
+  if (!m._svx_blood || !m._svx_blood_drops || !m._svx_blood_stain_count || !m._svx_blood_stains) return;
+  const n = m._svx_blood(eng);
+  const ns = m._svx_blood_stain_count(eng);
+  if (n === 0 && ns === 0 && !bloodLive) return;
+  if ((n > 0 || ns > 0) && posesHeld()) return;
+  bloodLive = n > 0 || ns > 0;
+  const b = m._svx_blood_drops(eng) >> 2;
+  const bs = m._svx_blood_stains(eng) >> 2;
+  postToMain({ type: 'blood', drops: m.HEAPF32.slice(b, b + n * BLOOD_DROP_STRIDE), stains: m.HEAPF32.slice(bs, bs + ns * BLOOD_STAIN_STRIDE) });
+}
+
+/** A piece event's voxels for the client's collision (svx_event_occupancy), if it has them. */
+function eventOccupancy(i: number): { occupancy?: ArrayBuffer } {
+  const m = mod as SvxModule;
+  const size = scratch + 8 * 30; // (a double past the event info the caller is reading)
+  const ptr = m._svx_event_occupancy(eng, i, size);
+  const bytes = m.HEAPF64[size >> 3]!;
+  return ptr && bytes > 0 ? { occupancy: copyOut(ptr, bytes) } : {};
 }
 
 function flushEvents(): void {
@@ -364,16 +636,51 @@ function flushEvents(): void {
           indices: copyOut(m._svx_event_indices(eng, i), ic * 4),
           indexCount: ic,
         },
+        ...eventOccupancy(i),
       });
     } else if (kind === 1) {
       const voxels = f64(16);
+      const material = f64(17);
       list.push(
         voxels > 0
-          ? { kind: 'crack', pos, normal: [f64(11), f64(12), f64(13)], strength: f64(15), voxels, velocity: [f64(5), f64(6), f64(7)], radius: f64(14) }
+          ? {
+              kind: 'crack',
+              pos,
+              normal: [f64(11), f64(12), f64(13)],
+              strength: f64(15),
+              voxels,
+              velocity: [f64(5), f64(6), f64(7)],
+              radius: f64(14),
+              ...(material >= 0 ? { material } : {}),
+            }
           : { kind: 'crack', pos, normal: [f64(11), f64(12), f64(13)], strength: f64(15) },
       );
     } else if (kind === 2) {
       list.push({ kind: 'impact', pos, energy: f64(15) });
+    } else if (kind === 4) {
+      list.push({ kind: 'splash', pos, strength: f64(15) });
+    } else if (kind === 5) {
+      const vc = f64(18);
+      const ic = f64(19);
+      list.push({
+        kind: 'detached',
+        id: f64(1),
+        voxels: f64(16),
+        centroid: pos,
+        velocity: [f64(5), f64(6), f64(7)],
+        angular: [f64(8), f64(9), f64(10)],
+        rigid: true,
+        remesh: true,
+        mesh: {
+          vertices: copyOut(m._svx_event_vertices(eng, i), vc * VERTEX_STRIDE),
+          vertexCount: vc,
+          indices: copyOut(m._svx_event_indices(eng, i), ic * 4),
+          indexCount: ic,
+        },
+        ...eventOccupancy(i),
+      });
+    } else if (kind === 6) {
+      list.push({ kind: 'removed', id: f64(1) });
     }
     // (kind 3, the v1 bubble debug event, is not emitted by v2 engines)
   }
@@ -389,12 +696,55 @@ function flushDebris(): void {
   const m = mod as SvxModule;
   const n = m._svx_debris(eng);
   if (n === 0 && debrisLive === 0) return;
+  if (n > 0 && posesHeld()) return;
   debrisLive = n;
   const b = m._svx_debris_data(eng) >> 3;
   const poses = m.HEAPF64.slice(b, b + n * DEBRIS_STRIDE);
   if (poses.length > 0 && poses.length === debrisSent.length && poses.every((v, i) => v === debrisSent[i])) return;
   debrisSent = poses.slice();
-  postToMain({ type: 'debris', poses });
+  postToMain({ type: 'debris', poses, seq: poseSeq });
+}
+
+/** Water surface meshes of chunks whose water changed, and chunks whose water is gone. */
+function flushWater(): void {
+  const m = mod as SvxModule;
+  const n = m._svx_poll_water(eng);
+  const meshes: ChunkMesh[] = [];
+  for (let i = 0; i < n; i++) {
+    m._svx_water_info(eng, i, scratch);
+    const vc = f64(6);
+    const ic = f64(7);
+    meshes.push({
+      key: chunkKey(f64(0), f64(1), f64(2)),
+      origin: [f64(3), f64(4), f64(5)],
+      vertices: copyOut(m._svx_water_vertices(eng, i), vc * VERTEX_STRIDE),
+      vertexCount: vc,
+      indices: copyOut(m._svx_water_indices(eng, i), ic * 4),
+      indexCount: ic,
+    });
+  }
+  const r = m._svx_poll_water_removed(eng);
+  const removed: string[] = [];
+  for (let i = 0; i < r; i++) {
+    m._svx_water_removed(eng, i, scratch);
+    const b = scratch >> 2;
+    removed.push(chunkKey(m.HEAP32[b] ?? 0, m.HEAP32[b + 1] ?? 0, m.HEAP32[b + 2] ?? 0));
+  }
+  if (meshes.length > 0 || removed.length > 0) postToMain({ type: 'water', meshes, removed });
+}
+
+/** The environment for the renderer: flames and smoke (one final empty set when all is clear). */
+function flushEnv(): void {
+  if (++envTick < ENV_TICKS) return;
+  envTick = 0;
+  const m = mod as SvxModule;
+  const n = m._svx_poll_env(eng, MAX_FLAMES, MAX_SMOKE);
+  const ns = m._svx_env_smoke_count(eng);
+  if (n === 0 && ns === 0 && !envLive) return;
+  envLive = n > 0 || ns > 0;
+  const b = m._svx_env_flames(eng) >> 2;
+  const bs = m._svx_env_smoke(eng) >> 2;
+  postToMain({ type: 'env', flames: m.HEAPF32.slice(b, b + n * FLAME_STRIDE), smoke: m.HEAPF32.slice(bs, bs + ns * SMOKE_STRIDE) });
 }
 
 /** One timeline sample: the tick's parts (engine timings of that tick) and the flush after it. */
@@ -406,8 +756,9 @@ function sampleTimeline(tickMs: number, flushMs: number): void {
   const events = running ? f64(2) : 0;
   const rigid = running ? f64(3) : 0;
   const stream = f64(28);
-  const other = Math.max(0, tickMs - structural - events - rigid - stream);
-  timeline.push(structural, rigid, events, stream, other, flushMs, f64(21));
+  const env = running ? f64(45) : 0;
+  const other = Math.max(0, tickMs - structural - events - rigid - stream - env);
+  timeline.push(structural, rigid, events, stream, env, other, flushMs, f64(21));
   if (timeline.length > 600 * TIMELINE_STRIDE) timeline = timeline.slice(-300 * TIMELINE_STRIDE);
 }
 
@@ -451,6 +802,28 @@ function sendStats(now: number): void {
     strengthenedVoxels: f64(32),
     floatingVoxelsRemoved: f64(33),
     bakeMs: Math.round(f64(34)),
+    worldMemoryMB: r2(35),
+    fragmentCacheMB: r2(36),
+    structureMemoryMB: r2(37),
+    pieceMemoryMB: r2(38),
+    archiveMB: r2(39),
+    archiveCapacityMB: r2(40),
+    forgottenRegions: f64(41),
+    culledPieces: f64(42),
+    fireHot: f64(43),
+    fireBurning: f64(44),
+    envMs: r2(45),
+    smokeCells: f64(46),
+    smokeBlocks: f64(47),
+    waterActive: f64(48),
+    waterLoads: f64(49),
+    floating: f64(50),
+    characters: f64(51),
+    charactersDeep: f64(52),
+    charactersShallow: f64(53),
+    charactersPlanOnly: f64(54),
+    charactersAtRest: f64(55),
+    charactersMs: r2(56),
   };
   eventsSinceStats = 0;
   lastStats = now;
@@ -470,18 +843,23 @@ function playThreads(): number {
   return Math.max(1, Math.min(8, loadThreads(), config.threads - 2));
 }
 
-function finishLoad(texturesSent: boolean, label: string): void {
+async function finishLoad(texturesSent: boolean, label: string): Promise<void> {
   const m = mod as SvxModule;
   postToMain({ type: 'progress', stage: `baking ${label}`, done: 1, total: 3 });
   const t0 = performance.now();
   m._svx_set_threads(loadThreads());
   const baked = m._svx_bake(eng) === 1;
+  // the saved changes go onto the designed world (a delta carries its chunks' design classes;
+  // baked after it, damaged members would be designed again as if built that way)
+  await restoreDelta();
   // gameplay: structure solves and pieces
   m._svx_set_threads(playThreads());
   console.info(`[wasm] ${label}: bake ${baked ? 'done' : 'skipped (world too large)'} in ${(performance.now() - t0).toFixed(0)} ms`);
   postToMain({ type: 'progress', stage: `meshing ${label}`, done: 2, total: 3 });
   postToMain({ type: 'ready', info: worldInfo(texturesSent) });
+  flushGrids();
   flushMeshes();
+  flushJoints();
   loaded = true;
   postToMain({ type: 'progress', stage: 'ready', done: 3, total: 3 });
 }
@@ -492,7 +870,20 @@ function clearChunks(): void {
   fieldsLive = 0;
   fieldsKey = '';
   debrisLive = 0; // (the front end drops the old world's pieces when it requests a load)
+  if (jointsLive) postToMain({ type: 'joints', joints: new Float64Array(0) });
+  jointsLive = false;
+  if (vehiclesLive) postToMain({ type: 'vehicles', vehicles: new Float64Array(0), wheels: new Float64Array(0), player: 0 });
+  vehiclesLive = false;
+  // (the old world's people: their meshes go as the engine drops them after the load)
+  if (charactersLive) postToMain({ type: 'characters', characters: new Float64Array(0), skin: new Float32Array(0) });
+  charactersLive = false;
+  if (bloodLive) postToMain({ type: 'blood', drops: new Float32Array(0), stains: new Float32Array(0) });
+  bloodLive = false;
   debrisSent = new Float64Array(0);
+  // (the old world's flames and smoke go now: a message sent before the load may still be on
+  // its way)
+  if (envLive) postToMain({ type: 'env', flames: new Float32Array(0), smoke: new Float32Array(0) });
+  envLive = false;
 }
 
 async function loadProcedural(kind: ProceduralKind, seed: number): Promise<void> {
@@ -502,8 +893,7 @@ async function loadProcedural(kind: ProceduralKind, seed: number): Promise<void>
   postToMain({ type: 'progress', stage: `generating ${kind}`, done: 0, total: 3 });
   withString(kind, (p) => m._svx_load_procedural(eng, p, seed >>> 0));
   worldId = `proc-${kind}-${seed >>> 0}`;
-  await restoreDelta();
-  finishLoad(false, kind);
+  await finishLoad(false, kind);
 }
 
 async function loadWad(buffer: ArrayBuffer, map: string, options: WadOptions): Promise<void> {
@@ -534,8 +924,27 @@ async function loadWad(buffer: ArrayBuffer, map: string, options: WadOptions): P
   let fp = bytes.length >>> 0;
   for (let i = 0; i < bytes.length; i += 4099) fp = (Math.imul(fp, 31) + (bytes[i] ?? 0)) >>> 0;
   worldId = `wad-${map}-${fp.toString(16)}`;
-  await restoreDelta();
-  finishLoad(tex, map);
+  await finishLoad(tex, map);
+}
+
+/**
+ * Draws the line under the outgoing world: what was sent before this is the old one's.
+ *
+ * The pose window starts over with it. A load sends no poses while it bakes, so leaving the
+ * window open would let poseSeq run away from the page's last ack, and poses past POSE_LAG are
+ * held - with nothing left to ack, they would be held for good and the new world would never
+ * move (its pieces stranded at the pose they detached at).
+ */
+function beginLoad(): void {
+  poseSeq = 0;
+  poseAcked = -1;
+  posesHeldNow = false;
+  debrisLive = 0;
+  debrisSent = new Float64Array(0);
+  vehiclesLive = false;
+  charactersLive = false;
+  bloodLive = false;
+  postToMain({ type: 'loading', generation: ++loads });
 }
 
 async function handle(cmd: EngineCommand): Promise<void> {
@@ -546,9 +955,11 @@ async function handle(cmd: EngineCommand): Promise<void> {
       await ensureModule();
       break;
     case 'loadProcedural':
+      beginLoad();
       await loadProcedural(cmd.kind, cmd.seed);
       break;
     case 'loadWad':
+      beginLoad();
       await loadWad(cmd.buffer, cmd.map, cmd.options);
       break;
     case 'viewer':
@@ -560,20 +971,51 @@ async function handle(cmd: EngineCommand): Promise<void> {
     case 'carve':
       if (mod && loaded) mod._svx_carve(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
       break;
+    case 'ignite':
+      if (mod && loaded) mod._svx_ignite(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
+      break;
+    case 'pour':
+      if (mod && loaded) mod._svx_pour(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
+      break;
+    case 'drain':
+      if (mod && loaded) mod._svx_drain(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
+      break;
+    case 'heat':
+      if (mod && loaded) mod._svx_heat(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius, cmd.celsius);
+      break;
+    case 'setEnv': {
+      // (kept for the next load too: the engine keeps its environment across levels)
+      const m = await ensureModule();
+      if (Number.isFinite(cmd.value)) withString(cmd.name, (p) => m._svx_set_env(eng, p, cmd.value));
+      break;
+    }
+    case 'setTunable': {
+      const m = await ensureModule();
+      if (Number.isFinite(cmd.value)) withString(cmd.name, (p) => m._svx_set_tunable(eng, p, cmd.value));
+      break;
+    }
+    case 'extinguish':
+      if (mod && loaded) mod._svx_extinguish(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius);
+      break;
     case 'use':
       if (mod && loaded) mod._svx_use(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.dir[0], cmd.dir[1], cmd.dir[2]);
       break;
     case 'raycast': {
-      let hit = null;
+      let hit: RaycastHit | null = null;
       if (mod && loaded) {
+        const o = cmd.origin;
         const d = cmd.dir;
-        if (mod._svx_raycast(eng, cmd.origin[0], cmd.origin[1], cmd.origin[2], d[0], d[1], d[2], cmd.maxDist, scratch) === 1)
-          hit = {
-            pos: [f64(0), f64(1), f64(2)] as Vec3,
-            normal: [f64(3), f64(4), f64(5)] as Vec3,
-            distance: f64(6),
-            material: f64(7),
-          };
+        // (a shot's line: the characters too - out[8] the one hit, out[9] its bone)
+        const r = cmd.characters
+          ? mod._svx_raycast_shot(eng, o[0], o[1], o[2], d[0], d[1], d[2], cmd.maxDist, scratch)
+          : mod._svx_raycast(eng, o[0], o[1], o[2], d[0], d[1], d[2], cmd.maxDist, scratch);
+        if (r !== 0) {
+          hit = { pos: [f64(0), f64(1), f64(2)], normal: [f64(3), f64(4), f64(5)], distance: f64(6), material: f64(7) };
+          if (cmd.characters && r === 2) {
+            hit.character = f64(8);
+            hit.bone = f64(9);
+          }
+        }
       }
       postToMain({ type: 'raycastResult', id: cmd.id, hit });
       break;
@@ -581,16 +1023,58 @@ async function handle(cmd: EngineCommand): Promise<void> {
     case 'collide': {
       let move: Vec3 = [...cmd.move];
       let onGround = false;
+      let ground = 0;
+      let groundPiece = 0;
+      let groundVelocity: Vec3 = [0, 0, 0];
       if (mod && loaded) {
         mod._svx_collide(eng, cmd.min[0], cmd.min[1], cmd.min[2], cmd.max[0], cmd.max[1], cmd.max[2], cmd.move[0], cmd.move[1], cmd.move[2], scratch);
         move = [f64(0), f64(1), f64(2)];
         onGround = f64(3) > 0;
+        ground = f64(4);
+        groundVelocity = [f64(5), f64(6), f64(7)];
+        groundPiece = f64(8);
       }
-      postToMain({ type: 'collideResult', id: cmd.id, move, onGround });
+      postToMain({ type: 'collideResult', id: cmd.id, move, onGround, ground, groundPiece, groundVelocity });
       break;
     }
     case 'setParams':
       applyParams(cmd.params);
+      break;
+    case 'shoot':
+      if (mod && loaded) mod._svx_shoot(eng, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius, cmd.energy);
+      break;
+    case 'spawnVehicle':
+      if (mod && loaded) mod._svx_spawn_vehicle(eng, cmd.kind | 0, cmd.paint | 0, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.yaw);
+      break;
+    case 'enterVehicle':
+      if (mod && loaded) mod._svx_enter_vehicle(eng, cmd.id >>> 0);
+      break;
+    case 'exitVehicle':
+      if (mod && loaded) mod._svx_exit_vehicle(eng);
+      break;
+    case 'drive':
+      if (mod && loaded) mod._svx_drive(eng, cmd.throttle, cmd.brake, cmd.steer, cmd.handbrake ? 1 : 0);
+      break;
+    case 'frameAck':
+      // (an ack for the world before this one: its sequence is ahead of the one now running)
+      if (cmd.seq <= poseSeq) poseAcked = cmd.seq;
+      break;
+    case 'setTraffic': {
+      // (kept for the next load too: the engine keeps its traffic settings across levels)
+      const m = await ensureModule();
+      const t = cmd.traffic;
+      m._svx_set_traffic(eng, t.enabled ? 1 : 0, t.cars | 0, t.parked | 0, t.nearRadius, t.radius, t.speedScale);
+      break;
+    }
+    case 'setPedestrians': {
+      // (likewise the pedestrians')
+      const m = await ensureModule();
+      const p = cmd.pedestrians;
+      m._svx_set_pedestrians(eng, p.enabled ? 1 : 0, p.count | 0, p.nearRadius, p.radius, p.bodies | 0, p.maxDeep | 0);
+      break;
+    }
+    case 'woundCharacter':
+      if (mod && loaded) mod._svx_wound_character(eng, cmd.id >>> 0, cmd.pos[0], cmd.pos[1], cmd.pos[2], cmd.radius, cmd.energy);
       break;
   }
 }
@@ -607,8 +1091,16 @@ function loop(): void {
       mod._svx_tick(eng);
       const t1 = performance.now();
       flushEvents();
+      beginPoses();
       flushDebris();
+      flushVehicles();
+      flushCharacters();
+      flushBlood();
+      flushEnv();
+      flushGrids();
       flushMeshes();
+      flushJoints();
+      flushWater();
       sampleTimeline(t1 - t0, performance.now() - t1);
       if (now - lastStats >= STATS_MS) sendStats(now);
       if (config.persist && now - lastSave >= AUTOSAVE_MS) {

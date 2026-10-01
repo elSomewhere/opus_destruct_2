@@ -6,10 +6,10 @@
  * a piece is a new detached event, up to 24 cracks per tick), so their particles draw on
  * per-frame budgets, refilled in `update`.
  */
-import type { CrackEvent, DetachedEvent, ImpactEvent, MaterialId, RaycastHit, Vec3 } from '../engine/protocol.ts';
-import { Material, VERTEX_STRIDE } from '../engine/protocol.ts';
+import type { CrackEvent, DetachedEvent, ImpactEvent, MaterialId, RaycastHit, SplashEvent, Vec3 } from '../engine/protocol.ts';
+import { FLAME_STRIDE, Material, SMOKE_CELL_VOXELS, SMOKE_STRIDE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { distance, normalize } from '../render/math.ts';
-import type { ParticleSystem } from '../render/particles.ts';
+import { FIELD_CAPACITY, FLOATS_PER_INSTANCE, type ParticleSystem } from '../render/particles.ts';
 
 type Rgb = [number, number, number];
 
@@ -26,6 +26,12 @@ const MATERIAL_DUST: Record<number, Rgb> = {
 /** Particles per frame from detached events (dust) and from cracks (chips and puffs). */
 const DETACHED_DUST_PER_FRAME = 300;
 const CRACK_PARTICLES_PER_FRAME = 150;
+/** Fire: flame tongues per burning voxel and second, and per-frame caps (flames, embers, smoke). */
+const FLAME_RATE = 2.5;
+const FLAME_PARTICLES_PER_FRAME = 140;
+const EMBER_RATE = 0.05;
+const FIRE_SMOKE_RATE = 0.08;
+const FIRE_SMOKE_PER_FRAME = 6;
 
 function dustColor(material: MaterialId): Rgb {
   return MATERIAL_DUST[material] ?? [0.4, 0.4, 0.4];
@@ -59,6 +65,16 @@ export class Effects {
   muzzle = 0;
   private detachedBudget = DETACHED_DUST_PER_FRAME;
   private crackBudget = CRACK_PARTICLES_PER_FRAME;
+  /** The engine's flames (FLAME_STRIDE floats each). */
+  private flames: Float32Array = new Float32Array(0);
+  /** The engine's smoke cells (SMOKE_STRIDE floats each), and their sprites. */
+  private smoke: Float32Array = new Float32Array(0);
+  private readonly smokeSprites = new Float32Array(FIELD_CAPACITY * FLOATS_PER_INSTANCE);
+  private smokeBuilt = -1;
+  private smokeDirty = true;
+  private fireCarry = 0;
+  private emberCarry = 0;
+  private smokeCarry = 0;
 
   constructor(particles: ParticleSystem) {
     this.particles = particles;
@@ -125,6 +141,20 @@ export class Effects {
     }
   }
 
+  /** A round into someone: blood spraying out along the shot and back out of the wound, a red mist. */
+  bloodHit(pos: Vec3, dir: Vec3): void {
+    for (let k = 0; k < 12; k++) {
+      const out = k % 3 === 0 ? -0.6 : 1; // (most go on through, some back out)
+      const d = normalize([dir[0] * out + rand(-0.5, 0.5), dir[1] * out + rand(-0.5, 0.5), dir[2] * out + rand(-0.2, 0.6)]);
+      const v = rand(1.2, 4.5);
+      this.particles.spawn({ pos, vel: [d[0] * v, d[1] * v, d[2] * v], life: rand(0.35, 0.8), size: rand(0.01, 0.025), color: [0.22, 0.008, 0.008, 1], gravity: 1, drag: 0.8 });
+    }
+    for (let k = 0; k < 3; k++) {
+      const d = randomUnit();
+      this.particles.spawn({ pos, vel: [d[0] * 0.3 + dir[0] * 0.6, d[1] * 0.3 + dir[1] * 0.6, d[2] * 0.3], life: rand(0.3, 0.6), size: rand(0.05, 0.09), grow: 0.25, color: [0.2, 0.012, 0.01, 0.4], drag: 3, gravity: 0.05 });
+    }
+  }
+
   explosion(pos: Vec3, radius: number): void {
     this.light(pos, 14);
     for (let k = 0; k < 40; k++) {
@@ -165,6 +195,15 @@ export class Effects {
 
   /** Crushed material or a shard too small to be a piece: chips flying on with it and a cloud. */
   private dust(ev: CrackEvent): void {
+    const m = ev.material;
+    if (m === Material.Glass || m === Material.Window || m === Material.Lamp) {
+      this.shards(ev, m === Material.Lamp);
+      return;
+    }
+    if (m === Material.Sheet || m === Material.CarFrame || m === Material.Engine || m === Material.Steel || m === Material.SteelSection) {
+      this.sparks(ev.pos, ev.velocity ?? [0, 0, 0], Math.min(24, 6 + (ev.voxels ?? 1)));
+      return;
+    }
     const vox = ev.voxels ?? 1;
     const r = Math.max(0.1, ev.radius ?? 0.2);
     const v0 = ev.velocity ?? [0, 0, 0];
@@ -196,6 +235,82 @@ export class Effects {
         gravity: -0.03,
       });
     }
+  }
+
+  /** Glass shattering: glittering shards falling with what broke, a few catching the light. */
+  private shards(ev: CrackEvent, lamp: boolean): void {
+    const vox = ev.voxels ?? 1;
+    const v0 = ev.velocity ?? [0, 0, 0];
+    const n = Math.min(10 + vox * 2, 40, this.crackBudget);
+    if (n <= 0) return;
+    this.crackBudget -= n;
+    const r = Math.max(0.05, ev.radius ?? 0.1);
+    for (let k = 0; k < n; k++) {
+      const d = randomUnit();
+      const v = rand(0.6, 3.2);
+      const glint = Math.random() < 0.3;
+      this.particles.spawn({
+        pos: [ev.pos[0] + d[0] * r, ev.pos[1] + d[1] * r, ev.pos[2] + d[2] * r],
+        vel: [v0[0] * 0.7 + d[0] * v, v0[1] * 0.7 + d[1] * v, v0[2] * 0.7 + d[2] * v + 1],
+        life: rand(0.7, 1.5),
+        size: rand(0.008, 0.022),
+        color: glint ? [2.2, 2.3, 2.4, 1] : lamp ? [0.9, 0.85, 0.7, 0.9] : [0.55, 0.68, 0.72, 0.85],
+        additive: glint,
+        gravity: 1,
+        drag: 0.4,
+      });
+    }
+  }
+
+  /** Metal struck or torn: hot sparks spraying on with it (their streaks), a few falling chips. */
+  sparks(pos: Vec3, vel: Vec3, n: number): void {
+    const count = Math.min(Math.round(n), this.crackBudget);
+    if (count <= 0) return;
+    this.crackBudget -= count;
+    for (let k = 0; k < count; k++) {
+      const d = randomUnit();
+      const v = rand(2, 7);
+      this.particles.spawn({
+        pos: [pos[0] + d[0] * 0.05, pos[1] + d[1] * 0.05, pos[2] + d[2] * 0.05],
+        vel: [vel[0] * 0.6 + d[0] * v, vel[1] * 0.6 + d[1] * v, vel[2] * 0.6 + Math.abs(d[2]) * v * 0.8 + 0.5],
+        life: rand(0.2, 0.55),
+        size: rand(0.008, 0.016),
+        color: [5, 2.6, 0.9, 1],
+        additive: true,
+        gravity: 1,
+        drag: 1.2,
+      });
+    }
+    this.light(pos, Math.min(1.2, count * 0.05));
+  }
+
+  /** A sliding tyre's smoke (strength 0..1), drifting with the car. */
+  tyreSmoke(pos: Vec3, vel: Vec3, strength: number): void {
+    const d = randomUnit();
+    this.particles.spawn({
+      pos: [pos[0] + d[0] * 0.08, pos[1] + d[1] * 0.08, pos[2] + 0.08],
+      vel: [vel[0] * 0.25 + rand(-0.4, 0.4), vel[1] * 0.25 + rand(-0.4, 0.4), rand(0.3, 0.9)],
+      life: rand(1.4, 2.8),
+      size: rand(0.18, 0.3),
+      grow: 0.6 + 0.4 * strength,
+      color: [0.6, 0.6, 0.62, 0.14 + 0.16 * strength],
+      drag: 1.4,
+      gravity: -0.02,
+    });
+  }
+
+  /** Dust thrown up by a wheel spinning or sliding on soil. */
+  wheelDust(pos: Vec3, vel: Vec3, strength: number): void {
+    this.particles.spawn({
+      pos: [pos[0], pos[1], pos[2] + 0.05],
+      vel: [vel[0] * 0.3 + rand(-0.6, 0.6), vel[1] * 0.3 + rand(-0.6, 0.6), rand(0.4, 1.4)],
+      life: rand(1, 2),
+      size: rand(0.12, 0.22),
+      grow: 0.5,
+      color: [0.3, 0.23, 0.15, 0.2 + 0.2 * strength],
+      drag: 1.6,
+      gravity: 0.05,
+    });
   }
 
   /** Blast or landing debris: dust ring and camera shake by energy and distance. */
@@ -243,6 +358,178 @@ export class Effects {
         gravity: 0.05,
       });
     }
+  }
+
+  /** The engine's burning voxels (an `env` message). */
+  setFlames(flames: Float32Array): void {
+    this.flames = flames;
+  }
+
+  setSmoke(smoke: Float32Array): void {
+    this.smoke = smoke;
+    this.smokeDirty = true;
+  }
+
+  /**
+   * The smoke field as soft sprites (one per cell, a little bigger than it, jittered and slowly
+   * drifting so the grid does not show), handed to the particle system. Built again when new
+   * smoke comes and ten times a second for the drift (not every frame); sprites near the eye
+   * fade (no screen-filling layers).
+   */
+  smokeField(timeS: number, voxelSize: number, eye: Vec3): void {
+    if (!this.smokeDirty && timeS - this.smokeBuilt < 0.1) return;
+    this.smokeDirty = false;
+    this.smokeBuilt = timeS;
+    const s = this.smoke;
+    const total = Math.min(s.length / SMOKE_STRIDE, FIELD_CAPACITY);
+    const cell = voxelSize * SMOKE_CELL_VOXELS;
+    const out = this.smokeSprites;
+    let n = 0;
+    for (let q = 0; q < total; q++) {
+      const i = q * SMOKE_STRIDE;
+      const dx = s[i]! - eye[0];
+      const dy = s[i + 1]! - eye[1];
+      const dz = s[i + 2]! - eye[2];
+      const near = Math.hypot(dx, dy, dz);
+      if (near < 0.35 * cell) continue;
+      const fade = Math.min(1, (near - 0.35 * cell) / (2.5 * cell));
+      const k = n++;
+      const x = s[i]!;
+      const y = s[i + 1]!;
+      const z = s[i + 2]!;
+      // (a hash of the cell: its own jitter and phase)
+      const hsh = Math.abs(Math.sin(x * 12.9898 + y * 78.233 + z * 37.719) * 43758.5453) % 1;
+      const ph = hsh * 6.283;
+      const o = k * FLOATS_PER_INSTANCE;
+      out[o] = x + cell * (0.25 * Math.sin(ph * 3.1) + 0.15 * Math.sin(timeS * 0.5 + ph));
+      out[o + 1] = y + cell * (0.25 * Math.cos(ph * 2.3) + 0.15 * Math.cos(timeS * 0.43 + ph));
+      out[o + 2] = z + cell * (0.2 * Math.sin(ph * 5.7) + 0.1 * Math.sin(timeS * 0.61 + ph * 1.3));
+      out[o + 3] = cell * (0.95 + 0.25 * hsh);
+      const g = 0.11 + 0.04 * hsh;
+      out[o + 4] = g;
+      out[o + 5] = g;
+      out[o + 6] = g * 0.95;
+      out[o + 7] = fade * 0.6 * (1 - Math.exp(-1.6 * s[i + 3]!));
+    }
+    this.particles.setField(out.subarray(0, n * FLOATS_PER_INSTANCE));
+  }
+
+  get flameCount(): number {
+    return this.flames.length / FLAME_STRIDE;
+  }
+
+  /**
+   * Fire, every frame: flame tongues licking up from random burning voxels, embers, smoke, and a
+   * flickering light at the flames nearest the eye.
+   */
+  fire(dt: number, eye: Vec3, timeS: number): void {
+    const f = this.flames;
+    const n = f.length / FLAME_STRIDE;
+    if (n === 0) return;
+    const pick = (): number => Math.floor(Math.random() * n) * FLAME_STRIDE;
+    this.fireCarry += n * FLAME_RATE * dt;
+    const tongues = Math.min(FLAME_PARTICLES_PER_FRAME, Math.floor(this.fireCarry));
+    this.fireCarry = Math.min(this.fireCarry - tongues, 4);
+    for (let k = 0; k < tongues; k++) {
+      const i = pick();
+      const hot = Math.min(1.3, f[i + 3]! / 800);
+      this.particles.spawn({
+        pos: [f[i]! + rand(-0.07, 0.07), f[i + 1]! + rand(-0.07, 0.07), f[i + 2]! + rand(0, 0.08)],
+        vel: [rand(-0.15, 0.15), rand(-0.15, 0.15), rand(0.6, 1.4)],
+        life: rand(0.3, 0.65),
+        size: rand(0.08, 0.15),
+        grow: -0.08,
+        color: [2.6 * hot, rand(0.8, 1.3) * hot, 0.22 * hot, 0.75],
+        additive: true,
+        drag: 1.2,
+        gravity: -0.12,
+      });
+    }
+    this.emberCarry += n * EMBER_RATE * dt;
+    for (; this.emberCarry >= 1; this.emberCarry--) {
+      const i = pick();
+      this.particles.spawn({
+        pos: [f[i]!, f[i + 1]!, f[i + 2]! + 0.1],
+        vel: [rand(-0.6, 0.6), rand(-0.6, 0.6), rand(1.5, 3.5)],
+        life: rand(1.2, 2.8),
+        size: rand(0.008, 0.016),
+        color: [5, 1.8, 0.4, 1],
+        additive: true,
+        drag: 0.8,
+        gravity: -0.04,
+      });
+    }
+    this.emberCarry = Math.min(this.emberCarry, 4);
+    this.smokeCarry += n * FIRE_SMOKE_RATE * dt;
+    const puffs = Math.min(FIRE_SMOKE_PER_FRAME, Math.floor(this.smokeCarry));
+    this.smokeCarry = Math.min(this.smokeCarry - puffs, 4);
+    for (let k = 0; k < puffs; k++) {
+      const i = pick();
+      this.particles.spawn({
+        pos: [f[i]!, f[i + 1]!, f[i + 2]! + 0.35],
+        vel: [rand(-0.2, 0.2), rand(-0.2, 0.2), rand(0.8, 1.6)],
+        life: rand(2.5, 4.5),
+        size: rand(0.2, 0.35),
+        grow: 0.45,
+        color: [0.06, 0.055, 0.05, 0.4],
+        drag: 0.6,
+        gravity: -0.03,
+      });
+    }
+    // firelight: the flames near the eye (a sample), flickering
+    let best = Infinity;
+    let at = 0;
+    let near = 0;
+    const tries = Math.min(n, 48);
+    for (let k = 0; k < tries; k++) {
+      const i = tries === n ? k * FLAME_STRIDE : pick();
+      const d = distance(eye, [f[i]!, f[i + 1]!, f[i + 2]!]);
+      if (d < 20) near++;
+      if (d < best) {
+        best = d;
+        at = i;
+      }
+    }
+    if (best < 40) {
+      const flicker = 0.8 + 0.2 * Math.sin(timeS * 23) * Math.sin(timeS * 7.3 + 1.1);
+      this.light([f[at]!, f[at + 1]!, f[at + 2]! + 0.4], (1.2 + Math.log2(1 + (near * n) / tries) * 0.5) * flicker);
+    }
+  }
+
+  /** A piece hitting the water: a crown of droplets and a little mist. */
+  splash(ev: SplashEvent): void {
+    const s = Math.min(1, Math.cbrt(ev.strength / 2000));
+    const n = 12 + Math.round(40 * s);
+    for (let k = 0; k < n; k++) {
+      const a = rand(0, Math.PI * 2);
+      const v = rand(1, 3) * (0.5 + s);
+      this.particles.spawn({
+        pos: [ev.pos[0] + Math.cos(a) * 0.3, ev.pos[1] + Math.sin(a) * 0.3, ev.pos[2]],
+        vel: [Math.cos(a) * v * 0.5, Math.sin(a) * v * 0.5, rand(2, 5) * (0.5 + s)],
+        life: rand(0.6, 1.2),
+        size: rand(0.02, 0.05),
+        color: [0.7, 0.8, 0.85, 0.8],
+        gravity: 1,
+        drag: 0.5,
+      });
+    }
+    for (let k = 0; k < 4; k++) {
+      this.particles.spawn({ pos: ev.pos, vel: [rand(-0.5, 0.5), rand(-0.5, 0.5), rand(0.3, 1)], life: rand(1, 1.8), size: 0.25 + 0.3 * s, grow: 0.5, color: [0.8, 0.85, 0.9, 0.25], drag: 2, gravity: 0.05 });
+    }
+  }
+
+  /** The flamethrower's flames or the hose's water, from the muzzle along dir. */
+  spray(muzzle: Vec3, dir: Vec3, flame: boolean): void {
+    for (let k = 0; k < 5; k++) {
+      const v = rand(7, 11);
+      const d = hemisphere(dir, 0.08);
+      this.particles.spawn(
+        flame
+          ? { pos: muzzle, vel: [d[0] * v, d[1] * v, d[2] * v], life: rand(0.35, 0.6), size: 0.05, grow: 0.6, color: [3, 1.2, 0.25, 0.8], additive: true, drag: 1.4, gravity: -0.3 }
+          : { pos: muzzle, vel: [d[0] * v, d[1] * v, d[2] * v], life: rand(0.5, 0.9), size: 0.03, grow: 0.15, color: [0.6, 0.72, 0.8, 0.6], drag: 0.3, gravity: 1 },
+      );
+    }
+    if (flame) this.light(muzzle, 0.8);
   }
 
   rocketTrail(pos: Vec3, dir: Vec3): void {

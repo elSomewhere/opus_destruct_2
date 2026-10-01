@@ -42,6 +42,16 @@ settles and sleeps.
     strength class multiplies it (§3, design pass).
 - **Persistent state is the voxel grid**: materials, a broken bit per voxel face, design classes.
   Fragments and bonds are caches derived from it.
+- **Oriented grids** ([`GRIDS.md`](GRIDS.md)) are voxel lattices with a position and rotation of
+  their own, fragmented in their own lattice. Where two grids' voxels meet, **junctions** bond
+  them:
+  - The faces of the newer grid (which owns any overlap) are sampled 3 × 3 per face, pushed half
+    a voxel out; samples landing in the other grid's solid are the interface.
+  - A junction bond's section is its samples projected on their mean normal, like a lattice
+    bond's faces.
+  - It breaks sample by sample; the broken samples are kept on the voxels whose faces they
+    sample.
+  - A world of the world grid alone computes exactly as before.
 
 ## 2. Stress: one elastic equilibrium solve per body
 
@@ -66,6 +76,14 @@ linear-elastic equilibrium on the fragment graph:
   - Static structures converge over ticks under a work budget (stress spreads through a building
     over a few frames) and are patched in place: removed bonds are subtracted from K, detached
     nodes retired, new fragments appended.
+  - Small structures (under 160 fragments) are preconditioned by block-Jacobi.
+    - One whose solve does not converge meets a near-mechanism: a frame left hanging by one face
+      of its support, or a member held by a sliver of junction. It is solved with its multigrid
+      from then on (rigid-body coarse spaces, the coarsest level exact), and so is still judged.
+      Before, such a solve never converged, so the frame hung there for good.
+    - What converges in neither after `solve_restarts` restarts is left alone rather than solved
+      every tick (`WorldStats::solves_abandoned`).
+    - The design pass retries a stagnating solve with the multigrid the same way.
   - Pieces are solved within the substep (exactly, for small ones).
 
 ## 3. Failure of static structures
@@ -74,11 +92,19 @@ linear-elastic equilibrium on the fragment graph:
   stresses N/A ± M/S, divided by the fragility knob.
 - **Break rounds.** On a converged state, a round breaks the bonds with φ ≥ max(1, 0.85 · φ_max)
   and at least the worst quarter of those over strength (at most 256), then solves again: a
-  cascade unfolds over ticks.
+  cascade unfolds over ticks (at most `max_rounds` rounds each).
 - **Sudden changes** (a carve, a blast, a break round) are judged with a dynamic increase factor
-  on the change of bond force since the last converged state, F_old + DIF · ΔF.
+  on the change of bond force since the last converged steady state, F_old + DIF · ΔF. An impact
+  load case (a blast, landing debris) is judged and passes: the steady state is solved again
+  after it, and stays the reference.
+- **Blasts.** Fragments within 1.7 crater radii shatter and are thrown out; those within 3.5 are
+  loaded (an impact load case) as if thrown with the speed the falloff gives them. The blast's
+  kinetic share of its energy (6 %) bounds both: it goes to the shattered mass, or, with little
+  or none of it (a blast in the air, on the anchored ground), to the loaded mass.
 - **Detachment.** After a round, what no longer reaches an anchor leaves the grid as a rigid
-  piece, with its bonds (unbroken faces), at rest or with a blast's impulse.
+  piece, with its bonds (unbroken faces): at rest, or - what a blast's load broke off, within
+  its cascade - with the momentum the blast gave its fragments (a wall 2.2 m behind a blast in
+  the air comes apart at 2.9 m/s on average, not 0.1).
 - **Design pass** (bake): every structure is solved under its own weight, and members above a
   utilization of 0.45 are strengthened, so what stands at load time stands at rest.
 - **Streamed worlds are designed on first touch.** Chunks fresh from the generator are
@@ -91,12 +117,20 @@ linear-elastic equilibrium on the fragment graph:
 
 ## 4. Rigid pieces
 
-Each piece owns a voxel shape in its own grid-aligned frame, its fragments and its bond graph.
+Each piece owns its voxels in their grids' lattices (one shape per grid it came from; the first
+shape's lattice is the piece's frame), its fragments and its bond graph: the lattice bonds within
+each shape and the junctions between its shapes.
 
 - **Contacts.** Surface samples (inset corners of exposed faces; more for larger pieces) are
   tested against the world grid and other pieces' shapes. Normals come from the face of least
   penetration leading to air. A pair keeps a manifold of 12 contacts, plus 8 per metre of a
   piece's radius (a large piece rests on a bearing surface, not on a few points).
+- **Continuous collision.** A piece that may move more than half a voxel in a substep (7.5 m/s at
+  120 Hz, 3.75 m/s at 60 Hz) casts its free samples along their motion through the grids; the
+  nearest faces they would reach (at most 8) become speculative contacts: rows that ask for no
+  more closing than the gap within the substep, with no position correction and no warm start.
+  A piece at 28 m/s (a blast's fastest) stops at a sheet one voxel thick instead of passing it.
+  It costs nothing measurable (fast pieces no longer sink deep into what they hit).
 - **Solver.** Sequential impulses (projected Gauss–Seidel): warm starting, Coulomb friction,
   restitution for fast impacts only, split-impulse position correction (the impulses stay true
   forces for the fracture layer). A squeeze guard keeps a light piece pinned between heavy ones
@@ -104,16 +138,25 @@ Each piece owns a voxel shape in its own grid-aligned frame, its fragments and i
 - **Substeps.** Two a tick (10 velocity, 4 position iterations). *Busy* (more than 150 pieces
   faster than 2 m/s, the violent part of a collapse, or more than 6,000 contacts, a large pile
   settling): one substep, 6 and 2 iterations. Both are functions of the state alone.
-- **Sleep.** A piece touching something sleeps once its smoothed speed stayed below the sleep
-  speed for 0.25 s (0.15 m/s, or 1.2 g dt if more: what gravity adds in a substep is what an
-  unconverged solve leaves). Rubble (pieces under 1.5 m) moving slower than 0.9 m/s loses 20 %
-  of its speed per 1/120 s: rubble is rough, and piles settle within seconds. A large piece
-  toppling slowly is not held. An awake piece moving near a sleeping one wakes it, as do carves
-  and blasts nearby.
+- **Held pieces.** A piece is held up when a contact with the world, a sleeping piece or a held
+  piece faces up (less steep than 84°), or when such contacts' impulses (friction too: a piece
+  wedged between walls) carry half its weight in the substep. Debris falling in a clump touches
+  and pushes, but nothing holds it: it falls at g. (Rubble settling in a pile loses and finds its
+  hold from one substep to the next: a hold lasts 0.05 s, for all but a fall.)
+- **Sleep.** A held piece sleeps once its smoothed speed stayed below the sleep speed for 0.25 s
+  (0.15 m/s, or 1.2 g dt if more: what gravity adds in a substep is what an unconverged solve
+  leaves). Held rubble (pieces under 1.5 m) moving slower than 0.9 m/s loses 20 % of its speed
+  per 1/120 s: rubble is rough, and piles settle within seconds. A large piece toppling slowly is
+  not held back. An awake piece moving near a sleeping one wakes it, as do carves and blasts
+  nearby, and a piece removed or broken (what rested on it may hang over a gap).
+- **Machines** (pieces on driven joints, MOTION.md): their parts are not settled while their
+  drives work, and what rests on them settles relative to the part it rests on (a crate on a
+  turntable is carried, not held back) and does not sleep while it runs; a machine at work wakes
+  what it touches, however slowly it moves.
 - **Coupling to structures.** Contact impulses on world voxels load the fragment they touch:
   impacts as sudden load cases (pancake collapse of floors), resting pieces as dead loads.
-- **Budget.** Beyond 3,000 pieces the smallest sleeping ones fade out. Pieces that fall off the
-  world are removed.
+- **Budget.** Beyond 3,000 pieces the smallest sleeping ones fade out (never a joint's pieces, nor
+  those the host keeps). Pieces that fall off the world are removed.
 
 ## 5. Fracture of pieces
 
@@ -135,7 +178,10 @@ A piece is checked when something happens to it, after its contact solve in the 
   - The rigid solver's contact forces are one of many statically admissible answers and may put
     a piece's whole weight on a few points. The check uses the elastic answer instead: the same
     net force and moment shared over the contact points as by a rigid body on equal springs
-    (least squares, f_c = u + θ × r_c).
+    (least squares, f_c = u + θ × r_c) - each partner's contacts on their own (the ground's,
+    another piece's): what presses on a piece and what holds it keep their places, and a beam
+    loaded between its supports is bent, not relieved (pooled, they would cancel). Joints' and
+    wheels' pulls act where they are.
 - **Break rounds: a progressive failure within the substep** (steps of a sequentially linear
   analysis).
   1. Solve, then break the worst bonds: those within 0.85 of φ_max and at least the worst
@@ -151,7 +197,11 @@ A piece is checked when something happens to it, after its contact solve in the 
   of that substep: the failed interface carried its strength and then no more. When a part of
   some size (500 voxels) comes apart, the contact step is solved again with the new pieces (only
   they are collided afresh), so the part above a failed storey keeps falling and meets what is
-  below in its own collision; chips take the velocity the step left the piece with. Collapse and breakup
+  below in its own collision; chips take the velocity the step left the piece with. Chips that
+  broke off with most of the step's contact impulses (a stub a piece landed on) take those
+  impulses along, as far as breaking them did not cost the energy those contacts took out of the
+  motion: a piece goes on past a thin stub, while crushing columns brake a falling building.
+  Collapse and breakup
   proceed through collisions, storey by storey and crack by crack, instead of one overloaded
   solve pulverizing everything at once.
 - **Energy.** An impact pays for its cracks from the kinetic energy its contacts take out of the
@@ -193,7 +243,7 @@ announced as new pieces.
 
 ## 8. Knobs
 
-Runtime (`EngineParams`, the front end's settings):
+Runtime (`WorldParams`, the front end's settings):
 
 | Knob | Default | Meaning |
 |---|---|---|
@@ -201,7 +251,8 @@ Runtime (`EngineParams`, the front end's settings):
 | impact | 1 | scales contact loads on structures and pieces (impact severity) |
 | dynamic increase factor | 1.5 | overshoot of sudden load changes on structures |
 
-Configuration (`EngineConfig`, `RigidParams`, the material table):
+Configuration (`WorldConfig`, `RigidParams`, the material registry; the C API sets any of them
+by name, see [`CORE.md`](CORE.md)):
 
 | Knob | Default | Meaning |
 |---|---|---|
@@ -214,5 +265,8 @@ Configuration (`EngineConfig`, `RigidParams`, the material table):
 | impact_wave_speed | 400 m/s | how long an impact takes to load a piece |
 | crush_energy | 20 | crushing cost relative to a crack |
 | min_body_voxels, min_fracture_frags | 16, 8 | dust below; unbreakable rubble below |
-| max_bodies | 3,000 | beyond: the smallest sleeping pieces fade |
+| max_bodies | 3,000 | beyond: the smallest sleeping pieces are culled (the game fades them) |
 | substeps, iterations | 2, 10 | rigid solver |
+| junction_samples, junction_reach | 3, 0.5 | samples per face edge and how far out they reach (voxels of the other grid) at junctions between grids |
+| rigid.joint_baumgarte, rigid.joint_slop, rigid.joint_warm | 0.5, 0.5 mm, 0.9 | joints: the share of their position error taken out per substep beyond the slop, and of the last substep's impulses they start from |
+| solve_restarts | 60 | unconverged restarts of a structure's solve (each after 120 iterations) before it is left alone |

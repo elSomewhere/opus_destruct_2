@@ -8,7 +8,7 @@ struct TexInfo {
 
 struct Object {
   model: mat4x4f,
-  params: vec4f, // x = opacity (dithered), y = displaced by the fields (1/0), zw unused
+  params: vec4f, // x = opacity (dithered), y = displaced by the fields (1/0), z = its voxel size (0: the frame's), w unused
 };
 
 // Displacement fields of running physics bubbles (fields.ts; v1 engines, v2 sends none): per
@@ -45,6 +45,10 @@ struct VertexOut {
   @location(5) debugValue: f32,
   @location(6) @interpolate(flat) tex: u32,
   @location(7) @interpolate(flat) debugId: u32, // the debug byte, not interpolated (fragment ids)
+  // (the per-voxel variation: in the object's own frame and voxel size, so it stays on a moving grid's voxels)
+  @location(8) local: vec3f,
+  @location(9) localNormal: vec3f,
+  @location(10) @interpolate(flat) cell: f32,
 };
 
 // Normalized texture coordinates of p in field k (w = 1 inside the field's texel box).
@@ -92,6 +96,9 @@ fn vs(v: VertexIn) -> VertexOut {
   o.debugValue = f32(v.packed >> 24u);
   o.debugId = v.packed >> 24u;
   o.tex = v.packed & 0xffffu;
+  o.local = p;
+  o.localNormal = v.normalAo.xyz;
+  o.cell = select(frame.zenith.w, object.params.z, object.params.z > 0.0);
   return o;
 }
 
@@ -145,13 +152,28 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
       textured = true;
     }
   }
+  // Glossy surfaces: car paint (paint slots 32..45: its clear coat), glazing (glass 9, a car's
+  // windows 15), lamps (20; tail lamps and indicators 47, 48), a little on trim and plastic.
+  var gloss = 0.0;
   if (!textured) {
-    // 0xFFFF = default colour; 0xFF00 + material = that material's colour.
-    let slot = select(7u, min(i.tex & 0xffu, 7u), i.tex != 0xffffu);
+    // 0xFFFF = default colour; 0xFF00 (0xFE00: glowing) + slot = that slot's colour: a material's
+    // (slot = material id) or a paint's (31 + paint).
+    let slot = select(31u, min(i.tex & 0xffu, 63u), i.tex != 0xffffu);
     base = frame.palette[slot].rgb;
-    // Faint per-voxel variation keeps the voxel scale readable on flat colours.
-    let cell = floor((i.world - n * 0.01) / frame.zenith.w);
-    base *= 0.88 + 0.12 * hash3(cell);
+    if ((i.tex & 0xff00u) == 0xff00u && i.tex != 0xffffu) {
+      if (slot >= 32u && slot <= 45u) {
+        gloss = 0.6;
+      } else if (slot == 9u || slot == 15u) {
+        gloss = 0.9;
+      } else if (slot == 20u || slot == 47u || slot == 48u) {
+        gloss = 0.7;
+      } else if (slot == 46u || slot == 17u) {
+        gloss = 0.2;
+      }
+    }
+    // Faint per-voxel variation keeps the voxel scale readable on flat colours (fainter on paint).
+    let cell = floor((i.local - normalize(i.localNormal) * 0.01) / i.cell);
+    base *= select(0.88 + 0.12 * hash3(cell), 0.96 + 0.04 * hash3(cell), gloss > 0.0);
   }
 
   let toEye = frame.eye.xyz - i.world;
@@ -166,6 +188,17 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
   let ao = mix(0.3, 1.0, i.ao * i.ao);
   let shade = (0.75 * hemi * contrast + 0.6 * sun) * ao;
   var color = base * level * diminish * shade;
+
+  // Gloss: the sky mirrored (Fresnel), and the sun's highlight.
+  if (gloss > 0.0 && u32(frame.forward.w + 0.5) == 0u) {
+    let v = normalize(toEye);
+    let r = reflect(-v, n);
+    let fres = 0.04 + 0.96 * pow(1.0 - max(dot(n, v), 0.0), 5.0);
+    let skyc = mix(frame.fog.rgb, frame.zenith.rgb, clamp(r.z * 1.5, 0.0, 1.0)) * select(0.3, 1.0, r.z > 0.0);
+    let rs = max(dot(r, frame.sun.xyz), 0.0);
+    let spec = pow(rs, 160.0) * 4.0 + pow(rs, 12.0) * 0.08;
+    color = mix(color, skyc * level * ao, gloss * fres) + vec3f(spec) * gloss * level * ao * smoothstep(0.85, 1.0, sector);
+  }
 
   // Muzzle flash / explosion light.
   let toFlash = frame.flash.xyz - i.world;
@@ -184,6 +217,15 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
     } else {
       color = fragmentColor(i.debugId) * (0.35 + 0.65 * shade);
     }
+  }
+
+  // Glowing voxels (0xFE00 + material: burning wood, red-hot metal): embers under the flames,
+  // flickering per voxel.
+  if ((i.tex & 0xff00u) == 0xfe00u && view == 0u) {
+    let cell = floor((i.local - normalize(i.localNormal) * 0.01) / i.cell);
+    let r = hash3(cell);
+    let flick = 0.6 + 0.4 * sin(frame.eye.w * (5.0 + 6.0 * r) + r * 40.0);
+    color = color * 0.35 + vec3f(1.7, 0.42, 0.07) * flick * (0.55 + 0.45 * hash3(cell + vec3f(7.0)));
   }
 
   let fog = 1.0 - exp(-dist * frame.fog.w);

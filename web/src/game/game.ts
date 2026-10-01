@@ -1,17 +1,28 @@
 /**
  * Game orchestration: wires engine messages to the renderer and effects, runs the frame
- * loop (input -> player -> weapons -> effects -> render -> HUD) and owns the UI.
+ * loop (input -> player or the car they drive -> weapons -> effects -> render -> HUD) and owns
+ * the UI.
  */
 import type { EngineClient } from '../engine/client.ts';
-import type { DebugView, EngineEvent, EngineParams, EngineStats, ProceduralKind, Vec3, WorldInfo } from '../engine/protocol.ts';
-import type { Renderer, RenderStats } from '../render/renderer.ts';
+import { GridFrames } from '../engine/gridframes.ts';
+import type { DebugView, EngineEvent, EngineParams, EngineStats, PedestrianSettings, ProceduralKind, RaycastHit, TrafficSettings, Vec3, WorldInfo } from '../engine/protocol.ts';
+import { CAR_PAINTS, DEFAULT_PEDESTRIANS, DEFAULT_TRAFFIC, VEHICLE_KINDS } from '../engine/protocol.ts';
+import type { Camera, Renderer, RenderStats } from '../render/renderer.ts';
+import type { WheelDraw } from '../render/wheels.ts';
+import { DriveHud } from '../ui/drivehud.ts';
 import { Hud } from '../ui/hud.ts';
 import type { Overlay } from '../ui/overlay.ts';
 import { SettingsPanel } from '../ui/settings.ts';
 import { Effects } from './effects.ts';
 import { Input } from './input.ts';
+import { PieceBodies } from '../engine/pieces.ts';
+import { PoseClock } from '../engine/poseclock.ts';
 import { OccupancyStore } from './occupancy.ts';
-import { Player } from './player.ts';
+import { Driving, padPressed, type CameraMode } from './driving.ts';
+import { CharacterTracker } from './people.ts';
+import { PLAYER, Player } from './player.ts';
+import { VehicleEffects } from './vehicle-effects.ts';
+import { kindName, paintName, rotate, VehicleTracker } from './vehicles.ts';
 import { WEAPONS, Weapons, type WeaponId } from './weapons.ts';
 
 export interface GameOptions {
@@ -23,11 +34,15 @@ export interface GameOptions {
   world: { kind: ProceduralKind; seed: number };
   params: EngineParams;
   voxelSize: number;
+  /** Pedestrians settings for the engine at start (URL parameters); absent: its defaults. */
+  pedestrians?: PedestrianSettings;
 }
 
 const FOV_Y = (70 * Math.PI) / 180;
 const NEAR = 0.05;
 const HUD_INTERVAL_MS = 200;
+/** How near (m, from the player's middle to a car's box) the player takes a car. */
+const ENTER_REACH = 2.2;
 
 export class Game {
   private readonly renderer: Renderer;
@@ -36,9 +51,33 @@ export class Game {
   private readonly input: Input;
   private readonly player = new Player();
   private readonly occupancy = new OccupancyStore();
+  /** The oriented grids' places: drawn and felt where they are (interpolated when they move). */
+  private readonly gridFrames = new GridFrames();
+  /**
+   * When the engine's poses are drawn and felt: one batch interval behind, as measured - shared by
+   * the pieces, the vehicles and the characters (a car's body, its wheels and the camera on it).
+   */
+  private readonly poseClock = new PoseClock();
+  /** The rigid pieces as the player's collision feels them (a lift's car, a turntable, rubble). */
+  private readonly pieces = new PieceBodies(this.poseClock);
   private readonly effects: Effects;
   private readonly weapons: Weapons;
   private readonly hud: Hud;
+  private readonly driveHud: DriveHud;
+  /** The vehicles (`vehicles` messages): their bodies are pieces, their wheels drawn from this. */
+  private readonly tracker = new VehicleTracker(this.poseClock);
+  private readonly driving = new Driving();
+  private readonly vehicleFx = new VehicleEffects();
+  /** The next kind of car B drops in front of the player. */
+  private spawnKind = 1;
+  private traffic: TrafficSettings = { ...DEFAULT_TRAFFIC };
+  /** The people (`characters` messages): their meshes and palettes go to the renderer as they come. */
+  private readonly people = new CharacterTracker(this.poseClock);
+  private pedestrians: PedestrianSettings;
+  private readonly pedestriansAtStart: boolean;
+  /** The last pose message (debris, vehicles, characters) handled, acknowledged to the worker every frame. */
+  private poseSeq = 0;
+  private ackedSeq = 0;
   private readonly settings: SettingsPanel;
   private readonly voxelSize: number;
   private readonly world: { kind: ProceduralKind; seed: number };
@@ -46,6 +85,9 @@ export class Game {
   private info: WorldInfo | null = null;
   private engineStats: EngineStats | null = null;
   private lastRender: RenderStats | null = null;
+  /** The last frame's camera (the debug handle reports it). */
+  private lastEye: Vec3 = [0, 0, 0];
+  private lastForward: Vec3 = [1, 0, 0];
   private running = false;
   private lastFrame = 0;
   private frameMsEma = 16;
@@ -58,20 +100,36 @@ export class Game {
 
   constructor(opts: GameOptions) {
     this.renderer = opts.renderer;
+    this.renderer.islands.clock = this.poseClock;
     this.engine = opts.engine;
     this.overlay = opts.overlay;
     this.voxelSize = opts.voxelSize;
     this.world = { ...opts.world };
     this.params = { ...opts.params };
+    this.pedestrians = { ...(opts.pedestrians ?? DEFAULT_PEDESTRIANS) };
+    this.pedestriansAtStart = opts.pedestrians !== undefined;
     this.effects = new Effects(this.renderer.particles);
     this.weapons = new Weapons(this.engine, this.effects);
     this.hud = new Hud(opts.uiRoot);
-    this.settings = new SettingsPanel(opts.uiRoot, this.params, this.world, {
+    this.driveHud = new DriveHud(opts.uiRoot);
+    this.settings = new SettingsPanel(opts.uiRoot, this.params, this.world, this.traffic, this.pedestrians, {
       onParams: (p) => {
         this.params = p;
         this.engine.setParams(p);
       },
+      onSetting: (kind, name, value) => {
+        if (kind === 'env') this.engine.setEnv(name, value);
+        else this.engine.setTunable(name, value);
+      },
       onLoadProcedural: (kind, seed) => this.loadProcedural(kind, seed),
+      onTraffic: (t) => {
+        this.traffic = { ...t };
+        this.engine.setTraffic(t);
+      },
+      onPedestrians: (p) => {
+        this.pedestrians = { ...p };
+        this.engine.setPedestrians(p);
+      },
       onLoadWad: (file, map, options) => {
         this.beginLoad(`Reading ${file.name}`);
         file
@@ -83,6 +141,8 @@ export class Game {
           .catch((err: unknown) => this.overlay.toast(`Could not read ${file.name}: ${String(err)}`, 'error'));
       },
     });
+    this.occupancy.setFrames(this.gridFrames);
+    this.occupancy.setPieces(this.pieces);
     this.input = new Input(opts.canvas, (locked) => {
       this.overlay.setPrompt(!locked && this.info !== null);
       this.settings.setVisible(!locked);
@@ -99,6 +159,8 @@ export class Game {
       persist: new URLSearchParams(location.search).get('persist') === '1',
       gpuDisplacement: new URLSearchParams(location.search).get('gpudisp') !== '0',
     });
+    // (the engine keeps them across loads: set before the first)
+    if (this.pedestriansAtStart) this.engine.setPedestrians(this.pedestrians);
     this.loadProcedural(this.world.kind, this.world.seed);
     this.running = true;
     requestAnimationFrame(this.frame);
@@ -114,11 +176,23 @@ export class Game {
     this.engineStats = null;
     this.hud.clearTimeline();
     this.player.active = false;
+    this.driving.vehicle = 0;
+    this.driving.scripted = null;
+    this.tracker.clear();
+    this.vehicleFx.clear();
+    this.people.clear();
     this.meshesSinceReady = 0;
+    // the pose window starts over with the world (the engine's does too, in its beginLoad)
+    this.poseSeq = 0;
+    this.ackedSeq = 0;
     // Engines remove the old world's chunks with chunkRemoved; clearing here as well
     // keeps the view clean if one does not.
     this.renderer.clearWorld();
     this.occupancy.clear();
+    this.gridFrames.clear();
+    this.pieces.clear();
+    this.effects.setFlames(new Float32Array(0));
+    this.effects.setSmoke(new Float32Array(0));
     this.overlay.setLoading(text, 0.05);
     this.overlay.setPrompt(false);
   }
@@ -146,17 +220,63 @@ export class Game {
       this.overlay.setPrompt(!this.input.locked);
     });
     e.on('chunkMeshes', (msg) => {
-      for (const m of msg.meshes) this.renderer.chunks.upsert(m);
+      for (const m of msg.meshes) {
+        if (m.grid !== undefined) this.renderer.grids.upsert(m);
+        else this.renderer.chunks.upsert(m);
+      }
       if (msg.fields) this.renderer.fields.set(msg.fields);
       if (this.info && this.meshesSinceReady === 0) this.overlay.setLoading(null);
       this.meshesSinceReady += msg.meshes.length;
     });
     e.on('chunkRemoved', (msg) => {
-      for (const k of msg.keys) this.renderer.chunks.remove(k);
+      for (const k of msg.keys) if (!this.renderer.grids.remove(k)) this.renderer.chunks.remove(k);
     });
+    e.on('grids', (msg) => {
+      this.gridFrames.apply(msg.frames, msg.removed);
+      for (const id of msg.removed) {
+        this.renderer.grids.removeGrid(id);
+        this.occupancy.removeGrid(id);
+      }
+    });
+    e.on('joints', (msg) => this.renderer.ropes.set(msg.joints));
+    e.on('vehicles', (msg) => {
+      const now = performance.now() / 1000;
+      this.poseClock.batch(msg.seq, now);
+      this.tracker.apply(msg.vehicles, msg.wheels, msg.player, now);
+      // (the car the player drives is gone - all its wheels torn off - or no longer theirs)
+      if (!this.driving.confirm(this.tracker)) this.leaveVehicle(false);
+      this.poseSeq = msg.seq ?? this.poseSeq;
+    });
+    e.on('characterMeshes', (msg) => {
+      const c = this.renderer.characters;
+      for (const id of msg.removed) c.removeMesh(id);
+      for (const m of msg.meshes) c.addMesh(m);
+      for (const p of msg.palettes) c.setPalette(p.id, p.rgb);
+    });
+    e.on('characters', (msg) => {
+      const now = performance.now() / 1000;
+      this.poseClock.batch(msg.seq, now);
+      this.people.apply(msg.characters, msg.skin, msg.props, now);
+      this.poseSeq = msg.seq ?? this.poseSeq;
+    });
+    e.on('blood', (msg) => this.renderer.characters.setBlood(msg.drops, msg.stains));
     e.on('events', (msg) => this.handleEvents(msg.list));
     e.on('occupancy', (msg) => this.occupancy.apply(msg));
-    e.on('debris', (msg) => this.renderer.islands.applyDebris(msg.poses, performance.now() / 1000));
+    e.on('debris', (msg) => {
+      const now = performance.now() / 1000;
+      this.poseClock.batch(msg.seq, now);
+      this.renderer.islands.applyDebris(msg.poses, now);
+      this.pieces.applyDebris(msg.poses, now);
+      this.poseSeq = msg.seq ?? this.poseSeq;
+    });
+    e.on('water', (msg) => {
+      for (const k of msg.removed) this.renderer.water.remove(k);
+      for (const m of msg.meshes) this.renderer.water.upsert(m);
+    });
+    e.on('env', (msg) => {
+      this.effects.setFlames(msg.flames);
+      this.effects.setSmoke(msg.smoke);
+    });
     e.on('stats', (msg) => {
       if (this.info === null) return; // posted before the current world's ready (worker messages are ordered)
       this.engineStats = msg.stats;
@@ -188,7 +308,8 @@ export class Game {
       switch (ev.kind) {
         case 'detached':
           this.renderer.islands.add(ev, now);
-          this.effects.detached(ev);
+          this.pieces.add(ev);
+          if (!ev.remesh) this.effects.detached(ev);
           break;
         case 'crack':
           this.effects.crack(ev);
@@ -196,23 +317,110 @@ export class Game {
         case 'impact':
           this.effects.impact(ev, eye);
           break;
+        case 'splash':
+          this.effects.splash(ev);
+          break;
+        case 'removed':
+          this.renderer.islands.remove(ev.id);
+          this.pieces.remove(ev.id);
+          break;
       }
     }
   }
 
-  private handleKeys(): void {
+  private handleKeys(nowS: number): void {
     const i = this.input;
-    for (const w of WEAPONS) if (i.wasPressed(w.key)) this.weapons.select(w.id);
+    const driving = this.driving.driving;
+    if (!driving) for (const w of WEAPONS) if (i.wasPressed(w.key)) this.weapons.select(w.id);
     const wheel = i.consumeWheel();
-    if (wheel !== 0) this.weapons.cycle(wheel);
-    if (i.wasPressed('KeyV')) this.player.noclip = !this.player.noclip;
-    if (i.wasPressed('KeyE') && this.player.active) this.engine.use(this.player.eye(), this.player.forward());
-    if (i.wasPressed('KeyR')) this.player.respawn();
+    if (wheel !== 0 && !driving) this.weapons.cycle(wheel);
+    if (i.wasPressed('KeyV') && !driving) this.player.noclip = !this.player.noclip;
+    if (i.wasPressed('KeyE')) this.useKey(nowS);
+    if (i.wasPressed('KeyC') && driving) this.driving.cycleCamera();
+    if (i.wasPressed('KeyB') && !driving) this.spawnCar();
+    if (i.wasPressed('KeyR')) {
+      if (driving) this.leaveVehicle(true);
+      this.player.respawn();
+    }
     if (i.wasPressed('KeyG')) this.settings.cycleDebugView();
     if (i.wasPressed('KeyH')) {
       this.hudVisible = !this.hudVisible;
       this.hud.setVisible(this.hudVisible);
     }
+  }
+
+  /** E (or a gamepad's Y): out of the car; into one near by; else "use" (doors, lifts). */
+  private useKey(nowS: number): void {
+    if (this.driving.driving) {
+      this.leaveVehicle(true);
+      return;
+    }
+    if (!this.player.active) return;
+    const v = this.tracker.nearest(this.playerMiddle(), ENTER_REACH, nowS);
+    if (v) {
+      this.driving.enter(v, this.tracker.pose(v, nowS), this.engine);
+      this.player.active = false;
+      this.player.vel = [0, 0, 0];
+      return;
+    }
+    this.engine.use(this.player.eye(), this.player.forward());
+  }
+
+  private playerMiddle(): Vec3 {
+    return [this.player.pos[0], this.player.pos[1], this.player.pos[2] + PLAYER.height / 2];
+  }
+
+  /** Out of the car: beside its door (or wherever there is room), on foot again. */
+  private leaveVehicle(tellEngine: boolean): void {
+    if (!this.driving.driving && this.player.active) return;
+    const v = this.tracker.vehicles.get(this.driving.vehicle);
+    const spot = this.driving.exitSpot(v, this.occupancy, PLAYER.width, PLAYER.height);
+    if (tellEngine) this.driving.exit(this.engine);
+    else this.driving.vehicle = 0;
+    if (spot) {
+      this.player.pos = spot.pos;
+      this.player.yaw = spot.yaw;
+      this.player.pitch = -0.1;
+    }
+    this.player.vel = [0, 0, 0];
+    this.player.active = this.info !== null;
+  }
+
+  /** B: a car dropped on the ground a few metres in front of the player, facing their way. */
+  private spawnCar(): void {
+    if (!this.player.active) return;
+    const f: Vec3 = [Math.cos(this.player.yaw), Math.sin(this.player.yaw), 0];
+    const p: Vec3 = [this.player.pos[0] + f[0] * 7, this.player.pos[1] + f[1] * 7, this.player.pos[2]];
+    // (on the ground there: the first solid voxel under free space, from above the player's head)
+    const h = this.voxelSize;
+    const ix = Math.floor(p[0] / h + 0.5);
+    const iy = Math.floor(p[1] / h + 0.5);
+    let z = p[2];
+    if (this.occupancy.ready) {
+      for (let iz = Math.floor((p[2] + 2.5) / h + 0.5); iz > Math.floor((p[2] - 6) / h); iz--) {
+        if (this.occupancy.solid(ix, iy, iz) && !this.occupancy.solid(ix, iy, iz + 1)) {
+          z = (iz + 0.5) * h;
+          break;
+        }
+      }
+    }
+    const kind = this.spawnKind;
+    this.spawnKind = (this.spawnKind + 1) % VEHICLE_KINDS.length;
+    const paint = CAR_PAINTS[Math.floor(Math.random() * CAR_PAINTS.length)]!;
+    this.engine.spawnVehicle(kind, paint, [p[0], p[1], z + 0.05], this.player.yaw);
+  }
+
+  /** The wheels to draw this frame (interpolated), and the vehicles' effects. */
+  private vehicleFrame(dt: number, nowS: number): WheelDraw[] {
+    const wheels: WheelDraw[] = [];
+    for (const w of this.tracker.wheels.values()) {
+      const v = this.tracker.vehicles.get(w.vehicle);
+      if (!v) continue;
+      const p = this.tracker.wheelPose(w, nowS);
+      wheels.push({ centre: p.centre, rot: p.rot, radius: w.radius, width: w.width, side: w.side, spin: v.speed / Math.max(0.1, w.radius) });
+    }
+    this.vehicleFx.update(dt, nowS, this.tracker, this.renderer.skids, this.effects);
+    return wheels;
   }
 
   private readonly frame = (t: number): void => {
@@ -221,49 +429,128 @@ export class Game {
     this.lastFrame = t;
     this.frameMsEma = this.frameMsEma * 0.95 + dt * 1000 * 0.05;
     this.frameCount++;
+    const nowS = t / 1000;
 
     if (this.input.locked) {
       const [dx, dy] = this.input.consumeMouse();
-      this.player.look(dx, dy);
-      this.handleKeys();
+      if (this.driving.driving) this.driving.look(dx, dy, nowS);
+      else this.player.look(dx, dy);
+      this.handleKeys(nowS);
+    } else if (this.driving.driving) {
+      this.driving.look(0, 0, nowS); // (a gamepad's stick)
     }
-    this.player.update(dt, this.input, this.engine, this.occupancy);
-    if (this.info && this.player.pos[2] < this.info.bounds.min[2] - 30) this.player.respawn(); // kill plane
+    if (padPressed(3)) this.useKey(nowS); // (a gamepad's Y: in or out)
+    // (the pieces where they are drawn: the player feels them there too)
+    this.pieces.advance(nowS);
 
-    const eye = this.player.eye();
-    const forward = this.player.forward();
-    if (this.player.active) {
-      this.weapons.update(dt, this.input.locked && this.input.fireHeld, this.input.locked && this.input.fireClicked, eye, forward);
+    const shake = this.effects.shake(nowS);
+    let camera: Camera;
+    let focus: Vec3;
+    let focusDir: Vec3;
+    const car = this.driving.driving ? this.tracker.vehicles.get(this.driving.vehicle) : undefined;
+    if (this.driving.driving) {
+      this.driving.steer(this.input, this.engine);
+      if (car && car.chassis !== 0) {
+        const pose = this.tracker.pose(car, nowS);
+        const { cam, jolt } = this.driving.camera(car, pose, dt, nowS, this.occupancy, this.voxelSize);
+        if (jolt > 0) this.effects.addTrauma(jolt);
+        camera = { eye: [cam.eye[0] + shake.offset[0], cam.eye[1] + shake.offset[1], cam.eye[2] + shake.offset[2]], forward: cam.forward, fovY: cam.fovY, near: NEAR };
+        focus = pose.pos;
+        focusDir = rotate(pose.rot, [1, 0, 0]);
+        // (the player rides in it: where they are, for streaming and the HUD)
+        this.player.pos = [pose.pos[0], pose.pos[1], pose.pos[2] - PLAYER.eye / 2];
+      } else {
+        const eye = this.player.eye();
+        camera = { eye, forward: this.player.forward(), fovY: FOV_Y, near: NEAR };
+        focus = eye;
+        focusDir = this.player.forward();
+      }
+    } else {
+      this.player.update(dt, this.input, this.engine, this.occupancy);
+      if (this.info && this.player.pos[2] < this.info.bounds.min[2] - 30) this.player.respawn(); // kill plane
+      const eye = this.player.eye();
+      const forward = this.player.forward();
+      if (this.player.active) {
+        this.weapons.update(dt, this.input.locked && this.input.fireHeld, this.input.locked && this.input.fireClicked, eye, forward);
+      }
+      // Camera shake perturbs only the rendered view, not aiming.
+      const yaw = this.player.yaw + shake.yaw;
+      const pitch = this.player.pitch + shake.pitch;
+      const cp = Math.cos(pitch);
+      camera = {
+        eye: [eye[0] + shake.offset[0], eye[1] + shake.offset[1], eye[2] + shake.offset[2]],
+        forward: [cp * Math.cos(yaw), cp * Math.sin(yaw), Math.sin(pitch)],
+        fovY: FOV_Y,
+        near: NEAR,
+      };
+      focus = eye;
+      focusDir = forward;
     }
-    // streaming / bake focus follows the camera whether or not the player is in control
-    if (this.frameCount % 2 === 0) this.engine.viewer(eye, forward);
+    // streaming / bake focus follows the player (or their car) whether or not they are in control
+    if (this.frameCount % 2 === 0) this.engine.viewer(focus, focusDir);
     this.effects.update(dt);
+    this.effects.fire(dt, camera.eye, nowS);
+    this.effects.smokeField(nowS, this.voxelSize, camera.eye);
+    const wheels = this.vehicleFrame(dt, nowS);
     this.renderer.particles.update(dt);
 
-    // Camera shake perturbs only the rendered view, not aiming.
-    const shake = this.effects.shake(t / 1000);
-    const yaw = this.player.yaw + shake.yaw;
-    const pitch = this.player.pitch + shake.pitch;
-    const cp = Math.cos(pitch);
-    const viewDir: Vec3 = [cp * Math.cos(yaw), cp * Math.sin(yaw), Math.sin(pitch)];
-    const viewEye: Vec3 = [eye[0] + shake.offset[0], eye[1] + shake.offset[1], eye[2] + shake.offset[2]];
-
-    this.lastRender = this.renderer.render({
-      camera: { eye: viewEye, forward: viewDir, fovY: FOV_Y, near: NEAR },
-      timeS: t / 1000,
-      debugView: this.params.debugView,
-      flashPos: this.effects.flashPos,
-      flashIntensity: this.effects.flashIntensity,
-      voxelSize: this.voxelSize,
-    });
-    this.hud.setMuzzleFlash(this.effects.muzzle > 0);
+    this.lastEye = camera.eye;
+    this.lastForward = camera.forward;
+    if (this.frameCount % Math.max(1, Math.round(this.renderer.drawEvery)) === 0) {
+      this.lastRender = this.renderer.render({
+        camera,
+        timeS: nowS,
+        debugView: this.params.debugView,
+        flashPos: this.effects.flashPos,
+        flashIntensity: this.effects.flashIntensity,
+        voxelSize: this.voxelSize,
+        gridFrames: this.gridFrames,
+        wheels,
+        characters: this.people.frame(nowS),
+      });
+    }
+    this.hud.setMuzzleFlash(this.effects.muzzle > 0 && !this.driving.driving);
+    this.hud.setDriving(this.driving.driving);
+    this.updateDriveHud(car, nowS);
     if (t - this.lastHud > HUD_INTERVAL_MS) {
       this.lastHud = t;
       this.updateHud();
     }
     this.input.endFrame();
+    // (the worker holds back poses while the page is far behind: it gets the latest instead of a backlog)
+    if (this.poseSeq !== this.ackedSeq) {
+      this.ackedSeq = this.poseSeq;
+      this.engine.frameAck(this.poseSeq);
+    }
     requestAnimationFrame(this.frame);
   };
+
+  private updateDriveHud(car: ReturnType<VehicleTracker['vehicles']['get']>, nowS: number): void {
+    if (this.driving.driving) {
+      this.driveHud.setPrompt(null);
+      this.driveHud.update(
+        car
+          ? {
+              speed: car.speed,
+              gear: car.gear,
+              rpm: car.rpm,
+              redline: car.redline,
+              damage: car.damage,
+              wheels: car.wheels,
+              wheelSlots: Math.max(car.wheels, car.kind === 4 ? 6 : 4),
+              handbrake: this.driving.controls.handbrake,
+              camera: this.driving.mode,
+              kind: kindName(car.kind),
+              gamepad: this.driving.gamepad,
+            }
+          : null,
+      );
+      return;
+    }
+    this.driveHud.update(null);
+    const near = this.player.active && this.info ? this.tracker.nearest(this.playerMiddle(), ENTER_REACH, nowS) : null;
+    this.driveHud.setPrompt(near ? `E  drive the ${paintName(near.paint)} ${kindName(near.kind)}` : null);
+  }
 
   private updateHud(): void {
     if (!this.lastRender) return;
@@ -278,6 +565,7 @@ export class Game {
       weapon: this.weapons.current,
       weapons: WEAPONS,
       player: { pos: this.player.pos, onGround: this.player.onGround, noclip: this.player.noclip },
+      vehicles: this.tracker.size,
       debugView: this.params.debugView,
       rockets: this.weapons.liveRockets,
     });
@@ -292,6 +580,12 @@ export class Game {
         this.player.yaw = (yawDeg * Math.PI) / 180;
         this.player.pitch = (pitchDeg * Math.PI) / 180;
       },
+      aimAt: (x, y, z) => {
+        const eye = this.player.eye();
+        const d: Vec3 = [x - eye[0], y - eye[1], z - eye[2]];
+        this.player.yaw = Math.atan2(d[1], d[0]);
+        this.player.pitch = Math.atan2(d[2], Math.hypot(d[0], d[1]));
+      },
       collideLocal: (min, max, move) => (this.occupancy.ready ? this.occupancy.collide(min, max, move) : null),
       teleport: (x, y, z) => {
         this.player.pos = [x, y, z];
@@ -303,6 +597,56 @@ export class Game {
       },
       setDebugView: (v) => this.settings.setDebugView(v),
       load: (kind, seed) => this.loadProcedural(kind, seed),
+      vehicles: () =>
+        [...this.tracker.vehicles.values()].map((v) => ({
+          id: v.id,
+          kind: kindName(v.kind),
+          pos: [...v.cur.pos],
+          yaw: (Math.atan2(rotate(v.cur.rot, [1, 0, 0])[1], rotate(v.cur.rot, [1, 0, 0])[0]) * 180) / Math.PI,
+          speed: v.speed,
+          gear: v.gear,
+          rpm: v.rpm,
+          flags: v.flags,
+          damage: v.damage,
+          wheels: v.wheels,
+          parts: v.parts,
+          partsBuilt: v.partsBuilt,
+          chassis: v.chassis,
+        })),
+      spawnVehicle: (kind, paint, x, y, z, yawDeg) => this.engine.spawnVehicle(kind, paint, [x, y, z], (yawDeg * Math.PI) / 180),
+      enterVehicle: (id) => {
+        const now = performance.now() / 1000;
+        const v = id !== undefined ? this.tracker.vehicles.get(id) : this.tracker.nearest(this.playerMiddle(), 50, now);
+        if (!v) return false;
+        this.driving.enter(v, this.tracker.pose(v, now), this.engine);
+        this.player.active = false;
+        return true;
+      },
+      exitVehicle: () => this.leaveVehicle(true),
+      drive: (throttle, steer, handbrake = false, brake = 0) => {
+        this.driving.scripted = { throttle, steer, handbrake, brake };
+      },
+      camera: (mode) => {
+        this.driving.mode = mode;
+      },
+      setTraffic: (t) => {
+        this.traffic = { ...this.traffic, ...t };
+        this.engine.setTraffic(this.traffic);
+      },
+      characters: () =>
+        [...this.people.characters.values()]
+          .filter((c) => c.gone < 0)
+          .map((c) => {
+            const k = c.cur.skin;
+            // (bone 5, the head's, at the rest pose's (0, 0.02, 1.62): an average person's head)
+            const head = [0, 1, 2].map((r) => k[84 + r]! * 0.02 + k[88 + r]! * 1.62 + k[92 + r]!);
+            return { id: c.id, flags: c.flags, centre: [...c.centre], radius: c.radius, flash: c.flash, health: c.health, mesh: c.mesh, palette: c.palette, root: [k[12]!, k[13]!, k[14]!], forward: [k[4]!, k[5]!, k[6]!], head, shadow: c.draw.shadow ? [...c.draw.shadow] : null };
+          }),
+      setPedestrians: (p) => {
+        this.pedestrians = { ...this.pedestrians, ...p };
+        this.engine.setPedestrians(this.pedestrians);
+      },
+      raycast: (origin, dir, maxDist, characters = false) => this.engine.raycast(origin, dir, maxDist, characters),
       state: () => ({
         ready: this.info !== null,
         player: [...this.player.pos],
@@ -312,7 +656,16 @@ export class Game {
         engine: this.engineStats,
         statsSeq: this.statsSeq,
         events: this.eventsSeen,
+        pieceBodies: this.pieces.size,
         fps: 1000 / Math.max(1e-3, this.frameMsEma),
+        driving: this.driving.vehicle,
+        engineDriving: this.tracker.player,
+        camera: this.driving.mode,
+        cameraDistance: { ...this.driving.camInfo },
+        view: { eye: [...this.lastEye], forward: [...this.lastForward] },
+        wheels: [...this.tracker.wheels.values()]
+          .filter((w) => w.vehicle === this.driving.vehicle)
+          .map((w) => ({ contact: w.contact, slip: w.slip, material: w.material })),
       }),
     };
   }
@@ -322,6 +675,8 @@ export interface StructvoxDebugApi {
   fire(): void;
   select(id: WeaponId): void;
   look(yawDeg: number, pitchDeg: number): void;
+  /** Turns the player's view to a point (from their eye). */
+  aimAt(x: number, y: number, z: number): void;
   teleport(x: number, y: number, z: number): void;
   /** Free flight without collision or gravity (the V key; keys need pointer lock). */
   noclip(on: boolean): void;
@@ -329,6 +684,53 @@ export interface StructvoxDebugApi {
   collideLocal(min: Vec3, max: Vec3, move: Vec3): { move: Vec3; onGround: boolean } | null;
   setDebugView(v: DebugView): void;
   load(kind: ProceduralKind, seed: number): void;
+  /** The vehicles (as the last `vehicles` message had them). */
+  vehicles(): {
+    id: number;
+    kind: string;
+    pos: number[];
+    yaw: number;
+    speed: number;
+    gear: number;
+    rpm: number;
+    flags: number;
+    damage: number;
+    wheels: number;
+    parts: number;
+    partsBuilt: number;
+    chassis: number;
+  }[];
+  spawnVehicle(kind: number, paint: number, x: number, y: number, z: number, yawDeg: number): void;
+  /** Takes the wheel of a vehicle (the nearest within 50 m if no id); false if there is none. */
+  enterVehicle(id?: number): boolean;
+  exitVehicle(): void;
+  /** Scripted controls of the player's vehicle (instead of the keys, until getting out). */
+  drive(throttle: number, steer: number, handbrake?: boolean, brake?: number): void;
+  camera(mode: CameraMode): void;
+  setTraffic(t: Partial<TrafficSettings>): void;
+  /**
+   * The characters and gibs (as the last `characters` message had them): flags (CharacterFlag),
+   * bounding sphere, hit flash, health, mesh and palette ids, the root (bone 0: on the ground
+   * between the feet of a posed body; a physical body's rides with its pelvis) and the way it
+   * faces, about where the head is, where its shadow was drawn (null: none).
+   */
+  characters(): {
+    id: number;
+    flags: number;
+    centre: number[];
+    radius: number;
+    flash: number;
+    health: number;
+    mesh: number;
+    palette: number;
+    root: number[];
+    forward: number[];
+    head: number[];
+    shadow: number[] | null;
+  }[];
+  setPedestrians(p: Partial<PedestrianSettings>): void;
+  /** A shot's line (the engine's `raycast`; `characters`: people's bodies are seen too). */
+  raycast(origin: Vec3, dir: Vec3, maxDist: number, characters?: boolean): Promise<RaycastHit | null>;
   state(): {
     ready: boolean;
     player: number[];
@@ -339,6 +741,18 @@ export interface StructvoxDebugApi {
     /** Number of `stats` messages received (to wait for fresh stats after an action). */
     statsSeq: number;
     events: number;
+    /** Pieces whose voxels the client's collision holds. */
+    pieceBodies: number;
     fps: number;
+    /** The vehicle the player drives (0: on foot), and the engine's word on it. */
+    driving: number;
+    engineDriving: number;
+    camera: CameraMode;
+    /** The chase camera's distances (m): wanted, free of walls, now. */
+    cameraDistance: { want: number; free: number; now: number };
+    /** The camera of the last frame drawn. */
+    view: { eye: number[]; forward: number[] };
+    /** The player's car's wheels. */
+    wheels: { contact: boolean; slip: number; material: number }[];
   };
 }
