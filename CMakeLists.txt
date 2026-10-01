@@ -99,7 +99,16 @@ endif()
 option(SVX_BUILD_CITY "svx_city (the city generator)" ${SVX_BUILD_GAME})
 if(SVX_BUILD_CITY)
   file(GLOB_RECURSE SVX_CITY_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/level/city/src/*.cpp)
-  add_library(svx_city STATIC ${SVX_CITY_SOURCES})
+  # (its data, data/city/*.json, embedded: svx/data.hpp)
+  file(GLOB_RECURSE SVX_CITY_DATA_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/city/*.json)
+  set(SVX_CITY_DATA_CPP ${CMAKE_CURRENT_BINARY_DIR}/generated/city_data.cpp)
+  add_custom_command(OUTPUT ${SVX_CITY_DATA_CPP}
+                     COMMAND ${CMAKE_COMMAND} -DDIR=${CMAKE_CURRENT_SOURCE_DIR}/data/city -DOUT=${SVX_CITY_DATA_CPP}
+                             -DHEADER=svx/data.hpp -DNAMESPACE=svx::city -DFUNCTION=embedded_city_data
+                             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_data.cmake
+                     DEPENDS ${SVX_CITY_DATA_FILES} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_data.cmake
+                     COMMENT "Embedding the city's data")
+  add_library(svx_city STATIC ${SVX_CITY_SOURCES} ${SVX_CITY_DATA_CPP})
   target_include_directories(svx_city PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/level/city/include>
                              PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/level/city/src)
   target_link_libraries(svx_city PUBLIC svx_core)

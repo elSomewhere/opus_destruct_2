@@ -62,6 +62,9 @@ exports, natively and in WASM, on any thread count.
 | site layer | `world/sites.js` | `world/sites.*` (SITES, the layer, pads, the ground override, the site source's z range and rasterizer; the kinds, and the highway and water tests of a site's placement, come later) | stage `sites` (stand-in kinds: `tools/procgen_ref/lib/sitekinds.mjs`, `tests/city/site_kinds.hpp`) |
 | site links | `sites/links.js` | `sites/links.*` (`site_link_source()`) | stage `sitelinks` (the same stand-in kinds) |
 
+| the props' classes (the export's change, PROCGEN_MERGE_PLAN.md §7.3, §10.2): fixed, loose, entity, decorative; uses; an entity's kind | - (the reference draws every prop and piece of furniture as isolated voxels) | `data/city/props.json` (embedded: `svx/data.hpp`), `svx/props.*` (`prop_class`) | test `city props` (every prop, piece of furniture and civic fitting has one) |
+| the public entry: a world from a preset, its materials | `svx/source.js` (`createSvxSource`'s world), `svx/materials.js` (`svxMaterials`) | `include/svx/city/world.hpp` (`make_world`), `include/svx/city/materials.hpp` (`physics_classes`, `looks`) | tests `city world api`; `svx_game_tests` `city materials` |
+
 (The table grows with the port; §5 lists the order.)
 
 ## 2. Porting rules
