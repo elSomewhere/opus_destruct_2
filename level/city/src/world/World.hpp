@@ -64,6 +64,7 @@ class Subway;
 class Sewers;
 class SiteLayer;
 class SiteLinks;
+struct Lake;
 struct CellNet;
 struct CellPlan;
 class RoadView;
@@ -81,7 +82,7 @@ struct CellIJ {
 // the island's sea).
 struct Shore {
   double level = 0, dist = 0, nx = 0, ny = 0;
-  const void* lake = nullptr;  // (a Lake of nature/lakes.hpp, or null for the sea)
+  std::shared_ptr<const Lake> lake;  // (nature/lakes.hpp; null for the sea)
 };
 
 class World {
@@ -129,7 +130,17 @@ class World {
   // Building envelopes overlapping a world rect (in the cells' order, each cell's own order).
   std::vector<std::shared_ptr<const Envelope>> envelopes_in(const Rect& r) const;  // city/cellPlan.cpp
 
-  // ---- createWorld.js (world/createWorld.cpp unless noted)
+  // ---- createWorld.js (world/createWorld.cpp unless noted): a World made by create_world (the
+  // reference's plain World has none of these; its callers' `world.isWet && ...` guards hold for
+  // every world createWorld makes)
+  //   sea_at          island mode: is (x, y) at sea (or within margin_m of the shore)?
+  //   is_wet          in (or within margin_m of) a river channel, a lake or the sea?
+  //   sea_hits_rect   island mode: does a rect (voxels) reach within margin_m of the sea (~12 m samples)?
+  //   sea_share       the share (0..1) of a rect (voxels) in the sea, from a 5 x 5 sample
+  //   sea_hits_seg    island mode: does the segment a-b (voxels) cross the sea (within margin_m)?
+  //   open_water_at   a lake or the sea at a point?
+  //   shore_near      the nearest shore a harbour can face: a big lake's, or on an island the sea's
+  //   water_hits_rect does a rect touch open water (the sea, rivers, lakes)?
   bool sea_at(double x, double y, double margin_m = 0) const;
   bool is_wet(double x, double y, double margin_m = 2) const;
   bool sea_hits_rect(const Rect& r, double margin_m = 6) const;

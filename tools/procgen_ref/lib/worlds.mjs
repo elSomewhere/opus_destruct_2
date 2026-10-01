@@ -128,6 +128,47 @@ export function warmBasesIn(w, rect) {
   for (const v of w.fields.villagesIn(rect)) w.terrain.settlementBase(v);
 }
 
+/**
+ * The same warm-up for every terrain sample a World makes, whoever makes it - a stage, or a plan
+ * inside a stage's query (a lake's rim, a river's water level, the land cover's forest density):
+ * each sample first makes, in a fixed order, what it may read that would otherwise be made by a
+ * call nested in it (in the reference's shared terrain context): the base height of every town and
+ * village it can see (nearestSettlements, nearestVillages: urban()'s parts), then - on a world with
+ * createWorld's harbour grading hook, where the sample will call it (not raw, near a town) - the
+ * port lakes the hook reads (lakes.portLakeOf, whose lakes sample the terrain themselves: the hook
+ * is run once first, its result dropped). A terrain call nested in a sample all the same throws, so
+ * a stage that passes made none. The reference's samples are then pure functions of (world,
+ * arguments), as the port's are, in any order (docs/CITY.md §6). Call it once, right after making
+ * the world, before anything samples.
+ */
+export function pureTerrain(w) {
+  const T = w.terrain;
+  const F = w.fields;
+  const { sample, natural } = Object.getPrototypeOf(T);
+  let busy = false; // a sample is running (its own landform stack, grading, harbour hook)
+  let own = false; // the next natural() is that sample's own
+  T.natural = function (...a) {
+    if (busy && !own) throw new Error("pureTerrain: a landform stack run nested in a terrain sample");
+    own = false;
+    return natural.apply(this, a);
+  };
+  T.sample = function (x, y, urban = null, raw = false) {
+    if (busy) throw new Error("pureTerrain: a terrain sample nested in a terrain sample");
+    for (const s of F.nearestSettlements(x, y)) T.settlementBase(s);
+    for (const v of F.nearestVillages(x, y)) T.settlementBase(v);
+    if (!raw && T.portGrade && (urban ?? F.urban(x, y)).prox > 0) T.portGrade(x, y, 0);
+    busy = true;
+    own = true;
+    try {
+      return sample.call(this, x, y, urban, raw);
+    } finally {
+      busy = false;
+      own = false;
+    }
+  };
+  return w;
+}
+
 /** A settlement record as a line: every field JS gives it ("-" where JS leaves it undefined or null). */
 export function settlementFields(s) {
   return [s.id, s.i, s.j, s.village ?? false, s.hamlet ?? false, s.x, s.y, s.radius, s.importance, s.style, s.peak ?? 0, s.cx ?? "-", s.cy ?? "-", s.t, s.m, s.flavor ?? "-", s.island ?? false];

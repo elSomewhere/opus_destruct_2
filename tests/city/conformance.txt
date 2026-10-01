@@ -13,6 +13,7 @@ frames b7256c507fcb4722
 ids 4edd32b9f8a56a72
 industry 55bdd13e70a1d7c0
 island 6de5e618c06b37ce
+landcover 3e4d29cf9f4d0a6b
 materials 1548a45e43d835c7
 parts e6c577354df3c3aa
 prefabs be78153eebbbfcd4
@@ -22,3 +23,4 @@ season 8b71362d13e49396
 stairs 721acd61aa53f91b
 svxmat 6929dc45e6f5ddd2
 terrain b7eb60e0c562cdee
+water 85e6c4a02754c63a
