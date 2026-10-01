@@ -42,6 +42,8 @@ exports, natively and in WASM, on any thread count.
 | interior data | `buildings/interior/{prefabs,civicPrefabs,civicRules,common,stairs,grid}.js` | `buildings/interior/` | stages `prefabs`, `civicrules`, `floorgrid`, `stairs` |
 | prop prefabs, industry | `city/{propPrefabs,industry}.js` | `city/propPrefabs.*`, `city/industry.*` | stages `propprefabs`, `industry` |
 | polygon blocks, chamfers | `city/blockPoly.js`, `buildings/chamfer.js` | `city/blockPoly.*`, `buildings/chamfer.*` | stages `blockpoly`, `chamfer` |
+| cell network (city stage 1), street patterns, diagonal boulevards; the road record | `city/cellNetwork.js`, `city/streets.js`, `city/diagonals.js`; `World.cellNet`; createWorld's island sea tests | `city/cellNetwork.*` (`World::cell_net`), `city/streets.*`, `city/diagonals.*`, `network/road.hpp`, `world/createWorld.cpp` (`sea_at`, `sea_hits_rect`, `sea_share`, `sea_hits_seg`) | stages `cellnet`, `streets`; tests (any order, 4 threads); on a World without lakes and highways (§6) |
+| town plans | `city/townPlan.js` | `city/townPlan.*` (`Settlement::plan`) | stage `townplan`; tests (any order, 4 threads); without highways (§6) |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -241,3 +243,26 @@ so that it stays the oracle.
   (to be measured when the golden stage is ported).
 - **The gullies' kernel cache** (`terrain/landforms.js`) is keyed `i * 1000003 + j` in the
   reference, which collides only for cells 40,000 km apart; the port keys it by the exact cell.
+- **Road identity.** The reference compares roads as objects: the road view's maps by road,
+  `roadLevel`'s `s.road === road` (a road is not its own through road) and `ownSeg` (a segment
+  as its owner cell's view has it). A cell network dropped by its LRU and made again makes new
+  objects for the same roads, so two road views made on either side of that hold different
+  objects for one road, and those comparisons fail (`ownSeg` falls back to the asking segment):
+  there, a road's levels depend on what the caches held. In the port a road is the same road as
+  another when it has the same id and was made by the same cell (`same_road`,
+  `network/road.hpp`: `id` alone repeats in each lap of a wrapping world); the port compares
+  roads that way, never by address. A stage of the road modules makes each cell network once while it
+  runs (the reference's World caches 64: give it a cache that drops nothing), so the reference's
+  objects stay one per road.
+- **Cell networks and town plans, on a World without lakes and highways.** The reference asks
+  `world.lakes?.shoreNear` for a harbour district (`portNear`) and `world.highways` for the
+  civic landmarks (a highway's corridor keeps them off a block), both installed by
+  `createWorld`. Until the port installs them (`create_world`), its cell network and town plans
+  are those of a World of `World.js` with createWorld's island sea tests (the stages:
+  `lib/worlds.mjs` `withSeaTests` on a bare World; no lakes, highways or harbour grading of the
+  terrain): `port_near` and `resolve_town` fail on a World that has lakes or highways, the
+  places to wire them. Their base heights are made first (`warmBasesIn`, `warmIsland`); measured
+  on the `cellnet` cells, the reference's networks are the same planned cold and backwards (the
+  country roads' slope test and the trunk roads' A* read heights, but none of these cells
+  flips); a town plan's church (the highest of a few spots near the centre) compares terrain
+  samples.
