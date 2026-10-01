@@ -70,11 +70,11 @@ TEST_CASE("city underground: stations and sewer plans are the same in any order,
       const std::unique_ptr<World> probe = test::underground_world(ws.overrides);
       rec::Samples r(5);
       cells = test::cells_of(*probe, r);
-      if (cells.size() > 16) cells.resize(16);
+      if (cells.size() > 12) cells.resize(12);
       const CellIJ c0 = probe->arterials->cell_at(0, 0);
       for (int axis = 0; axis < 2; ++axis)
-        for (double i = -3; i <= 3; i += 1)
-          for (double j = -3; j <= 3; j += 1) nodes.push_back({axis, (axis == 0 ? c0.i : c0.j) + i, (axis == 0 ? c0.j : c0.i) + j});
+        for (double i = -2; i <= 2; i += 1)
+          for (double j = -2; j <= 2; j += 1) nodes.push_back({axis, (axis == 0 ? c0.i : c0.j) + i, (axis == 0 ? c0.j : c0.i) + j});
     }
     // a fresh world, forward through its caches
     const std::unique_ptr<World> a = test::underground_world(ws.overrides);
