@@ -37,6 +37,13 @@ struct CaveColumns {
   double z_min = 0, z_max = 0;
 };
 
+// The view of a tile that has the reference's fields (kind, water, top, z as contiguous arrays;
+// z_min, z_max).
+template <class Tile>
+CaveColumns cave_columns(const Tile& t) {
+  return {t.kind.data(), t.water.data(), t.top.data(), t.z.data(), static_cast<double>(t.z_min), static_cast<double>(t.z_max)};
+}
+
 class Caves {
  public:
   explicit Caves(const World& world);

@@ -3,9 +3,9 @@
 // (world/createWorld.js: seaAt, isWet, seaHitsRect, seaShare, seaHitsSeg, openWaterAt, shoreNear,
 // waterHitsRect) of the worlds of lib/worlds.mjs (every chart, island and lake lattice: WATER_KEYS,
 // without the angled twins and the size variants that add nothing here) and two of its own, made
-// by createWorld, within 20 km of the spawn:
-// the lakes of the lattice round the spawn (and of other laps round a wrapping world), every town's
-// port lake, the lakes near the region; at points drawn at random, round every lake (in the water,
+// by createWorld, within 20 km of the spawn: the lakes of the lattice round the spawn (and of other
+// laps round a wrapping world), every town's port lake, the lakes near the region; at points drawn
+// at random, round every lake (in the water,
 // on its shore, beyond), along rivers (channels, banks, quays), round the harbour towns (their
 // graded waterfront) and over an island (its coasts): the terrain's height, river and lake info,
 // carved ground, channel gaps, water levels, shore distances and the predicates; rects and

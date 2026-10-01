@@ -59,8 +59,9 @@ std::shared_ptr<World> create_world(const Value& config) {
   // (buildings/interior/plan: World::building_plan; buildings/interior/voxelize:
   // World::voxelize_building)
   // (World::blocks_surface: the subway's and the sewers' openings)
-  // (feature sources, in this order: caves (nature/caves: cave_z_range and cave_rasterize over the
-  // ground tile's columns, wrapped by voxel/compose once its GroundTile exists), sewers, subway
+  // (feature sources, in this order: caves (nature/caves: id kCaveSourceId, order kCaveSourceOrder,
+  // max_lod kCaveSourceMaxLod; cave_z_range and cave_rasterize over cave_columns(tile), wrapped
+  // once voxel/compose's GroundTile exists), sewers, subway
   // (with a subway), site links, sites, highways (with highways), buildings, dressing, skybridges,
   // forest, boulders, ground cover, landmarks (with landmarks))
   return world;

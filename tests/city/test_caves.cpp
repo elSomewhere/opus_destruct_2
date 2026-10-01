@@ -39,7 +39,6 @@ struct Tile {
   std::vector<uint16_t> top;
   std::vector<uint8_t> kind;
   double z_min = js::kInf, z_max = -js::kInf;
-  CaveColumns view() const { return {kind.data(), water.data(), top.data(), z.data(), z_min, z_max}; }
 };
 
 Tile make_tile(const World& w, int lod, double cx, double cy) {
@@ -131,7 +130,7 @@ TEST_CASE("city caves: caves and their feature source conform to the reference (
       const double cx = std::floor(x / span);
       const double cy = std::floor(y / span);
       const Tile tile = make_tile(w, lod, cx, cy);
-      const CaveColumns view = tile.view();
+      const CaveColumns view = cave_columns(tile);
       const double bx = (cx * 32 - 1) * s;
       const double by = (cy * 32 - 1) * s;
       const Rect rect{bx, by, bx + kP * s - 1, by + kP * s - 1};
