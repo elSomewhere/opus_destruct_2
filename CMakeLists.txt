@@ -132,6 +132,10 @@ if(SVX_BUILD_GAME)
   target_include_directories(svx_procgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/procgen/include
                              PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann)
   target_link_libraries(svx_procgen PUBLIC svx_game)
+  if(TARGET svx_city)
+    # (the city generator's adapter: CityWorldSource)
+    target_link_libraries(svx_procgen PUBLIC svx_city)
+  endif()
   target_compile_options(svx_procgen PRIVATE -fno-exceptions -fno-rtti ${SVX_WARNINGS})
 
   # The game's C ABI (svx/game/api/svx_api.h: the web worker's engine), which picks the levels.

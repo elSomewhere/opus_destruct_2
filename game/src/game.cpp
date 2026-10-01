@@ -136,6 +136,7 @@ void Game::load_streaming(std::shared_ptr<const GameSource> src, f64 h, const St
   g.h = h;
   load(std::move(g), src->spawn_pos(), src->spawn_dir());
   source_ = src;
+  if (FireSystem* f = env_.fire()) src->fire_materials(*f);
   // (its looks: a regenerable layer, from the source on demand)
   if (std::shared_ptr<const AppearanceTable> t = src->appearances()) {
     appearances_ = std::move(t);
