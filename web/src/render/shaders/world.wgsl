@@ -6,6 +6,12 @@ struct TexInfo {
   extra: vec4f, // layer, atlas texels per texel, valid (1/0), unused
 };
 
+// An appearance of the world's table (protocol TEXTURE_APPEARANCE_BASE, renderer.setAppearances).
+struct Appearance {
+  color: vec4f, // linear rgb, opacity (below 1: see-through, by alpha to coverage)
+  extra: vec4f, // emissive (0..1), noise (per-voxel variation), gloss, glow (1: window glass, lit at night)
+};
+
 struct Object {
   model: mat4x4f,
   params: vec4f, // x = opacity (dithered), y = displaced by the fields (1/0), z = its voxel size (0: the frame's), w unused
@@ -26,6 +32,7 @@ struct Fields {
 @group(0) @binding(7) var field3: texture_3d<f32>;
 @group(0) @binding(8) var fieldSampler: sampler;
 @group(0) @binding(9) var<uniform> fields: Fields;
+@group(0) @binding(10) var<storage, read> appearances: array<Appearance>;
 @group(1) @binding(0) var<uniform> object: Object;
 
 struct VertexIn {
@@ -155,7 +162,23 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
   // Glossy surfaces: car paint (paint slots 32..45: its clear coat), glazing (glass 9, a car's
   // windows 15), lamps (20; tail lamps and indicators 47, 48), a little on trim and plastic.
   var gloss = 0.0;
-  if (!textured) {
+  // (an appearance's: see-through, self-lit, a window pane lit at night)
+  var opacity = 1.0;
+  var emissive = 0.0;
+  var lit = 0.0;
+  let looked = !textured && i.tex >= 0xc000u && i.tex < 0xfe00u;
+  if (looked) {
+    let a = appearances[min(i.tex - 0xc000u, arrayLength(&appearances) - 1u)];
+    let cell = floor((i.local - normalize(i.localNormal) * 0.01) / i.cell);
+    base = a.color.rgb * (1.0 - a.extra.y + 2.0 * a.extra.y * hash3(cell));
+    opacity = a.color.a;
+    emissive = a.extra.x;
+    gloss = a.extra.z;
+    // (a share of the window panes lit at night: per pane of 4 voxels square, as a window's)
+    if (a.extra.w > 0.5 && hash3(floor(cell / 4.0) + vec3f(3.0)) < 0.3) {
+      lit = frame.atmo.z;
+    }
+  } else if (!textured) {
     // 0xFFFF = default colour; 0xFF00 (0xFE00: glowing) + slot = that slot's colour: a material's
     // (slot = material id) or a paint's (31 + paint).
     let slot = select(31u, min(i.tex & 0xffu, 63u), i.tex != 0xffffu);
@@ -186,7 +209,7 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
   let contrast = 1.0 - 0.12 * abs(n.x); // Doom's "fake contrast" on x-facing walls
   let sun = max(dot(n, frame.sun.xyz), 0.0) * smoothstep(0.85, 1.0, sector);
   let ao = mix(0.3, 1.0, i.ao * i.ao);
-  let shade = (0.75 * hemi * contrast + 0.6 * sun) * ao;
+  let shade = (0.75 * hemi * contrast * frame.atmo.y + 0.6 * sun * frame.atmo.x) * ao;
   var color = base * level * diminish * shade;
 
   // Gloss: the sky mirrored (Fresnel), and the sun's highlight.
@@ -198,6 +221,15 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
     let rs = max(dot(r, frame.sun.xyz), 0.0);
     let spec = pow(rs, 160.0) * 4.0 + pow(rs, 12.0) * 0.08;
     color = mix(color, skyc * level * ao, gloss * fres) + vec3f(spec) * gloss * level * ao * smoothstep(0.85, 1.0, sector);
+  }
+
+  // Self-lit appearances (lamps, neon, screens; brighter at night) and the lit window panes.
+  if (looked) {
+    color = max(color, base * emissive * (0.8 + 0.8 * frame.atmo.z));
+    color = mix(color, vec3f(1.0, 0.78, 0.45) * 0.9, lit);
+    if (lit > 0.0) {
+      opacity = max(opacity, lit);
+    }
   }
 
   // Muzzle flash / explosion light.
@@ -235,5 +267,6 @@ fn fs(i: VertexOut) -> @location(0) vec4f {
   if (object.params.x < 0.999 && object.params.x < bayer4(vec2u(i.clip.xy))) {
     discard;
   }
-  return vec4f(color, 1.0);
+  // (see-through faces cover a share of the samples: alpha to coverage, the world pipeline's)
+  return vec4f(color, opacity);
 }

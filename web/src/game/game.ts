@@ -227,6 +227,9 @@ export class Game {
     });
     e.on('ready', (msg) => {
       this.info = msg.info;
+      // (its looks and light: the city's appearance table, a preset's atmosphere)
+      this.renderer.setAppearances(msg.info.appearances);
+      this.renderer.setAtmosphere(msg.info.atmosphere);
       this.player.spawn(msg.info.spawn.pos, msg.info.spawn.dir);
       this.overlay.setLoading('Streaming chunk meshes', 0.5);
       this.overlay.setPrompt(!this.input.locked);

@@ -19,5 +19,14 @@
   },
   "tunables": {
     "pretouch_radius": 48
+  },
+  "atmosphere": {
+    "sky": "#a2acb3",
+    "fog": 1.75,
+    "sun": 0.62,
+    "ambient": 0.95,
+    "sun_elevation": 0.34,
+    "desaturate": 0.24,
+    "time_of_day": 12.5
   }
 }
