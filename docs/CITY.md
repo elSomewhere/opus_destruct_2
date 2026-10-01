@@ -48,6 +48,7 @@ exports, natively and in WASM, on any thread count.
 | rivers, lakes, port lakes | `nature/rivers.js`, `nature/lakes.js` | `nature/rivers.*`, `nature/lakes.*` | stage `water` (§6: port lakes) |
 | createWorld (so far), harbour grading, water predicates | `world/createWorld.js` | `world/createWorld.cpp`: land cover, rivers, lakes, the terrain's `port_grade`, caves; `sea_at` ... `water_hits_rect`; marked places for the rest | stage `water`; `test_nature_threads.cpp` |
 | caves, their feature source | `nature/caves.js` | `nature/caves.*`: `cave_z_range` and `cave_rasterize` over a view of the ground tile's columns (`CaveColumns`), for compose to wrap as a `FeatureSource` | stage `caves` (synthetic tiles) |
+| lots, parks, landscape (city stage 2 parts); the lot and open space records | `city/lots.js`, `city/parks.js`, `city/landscape.js`; the lots and spaces of `city/cellPlan.js` | `city/lots.*` (`Lot`: every field a lot gets anywhere), `city/parks.*`, `city/landscape.*` (`LotEnv`: what `lot_surface` reads of an envelope), `city/space.hpp` (`OpenSpace`, the park layout and frame lazy on it) | stages `lots` (the blocks of every city world's cell networks, synthetic blocks), `parks`, `landscape` (synthetic spaces and envelopes); every block of the three modules runs; tests (4 threads) |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -294,3 +295,15 @@ so that it stays the oracle.
   JavaScript would read then). The reference's `hash32` / `hashFloat` read four arguments and
   ignore any more (`farmland.js`, `caves.js`, `sites/links.js`): the port's take four, so such a
   call is ported without its extra ones (a farm field's key is its strip's cut hash).
+- **Lots, parks and the landscape: no order.** The reference caches by object - parks.js's
+  layouts, landscape.js's space frames, industry.js's layouts, frameOf's frames - and each is a
+  pure function of its object: the port keeps them as lazy fields of the open space record
+  (`OpenSpace`, `city/space.hpp`) and in what an envelope gives the landscape (`LotEnv`, made once
+  per envelope). For the ports to come: makeLot (so freeLot, wholeBlockLot) takes a stream it never
+  draws from and lotSurface a lot it never reads (the port's take neither); a lot's `whole` is
+  `true` (a block taken whole) or, once the cell plan's fitLots trimmed the lot, its rect as
+  planned (`Lot::whole_rect`), and planWings's `lot.whole ?? lot.rect` reads the boolean on a
+  whole lot fitLots left alone (its fields undefined: every comparison false, so no point of a
+  wing's outline off the building and the streets is in its lot); fitLots tells a lot it left
+  alone by `rect === lot.rect` (clearOfStreets hands back the same object), which a port keeps as
+  a flag; parks.js's grid key `i * 4096 + j` gives buckets 4,096 apart one list (kept).
