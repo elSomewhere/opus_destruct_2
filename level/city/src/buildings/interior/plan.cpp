@@ -211,6 +211,10 @@ const std::vector<PlanIssue>& validate_plan(BuildingPlan& plan) {
 }
 
 // ---- PLANNERS
+//
+// (JS looks the planner up in an object literal, PLANNERS[env.archetype]: an archetype id named
+// like a member of Object.prototype - "constructor", "toString" ... - would find a function there.
+// No such archetype is registered: the port knows the planners' ids alone.)
 
 bool has_planner(const std::string& a) {
   return a == "walkup" || a == "midrise" || a == "tower" || a == "office" || a == "house" || a == "rowhouse" || a == "warehouse" || a == "factory" ||
