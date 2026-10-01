@@ -197,10 +197,14 @@ TEST_CASE("city interiors: building plans are the reference's (stage interiors)"
     const char* cut;
     int n;
   };
-  const Odd kOdd[] = {{"walkup", "shallow", 30},      {"townhouse", "shallow", 16}, {"wharfhouse", "shallow", 10}, {"panelSlab", "shallow", 10},
-                      {"garage", "shallow", 30},      {"school", "narrow", 24},     {"midrise", "narrow", 14},     {"office", "narrow", 14},
-                      {"tower", "narrow", 10},        {"warehouse", "narrow", 10},  {"hospital", "narrow", 10},    {"policeStation", "narrow", 10},
-                      {"supermarket", "narrow", 8},   {"cinema", "narrow", 8},      {"departmentStore", "narrow", 8}, {"house", "bogus", 4}};
+  const Odd kOdd[] = {{"walkup", "shallow", 30},      {"townhouse", "shallow", 16},   {"wharfhouse", "shallow", 10}, {"panelSlab", "shallow", 10},
+                      {"garage", "shallow", 30},      {"office", "shallow", 16},      {"school", "narrow", 24},      {"midrise", "narrow", 14},
+                      {"office", "narrow", 14},       {"tower", "narrow", 10},        {"warehouse", "narrow", 10},   {"hospital", "narrow", 12},
+                      {"policeStation", "narrow", 12}, {"fireStation", "narrow", 12}, {"supermarket", "narrow", 8},  {"cinema", "narrow", 8},
+                      {"departmentStore", "narrow", 8}, {"midrise", "tall", 24},      {"garage", "tall", 12},        {"walkup", "style", 8},
+                      {"office", "nobasement", 8},    {"warehouse", "program", 6},    {"school", "onefloor", 6},     {"hospital", "onefloor", 6},
+                      {"house", "bogus", 4}};
+  auto corridor_id = [](const std::string& id) { return id == "hospital" || id == "policeStation" || id == "fireStation"; };
   for (const Odd& o : kOdd) {
     const Archetype& a = archetype_registry().get(o.id);
     const std::string cut = o.cut;
@@ -225,14 +229,31 @@ TEST_CASE("city interiors: building plans are the reference's (stage interiors)"
       const double size = r();
       const double pr = r();
       if (env) {
+        const std::string id = o.id;
         if (cut == "shallow") {
-          const double depth = std::string(o.id) == "garage" ? 150 + std::floor(size * 180) : 30 + std::floor(size * 90);
+          const double depth = id == "garage" ? 150 + std::floor(size * 180) : id == "office" ? 40 + std::floor(size * 80) : 30 + std::floor(size * 90);
           for (EnvTier& t : env->tiers)
             for (Rect& q : t.rects) q.y1 = js::min(q.y1, q.y0 + depth - 1);
         } else if (cut == "narrow") {
-          const double width = 90 + std::floor(size * 260);
+          const double width = corridor_id(id) ? 60 + std::floor(size * size * 260) : 90 + std::floor(size * 260);
           for (EnvTier& t : env->tiers)
             for (Rect& q : t.rects) q.x1 = js::min(q.x1, q.x0 + width - 1);
+        } else if (cut == "tall") {
+          const double h = id == "garage" ? 28 + std::floor(size * 12) : 40 + std::floor(size * 24);
+          if (id == "garage")
+            for (double& sh : env->story_h) sh = h;
+          else
+            env->story_h[0] = h;
+        } else if (cut == "style") {
+          env->style = "nope";
+        } else if (cut == "nobasement") {
+          env->basements = 0;
+        } else if (cut == "program") {
+          env->program.ground = "nope";
+        } else if (cut == "onefloor") {
+          env->floors = 1;
+          env->story_h = {env->story_h[0]};
+          for (EnvTier& t : env->tiers) t.f1 = 0;
         } else {
           env->archetype = "bogus";
         }
@@ -246,17 +267,23 @@ TEST_CASE("city interiors: building plans are the reference's (stage interiors)"
   // ---- validatePlan on scripted plans
   static const char* const kTypes[] = {"office", "hall", "stair", "elevator", "shaft", "void", "mechanicalShaft", "storage"};
   static const char* const kDoorKinds[] = {"interior", "entrance", "elevator", "balcony", "window", "opening", "stair"};
+  // (built by PlanBuilder.build: floors sorted by z, then index)
+  Envelope env0;
+  env0.base_z = 0;
+  env0.basement_h = 26;
+  env0.story_h = {30, 30, 30, 30, 30};
+  Rng rng0(0);
   for (int c = 0; c < 400; ++c) {
     const double nR = 2 + std::floor(r() * 7);
     const double nG = 1 + std::floor(r() * 3);
     const double nS = std::floor(r() * 3);
-    BuildingPlan plan;
+    PlanBuilder pb(env0, rng0);
     for (double s = 0; s < nS; s += 1) {
       auto st = std::make_shared<Stair>();
       st->id = s;
       st->f0 = std::floor(r() * 3) - 1;
       st->f1 = st->f0 + std::floor(r() * 4);
-      plan.stairs.push_back(st);
+      pb.stairs.push_back(st);
     }
     std::vector<std::shared_ptr<FloorGrid>> grids;
     for (double g = 0; g < nG; g += 1) {
@@ -284,33 +311,30 @@ TEST_CASE("city interiors: building plans are the reference's (stage interiors)"
     }
     const double nF = 1 + std::floor(r() * 5);
     for (double q = 0; q < nF; q += 1) {
-      PlanFloor fl;
-      fl.index = std::floor(r() * 5) - 1;
-      fl.z = r() < 0.2 ? 0 : fl.index * 30;
-      fl.height = 30;
-      fl.grid = grids[pick(r, static_cast<size_t>(nG))];
-      fl.kind = "x";
-      plan.floors.push_back(fl);
+      const double index = std::floor(r() * 5) - 1;
+      FloorExtra extra;
+      extra.z = r() < 0.2 ? 0 : index * 30;
+      extra.height = 30;
+      pb.add_floor(index, grids[pick(r, static_cast<size_t>(nG))], "x", extra);
     }
-    js::sort(plan.floors, [](const PlanFloor& p, const PlanFloor& q) { return js::or_(p.z - q.z, p.index - q.index); });
     const double nL = std::floor(r() * 3);
     for (double q = 0; q < nL; q += 1) {
       PlanLink l;
-      l.fa = plan.floors[pick(r, static_cast<size_t>(nF))].index;
+      l.fa = pb.floors[pick(r, static_cast<size_t>(nF))].index;
       l.ra = std::floor(r() * nR);
-      l.fb = plan.floors[pick(r, static_cast<size_t>(nF))].index;
+      l.fb = pb.floors[pick(r, static_cast<size_t>(nF))].index;
       l.rb = std::floor(r() * nR);
       l.ramp = q;
-      plan.links.push_back(l);
+      pb.links.push_back(l);
     }
     for (const auto& g : grids)
       for (const auto& m : g->rooms) {
         const double lk = r();
-        const double lf = plan.floors[pick(r, static_cast<size_t>(nF))].index;
+        const double lf = pb.floors[pick(r, static_cast<size_t>(nF))].index;
         const double lr = std::floor(r() * nR);
         if (lk < 0.15) m->link_to = RoomLink{lf, lr};
       }
-    validate_plan(plan);
+    const BuildingPlan plan = pb.build();
     std::string fls;
     for (size_t q = 0; q < plan.floors.size(); ++q) {
       double gi = -1;
@@ -319,7 +343,7 @@ TEST_CASE("city interiors: building plans are the reference's (stage interiors)"
           gi = static_cast<double>(i);
           break;
         }
-      fls += js::cat(q ? "," : "", plan.floors[q].index, "@", plan.floors[q].z, ":", gi);
+      fls += js::cat(q ? "," : "", plan.floors[q].index, "@", plan.floors[q].z, ":", gi, ":", plan.floor_by_index(plan.floors[q].index) == &plan.floors[q] ? 1 : 0);
     }
     std::string issues;
     for (size_t q = 0; q < plan.issues.size(); ++q) {

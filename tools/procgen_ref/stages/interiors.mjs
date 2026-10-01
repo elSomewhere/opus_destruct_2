@@ -186,23 +186,34 @@ export default function* interiors() {
     if (!env) continue;
     yield* planRecords(PL.planBuilding(worldOf(ci), env));
   }
-  // ---- odd envelopes: footprints cut shallow, narrow or short (a tier's rects clipped), no planner
+  // ---- odd envelopes: footprints cut shallow or narrow (every tier's rects clipped), taller
+  // stories, no basements, one floor, a style or a ground program nothing registers, no planner
+  const CORRIDORS = new Set(["hospital", "policeStation", "fireStation"]);
   const ODD = [
     ["walkup", "shallow", 30],
     ["townhouse", "shallow", 16],
     ["wharfhouse", "shallow", 10],
     ["panelSlab", "shallow", 10],
     ["garage", "shallow", 30],
+    ["office", "shallow", 16],
     ["school", "narrow", 24],
     ["midrise", "narrow", 14],
     ["office", "narrow", 14],
     ["tower", "narrow", 10],
     ["warehouse", "narrow", 10],
-    ["hospital", "narrow", 10],
-    ["policeStation", "narrow", 10],
+    ["hospital", "narrow", 12],
+    ["policeStation", "narrow", 12],
+    ["fireStation", "narrow", 12],
     ["supermarket", "narrow", 8],
     ["cinema", "narrow", 8],
     ["departmentStore", "narrow", 8],
+    ["midrise", "tall", 24],
+    ["garage", "tall", 12],
+    ["walkup", "style", 8],
+    ["office", "nobasement", 8],
+    ["warehouse", "program", 6],
+    ["school", "onefloor", 6],
+    ["hospital", "onefloor", 6],
     ["house", "bogus", 4],
   ];
   for (const [id, cut, n] of ODD) {
@@ -225,11 +236,22 @@ export default function* interiors() {
       const pr = r();
       if (env) {
         if (cut === "shallow") {
-          const depth = id === "garage" ? 150 + Math.floor(size * 180) : 30 + Math.floor(size * 90);
+          const depth = id === "garage" ? 150 + Math.floor(size * 180) : id === "office" ? 40 + Math.floor(size * 80) : 30 + Math.floor(size * 90);
           for (const t of env.tiers) for (const q of t.rects) q.y1 = Math.min(q.y1, q.y0 + depth - 1);
         } else if (cut === "narrow") {
-          const width = 90 + Math.floor(size * 260);
+          const width = CORRIDORS.has(id) ? 60 + Math.floor(size * size * 260) : 90 + Math.floor(size * 260);
           for (const t of env.tiers) for (const q of t.rects) q.x1 = Math.min(q.x1, q.x0 + width - 1);
+        } else if (cut === "tall") {
+          const h = id === "garage" ? 28 + Math.floor(size * 12) : 40 + Math.floor(size * 24);
+          if (id === "garage") env.storyH = env.storyH.map(() => h);
+          else env.storyH[0] = h;
+        } else if (cut === "style") env.style = "nope";
+        else if (cut === "nobasement") env.basements = 0;
+        else if (cut === "program") env.program = { ...env.program, ground: "nope" };
+        else if (cut === "onefloor") {
+          env.floors = 1;
+          env.storyH = [env.storyH[0]];
+          for (const t of env.tiers) t.f1 = 0;
         } else env.archetype = "bogus";
         if (pr < 0.6) env.pitchedRamps = true;
       }
@@ -238,15 +260,16 @@ export default function* interiors() {
       yield* planRecords(PL.planBuilding(worldOf(ci), env));
     }
   }
-  // ---- validatePlan on scripted plans
+  // ---- validatePlan on scripted plans, built by PlanBuilder.build (floors sorted by z, then index)
+  const env0 = { baseZ: 0, basementH: 26, storyH: [30, 30, 30, 30, 30] };
   for (let c = 0; c < 400; c += 1) {
     const nR = 2 + Math.floor(r() * 7);
     const nG = 1 + Math.floor(r() * 3);
     const nS = Math.floor(r() * 3);
-    const stairs = [];
+    const pb = new PL.PlanBuilder(env0, null);
     for (let s = 0; s < nS; s += 1) {
       const f0 = Math.floor(r() * 3) - 1;
-      stairs.push({ id: s, f0, f1: f0 + Math.floor(r() * 4) });
+      pb.stairs.push({ id: s, f0, f1: f0 + Math.floor(r() * 4) });
     }
     const grids = [];
     for (let g = 0; g < nG; g += 1) {
@@ -269,32 +292,28 @@ export default function* interiors() {
       grids.push(grid);
     }
     const nF = 1 + Math.floor(r() * 5);
-    const floors = [];
     for (let q = 0; q < nF; q += 1) {
       const index = Math.floor(r() * 5) - 1;
       const z = r() < 0.2 ? 0 : index * 30;
-      floors.push({ index, z, height: 30, grid: grids[Math.floor(r() * nG)], kind: "x" });
+      pb.addFloor(index, grids[Math.floor(r() * nG)], "x", { z, height: 30 });
     }
-    floors.sort((p, q) => p.z - q.z || p.index - q.index);
-    const links = [];
     const nL = Math.floor(r() * 3);
     for (let q = 0; q < nL; q += 1) {
-      const fa = floors[Math.floor(r() * nF)].index;
+      const fa = pb.floors[Math.floor(r() * nF)].index;
       const ra = Math.floor(r() * nR);
-      const fb = floors[Math.floor(r() * nF)].index;
+      const fb = pb.floors[Math.floor(r() * nF)].index;
       const rb = Math.floor(r() * nR);
-      links.push([[fa, ra], [fb, rb], { ramp: q }]);
+      pb.links.push([[fa, ra], [fb, rb], { ramp: q }]);
     }
     for (const g of grids)
       for (const m of g.rooms) {
         const lk = r();
-        const lf = floors[Math.floor(r() * nF)].index;
+        const lf = pb.floors[Math.floor(r() * nF)].index;
         const lr = Math.floor(r() * nR);
         if (lk < 0.15) m.linkTo = { floor: lf, room: lr };
       }
-    const plan = { floors, stairs, links, issues: [] };
-    PL.validatePlan(plan);
-    const fl = floors.map((q) => `${q.index}@${q.z}:${grids.indexOf(q.grid)}`).join(",");
+    const plan = pb.build();
+    const fl = plan.floors.map((q) => `${q.index}@${q.z}:${grids.indexOf(q.grid)}:${plan.floorByIndex.get(q.index) === q ? 1 : 0}`).join(",");
     yield line("vp", c, nR, nG, nS, fl, plan.issues.map((q) => `${q.floor}/${q.room}/${q.type}/${q.msg}`).join(",") || "-");
   }
   // ---- roomAtCell on the first plans' floors
