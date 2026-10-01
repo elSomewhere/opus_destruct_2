@@ -1758,34 +1758,99 @@ void shape_palm(ChunkBuffer& chunk, const Tree& t, const Box3& bb, const Grid& g
   const double turn = static_cast<double>(js::to_int32(t.seed) & 7) * 0.3;
   const double fx = t.x + lean_x * 6;
   const double fy = t.y + lean_y * 6;
-  // (the trunk within 0.9 of its axis at each height, the fronds within t.r of the crown's centre)
-  auto cand = [&](double z, Rect& c) {
-    const bool trunk = z >= t.z && z <= top;
-    const bool fronds = !(z > top + 1 || z < top - 4);
-    if (!trunk && !fronds) return false;
+  // JS's test of the trunk (hypot >= either of its arguments: the cheap test first)
+  auto trunk_at = [&](double x, double y, double z) {
     const double k = (z - t.z) / t.h;
     const double cx = t.x + lean_x * k * k * 6;
     const double cy = t.y + lean_y * k * k * 6;
-    c = {js::kInf, js::kInf, -js::kInf, -js::kInf};
-    if (trunk) c = {cx - 1, cy - 1, cx + 1, cy + 1};
-    if (fronds) c = {js::min(c.x0, fx - t.r - 0.1), js::min(c.y0, fy - t.r - 0.1), js::max(c.x1, fx + t.r + 0.1), js::max(c.y1, fy + t.r + 0.1)};
-    return true;
+    return z >= t.z && z <= top && js::abs(x - cx) <= 0.9 && js::abs(y - cy) <= 0.9 && js::hypot(x - cx, y - cy) <= 0.9;
   };
-  each_voxel(chunk, bb, g, cand, [&](int, int, int, double x, double y, double z) -> uint16_t {
-    const double k = (z - t.z) / t.h;
-    const double cx = t.x + lean_x * k * k * 6;
-    const double cy = t.y + lean_y * k * k * 6;
-    if (z >= t.z && z <= top && js::hypot(x - cx, y - cy) <= 0.9) return MAT::BARK_PALM;
+  // the fronds of a column: its offset from the crown's centre, dr and the height they droop to
+  // (want, and the voxel under it); `frond` tests its angle - JS's tests, of the column alone up to
+  // the height
+  struct Column {
+    double dx, dy, dr, want;
+  };
+  auto column = [&](double x, double y) {
     const double dx = x - fx;
     const double dy = y - fy;
-    const double dr = js::hypot(dx, dy);
-    if (dr > t.r || z > top + 1 || z < top - 4) return 0;
-    const double want = js::round(top + 1 - js::pow(dr / t.r, 2) * 4);
-    if (z != want && z != want - 1) return 0;
-    const double ang = js::atan2(dy, dx) + turn;
+    Column c{dx, dy, js::hypot(dx, dy), js::kNaN};
+    if (!(c.dr > t.r)) c.want = js::round(top + 1 - js::pow(c.dr / t.r, 2) * 4);
+    return c;
+  };
+  auto frond = [&](const Column& c) {
+    const double ang = js::atan2(c.dy, c.dx) + turn;
     const double f = std::fmod((ang / (2 * kPi)) * nF + nF, 1);
-    return js::abs(f - 0.5) < 0.16 + 0.25 / js::max(1, dr) ? MAT::PALM_FROND : 0;
-  });
+    return js::abs(f - 0.5) < 0.16 + 0.25 / js::max(1, c.dr);
+  };
+  // eachVoxel's function: the trunk, else the fronds of the column
+  auto fn = [&](double x, double y, double z) -> uint16_t {
+    if (trunk_at(x, y, z)) return MAT::BARK_PALM;
+    if (z > top + 1 || z < top - 4) return 0;
+    const Column c = column(x, y);
+    if (c.dr > t.r) return 0;
+    if (z != c.want && z != c.want - 1) return 0;
+    return frond(c) ? MAT::PALM_FROND : 0;
+  };
+  const IdxRange ri = chunk.range_x(bb.x0, bb.x1);
+  const IdxRange rj = chunk.range_y(bb.y0, bb.y1);
+  const IdxRange rk = chunk.range_z(bb.z0, bb.z1);
+  uint16_t* d = chunk.data.data();
+  const double s = chunk.s;
+  const double base_x = chunk.bx + chunk.half;
+  const double base_y = chunk.by + chunk.half;
+  const double base_z = chunk.bz + chunk.half;
+  // the trunk: at each height of it, the voxels within 0.9 of its axis (every voxel there tested whole)
+  for (int k = rk.lo; k <= rk.hi; ++k) {
+    const double z = g.w[2][k];
+    if (!(z >= t.z && z <= top)) continue;
+    const double kk = (z - t.z) / t.h;
+    const double cx = t.x + lean_x * kk * kk * 6;
+    const double cy = t.y + lean_y * kk * kk * 6;
+    int i0 = ri.lo, i1 = ri.hi, j0 = rj.lo, j1 = rj.hi;
+    clip(base_x, s, cx - 1, cx + 1, i0, i1);
+    clip(base_y, s, cy - 1, cy + 1, j0, j1);
+    for (int j = j0; j <= j1; ++j)
+      for (int i = i0; i <= i1; ++i) {
+        const int idx = i + j * kP + k * kP2;
+        if (d[idx] != 0) continue;
+        const uint16_t m = fn(g.w[0][i], g.w[1][j], z);
+        if (m) d[idx] = m;
+      }
+  }
+  // the fronds: in every column within t.r of the crown's centre, the two heights they droop to
+  // (a voxel elsewhere in their rows is no frond, nor trunk but within 0.9 of its axis) - where the
+  // chunk holds a row at their heights
+  bool rows = false;
+  for (int k = rk.lo; k <= rk.hi && !rows; ++k) rows = !(g.w[2][k] > top + 1 || g.w[2][k] < top - 4);
+  if (!rows) return;
+  int i0 = ri.lo, i1 = ri.hi, j0 = rj.lo, j1 = rj.hi;
+  clip(base_x, s, fx - t.r - 0.1, fx + t.r + 0.1, i0, i1);
+  clip(base_y, s, fy - t.r - 0.1, fy + t.r + 0.1, j0, j1);
+  for (int j = j0; j <= j1; ++j)
+    for (int i = i0; i <= i1; ++i) {
+      const double x = g.w[0][i];
+      const double y = g.w[1][j];
+      const Column c = column(x, y);
+      if (!(c.dr <= t.r)) continue;
+      int fronds = -1;  // (the column's frond test, made once)
+      for (const double z : {c.want - 1, c.want}) {
+        if (z > top + 1 || z < top - 4) continue;
+        // (the padded index of height z, if it is a representative)
+        const double kd = (z - base_z) / s;
+        if (!(kd >= rk.lo && kd <= rk.hi) || kd != std::floor(kd)) continue;
+        const int k = static_cast<int>(kd);
+        const int idx = i + j * kP + k * kP2;
+        if (d[idx] != 0) continue;
+        // (fn at a height the column's fronds droop to: the trunk, else its fronds)
+        uint16_t m = MAT::BARK_PALM;
+        if (!trunk_at(x, y, g.w[2][k])) {
+          if (fronds < 0) fronds = frond(c) ? 1 : 0;
+          m = fronds ? MAT::PALM_FROND : 0;
+        }
+        if (m) d[idx] = m;
+      }
+    }
 }
 
 }  // namespace
