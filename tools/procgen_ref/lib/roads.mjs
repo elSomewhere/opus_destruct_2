@@ -203,7 +203,8 @@ function roadJson(road, net, specs, classes) {
 
 /**
  * The recorded inputs of a recording world: { classes, specs: [cross-section by class], cells: [[i, j,
- * cell id, [road]]], wet: [[x, y, m, 0 | 1]] }.
+ * cell id, [road]]], wet: [[x, y, m]] } - wet only the questions answered yes (any other is dry: a
+ * port asking other questions than the reference's shows in its records anyway).
  */
 export function recorded({ w, cells, wet }) {
   const specs = roadSpecs(w.config);
@@ -212,7 +213,7 @@ export function recorded({ w, cells, wet }) {
     classes,
     specs: classes.map((cls) => SPEC_KEYS.map((k) => specs[cls][k])),
     cells: [...cells.values()].map(({ i, j, net }) => [i, j, net.id, net.roads.map((r) => roadJson(r, net, specs, classes))]),
-    wet: [...wet.values()],
+    wet: [...wet.values()].filter((q) => q[3]).map(([x, y, m]) => [x, y, m]),
   };
 }
 

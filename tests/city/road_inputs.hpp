@@ -12,6 +12,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "core/js.hpp"
@@ -156,21 +157,18 @@ struct WetKeyHash {
 };
 
 // One world's recorded inputs: the roads of the cells the stage read (one object per road, as a
-// World's views share them) and the water answers it asked.
+// World's views share them) and where the waters answered yes.
 struct RecordedWorld {
   std::unordered_map<uint64_t, RoadList> cells;
-  std::unordered_map<WetKey, bool, WetKeyHash> wet;
+  std::unordered_set<WetKey, WetKeyHash> wet;
 
   const RoadList& roads(double i, double j) const {
     auto it = cells.find(cell_key(i, j));
     if (it == cells.end()) SVX_FAIL("recorded roads: the stage never read this cell");
     return it->second;
   }
-  bool is_wet(double x, double y, double m) const {
-    auto it = wet.find(WetKey{x, y, m});
-    if (it == wet.end()) SVX_FAIL("recorded water: the stage never asked this");
-    return it->second;
-  }
+  // (only the questions the reference answered yes are recorded: the others are dry)
+  bool is_wet(double x, double y, double m) const { return wet.count(WetKey{x, y, m}) != 0; }
 };
 
 inline Value read_json_file(const std::string& path) {
@@ -228,7 +226,7 @@ inline std::map<std::string, std::shared_ptr<const RecordedWorld>> load_recorded
       }
       rw->cells[cell_key(i, j)] = std::move(roads);
     }
-    for (const Value& e : wm.second["wet"].items()) rw->wet[WetKey{e[size_t{0}].to_number(), e[size_t{1}].to_number(), e[size_t{2}].to_number()}] = e[size_t{3}].to_number() != 0;
+    for (const Value& e : wm.second["wet"].items()) rw->wet.insert(WetKey{e[size_t{0}].to_number(), e[size_t{1}].to_number(), e[size_t{2}].to_number()});
     out[wm.first] = rw;
   }
   return out;
