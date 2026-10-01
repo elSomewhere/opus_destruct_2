@@ -83,7 +83,8 @@ add_executable(svx_game_tests
   game/test_presets.cpp
   game/test_appearance.cpp
   game/test_city_materials.cpp
-  game/test_spawns.cpp)
+  game/test_spawns.cpp
+  game/test_semantics.cpp)
 target_include_directories(svx_game_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest)
 target_link_libraries(svx_game_tests PRIVATE svx_game svx_procgen svx_api)
 if(CMAKE_CXX_COMPILER_ID STREQUAL "GNU")

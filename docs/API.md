@@ -314,6 +314,9 @@ the same world is loaded again. Worlds are identified by:
 - lifecycle: `svx_create`, `svx_load_*`; presets (**ext**, [`PRESETS.md`](PRESETS.md)):
   `svx_presets`, `svx_default_preset`, `svx_load_preset`, `svx_preset_atmosphere`; the loaded
   world's appearance table (**ext**): `svx_appearance_count` / `svx_appearances` (8 floats each);
+  what the world means (**ext**, `svx/game/semantics.hpp`: a generated world's plans - buildings
+  with their entrances, furniture with its uses, zones): `svx_buildings_in`, `svx_furniture_in`,
+  `svx_zone_at` (JSON);
 - simulation and commands: `svx_tick`, `svx_blast`, `svx_carve`, `svx_use`, `svx_ignite`,
   `svx_extinguish`, `svx_pour`;
 - queries: `svx_raycast`, `svx_collide` (9 values: the move, on ground, the grid stood on, the

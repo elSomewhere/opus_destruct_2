@@ -11,6 +11,7 @@
 #include "svx/env/fire.hpp"
 #include "svx/game/appearance.hpp"
 #include "svx/game/roads.hpp"
+#include "svx/game/semantics.hpp"
 #include "svx/world/source.hpp"
 
 namespace svx {
@@ -43,6 +44,9 @@ class GameSource : public ChunkSource {
   virtual void spawns_in(const V3& lo, const V3& hi, std::vector<SpawnRecord>& out) const {
     (void)lo, (void)hi, (void)out;
   }
+  // What its world means - buildings and their entrances, furniture and its uses, zones - for AI
+  // and gameplay (svx/game/semantics.hpp; nullptr: nothing beyond its voxels).
+  virtual const WorldSemantics* semantics() const { return nullptr; }
   // The fire facets of its own materials (a city's roofing, furnishings, plants): set on the
   // game's fire when it loads the source (ids no other world uses: they stay set).
   virtual void fire_materials(FireSystem& fire) const { (void)fire; }

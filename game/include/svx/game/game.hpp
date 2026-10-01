@@ -306,6 +306,8 @@ class Game {
   // The loaded world's looks (GameSource::appearances; nullptr: its materials' colours) and its
   // "look" layer (-1: none). Meshes carry kAppearanceTexture + i for a face of appearance i.
   const AppearanceTable* appearances() const { return appearances_.get(); }
+  // What the loaded world means (its source's semantics; nullptr: none).
+  const WorldSemantics* semantics() const { return source_ ? source_->semantics() : nullptr; }
   int look_layer() const { return look_layer_; }
 
   // Pedestrians (game/src/pedestrians.cpp). A shot or a blast frightens them; a car coming at
