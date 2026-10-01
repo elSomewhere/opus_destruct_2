@@ -170,8 +170,12 @@ export function warmView(w, i, j) {
 const SPEC_KEYS = ["hc", "hr", "corner", "median", "parking", "lanes", "lane", "sidewalk", "shoulder"];
 const ROAD_KEYS = new Set(["id", "cell", "cls", "pts", ...SPEC_KEYS, "home", "arterialEdge", "paving", "diagonal", "sub", "strip", "prof", "prof0"]);
 
-/** A recorded road: [n (its id's counter), cls, [x, y, ...], extras?] (its cross-section is its class's). */
-function roadJson(road, net, specs) {
+/**
+ * A recorded road: [n (its id's counter), its class (an index into the world's classes), [x, y, ...],
+ * extras?] - its cross-section is its class's; extras: e arterialEdge, p paving, d diagonal [f, k],
+ * u sub (k for the cell's sub-cell `${cell}/s${k}`, else the id), s strip, h home [i, j].
+ */
+function roadJson(road, net, specs, classes) {
   const prefix = `${net.id}/r`;
   if (!road.id.startsWith(prefix) || road.cell !== net.id) throw new Error(`roads: ${road.id} is no road of ${net.id}`);
   for (const k of Object.keys(road)) if (!ROAD_KEYS.has(k)) throw new Error(`roads: ${road.id} has a field the record lacks: ${k}`);
@@ -186,22 +190,28 @@ function roadJson(road, net, specs) {
   if (road.arterialEdge !== undefined) extra.e = road.arterialEdge;
   if (road.paving !== undefined && road.paving !== null) extra.p = road.paving;
   if (road.diagonal !== undefined) extra.d = [road.diagonal.f, road.diagonal.k];
-  if (road.sub !== undefined) extra.u = road.sub;
+  if (road.sub !== undefined) {
+    const k = road.sub.startsWith(`${net.id}/s`) ? Number(road.sub.slice(net.id.length + 2)) : NaN;
+    extra.u = Number.isInteger(k) && `${net.id}/s${k}` === road.sub ? k : road.sub;
+  }
   if (road.strip !== undefined) extra.s = road.strip;
   if (road.home !== undefined) extra.h = road.home;
-  const out = [Number(road.id.slice(prefix.length)), road.cls, pts];
+  const out = [Number(road.id.slice(prefix.length)), classes.indexOf(road.cls), pts];
   if (Object.keys(extra).length) out.push(extra);
   return out;
 }
 
-/** The recorded inputs of a recording world: { specs, cells: [[i, j, cell id, [road]]], wet: [[x, y, m, 0 | 1]] }. */
+/**
+ * The recorded inputs of a recording world: { classes, specs: [cross-section by class], cells: [[i, j,
+ * cell id, [road]]], wet: [[x, y, m, 0 | 1]] }.
+ */
 export function recorded({ w, cells, wet }) {
   const specs = roadSpecs(w.config);
-  const sp = {};
-  for (const [cls, s] of Object.entries(specs)) sp[cls] = SPEC_KEYS.map((k) => s[k]);
+  const classes = Object.keys(specs);
   return {
-    specs: sp,
-    cells: [...cells.values()].map(({ i, j, net }) => [i, j, net.id, net.roads.map((r) => roadJson(r, net, specs))]),
+    classes,
+    specs: classes.map((cls) => SPEC_KEYS.map((k) => specs[cls][k])),
+    cells: [...cells.values()].map(({ i, j, net }) => [i, j, net.id, net.roads.map((r) => roadJson(r, net, specs, classes))]),
     wet: [...wet.values()],
   };
 }

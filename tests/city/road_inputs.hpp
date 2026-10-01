@@ -190,6 +190,7 @@ inline std::map<std::string, std::shared_ptr<const RecordedWorld>> load_recorded
   std::map<std::string, std::shared_ptr<const RecordedWorld>> out;
   for (const Value::Member& wm : root.members()) {
     auto rw = std::make_shared<RecordedWorld>();
+    const Value& classes = wm.second["classes"];
     const Value& specs = wm.second["specs"];
     for (const Value& c : wm.second["cells"].items()) {
       const double i = c[size_t{0}].to_number();
@@ -200,10 +201,11 @@ inline std::map<std::string, std::shared_ptr<const RecordedWorld>> load_recorded
         auto road = std::make_shared<Road>();
         road->id = js::cat(cell, "/r", rv[size_t{0}].to_number());
         road->cell = cell;
-        road->cls = rv[size_t{1}].str();
+        const size_t cls = static_cast<size_t>(rv[size_t{1}].to_number());
+        road->cls = classes[cls].str();
         const Value& pts = rv[size_t{2}];
         for (size_t p = 0; p + 1 < pts.size(); p += 2) road->pts.push_back({pts[p].to_number(), pts[p + 1].to_number()});
-        const Value& sp = specs[road->cls];
+        const Value& sp = specs[cls];
         road->hc = sp[size_t{0}].to_number();
         road->hr = sp[size_t{1}].to_number();
         road->corner = sp[size_t{2}].to_number();
@@ -218,7 +220,7 @@ inline std::map<std::string, std::shared_ptr<const RecordedWorld>> load_recorded
           if (ex.has("e")) road->arterial_edge = ex["e"].str();
           if (ex.has("p")) road->paving = ex["p"].str();
           if (ex.has("d")) road->diagonal = RoadDiagonal{ex["d"][size_t{0}].to_number(), ex["d"][size_t{1}].to_number()};
-          if (ex.has("u")) road->sub = ex["u"].str();
+          if (ex.has("u")) road->sub = ex["u"].is_number() ? js::cat(cell, "/s", ex["u"].to_number()) : ex["u"].str();
           if (ex.has("s")) road->strip = ex["s"].str();
           if (ex.has("h")) road->home = std::array<double, 2>{ex["h"][size_t{0}].to_number(), ex["h"][size_t{1}].to_number()};
         }

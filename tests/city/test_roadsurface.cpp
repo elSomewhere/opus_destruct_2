@@ -1,6 +1,6 @@
 // svx_city tests — the road surface of a column (voxel_city network/roadSurface.js) against the
-// reference (stage "roadsurface"): scripted road sets and the reference's own views
-// (tools/procgen_ref/data).
+// reference (stage "roadsurface"): scripted road sets and the reference's own views (the roads
+// stage roadview recorded: tools/procgen_ref/data/roadview.json).
 #include <doctest.h>
 
 #include "config/defaults.hpp"
@@ -91,7 +91,8 @@ TEST_CASE("city roadsurface: the road surface conforms to the reference (stage r
     out << (Line() << "set" << js::cat("S", k) << rs.period << seed);
     surface_records(out, view, r, rs, seed, 300, 2);
   }
-  const auto recorded = test::load_recorded("roadsurface");
+  // (the views' roads: stage roadview's recording)
+  const auto recorded = test::load_recorded("roadview");
   for (const SurfaceView& sv : views()) {
     const Value config = make_config(preset_config(sv.id, sv.size));
     const double seed = config["seed"].to_number();

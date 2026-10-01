@@ -6,10 +6,10 @@
 // out to their right-of-way and corners, and dense over the approaches of junctions (crosswalks,
 // stop lines, lane arrows, fillets, tactile curbs, painted medians); candidates from near() rects
 // of several sizes, with and without a reach. One sample object serves every call, as the
-// reference's callers keep one (what a call does not set stays). The views' roads are recorded in
-// data/roadsurface.json for the port.
+// reference's callers keep one (what a call does not set stays). The port reads the views' roads
+// from stage "roadview"'s recording (data/roadview.json: every view sampled here is one of its).
 import { REF, line, samples } from "../lib/rec.mjs";
-import { scriptedRoads, segRef, recordingWorld, recorded, writeInputs, warmView } from "../lib/roads.mjs";
+import { scriptedRoads, segRef, recordingWorld, warmView } from "../lib/roads.mjs";
 
 const { RoadView } = await import(REF + "network/roadView.js");
 const { sampleRoadSurface, makeRoadSample } = await import(REF + "network/roadSurface.js");
@@ -76,7 +76,6 @@ export default function* roadsurface() {
     yield line("set", `S${k}`, out.period, seed);
     yield* surfaceRecords(view, r, out, seed, 300, 2);
   }
-  const inputs = {};
   for (const [key, id, size, cells] of VIEWS) {
     const rw = recordingWorld(presetConfig(id, { size }));
     const w = rw.w;
@@ -86,7 +85,5 @@ export default function* roadsurface() {
       yield line("set", `${key}:${i},${j}`, out.period, w.seed);
       yield* surfaceRecords(w.roadView(i, j), r, out, w.seed, 2000, 4);
     }
-    inputs[key] = recorded(rw);
   }
-  writeInputs("roadsurface", inputs);
 }
