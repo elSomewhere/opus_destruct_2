@@ -68,6 +68,7 @@ struct Lake;
 struct CellNet;
 struct CellPlan;
 class RoadView;
+struct Road;  // network/road.hpp
 struct BuildingPlan;
 struct Dressing;
 struct Envelope;
@@ -154,6 +155,15 @@ class World {
   std::shared_ptr<const BuildingPlan> building_plan(const Envelope& env) const;  // buildings/interior/plan.cpp
   void voxelize_building(const Envelope& env, ChunkBuffer& chunk) const;  // buildings/interior/voxelize.cpp
   bool blocks_surface(double x, double y) const;
+
+  // ---- the road network's inputs served from elsewhere (tests checking it on the reference's own,
+  // recorded in tools/procgen_ref/data; docs/CITY.md §6). Unset (always, but in such a test):
+  // the World's own.
+  // The roads of cell (i, j)'s network, which road_view gathers for the 3 x 3 cells round a cell
+  // in place of cell_net(i, j)->roads (network/roadView.cpp).
+  std::function<std::vector<std::shared_ptr<const Road>>(double i, double j)> cell_roads;
+  // Water: is_wet asks it first (world/createWorld.cpp).
+  std::function<bool(double x, double y, double margin_m)> wet_source;
 
   // ---- caches (World.js's LRUs; createWorld's dressing cache; keys as their modules make them)
   struct Caches;

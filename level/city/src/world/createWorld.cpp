@@ -9,6 +9,7 @@
 #include "nature/lakes.hpp"
 #include "nature/landcover.hpp"
 #include "nature/rivers.hpp"
+#include "network/highways.hpp"
 #include "terrain/terrain.hpp"
 #include "world/World.hpp"
 #include "world/fields.hpp"
@@ -50,7 +51,9 @@ std::shared_ptr<World> create_world(const Value& config) {
   // (world/landmarks: island landmarks - lighthouse, boathouses, fish racks, cairns - on islands)
   // (nature/forest: the forest)
   // (nature/boulders: the boulders)
-  // (network/highways: the highways unless config.highways.enabled is false)
+  // small places (islands) go without elevated highways
+  const Value& highways = w.config["highways"]["enabled"];
+  if (!(highways.is_bool() && !highways.truthy())) w.highways = std::make_shared<HighwayNetwork>(w);
   // (underground/subway: the subway unless config.subway.enabled is false)
   // (underground/sewers: the sewers)
   // (world/sites: the site layer)
@@ -62,7 +65,9 @@ std::shared_ptr<World> create_world(const Value& config) {
   // (feature sources, in this order: caves (nature/caves: id kCaveSourceId, order kCaveSourceOrder,
   // max_lod kCaveSourceMaxLod; cave_z_range and cave_rasterize over cave_columns(tile), wrapped
   // once voxel/compose's GroundTile exists), sewers, subway
-  // (with a subway), site links, sites, highways (with highways), buildings, dressing, skybridges,
+  // (with a subway), site links, sites, highways (with highways: network/highways, id "highways",
+  // order kHighwaySourceOrder, max_lod kHighwaySourceMaxLod; highway_z_range and
+  // rasterize_highways over the tile's z, wrapped likewise), buildings, dressing, skybridges,
   // forest, boulders, ground cover, landmarks (with landmarks))
   return world;
 }
@@ -74,6 +79,8 @@ bool World::sea_at(double x, double y, double margin_m) const {
 }
 
 bool World::is_wet(double x, double y, double margin_m) const {
+  // (a test checking the road network on the reference's own water answers: World::wet_source)
+  if (wet_source) return wet_source(x, y, margin_m);
   const IslandPlan* island = fields->island.get();
   if (island && island->coast(x / 8, y / 8) < margin_m) return true;
   const std::optional<RiverInfo> ri = rivers->at(x, y);

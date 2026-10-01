@@ -14,6 +14,7 @@
 #include "core/hash.hpp"
 #include "core/js.hpp"
 #include "core/math.hpp"
+#include "network/highways.hpp"
 #include "terrain/terrain.hpp"
 #include "world/World.hpp"
 #include "world/fields.hpp"
@@ -243,13 +244,13 @@ std::vector<std::string> resolve_town(const World& world, const TownPlan& plan) 
   std::vector<size_t> order(plan.anchors.size());
   std::iota(order.begin(), order.end(), size_t(0));
   js::sort(order, [&](size_t p, size_t q) { return plan.anchors[p].pri - plan.anchors[q].pri; });
-  // (a civic building keeps off the blocks a highway crosses: world.highways.corridorsNear(b.prop)
-  // .some(c => c.hitsRect(b.prop)) - network/highways is a stage of its own; a World without
-  // highways (World.js's, the port's until createWorld installs them) crosses nothing. A World
-  // with highways needs this wired to them first.)
-  auto crossed = [&](const Block&) -> bool {
+  // (a civic building keeps off the blocks a highway crosses; a World without highways - World.js's
+  // - crosses nothing)
+  auto crossed = [&](const Block& b) -> bool {
     if (!world.highways) return false;
-    SVX_FAIL("townPlan: the civic landmarks do not ask the highway corridors yet (network/highways)");
+    for (const HighwayCorridor& c : world.highways->corridors_near(b.prop))
+      if (c.hits_rect(b.prop)) return true;
+    return false;
   };
   for (const size_t ai : order) {
     const TownAnchor& a = plan.anchors[ai];
