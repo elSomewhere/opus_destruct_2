@@ -146,6 +146,7 @@ constexpr Field kFields[] = {
     SVX_T_BOOL("shards_hold_together", shards_hold_together),
     SVX_T_BOOL("cluster_cubes", cluster_cubes),
     SVX_T_BOOL("fair_solve_order", fair_solve_order),
+    SVX_T_BOOL("ensure_before_walk", ensure_before_walk),
 };
 #undef SVX_T_F64
 #undef SVX_T_I32

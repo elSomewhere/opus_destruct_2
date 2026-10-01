@@ -287,3 +287,61 @@ TEST_CASE("streaming: a source's grid removed in play never comes back - after i
   go(w2, 2.0, 30);
   CHECK(w2.grid(1) == nullptr);
 }
+
+namespace {
+
+// Rock ground, and a concrete block 16 m long (x 40 .. 56 m), 8 m wide and 12 m tall on it.
+class BlockSource final : public ChunkSource {
+ public:
+  bool generate(const IVec3& cc, std::vector<Vox>& out) const override {
+    if (cc[2] == -1) {
+      out.assign(kChunkVox, kRock);
+      return true;
+    }
+    if (cc[0] >= 10 && cc[0] < 14 && cc[1] >= 0 && cc[1] < 2 && cc[2] >= 0 && cc[2] < 3) {
+      out.assign(kChunkVox, kConcrete);
+      return true;
+    }
+    return false;
+  }
+  IVec3 chunk_lo() const override { return {-4, -4, -1}; }
+  IVec3 chunk_hi() const override { return {20, 6, 4}; }
+};
+
+}  // namespace
+
+TEST_CASE("streaming: a structure first touched where its reach borders chunks not generated is walked once (ensure_before_walk)") {
+  struct Touch {
+    i64 walks = 0, nodes = 0;
+  };
+  auto first_touch = [](bool before) {
+    StreamConfig sc;
+    sc.load_radius = 30.0;    // (the block is out of range: only what is made resident by hand is there)
+    sc.evict_radius = 200.0;
+    sc.chunks_per_tick = 400;
+    WorldConfig c;
+    c.ensure_before_walk = before;
+    World w;
+    w.configure(c);
+    VoxelGrid g;
+    g.h = kH;
+    w.load(std::move(g));
+    w.enable_streaming(std::make_shared<BlockSource>(), sc);
+    w.set_focus(V3{0.0, 4.0, 0.0});
+    for (int t = 0; t < 3; ++t) w.tick();
+    w.ensure_resident({10 * kChunk, 0, -kChunk}, {12 * kChunk, 2 * kChunk, 3 * kChunk});  // (its near half)
+    const i64 e0 = w.stats().extractions;
+    w.carve({kH * (10 * kChunk + 4), 4.0, 6.0}, 0.5);
+    w.tick();
+    Touch r;
+    r.walks = w.stats().extractions - e0;
+    r.nodes = w.stats().solve_nodes;
+    return r;
+  };
+  const Touch on = first_touch(true), off = first_touch(false);
+  MESSAGE("walks " << on.walks << " (off: " << off.walks << "), nodes " << on.nodes << " (off: " << off.nodes << ")");
+  CHECK(on.walks == 1);
+  CHECK(off.walks >= 2);  // (a ring of chunks at a time: walked again after each)
+  CHECK(on.nodes > 0);
+  CHECK(on.nodes == off.nodes);  // (the same structure, its whole reach generated first)
+}

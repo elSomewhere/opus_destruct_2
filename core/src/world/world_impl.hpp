@@ -313,7 +313,13 @@ struct World::Impl {
   // ---- fragments
   FragChunk& frag_chunk(u16 g, const IVec3& cc);  // (re)builds when stale
   FragChunk& adopt_fragments(u16 g, u64 key, FragChunk&& nf);  // (a chunk's new fragments into the cache)
-  void prefragment(u16 g, const IVec3& seed_chunk, f64 max_radius);  // (the chunks a walk can reach, in parallel)
+  // The chunks a walk can reach, fragmented in parallel; their box (chunks), whether it borders
+  // chunks not generated yet (a streamed world grid's) and whether any is still to be designed.
+  struct Reach {
+    IVec3 lo{0, 0, 0}, hi{0, 0, 0};
+    bool unknown = false, undesigned = false;
+  };
+  Reach prefragment(u16 g, const IVec3& seed_chunk, f64 max_radius);
   FragChunk* frag_chunk_if(u16 g, u64 key);  // current or nullptr (no rebuild)
   FragParams frag_params(u16 g) const;       // (a grid of another voxel size: the world's rubble in metres)
   FragChunk* frag_chunk_if(const FragKey& f) { return frag_chunk_if(f.grid, f.chunk); }

@@ -268,14 +268,14 @@ FragChunk& World::Impl::adopt_fragments(u16 g, u64 key, FragChunk&& nf) {
   return slot;
 }
 
-void World::Impl::prefragment(u16 g, const IVec3& seed, f64 max_radius) {
+World::Impl::Reach World::Impl::prefragment(u16 g, const IVec3& seed, f64 max_radius) {
   // The chunks a structure walk from here can reach - face-connected chunks holding free
   // voxels, within its reach - fragmented at once, in parallel (fragment_chunk only reads the
   // grid): the walk then finds them cached. The fragments are the ones the walk would make
   // chunk by chunk.
   constexpr size_t kMaxFlood = 4096, kMin = 4;
-  const f64 reach = std::ceil(max_radius / (h_of(g) * kChunk)) + 1.0;
-  const i32 R = reach < 1e6 ? static_cast<i32>(reach) : 1000000;  // (an unbounded reach: the flood's bound alone)
+  const f64 span = std::ceil(max_radius / (h_of(g) * kChunk)) + 1.0;
+  const i32 R = span < 1e6 ? static_cast<i32>(span) : 1000000;  // (an unbounded reach: the flood's bound alone)
   std::vector<IVec3> queue{seed}, todo;
   std::unordered_set<u64> seen{key3(seed[0], seed[1], seed[2])};
   const VoxelGrid& G = vg(g);
@@ -286,6 +286,19 @@ void World::Impl::prefragment(u16 g, const IVec3& seed, f64 max_radius) {
   auto free_at = [](const Chunk* c, const IVec3& l) {
     const Vox v = c->uniform ? c->value : c->v[size_t((l[0] * kChunk + l[1]) * kChunk + l[2])];
     return vox_free(v);
+  };
+  // (a free voxel on a chunk's face: a walk reaches past it)
+  auto face_free = [&](const Chunk* c, int d) {
+    const int ax = d / 2, u = (ax + 1) % 3, w = (ax + 2) % 3;
+    IVec3 l{0, 0, 0};
+    l[ax] = (d & 1) ? 0 : kChunk - 1;
+    for (i32 i = 0; i < kChunk; ++i)
+      for (i32 j = 0; j < kChunk; ++j) {
+        l[u] = i;
+        l[w] = j;
+        if (free_at(c, l)) return true;
+      }
+    return false;
   };
   auto meet = [&](const Chunk* a, const Chunk* b, int d) {
     const int ax = d / 2, u = (ax + 1) % 3, w = (ax + 2) % 3;
@@ -300,10 +313,18 @@ void World::Impl::prefragment(u16 g, const IVec3& seed, f64 max_radius) {
       }
     return false;
   };
+  Reach reach;
+  reach.lo = reach.hi = seed;
+  const bool streamed = g == 0 && strm_.source;
   for (size_t i = 0; i < queue.size() && queue.size() < kMaxFlood; ++i) {
     const IVec3 cc = queue[i];
     const Chunk* ch = G.chunk(cc);
     if (!ch || ch->free_count() == 0) continue;
+    for (int a = 0; a < 3; ++a) {
+      reach.lo[a] = std::min(reach.lo[a], cc[a]);
+      reach.hi[a] = std::max(reach.hi[a], cc[a]);
+    }
+    reach.undesigned = reach.undesigned || gs(g).undesigned.count(key3(cc[0], cc[1], cc[2])) > 0;
     // (only chunks never fragmented: a stale cache is rebuilt when the walk comes to it, which
     // is also when the structures holding its old fragments learn of it)
     if (!frags.count(key3(cc[0], cc[1], cc[2]))) todo.push_back(cc);
@@ -312,19 +333,21 @@ void World::Impl::prefragment(u16 g, const IVec3& seed, f64 max_radius) {
       q[d / 2] += (d & 1) ? -1 : 1;
       if (std::abs(q[0] - seed[0]) > R || std::abs(q[1] - seed[1]) > R || std::abs(q[2] - seed[2]) > R) continue;
       if (seen.count(key3(q[0], q[1], q[2]))) continue;
+      if (streamed && !reach.unknown && !chunk_resident(q) && face_free(ch, d)) reach.unknown = true;
       const Chunk* qc = G.chunk(q);
       if (!qc || qc->free_count() == 0 || !meet(ch, qc, d)) continue;
       seen.insert(key3(q[0], q[1], q[2]));
       queue.push_back(q);
     }
   }
-  if (todo.size() < kMin) return;  // (a few: the walk does them as well)
+  if (todo.size() < kMin) return reach;  // (a few: the walk does them as well)
   std::vector<FragChunk> out(todo.size());
   const FragParams fp = frag_params(g);
   parallel_for(static_cast<i64>(todo.size()), 1, [&](i64 a, i64 b) {
     for (i64 j = a; j < b; ++j) out[size_t(j)] = fragment_chunk(G, todo[size_t(j)], fp);
   });
   for (size_t j = 0; j < todo.size(); ++j) adopt_fragments(g, key3(todo[j][0], todo[j][1], todo[j][2]), std::move(out[j]));
+  return reach;
 }
 
 FragParams World::Impl::frag_params(u16 g) const {
@@ -402,7 +425,31 @@ u8 World::Impl::frag_class(const FragKey& f) {
 World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes, f64 max_radius, bool detach_free) {
   if (max_nodes <= 0) max_nodes = cfg_.structure_max_nodes;
   if (max_radius <= 0) max_radius = cfg_.structure_max_radius;
-  prefragment(seed.grid, unkey3(seed.chunk), max_radius);
+  // (the seed's voxel: what a generation may fragment again, it is found by)
+  GVox seed_vox;
+  bool seed_known = false;
+  if (FragChunk* fc = frag_chunk_if(seed); fc && seed.idx >= 0 && seed.idx < static_cast<i32>(fc->frags.size()) && fc->frags[size_t(seed.idx)].count > 0) {
+    const IVec3 cc = unkey3(seed.chunk), l = local_of(fc->frags[size_t(seed.idx)].first);
+    seed_vox = GVox{{cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]}, seed.grid};
+    seed_known = true;
+  }
+  auto extract_again = [&]() -> Structure* {
+    FragKey again;
+    if (!seed_known || !frag_at(seed_vox, &again) || owner_of(again) != 0) return nullptr;
+    return extract(again, max_nodes, max_radius, detach_free);
+  };
+  const Reach reach = prefragment(seed.grid, unkey3(seed.chunk), max_radius);
+  // A streamed structure touched for the first time whose reach borders chunks not generated
+  // yet: they come first (and their neighbours) - walked before them, it would be walked again
+  // after them. WorldConfig::ensure_before_walk
+  if (cfg_.ensure_before_walk && detach_free && reach.unknown && reach.undesigned && seed_known && ensuring_ < 8) {
+    ++ensuring_;
+    ensure_chunks({(reach.lo[0] - 1) * kChunk, (reach.lo[1] - 1) * kChunk, (reach.lo[2] - 1) * kChunk},
+                  {(reach.hi[0] + 2) * kChunk - 1, (reach.hi[1] + 2) * kChunk - 1, (reach.hi[2] + 2) * kChunk - 1});
+    Structure* again = extract_again();
+    --ensuring_;
+    return again;
+  }
   auto s = std::make_unique<Structure>();
   s->id = next_id_++;
   s->P.mats = mats_.get();
@@ -641,18 +688,6 @@ World::Impl::Structure* World::Impl::extract(const FragKey& seed, i32 max_nodes,
     // (extracted again from the seed's voxel: what is generated meanwhile may fragment the seed's
     // chunk again - a grid at home there displacing its voxels - and the seed is no more if that
     // voxel is gone or taken)
-    GVox seed_vox;
-    bool seed_known = false;
-    if (FragChunk* fc = frag_chunk_if(seed); fc && seed.idx >= 0 && seed.idx < static_cast<i32>(fc->frags.size()) && fc->frags[size_t(seed.idx)].count > 0) {
-      const IVec3 cc = unkey3(seed.chunk), l = local_of(fc->frags[size_t(seed.idx)].first);
-      seed_vox = GVox{{cc[0] * kChunk + l[0], cc[1] * kChunk + l[1], cc[2] * kChunk + l[2]}, seed.grid};
-      seed_known = true;
-    }
-    auto extract_again = [&]() -> Structure* {
-      FragKey again;
-      if (!seed_known || !frag_at(seed_vox, &again) || owner_of(again) != 0) return nullptr;
-      return extract(again, max_nodes, max_radius, detach_free);
-    };
     static const bool dbgd = diag("SVX_DEBUG_DESIGN");
     if (dbgd)
       std::printf("  [first touch] s%lld: %zu nodes, unloaded %d, ensuring %d, pristine %d\n", static_cast<long long>(id), out->P.nodes.size(),

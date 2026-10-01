@@ -242,6 +242,10 @@ struct WorldConfig {
   //     before - the first one it did not reach goes first - so a large structure slow to converge
   //     cannot hold the others back (a demolition's remnants waited 17 ticks to fall); off: by id
   //     every tick, the same structures first. (A tick that reached them all goes by id.)
+  //   ensure_before_walk (streaming): a structure touched for the first time whose reach borders
+  //     chunks not generated yet has them generated (and their neighbours) before it is walked;
+  //     off: walked, then - meeting them - dropped, they generated, and walked again (a large
+  //     building's first touch: its walk twice).
   //   rigid.busy_hold, rigid.warm_to_step (RigidParams): busy mode decided once a tick, and held
   //     until a collapse is well under its thresholds; the solver's warm starts scaled to the
   //     substep's length; off: decided every substep, warm starts as they were.
@@ -260,6 +264,7 @@ struct WorldConfig {
   bool shards_hold_together = true;
   bool cluster_cubes = false;  // (off: see above - a choice of the structural model's resolution)
   bool fair_solve_order = true;
+  bool ensure_before_walk = true;
   i32 evict_scan_ticks = 10;
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
   f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)
