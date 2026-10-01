@@ -1,9 +1,10 @@
 // svx_city tests — wings, corner bays, canted bays and chamfers (voxel_city buildings/wings.js)
 // against the reference (stage "wings"): planWings on scripted sites, the wings' chunks in the
-// world grid and in their own lattices.
+// world grid and in their own lattices; the building source (buildings/source.js) over them.
 #include <doctest.h>
 
 #include "buildings/archetypes.hpp"
+#include "buildings/source.hpp"
 #include "buildings/styles.hpp"
 #include "buildings/wings.hpp"
 #include "records.hpp"
@@ -49,6 +50,11 @@ TEST_CASE("city wings: planned and drawn as the reference's (stage wings)") {
     CellRoads cell_roads;
     serve_cell_roads(w, cell_roads);
     const RoadSpecs specs(w.config);
+    // (the building source's worlds: grid mode with a stub interior, parts mode)
+    Value pcfg = cfg;
+    pcfg.at_mut("world").at_mut("angles").set("partsMode", "separate");
+    const World w_parts(pcfg);
+    const VoxelizeBuildingFn stub = [](const Envelope& e, ChunkBuffer& c) { c.fill_box(e.R.x0, e.R.y0, e.base_z, e.R.x1, e.R.y1, e.base_z + 3, 7); };
     for (double k = 0; k < 242; k += 1) {
       const double i = 3 * std::fmod(k, 11) - 15;
       const double j = 3 * std::floor(k / 11) - 33;
@@ -64,10 +70,32 @@ TEST_CASE("city wings: planned and drawn as the reference's (stage wings)") {
       out << (Line() << "wings" << nolot << static_cast<double>(ws.size()) << rng.next());
       for (const Wing& q : ws) out << Line().operator<<(wing_line(q));
       if (ws.empty()) continue;
-      // (granted, as the cell plan does: the envelope keeps them, a chamfer cuts its corner)
+      // (granted, as the cell plan does: the envelope keeps them, a chamfer cuts its corner; a
+      // turned building is a part of its own)
       env.wings = ws;
       for (const Wing& q : ws)
         if (q.chamfer) env.chamfer = *q.chamfer;
+      if (env.turn) env.part = "1";
+      const EnvelopeList envs = {std::shared_ptr<const Envelope>(std::shared_ptr<const Envelope>(), &env)};
+      for (int src = 0; src < 2; ++src) {
+        const World& ww = src ? w_parts : w;
+        double z0 = 0, z1 = 0;
+        const bool has = building_z_range(ww, envs, &z0, &z1);
+        const Box3& b = ws[0].bounds;
+        const std::vector<std::array<double, 3>> pts = {
+            {(env.R.x0 + env.R.x1) / 2, (env.R.y0 + env.R.y1) / 2, env.base_z + 10},
+            {(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2},
+        };
+        out << (Line() << "bz" << (src == 1) << (has ? js::cat(z0, ",", z1) : std::string("-")));
+        for (const ChunkAt& c : chunks_at({0, 1, 2}, pts)) {
+          ChunkBuffer chunk(static_cast<int>(c[0]), c[1], c[2], c[3]);
+          rasterize_buildings(ww, envs, chunk, src ? VoxelizeBuildingFn() : stub);
+          Line l;
+          l << "b" << c[0] << c[1] << c[2] << c[3];
+          chunk_digest(l, chunk);
+          out << l;
+        }
+      }
       for (const Wing& q : env.wings) {
         const Box3& b = q.bounds;
         const double zr = floor_z(env, q.f1 + 1);

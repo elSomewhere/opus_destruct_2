@@ -5,7 +5,9 @@
 // World.js whose cells serve the sites' streets (the road levels and surfaces planWings asks), in
 // summer and winter: the wings and their placements; then, granted as the cell plan does, their
 // chunks in the world grid (rasterizeWing) at LOD 0 to 3 round their box, and in their own lattices
-// (rasterizeWingPart) at LOD 0 to 3. tests/city/test_wings.cpp plans and draws the same.
+// (rasterizeWingPart) at LOD 0 to 3; and the building source (buildings/source.js) over the
+// building in grid mode (a stub interior at LOD 0) and in parts mode (a turned building, a part of
+// its own, left out, and every wing), its z range. tests/city/test_wings.cpp plans and draws the same.
 import { REF, f, line, samples } from "../lib/rec.mjs";
 import { districtList, envLine } from "../lib/buildings.mjs";
 import { SHELL_WORLDS, wingSite, lotLine, chunkDigest, chunksAt } from "../lib/shells.mjs";
@@ -18,6 +20,7 @@ const W = await import(REF + "buildings/wings.js");
 const { roadSpecs } = await import(REF + "network/roadClasses.js");
 const { Rng } = await import(REF + "core/hash.js");
 const { ChunkBuffer } = await import(REF + "voxel/chunk.js");
+const { buildingSource } = await import(REF + "buildings/source.js");
 
 const WORLDS = [0, 1, 6];
 const SITES = 242;
@@ -46,6 +49,12 @@ export default function* wings() {
     const cellRoads = new Map();
     w.cellNet = (i, j) => ({ roads: cellRoads.get(`${i},${j}`) ?? [] });
     const specs = roadSpecs(w.config);
+    // (the building source's worlds: the envelopes it is asked for, grid mode with a stub interior,
+    // parts mode)
+    const grid = Object.create(w);
+    grid.voxelizeBuilding = (e, c) => c.fillBox(e.R.x0, e.R.y0, e.baseZ, e.R.x1, e.R.y1, e.baseZ + 3, 7);
+    const parts = Object.create(w);
+    parts.config = { ...w.config, world: { ...w.config.world, angles: { ...w.config.world.angles, partsMode: "separate" } } };
     for (let k = 0; k < SITES; k += 1) {
       const i = 3 * (k % 11) - 15;
       const j = 3 * Math.floor(k / 11) - 33;
@@ -59,9 +68,26 @@ export default function* wings() {
       yield line("wings", nolot, ws.length, rng.next());
       for (const q of ws) yield wingLine(q);
       if (!ws.length) continue;
-      // (granted, as the cell plan does: the envelope keeps them, a chamfer cuts its corner)
+      // (granted, as the cell plan does: the envelope keeps them, a chamfer cuts its corner; a turned
+      // building is a part of its own)
       env.wings = ws;
       for (const q of ws) if (q.chamfer) env.chamfer = q.chamfer;
+      if (env.turn) env.part = 1;
+      for (const src of [grid, parts]) {
+        src.envelopesIn = () => [env];
+        const zr = buildingSource.zRange(src, env.bounds);
+        const b = ws[0].bounds;
+        const pts = [
+          [(env.R.x0 + env.R.x1) / 2, (env.R.y0 + env.R.y1) / 2, env.baseZ + 10],
+          [(b.x0 + b.x1) / 2, (b.y0 + b.y1) / 2, (b.z0 + b.z1) / 2],
+        ];
+        yield line("bz", src === parts, zr ? zr.join(",") : "-");
+        for (const [lod, cx, cy, cz] of chunksAt([0, 1, 2], pts)) {
+          const c = new ChunkBuffer(lod, cx, cy, cz);
+          buildingSource.rasterize(src, c);
+          yield line("b", lod, cx, cy, cz, ...chunkDigest(c));
+        }
+      }
       for (const q of ws) {
         const b = q.bounds;
         const zr = A.floorZ(env, q.f1 + 1);
