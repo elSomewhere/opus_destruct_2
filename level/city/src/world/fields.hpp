@@ -32,7 +32,7 @@ namespace svx::city {
 class IslandPlan;
 struct IslandSettlements;
 struct Lake;      // nature/lakes (a later stage of the port)
-struct TownPlan;  // city/townPlan (a later stage of the port)
+struct TownPlan;  // city/townPlan.hpp (town_plan)
 
 // A town (settlement lattice, or an island's town) or a village / hamlet.
 struct Settlement {
