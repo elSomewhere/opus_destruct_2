@@ -304,9 +304,10 @@ TEST_CASE("stress: a solve reports no answer for non-finite loads, and u = 0 for
   CHECK(r1.breakdown);
 }
 
-TEST_CASE("stress: unsmoothed aggregation, and a dense coarse level coarsened once more, solve as the smoothed hierarchy does") {
-  // a block of n^3 cubes bonded face to face, standing on supports: its third multigrid level
-  // grows dense (some 200 blocks a row) at n = 16
+TEST_CASE("stress: unsmoothed aggregation, a dense coarse level coarsened once more, a level aggregated again: they solve as the smoothed hierarchy does") {
+  // a block of n^3 cubes bonded face to face, standing on supports: aggregated once at the
+  // strength threshold, its second level barely coarsens (514 nodes to 279) at n = 16, and its
+  // third grows dense (some 200 blocks a row)
   auto block = [](int n) {
     const f64 L = 0.4;
     StressProblem P;
@@ -330,13 +331,17 @@ TEST_CASE("stress: unsmoothed aggregation, and a dense coarse level coarsened on
         }
     return P;
   };
-  auto solve = [&](int n, const StressOptions& so, i64* work) {
+  struct Cost {
+    i64 per_iteration = 0, assembly = 0;
+    int iters = 0;
+  };
+  auto solve = [&](int n, const StressOptions& so, Cost* cost) {
     StressProblem P = block(n);
     REQUIRE(P.assemble(so));
     std::vector<f64> u;
     const PcgResult r = P.solve(gravity(P), u, 1e-8, 500, false);
     CHECK(r.converged);
-    if (work) *work = P.work_per_iteration();
+    if (cost) *cost = Cost{P.work_per_iteration(), P.assembly_work(), r.iters};
     return u;
   };
   auto close = [](const std::vector<f64>& a, const std::vector<f64>& b) {
@@ -353,12 +358,24 @@ TEST_CASE("stress: unsmoothed aggregation, and a dense coarse level coarsened on
     us.amg.smoothed = false;
     CHECK(close(solve(8, s, nullptr), solve(8, us, nullptr)));
   }
-  // the dense level: smoothed as the coarsest, or coarsened once more and solved exactly
+  // the dense level (aggregated once): smoothed as the coarsest, or coarsened once more and
+  // solved exactly
   StressOptions off, on;
   off.amg.coarsen_dense = false;
-  i64 w_off = 0, w_on = 0;
-  const std::vector<f64> a = solve(16, off, &w_off), b = solve(16, on, &w_on);
-  MESSAGE("work an iteration: " << w_off << " with the dense level smoothed, " << w_on << " coarsened once more");
+  off.amg.reaggregate = on.amg.reaggregate = false;
+  Cost c_off, c_on;
+  const std::vector<f64> a = solve(16, off, &c_off), b = solve(16, on, &c_on);
+  MESSAGE("work an iteration: " << c_off.per_iteration << " with the dense level smoothed, " << c_on.per_iteration << " coarsened once more");
   CHECK(close(a, b));
-  CHECK(w_on < w_off);
+  CHECK(c_on.per_iteration < c_off.per_iteration);
+  // the second level aggregated again at half the threshold: no dense level at all - a fraction
+  // of the assembly, less work an iteration, no more iterations
+  Cost c_again;
+  const std::vector<f64> c = solve(16, StressOptions{}, &c_again);
+  MESSAGE("aggregated once: assembly " << c_on.assembly << ", " << c_on.per_iteration << " an iteration, " << c_on.iters << " iterations; again: " << c_again.assembly << ", "
+                                       << c_again.per_iteration << ", " << c_again.iters);
+  CHECK(close(b, c));
+  CHECK(c_again.assembly < c_on.assembly / 2);
+  CHECK(c_again.per_iteration < c_on.per_iteration);
+  CHECK(c_again.iters <= c_on.iters + 1);
 }

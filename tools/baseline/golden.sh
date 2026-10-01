@@ -35,7 +35,7 @@ PARITY=(--tune impact_penetration=0 --tune restart_diverging_solves=0 --tune joi
   --tune spread_per_partner=0 --tune plastic_hinges=0 --tune rigid.piece_ccd=0 --tune load_trigger_gap=0
   --tune design_in_place=0 --tune patch_cut_structures=0 --tune evict_scan_ticks=1 --tune release_solvers=0
   --tune recheck_vacated=0 --tune true_solve_work=0 --tune rebuild_stale_only=0 --tune rigid.busy_hold=0
-  --tune rigid.warm_to_step=0 --tune coarsen_dense_levels=0)
+  --tune rigid.warm_to_step=0 --tune coarsen_dense_levels=0 --tune reaggregate_levels=0)
 
 world_hash() {  # (the world's hash from a tool's output: the last "world <hex>")
   printf '%s\n' "$1" | grep -o 'world [0-9a-f]\{16\}' | tail -1 | grep -o '[0-9a-f]*$'

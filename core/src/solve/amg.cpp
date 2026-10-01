@@ -243,12 +243,13 @@ bool Amg::build(const Bsr6& A, const std::vector<V3>& pos, const AmgOptions& opt
   }
   while (static_cast<int>(lv_.size()) < opt_.max_levels && lv_.back().A.n > opt_.coarse_max) {
     // (a level grown dense, as on huge irregular structures, would make the next products
-    // expensive and the cycle no cheaper: it becomes the coarsest - solved densely if it is small
-    // enough, else coarsened once more by its aggregates' rigid motions alone, unsmoothed: cheap
-    // products, and a coarsest level solved exactly instead of smoothed. AmgOptions::coarsen_dense)
+    // expensive and the cycle no cheaper: it is coarsened once more by its aggregates' rigid
+    // motions alone, unsmoothed - cheap products, and a small coarsest level solved exactly: the
+    // dense level's own factor, O(n^3), would cost more than the cycles it saves. Without
+    // AmgOptions::coarsen_dense it is the coarsest, solved densely only if it is small enough.)
     const Bsr6& L = lv_.back().A;
     const bool dense = lv_.size() > 1 && L.blocks() > 80 * static_cast<i64>(L.n);
-    if (dense && !(opt_.coarsen_dense && L.n > 4 * opt_.coarse_max)) break;
+    if (dense && !opt_.coarsen_dense) break;
     if (!coarsen(lv_.size() - 1, !dense && opt_.smoothed)) break;
     if (dense) break;
   }
@@ -274,60 +275,68 @@ bool Amg::coarsen(size_t l, bool smoothed) {
   const i32 n = A.n;
   std::vector<f64> dn(static_cast<size_t>(n));
   for (i32 i = 0; i < n; ++i) dn[size_t(i)] = blk6::fro6(&A.val[36 * size_t(A.rowptr[size_t(i)])]);
+  f64 theta = opt_.strength;
   auto strong = [&](i32 i, i32 k) {
     const i32 j = A.col[size_t(k)];
-    return j != i && blk6::fro6(&A.val[36 * size_t(k)]) >= opt_.strength * std::sqrt(dn[size_t(i)] * dn[size_t(j)]);
+    return j != i && blk6::fro6(&A.val[36 * size_t(k)]) >= theta * std::sqrt(dn[size_t(i)] * dn[size_t(j)]);
   };
   std::vector<i32> agg(size_t(n), -1);
   i32 na = 0;
-  // pass 1: roots whose strong neighbourhood is free (rows without couplings - retired nodes -
-  // are grouped in pass 3: as singleton roots they would stall the coarsening)
   auto isolated = [&](i32 i) { return A.rowptr[size_t(i) + 1] - A.rowptr[size_t(i)] <= 1; };
-  for (i32 i = 0; i < n; ++i) {
-    if (agg[size_t(i)] >= 0 || isolated(i)) continue;
-    bool free = true;
-    for (i32 k = A.rowptr[size_t(i)]; k < A.rowptr[size_t(i) + 1] && free; ++k)
-      if (strong(i, k) && agg[size_t(A.col[size_t(k)])] >= 0) free = false;
-    if (!free) continue;
-    agg[size_t(i)] = na;
-    for (i32 k = A.rowptr[size_t(i)]; k < A.rowptr[size_t(i) + 1]; ++k)
-      if (strong(i, k)) agg[size_t(A.col[size_t(k)])] = na;
-    ++na;
-  }
-  // pass 2: join the most strongly coupled aggregated neighbour
-  std::vector<i32> agg1 = agg;
-  for (i32 i = 0; i < n; ++i) {
-    if (agg1[size_t(i)] >= 0) continue;
-    f64 best = -1.0;
-    i32 ba = -1;
-    for (i32 k = A.rowptr[size_t(i)]; k < A.rowptr[size_t(i) + 1]; ++k) {
-      const i32 j = A.col[size_t(k)];
-      if (j == i || agg1[size_t(j)] < 0) continue;
-      const f64 s = blk6::fro6(&A.val[36 * size_t(k)]);
-      if (s > best) {
-        best = s;
-        ba = agg1[size_t(j)];
-      }
-    }
-    agg[size_t(i)] = ba;
-  }
-  // pass 3: leftovers. Nodes without any coupling (retired rows) are grouped eight at a time
-  // (they are decoupled: any grouping is exact for them), others become singletons.
-  {
-    i32 open = -1, fill = 0;
+  for (int round = 0;; ++round) {
+    std::fill(agg.begin(), agg.end(), -1);
+    na = 0;
+    // pass 1: roots whose strong neighbourhood is free (rows without couplings - retired nodes -
+    // are grouped in pass 3: as singleton roots they would stall the coarsening)
     for (i32 i = 0; i < n; ++i) {
-      if (agg[size_t(i)] >= 0) continue;
-      if (!isolated(i)) {
-        agg[size_t(i)] = na++;
-        continue;
-      }
-      if (open < 0 || fill >= 8) {
-        open = na++;
-        fill = 0;
-      }
-      agg[size_t(i)] = open;
-      ++fill;
+      if (agg[size_t(i)] >= 0 || isolated(i)) continue;
+      bool free = true;
+      for (i32 k = A.rowptr[size_t(i)]; k < A.rowptr[size_t(i) + 1] && free; ++k)
+        if (strong(i, k) && agg[size_t(A.col[size_t(k)])] >= 0) free = false;
+      if (!free) continue;
+      agg[size_t(i)] = na;
+      for (i32 k = A.rowptr[size_t(i)]; k < A.rowptr[size_t(i) + 1]; ++k)
+        if (strong(i, k)) agg[size_t(A.col[size_t(k)])] = na;
+      ++na;
     }
+    // pass 2: join the most strongly coupled aggregated neighbour
+    std::vector<i32> agg1 = agg;
+    for (i32 i = 0; i < n; ++i) {
+      if (agg1[size_t(i)] >= 0) continue;
+      f64 best = -1.0;
+      i32 ba = -1;
+      for (i32 k = A.rowptr[size_t(i)]; k < A.rowptr[size_t(i) + 1]; ++k) {
+        const i32 j = A.col[size_t(k)];
+        if (j == i || agg1[size_t(j)] < 0) continue;
+        const f64 s = blk6::fro6(&A.val[36 * size_t(k)]);
+        if (s > best) {
+          best = s;
+          ba = agg1[size_t(j)];
+        }
+      }
+      agg[size_t(i)] = ba;
+    }
+    // pass 3: leftovers. Nodes without any coupling (retired rows) are grouped eight at a time
+    // (they are decoupled: any grouping is exact for them), others become singletons.
+    {
+      i32 open = -1, fill = 0;
+      for (i32 i = 0; i < n; ++i) {
+        if (agg[size_t(i)] >= 0) continue;
+        if (!isolated(i)) {
+          agg[size_t(i)] = na++;
+          continue;
+        }
+        if (open < 0 || fill >= 8) {
+          open = na++;
+          fill = 0;
+        }
+        agg[size_t(i)] = open;
+        ++fill;
+      }
+    }
+    // (aggregates of fewer than two nodes: again at half the threshold - AmgOptions::reaggregate)
+    if (!opt_.reaggregate || round == 3 || 2 * static_cast<i64>(na) <= n) break;
+    theta *= 0.5;
   }
   if (na >= n || static_cast<f64>(na) > 0.85 * n) return false;
 

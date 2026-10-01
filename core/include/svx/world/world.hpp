@@ -219,9 +219,15 @@ struct WorldConfig {
   //     diverged iterate is never kept as the next solve's start; off: rebuilt in any case (a
   //     large structure's assembly every tick, the solve never getting anywhere), the iterate kept.
   //   coarsen_dense_levels: a stress solve's multigrid level grown dense (more than 80 blocks a
-  //     row: a large damaged structure's third or fourth) too large to solve densely is coarsened
-  //     once more, by its aggregates' rigid motions, and that solved densely; off: it is the
-  //     coarsest, smoothed - eight sweeps of its dense rows a cycle, and slow to converge.
+  //     row: a large damaged structure's third or fourth) is coarsened once more, by its
+  //     aggregates' rigid motions, and that solved densely; off: it is the coarsest - factored if
+  //     it is small (an assembly's most expensive part, at a hundred nodes), else smoothed: eight
+  //     sweeps of its dense rows a cycle, and slow to converge.
+  //   reaggregate_levels: a stress solve's multigrid level whose aggregates would hold fewer than
+  //     two nodes on average (its couplings mostly under the strength threshold: a large irregular
+  //     structure's second level) is aggregated again at half the threshold, up to three times;
+  //     off: aggregated once - it barely coarsens, and its smoothed coarse level fills in (a
+  //     damaged building's: 180 blocks a row, most of each assembly's and each cycle's work).
   //   rigid.busy_hold, rigid.warm_to_step (RigidParams): busy mode decided once a tick, and held
   //     until a collapse is well under its thresholds; the solver's warm starts scaled to the
   //     substep's length; off: decided every substep, warm starts as they were.
@@ -236,6 +242,7 @@ struct WorldConfig {
   bool true_solve_work = true;
   bool rebuild_stale_only = true;
   bool coarsen_dense_levels = true;
+  bool reaggregate_levels = true;
   i32 evict_scan_ticks = 10;
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
   f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)

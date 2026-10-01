@@ -893,10 +893,11 @@ std::vector<f64> World::Impl::load_vector(const Structure& s) const {
 
 StressOptions World::Impl::solver_options() const {
   // (what the configuration asks of every stress solve: WorldConfig::true_solve_work,
-  // coarsen_dense_levels)
+  // coarsen_dense_levels, reaggregate_levels)
   StressOptions so;
   so.amg.dense_work_per_unknown = !cfg_.true_solve_work;
   so.amg.coarsen_dense = cfg_.coarsen_dense_levels;
+  so.amg.reaggregate = cfg_.reaggregate_levels;
   return so;
 }
 

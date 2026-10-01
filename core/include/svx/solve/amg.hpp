@@ -56,10 +56,16 @@ struct AmgOptions {
   // (the reference's count of the coarsest dense solve in work_per_apply: by its unknowns, 36
   // times its cost - WorldConfig::true_solve_work off)
   bool dense_work_per_unknown = false;
-  // A level grown dense (more than 80 blocks a row) too large to solve densely is coarsened once
-  // more, unsmoothed, and its coarse level solved densely; false: it is the coarsest, smoothed
-  // (8 sweeps a cycle) - WorldConfig::coarsen_dense_levels off.
+  // A level grown dense (more than 80 blocks a row) is coarsened once more, unsmoothed, and its
+  // coarse level solved densely; false: it is the coarsest - solved densely if it has at most
+  // 4 coarse_max nodes, else smoothed (8 sweeps a cycle) - WorldConfig::coarsen_dense_levels off.
   bool coarsen_dense = true;
+  // A level whose aggregates would hold fewer than two nodes on average - its couplings mostly
+  // under the strength threshold, as on a large irregular structure's second level - is
+  // aggregated again at half the threshold, up to three times: it would barely coarsen, and its
+  // smoothed coarse level fill in (a damaged building's: 180 blocks a row, most of an assembly's
+  // and of each cycle's work). false: aggregated once - WorldConfig::reaggregate_levels off.
+  bool reaggregate = true;
 };
 
 class Amg {
