@@ -117,7 +117,9 @@ const GAPS = [0, 0, 1, 3];
  * and then cut back at a front corner by a slanted street (a block cut of a table yaw, now and then
  * off the table by a hair; the lot trimmed to it as cellPlan.js fitLots does, `whole` the lot as
  * planned) or taking its block whole (`whole: true`); its envelope (planBuildingEnvelopeAs) on the
- * ground level its frontage point's street gives (cellPlan.js lotGround). Draws from r.
+ * ground level its frontage point's street gives (cellPlan.js lotGround); now and then a flat-roofed
+ * one's upper floors set back from its sides or cantilevered over its front (footprints no archetype
+ * draws, which a chamfer or a bay may not fit). Draws from r.
  * Returns { lot, block, env, cellId, view }.
  */
 export function wingSite(r, w, cellRoads, i, j, k, DS, styles, specs) {

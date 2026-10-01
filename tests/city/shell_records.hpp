@@ -142,7 +142,10 @@ inline void serve_cell_roads(World& w, const CellRoads& roads) {
   };
 }
 
-// wingSite(r, w, cellRoads, i, j, k, DS, styles, specs)
+// wingSite(r, w, cellRoads, i, j, k, DS, styles, specs): a scripted site in cell (i, j) - a lot on
+// scripted streets (served as the cell's roads: cell_roads), now and then cut back by a slanted
+// street or taking its block whole, and its envelope (now and then its upper floors set back or
+// cantilevered: footprints no archetype draws).
 inline WingSite wing_site(rec::Samples& r, const World& w, CellRoads& cell_roads, double i, double j, double k, const std::vector<District>& DS,
                           const std::vector<std::string>& styles, const RoadSpecs& specs) {
   static const char* const kWinged[] = {"walkup", "midrise", "office", "rowhouse", "townhouse"};
