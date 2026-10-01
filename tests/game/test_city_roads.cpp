@@ -275,7 +275,7 @@ TEST_CASE("city roads: the same answers from several threads, in any order") {
   }
   for (const std::string& e : expect) CHECK(std::count(e.begin(), e.end(), '\n') > 20);
   // (one network, keeping few roads made: asked by four threads, each in its own order)
-  const CityRoadNetwork shared(city_world(), city::RoadNetworkOptions{96, 2, 1 << 16});
+  const CityRoadNetwork shared(city_world(), city::RoadNetworkOptions{96, 2, 1 << 16, 1 << 12});
   std::vector<std::vector<std::string>> got(4, std::vector<std::string>(boxes.size()));
   std::vector<std::thread> threads;
   for (size_t t = 0; t < 4; ++t)

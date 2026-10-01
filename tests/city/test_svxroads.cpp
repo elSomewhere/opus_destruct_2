@@ -28,7 +28,7 @@ TEST_CASE("city svx roads: lanes, ways on, signals, walks, corners, parking conf
   for (const test::RoadWorld& rw : test::road_worlds()) {
     const std::shared_ptr<World> w = test::export_world(rw.preset, rw.size);
     const std::vector<test::RoadBox> boxes = test::road_boxes(*w);
-    const RoadNetwork net(w, RoadNetworkOptions{1 << 16, 1 << 10, 1 << 20});
+    const RoadNetwork net(w, RoadNetworkOptions{1 << 16, 1 << 10, 1 << 20, 1 << 16});
     // (ids of a road at the spawn, before anything is handed out and after)
     const CellIJ c = w->cell_at(0, 0);
     const std::string road = w->road_view(c.i, c.j)->segs[0].road->id;
@@ -429,7 +429,7 @@ TEST_CASE("city svx roads: lane() and walk() know what was handed out, the most 
   const std::vector<RoadWalk> ref_walks = big.walks_in(lo, hi);
   REQUIRE(!ref.empty());
   REQUIRE(!ref_walks.empty());
-  const RoadNetwork net(w, RoadNetworkOptions{64, 4, 8});
+  const RoadNetwork net(w, RoadNetworkOptions{64, 4, 8, 8});
   // (nothing handed out: nothing known, no way on, no signal; always green, always open)
   int answered = 0;
   for (const RoadLane& l : ref) answered += net.lane(l.id).has_value() || !net.next(l.id).empty() || net.signal(l.id).has_value() || !net.green(l.id, 5);

@@ -28,8 +28,9 @@
 // reference keeps: lane(id) knows only lanes handed out - those of the roads (highway edges) whose
 // lanes a query has made (lanes_in, next) - and walk(id) only walks of the roads whose walks a query
 // has made (walks_in, walk_next); next, signal and walk_next answer for those alone. The network
-// remembers the most recent `remembered` roads' (edges') records (docs/CITY.md §6). Queries may come
-// from several threads at once; memory is bounded (RoadNetworkOptions).
+// remembers the records of the most recent `remembered` roads (`remembered_edges` highway edges:
+// docs/CITY.md §6). Queries may come from several threads at once; memory is bounded
+// (RoadNetworkOptions).
 #pragma once
 
 #include <array>
@@ -132,9 +133,10 @@ struct RoadRegion {
 // is made again alike when asked; a road's records dropped from what lane() and walk() remember are
 // answered again once a query hands them out again).
 struct RoadNetworkOptions {
-  size_t roads = 1024;        // roads' structures (nodes, junctions, lanes, walks) kept made
-  size_t edges = 32;          // highway edges' lanes kept made
-  size_t remembered = 4096;   // roads (and highway edges) whose lanes and walks lane() and walk() answer
+  size_t roads = 1024;            // roads' structures (nodes, junctions, lanes, walks) kept made
+  size_t edges = 32;              // highway edges' lanes kept made
+  size_t remembered = 4096;       // roads whose lanes and walks lane() and walk() answer
+  size_t remembered_edges = 256;  // highway edges whose lanes lane() answers
 };
 
 class RoadNetwork {

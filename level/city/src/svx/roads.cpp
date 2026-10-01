@@ -363,7 +363,7 @@ struct RoadNetwork::Impl {
                 if (x.edge == edge_id && x.index == ri) return leaving(info, static_cast<int>(k));
             return {};
           },
-          opt.edges, opt.remembered);
+          opt.edges, opt.remembered_edges);
   }
 
   std::shared_ptr<const World> world_ptr;

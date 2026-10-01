@@ -23,14 +23,14 @@ TEST_CASE("city svx roads: four threads, any order, small caches - the same reco
   // (one thread alone, nothing dropped)
   std::vector<std::string> expect;
   {
-    const RoadNetwork net(w, RoadNetworkOptions{1 << 16, 1 << 10, 1 << 20});
+    const RoadNetwork net(w, RoadNetworkOptions{1 << 16, 1 << 10, 1 << 20, 1 << 16});
     for (const test::RoadBox& b : boxes) {
       rec::Out out;
       test::road_box_records(out, net, b);
       expect.push_back(out.text());
     }
   }
-  const RoadNetwork net(w, RoadNetworkOptions{128, 2, 1 << 20});
+  const RoadNetwork net(w, RoadNetworkOptions{128, 2, 1 << 20, 1 << 16});
   std::vector<std::vector<std::string>> got(4, std::vector<std::string>(boxes.size()));
   std::vector<std::thread> threads;
   for (size_t t = 0; t < 4; ++t)

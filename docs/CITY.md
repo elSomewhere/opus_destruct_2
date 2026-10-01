@@ -355,18 +355,18 @@ so that it stays the oracle.
   reference's terrain made pure with `pureTerrain`); the recorded roads are those of a createWorld
   world whose terrain has no port grading, so a harbour town's may differ from them.
 - **The road network's memory: road structures and what was handed out** (`svx/roads.js`,
-  `svx/highwayLanes.js`). The reference keeps every road's structure it made (`roadInfo`: its
-  nodes, links, junctions, corners, lanes and walks) and every highway edge's lanes for good, and
-  remembers every lane and walk a query handed out (`laneIndex`, `walkIndex`, `walkEnds`, the
-  highways' `index`): `lane(id)`, `walk(id)`, `next`, `signal` and `walkNext` answer for those
-  alone - the lanes of a road whose lanes `lanesIn`, `next` (or a ramp's way on) made, the walks of
-  a road whose walks `walksIn` or `walkNext` made. Both grow without bound as a game drives on. The
-  port keeps the structures in caches (`RoadNetworkOptions` `roads`, `edges`: a structure is a pure
-  function of its road's id, made again alike when dropped) and remembers what was handed out by
-  road (edge): the `remembered` roads (edges) whose records a query handed out or asked about most
-  recently. A lane or walk of a road forgotten that way is unknown again - `lane` and `walk` answer
-  none, `next` and `walkNext` nothing, `green` and `walkOpen` always, as the reference does for an
-  id never handed out - until a query hands its road's records out again (`lanes_in`, `next`,
+  `svx/highwayLanes.js`). The reference keeps every road's structure it made (`roadInfo`: its nodes,
+  links, junctions, corners, lanes and walks) and every highway edge's lanes for good, and remembers
+  every lane and walk a query handed out (`laneIndex`, `walkIndex`, `walkEnds`, the highways'
+  `index`): `lane(id)`, `walk(id)`, `next`, `signal` and `walkNext` answer for those alone - the
+  lanes of a road whose lanes `lanesIn`, `next` (or a ramp's way on) made, the walks of a road whose
+  walks `walksIn` or `walkNext` made. Both grow without bound as a game drives on. The port keeps
+  the structures in caches (`RoadNetworkOptions` `roads`, `edges`: a structure is a pure function of
+  its road's id, made again alike when dropped) and remembers what was handed out by road (edge):
+  the `remembered` roads (`remembered_edges` edges) whose records a query handed out or asked about
+  most recently. A lane or walk of a road forgotten that way is unknown again - `lane` and `walk`
+  answer none, `next` and `walkNext` nothing, `green` and `walkOpen` always, as the reference does
+  for an id never handed out - until a query hands its road's records out again (`lanes_in`, `next`,
   `walks_in`, `walk_next` round it). The stage `svxroads` gives the network room for all it touches
   (the reference's answers, ids not handed out included); `test_svxroads.cpp` shows what the bounds
   forget, and that queries asked from four threads over small caches write the same records. The
