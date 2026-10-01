@@ -6,6 +6,7 @@
 
 #include <memory>
 #include <string>
+#include <thread>
 #include <vector>
 
 #include "complexes.hpp"
@@ -274,5 +275,65 @@ TEST_CASE("city sites: sites are the same whatever was asked before (cache order
     CHECK(sa[k]->id == sb[k]->id);
     CHECK(sa[k]->rect == sb[k]->rect);
     CHECK(sa[k]->pad_z == sb[k]->pad_z);
+  }
+}
+
+TEST_CASE("city sites: the layer, its ground and its source are the same on any thread") {
+  const std::vector<const SiteDef*> defs = test::test_site_defs();
+  auto make = [&] {
+    auto w = std::make_unique<World>(Value::object({{"seed", 1337}}));
+    w->sites = std::make_shared<SiteLayer>(*w, defs);
+    return w;
+  };
+  auto ground_of = [](const World& w, double x, double y, double nat) {
+    const std::optional<SiteGround> g = w.sites->ground(x, y, nat);
+    if (!g) return std::string("-");
+    return js::cat(g->z, "/", g->mat, "/", g->sub, "/", g->site->id, "/", static_cast<double>(g->pad - g->site->pads().data()), "/", g->inside);
+  };
+  auto chunk_of = [](const World& w, const std::array<double, 5>& c) {
+    ChunkBuffer ch = test::ground_chunk(static_cast<int>(c[0]), c[1], c[2], c[3], c[4]);
+    site_source_rasterize(w, ch, c[4] - 6);
+    return test::chunk_digest(ch.data);
+  };
+  // one thread: the sites round the origin, points round them, chunks over them
+  const auto w1 = make();
+  std::vector<std::array<double, 3>> probes;
+  std::vector<std::array<double, 5>> chunks;
+  for (double j = -2; j <= 2; j += 1)
+    for (double i = -2; i <= 2; i += 1) {
+      const auto s = w1->sites->site_at(i, j);
+      if (!s) continue;
+      const Rect& b = s->blend;
+      for (double k = 0; k < 12; k += 1) probes.push_back({b.x0 + std::fmod(k * 977, b.x1 - b.x0), b.y0 + std::fmod(k * 541, b.y1 - b.y0), s->pad_z + k - 6});
+      for (const int lod : {0, 2}) {
+        const double e = static_cast<double>(32 << lod);
+        chunks.push_back({static_cast<double>(lod), std::floor(s->center.x / e), std::floor(s->center.y / e), std::floor((s->pad_z - 40) / e), s->pad_z});
+      }
+    }
+  REQUIRE(!probes.empty());
+  std::vector<std::string> want;
+  for (const auto& p : probes) want.push_back(ground_of(*w1, p[0], p[1], p[2]));
+  std::vector<uint32_t> want_chunks;
+  for (const auto& c : chunks) want_chunks.push_back(chunk_of(*w1, c));
+  // four threads on a fresh world, each in an order of its own
+  const auto w2 = make();
+  std::vector<std::vector<std::string>> got(4, std::vector<std::string>(probes.size()));
+  std::vector<std::vector<uint32_t>> got_chunks(4, std::vector<uint32_t>(chunks.size()));
+  std::vector<std::thread> threads;
+  for (size_t t = 0; t < 4; ++t)
+    threads.emplace_back([&, t] {
+      for (size_t k = 0; k < chunks.size(); ++k) {
+        const size_t q = (k * 3 + t * 7) % chunks.size();
+        got_chunks[t][q] = chunk_of(*w2, chunks[q]);
+      }
+      for (size_t k = 0; k < probes.size(); ++k) {
+        const size_t q = (k + t * probes.size() / 4) % probes.size();
+        got[t][q] = ground_of(*w2, probes[q][0], probes[q][1], probes[q][2]);
+      }
+    });
+  for (std::thread& th : threads) th.join();
+  for (size_t t = 0; t < 4; ++t) {
+    CHECK(got[t] == want);
+    CHECK(got_chunks[t] == want_chunks);
   }
 }
