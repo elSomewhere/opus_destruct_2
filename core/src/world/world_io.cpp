@@ -380,18 +380,19 @@ bool World::Impl::load_delta(const std::vector<u8>& bytes) {
   // the grids: removed ones go, changed ones take their records, new ones are made
   for (GridId id : removed) {
     const i32 sl = slot_of(id);
-    if (sl > 0) {
-      removed_base_.push_back(id);
-      remove_grid_slot(static_cast<u16>(sl), true);
-    }
+    if (sl > 0) remove_grid_slot(static_cast<u16>(sl), true);
+    if (sl > 0 || strm_.source) note_removed_base(id);  // (a streamed one not resident: it must not come)
   }
   for (size_t q = 0; q < gds.size(); ++q) {
     GridDelta& d = gds[q];
     i32 sl = slot_of(d.id);
     if (sl < 0 && d.base) {
       // (a streamed grid not resident: its changes wait in the archive)
+      // (with the region of its origin's chunk: a source's grid is at home in one chunk, as a rule
+      // that one)
       const u64 key = (1ull << 63) | d.id;
-      archive_record(key, write_grid_entry(d), 0);
+      const IVec3 home = chunk_of(voxel_of(d.origin, grid_.h));
+      archive_record(key, write_grid_entry(d), region_of(key3(home[0], home[1], home[2])));
       continue;
     }
     if (sl < 0) {
@@ -686,6 +687,7 @@ void World::Impl::generate_grids(u64 key) {
   if (!strm_.source) return;
   for (const SourceGrid& sg : strm_.source->grids(unkey3(key))) {
     if (sg.id == 0 || sg.id >= kSessionGrids || slot_of(sg.id) >= 0) continue;  // (not a source's id; here already)
+    if (std::binary_search(removed_base_.begin(), removed_base_.end(), sg.id)) continue;  // (removed: for good)
     VoxelGrid g;
     g.h = sg.voxel_size > 0.0 ? sg.voxel_size : grid_.h;
     if (!strm_.source->generate_grid(sg.id, g)) continue;
@@ -695,15 +697,32 @@ void World::Impl::generate_grids(u64 key) {
     d.voxel_size = g.h;
     d.priority = sg.priority;
     d.base = true;
+    // (changed or placed anew in play, then archived out of range: it comes back as it was, where
+    // it was put)
+    const u64 ak = (1ull << 63) | sg.id;
+    std::vector<u8> saved;
+    bool moved = false;
+    if (strm_.archive->has(ak)) {
+      saved = strm_.archive->get(ak);
+      Rd in{saved};
+      GridDelta e;
+      const LatticeXf src = LatticeXf::make(sg.origin, sg.rot);
+      if (read_grid_entry(in, kGridsVersion, grid_.h, &e) &&
+          (e.origin.x != src.off.x || e.origin.y != src.off.y || e.origin.z != src.off.z || e.rot.x != src.q.x || e.rot.y != src.q.y ||
+           e.rot.z != src.q.z || e.rot.w != src.q.w)) {
+        d.frame = GridFrame{e.origin, e.rot};
+        moved = true;
+      }
+    }
     const GridId id = add_grid_impl(d, std::move(g), sg.id, key, false);
     if (id == 0) continue;
     const u16 sl = static_cast<u16>(slot_of(id));
     GridState& st = gs(sl);
-    const u64 ak = (1ull << 63) | id;
-    if (strm_.archive->has(ak)) {
+    if (!saved.empty()) {
       // its changes back (a grid changed by play was designed before it was changed)
       std::vector<u64> touched;
-      apply_grid_entry(sl, strm_.archive->get(ak), &touched);
+      apply_grid_entry(sl, saved, &touched);
+      st.moved = moved;
       strm_.archive->erase(ak);
     } else {
       // fresh from the source: designed when first touched
@@ -727,7 +746,8 @@ void World::Impl::generate_grids(u64 key) {
 
 void World::Impl::evict_grid(u16 g, u64 home_region) {
   GridState& st = gs(g);
-  if (!st.g.modified_chunks().empty()) archive_record((1ull << 63) | st.id, grid_entry(g), home_region);
+  // (changed, or placed anew: it comes back so)
+  if (!st.g.modified_chunks().empty() || st.moved) archive_record((1ull << 63) | st.id, grid_entry(g), home_region);
   remove_grid_slot(g, true);
 }
 
@@ -763,12 +783,6 @@ bool World::Impl::apply_grid_entry(u16 g, const std::vector<u8>& e, std::vector<
     if (touched) touched->push_back(key);
   }
   refresh_grid_box(g);
-  // (placed anew while it was out of range: where it was)
-  const GridState& st = gs(g);
-  const LatticeXf at = LatticeXf::make(d.origin, d.rot);
-  if (at.off.x != st.xf.off.x || at.off.y != st.xf.off.y || at.off.z != st.xf.off.z || at.q.x != st.xf.q.x ||
-      at.q.y != st.xf.q.y || at.q.z != st.xf.q.z || at.q.w != st.xf.q.w)
-    set_grid_frame(d.id, GridFrame{d.origin, d.rot});
   return true;
 }
 
@@ -897,6 +911,18 @@ void World::Impl::unload_joints() {
 }
 
 u64 World::Impl::region_of(u64 chunk_key) const { return strm_.source ? strm_.source->region(unkey3(chunk_key)) : 0; }
+
+void World::Impl::body_chunks(const Body& bd, const std::function<void(u64)>& f) const {
+  const IVec3 a = voxel_of(bd.box_lo, grid_.h), b = voxel_of(bd.box_hi, grid_.h);
+  for (i32 x = (a[0] >> kChunkBits) - 1; x <= (b[0] >> kChunkBits) + 1; ++x)
+    for (i32 y = (a[1] >> kChunkBits) - 1; y <= (b[1] >> kChunkBits) + 1; ++y)
+      for (i32 z = (a[2] >> kChunkBits) - 1; z <= (b[2] >> kChunkBits) + 1; ++z) f(key3(x, y, z));
+}
+
+void World::Impl::note_removed_base(GridId id) {
+  const auto it = std::lower_bound(removed_base_.begin(), removed_base_.end(), id);
+  if (it == removed_base_.end() || *it != id) removed_base_.insert(it, id);
+}
 
 void World::Impl::archive_record(u64 key, const std::vector<u8>& rec, u64 region) {
   if (!strm_.archive->fits(rec.size())) forget_regions(rec.size(), region);
@@ -1080,12 +1106,7 @@ int World::Impl::stream_update() {
   // structure being solved)
   // (a moving piece keeps the chunks around it; sleeping rubble does not: it is archived with
   // them, or it would keep regions it lies in resident forever)
-  auto chunks_of_body = [&](const Body& bd, const std::function<void(u64)>& f) {
-    const IVec3 a = voxel_of(bd.box_lo, grid_.h), b = voxel_of(bd.box_hi, grid_.h);
-    for (i32 x = (a[0] >> kChunkBits) - 1; x <= (b[0] >> kChunkBits) + 1; ++x)
-      for (i32 y = (a[1] >> kChunkBits) - 1; y <= (b[1] >> kChunkBits) + 1; ++y)
-        for (i32 z = (a[2] >> kChunkBits) - 1; z <= (b[2] >> kChunkBits) + 1; ++z) f(key3(x, y, z));
-  };
+  auto chunks_of_body = [&](const Body& bd, const std::function<void(u64)>& f) { body_chunks(bd, f); };
   // (what is wholly out of range - a machine running there, what it carries, debris flying off -
   // is archived as it is, with its joints: it would keep its region resident forever; it comes
   // back as it was, its drives' programs having run on)

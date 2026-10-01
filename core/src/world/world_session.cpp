@@ -657,6 +657,12 @@ bool World::Impl::read_session(Rd& in, SessionDelta* s, u32 version) const {
     SessionDelta probe;
     const u8 gv = rin.u8_();
     if (gv < 1 || gv > kGroupVersion || !read_group(rin, &probe, gv) || rin.p != a.record.size()) return false;
+    if (!probe.pieces.empty()) {
+      const IVec3 home = chunk_of(world_detail::voxel_of(probe.pieces.front()->x, grid_.h));
+      a.home = key3(home[0], home[1], home[2]);
+    } else if (!a.chunks.empty()) {
+      a.home = a.chunks.front();
+    }
     s->archived.push_back(std::move(a));
   }
   if (version >= 6) {
@@ -687,6 +693,12 @@ bool World::Impl::read_session(Rd& in, SessionDelta* s, u32 version) const {
       Rd rin{a.record};
       ArticulationSaved probe;
       if (!read_articulation_record(rin, &probe) || rin.p != a.record.size()) return false;
+      if (!probe.desc.links.empty()) {
+        const IVec3 home = chunk_of(world_detail::voxel_of(probe.desc.links.front().pos, grid_.h));
+        a.home = key3(home[0], home[1], home[2]);
+      } else if (!a.chunks.empty()) {
+        a.home = a.chunks.front();
+      }
       s->archived_articulations.push_back(std::move(a));
     }
   }
@@ -711,7 +723,6 @@ void World::Impl::apply_session(SessionDelta&& s) {
   att_.next_joint = std::max<JointId>(att_.next_joint, s.next_joint);
   att_.next_wheel = std::max<WheelId>(att_.next_wheel, s.next_wheel);
   steps_ = s.steps;
-  add_group(s);
   // (a streamed world's groups out of range: archived again, as they were)
   for (const auto& [key, g] : strm_.archived_groups) strm_.archive->erase(key);
   strm_.archived_groups.clear();
@@ -720,7 +731,7 @@ void World::Impl::apply_session(SessionDelta&& s) {
   if (strm_.source)
     for (SessionDelta::Archived& a : s.archived) {
       if (a.chunks.empty()) continue;
-      archive_record(a.key, a.record, region_of(a.chunks.front()));
+      archive_record(a.key, a.record, region_of(a.home));
       if (!strm_.archive->has(a.key)) continue;
       Rd rin{a.record};
       rin.u8_();
@@ -729,6 +740,36 @@ void World::Impl::apply_session(SessionDelta&& s) {
       strm_.archived_groups[a.key] = ArchivedGroup{std::move(a.chunks), std::move(a.joints), pieces};
       st_.archived_pieces += pieces;
     }
+  // (a streamed world: the chunks its pieces and links lie in, and those its joints hold on to,
+  // come first - a piece over a chunk not generated yet would fall through it, a joint on a grid
+  // not there would be gone; what is out of range goes back to the archive at the next eviction
+  // scan. While they come, the session's joints are not the source's to make again with its
+  // grids: they are the session's.)
+  if (strm_.source) {
+    std::vector<u64> need;
+    for (const auto& b : s.pieces) body_chunks(*b, [&](u64 k) { need.push_back(k); });
+    for (const ArticulationSaved& a : s.articulations)
+      for (const LinkDesc& l : a.desc.links) {
+        const IVec3 c = chunk_of(world_detail::voxel_of(l.pos, grid_.h));
+        for (i32 x = c[0] - 1; x <= c[0] + 1; ++x)
+          for (i32 y = c[1] - 1; y <= c[1] + 1; ++y)
+            for (i32 z = c[2] - 1; z <= c[2] + 1; ++z) need.push_back(key3(x, y, z));
+      }
+    for (const auto& [r, j] : s.joints)
+      for (const JointRec::End* E : {&r.a, &r.b})
+        if (E->kind == JointAnchor::Kind::Grid && E->piece == 0 && E->grid == kWorldGrid) {
+          const IVec3 c = chunk_of(E->voxel);
+          need.push_back(key3(c[0], c[1], c[2]));
+        }
+    std::sort(need.begin(), need.end());
+    need.erase(std::unique(need.begin(), need.end()), need.end());
+    std::vector<JointId> held;
+    for (const auto& [r, j] : s.joints)
+      if (strm_.archived_joints.insert(r.id).second) held.push_back(r.id);
+    for (u64 k : need) generate_chunk(k);
+    for (JointId id : held) strm_.archived_joints.erase(id);
+  }
+  add_group(s);
   // the articulations (their ids as they were), and those archived out of range
   for (ArticulationSaved& a : s.articulations) restore_articulation(std::move(a));
   // (the ids of those out of range stay theirs: one made from now on must not take one, and with
@@ -738,7 +779,7 @@ void World::Impl::apply_session(SessionDelta&& s) {
   if (strm_.source)
     for (SessionDelta::ArchivedArticulation& a : s.archived_articulations) {
       if (a.chunks.empty()) continue;
-      archive_record(a.key, a.record, region_of(a.chunks.front()));
+      archive_record(a.key, a.record, region_of(a.home));
       if (!strm_.archive->has(a.key)) continue;
       strm_.archived_arts[a.key] = std::move(a.chunks);
       ++st_.archived_articulations;

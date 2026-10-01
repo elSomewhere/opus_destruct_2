@@ -1663,8 +1663,8 @@ void World::Impl::remove_bodies(std::vector<i64> ids, PieceEnd end) {
     if (!b) continue;
     dead_loads_.erase(id);
     // what rested on it falls (a split piece's parts take its place; where it lost voxels on the
-    // way, split_body woke what rested on it)
-    if (end != PieceEnd::Split) wake_around(*b);
+    // way, split_body woke what rested on it; one archived out of range comes back under it)
+    if (end != PieceEnd::Split && end != PieceEnd::Unloaded) wake_around(*b);
     if (!b->announced) continue;  // (made and gone within one tick: never reported)
     WorldEvent ev;
     ev.kind = WorldEvent::Kind::PieceRemoved;

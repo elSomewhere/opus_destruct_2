@@ -533,7 +533,8 @@ struct World::Impl {
   // seed: extract its structures at the next tick (a grid added after the design pass)
   GridId add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId id, u64 home, bool seed);
   // A grid's changes as saved (its id, whether a level's, its frame, its chunk records: the
-  // changed ones, or all of them for a grid of this session), and applying one to a grid.
+  // changed ones, or all of them for a grid of this session), and applying one's records to a
+  // grid (its frame is the caller's: a streamed grid is made where the entry has it).
   std::vector<u8> grid_entry(u16 g) const;
   bool apply_grid_entry(u16 g, const std::vector<u8>& entry, std::vector<u64>* touched);
   // (the oriented grids' and the pieces' voxels, and the world grid's too if asked)
@@ -625,7 +626,8 @@ struct World::Impl {
   const SolidsCache* solids_entry(const IVec3& world_chunk) const;
   void world_chunks_of(const LatticeXf& xf, const V3& lo, const V3& hi, std::vector<u64>& out) const;
   std::vector<GridChunk> grid_dirty_;        // (oriented grids' changed chunks the host has not taken)
-  std::vector<GridId> removed_base_;         // base grids removed since load (saved in deltas)
+  std::vector<GridId> removed_base_;         // base grids removed since load, ascending (saved in deltas)
+  void note_removed_base(GridId id);         // (once: a streamed one never comes back)
   std::vector<PendingEvent> queue_;
   std::vector<WorldEvent> events_;
   i64 next_id_ = 1;
@@ -689,6 +691,9 @@ struct World::Impl {
 
   // streaming
   u64 region_of(u64 chunk_key) const;
+  // The chunks about a piece's box and their neighbours: what it may touch next (it keeps them
+  // resident while it moves, is archived with them when it sleeps).
+  void body_chunks(const Body& b, const std::function<void(u64)>& f) const;
   void unload_sleepers(const std::vector<u64>& chunks,
                        const std::function<void(const Body&, const std::function<void(u64)>&)>& chunks_of);
   // Keeps a chunk's changes (the archive; a full bounded archive forgets old regions first).

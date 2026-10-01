@@ -249,6 +249,9 @@ must be resident: one point per player, camera or AI of interest.
   is archived as it is, and comes back as it was, a machine's drive on its program. Pieces are
   grouped by their joints (and, out of range, what touches them): a group goes and comes back
   whole, with its region's changes, in the archive's budget, and is forgotten with its region.
+  What rests on a piece that goes is not woken: it goes too, or the piece comes back under it.
+- A source's grid changed, placed anew (`set_grid_frame`) or removed (`remove_grid`) in play stays
+  so: it comes back changed and where it was put, or not at all.
 - A source places joints with `ChunkSource::joints(chunk)` (`SourceJoint`: a stable id and a
   `JointDesc` on the grids at home in the chunk, or the world grid's voxels): made when the
   chunk's grids are, not while the machine is archived, again when it was forgotten.
@@ -278,7 +281,9 @@ streamed world's pieces archived out of range. `load_delta()` applies one:
 - A malformed delta is refused whole: nothing is applied.
 - A saved session goes on as it would have: its pieces where they were, a machine on its
   program. (The solver's warm starts are not saved: close, not the same bits. The environment's
-  transient state - heat, smoke - is not either.)
+  transient state - heat, smoke - is not either.) In a streamed world, the chunks its pieces lie
+  in and its joints hold on to are generated as it loads (a piece would fall through ground not
+  there yet); what is out of range goes back to the archive at the next eviction scan.
 
 ### Determinism
 

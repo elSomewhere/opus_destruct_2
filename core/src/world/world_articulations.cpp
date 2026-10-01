@@ -231,12 +231,13 @@ void World::Impl::drop_articulation(ArticulationId id, PieceEnd end) {
                        rigid_.targets.end());
   rigid_.articulations.erase(std::remove_if(rigid_.articulations.begin(), rigid_.articulations.end(), [&](const ArticulationRules& r) { return r.id == id; }),
                              rigid_.articulations.end());
-  // its links (what rested on them falls)
+  // its links (what rested on them falls - not when it is archived out of range: it comes back
+  // under it)
   std::vector<i64> ids = a.links;
   std::sort(ids.begin(), ids.end());
   for (i64 bid : ids) {
     dead_loads_.erase(bid);
-    if (const Body* b = rigid_.find(bid)) wake_around(*b);
+    if (const Body* b = rigid_.find(bid); b && end != PieceEnd::Unloaded) wake_around(*b);
   }
   rigid_.remove_if([&](const Body& b) { return std::binary_search(ids.begin(), ids.end(), b.id); });
   arts_.erase(it);

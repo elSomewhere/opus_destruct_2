@@ -459,7 +459,7 @@ bool World::Impl::remove_grid(GridId id) {
   // What it held through junctions is extracted again: it lost those bonds (a slab on a column of
   // it falls). (Not when a streamed grid is evicted: the world there is unknown, and holds.)
   release_junctions(g);
-  if (gs(g).base) removed_base_.push_back(id);
+  if (gs(g).base) note_removed_base(id);
   remove_grid_slot(g, true);
   return true;
 }

@@ -776,6 +776,7 @@ struct World::Impl::SessionDelta {
     std::vector<u64> chunks;
     std::vector<JointId> joints;
     std::vector<u8> record;
+    u64 home = 0;  // (the chunk of its first piece: its region is the one it was archived with)
   };
   std::vector<Archived> archived;
   // (v6) the articulations, and those archived out of range (their records as archived)
@@ -784,6 +785,7 @@ struct World::Impl::SessionDelta {
     u64 key = 0;
     std::vector<u64> chunks;
     std::vector<u8> record;
+    u64 home = 0;  // (the chunk of its first link)
   };
   std::vector<ArchivedArticulation> archived_articulations;
 };
