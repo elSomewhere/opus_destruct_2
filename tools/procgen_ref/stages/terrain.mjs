@@ -3,10 +3,10 @@
 // points (hints, stream channels, roughness, ruggedness, coast), samples with a precomputed urban
 // sample and raw ones, heights, the landform stack run directly (natural() and the context it
 // leaves: the hints and its lazy coast type, climate and desertness), and the settlements' base
-// heights. Samples run in order on one Terrain: its one context carries what nested calls leave
-// (a settlement's base height made inside a sample), as the reference's does.
+// heights. Every base height a sample reads is made first, in a fixed order (lib/worlds.mjs
+// warmBasesAt; docs/CITY.md §6): the reference's samples are then what they are in any order.
 import { REF, line, samples } from "../lib/rec.mjs";
-import { allWorlds, samplePoints } from "../lib/worlds.mjs";
+import { allWorlds, samplePoints, warmBasesAt } from "../lib/worlds.mjs";
 
 const { World } = await import(REF + "world/World.js");
 
@@ -19,6 +19,8 @@ export default function* terrain() {
     const T = w.terrain;
     yield line("terrain", key, T.seaLevel, T.forms.map((f) => f.lf.id).join(","), T.ctx.torusR);
     const pts = samplePoints(w, r);
+    // (the points sampled below: pts, and the shifted points of the "s2" records)
+    warmBasesAt(w, pts.flatMap(([x, y]) => [[x, y], [x + 3, y - 5], [x - 7, y + 2]]));
     for (const [x, y] of pts) {
       const s = T.sample(x, y);
       yield line("s", x, y, s.h, s.natural, s.u, s.core, s.settlement?.id, s.grade, s.mountain, s.canyon, s.ravine, s.outcrop, streamOf(s.stream), s.rough,

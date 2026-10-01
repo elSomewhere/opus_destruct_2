@@ -8,16 +8,15 @@
 //
 // Heights come out in VOXELS (floating point); z = 0 is sea level.
 //
-// The sample context. The reference keeps ONE mutable context object per Terrain (`this.ctx`)
-// that every call reuses: natural() resets it and the landforms fill it, and sample() reads its
-// hints back afterwards - including after nested calls that run natural() again in the same
-// object (a settlement's base height made on first use, and the world's portGrade hook, whose
-// lakes sample the terrain). Those nested calls leave their values behind, and the reference's
-// output reads them (a sample's `coast` and `rugged`, and on an island the town's waterfront
-// grading). To give the same numbers, the port keeps that object too: one context per thread and
-// per Terrain (thread-local), shared by the nested calls of that thread exactly as JS shares its
-// one. Single-threaded, the port follows the reference call for call; on several threads each
-// thread's context holds what its own calls left (as each of the reference's workers' does).
+// Every call runs the landform stack in a context of its own (TerrainCtx: the position, the
+// lazy climate, desertness and coast type, the hints the landforms leave), so a sample is a pure
+// function of (world, x, y, arguments): the same in any call order, with any cache sizes and on
+// any thread. The reference reuses one context object per Terrain (`this.ctx`), and sample()
+// reads its coast and ruggedness back after nested calls that run the stack again in it - a
+// settlement's base height made on first use, the world's portGrade hook (lakes sampling the
+// terrain) - so there the first sample that makes one of those takes values from elsewhere. The
+// port isolates the nested calls (docs/CITY.md §6); the conformance stages make the base heights
+// first, so both agree.
 #pragma once
 
 #include <functional>
@@ -75,9 +74,12 @@ struct TerrainCfg {
 
 class Terrain;
 
-// The landform stack's context (JS: terrain.ctx): the position, urbanization, mountainness,
-// lazy climate / desertness / coast type, and the hints the landforms leave.
+// The landform stack's context for one run (JS: terrain.ctx): the position, urbanization,
+// mountainness, lazy climate / desertness / coast type, and the hints the landforms leave.
 struct TerrainCtx {
+  // A fresh context of a Terrain (its constants; nothing computed).
+  explicit TerrainCtx(const Terrain& t);
+
   const Terrain* terrain = nullptr;
   const IslandPlan* island = nullptr;  // island mode: the plan (null elsewhere)
   const TerrainCfg* cfg = nullptr;
@@ -110,14 +112,23 @@ struct TerrainCtx {
   double desert();
   // chart point (m) -> field point (landforms that sample elsewhere, e.g. gullies)
   FieldPoint to_field(double xm, double ym) const;
+};
 
-  // (per-thread scratch of the landforms: the gullies' kernels, a pure function of their lattice
-  // cell, cached as the reference caches them on its one state)
+// The landforms' memos, one per thread and per Terrain: values that are pure functions of their
+// key (the gullies' kernels of an 80 m lattice cell), kept only to be made once. Nothing read
+// from them depends on what was asked before.
+struct LandformMemo {
   struct GullyKernel {
     double x, y, nx, ny, a, p1, p2;
   };
-  std::unordered_map<double, GullyKernel> gully_cache;
-  int busy = 0;  // (calls in flight on this context: it is not recycled while > 0)
+  struct Cell {
+    double i, j;
+    bool operator==(const Cell& o) const { return i == o.i && j == o.j; }
+  };
+  struct CellHash {
+    size_t operator()(const Cell& c) const;
+  };
+  std::unordered_map<Cell, GullyKernel, CellHash> gully;
 };
 
 class Terrain {
@@ -127,11 +138,15 @@ class Terrain {
   Terrain(const Terrain&) = delete;
   Terrain& operator=(const Terrain&) = delete;
 
-  // Runs the landform stack at voxel (x, y); returns the height (m) and leaves the hints in this
-  // thread's context. prox: the settlement proximity (computed when not given).
+  // Runs the landform stack at voxel (x, y) in context c (reset first); returns the height (m)
+  // and leaves the hints in c. prox: the settlement proximity (computed when not given).
+  double natural(TerrainCtx& c, double x, double y, double u, double fx, double fy, double fz, std::optional<double> prox = std::nullopt,
+                 double fw = js::kNaN) const;
+  // The same in a context of its own (the height only).
   double natural(double x, double y, double u, double fx, double fy, double fz, std::optional<double> prox = std::nullopt,
                  double fw = js::kNaN) const;
-  // The lowland height (m) at a settlement centre: its graded city level (cached on the record).
+  // The lowland height (m) at a settlement centre: its graded city level (made once, in a context
+  // of its own, and cached on the record).
   double settlement_base(const Settlement& s) const;
   double city_meters(double fx, double fy, double fz, double fw, const Urban& ur) const;
   // The full sample. Pass a precomputed urban sample to avoid evaluating it again; raw skips the
@@ -140,7 +155,7 @@ class Terrain {
   double height(double x, double y) const;
 
   // The world's hook (createWorld): harbour towns ease down to their lake. Set once, before any
-  // generation; null: none.
+  // generation; null: none. (Terrain samples it makes run in contexts of their own.)
   std::function<double(double x, double y, double h)> port_grade;
 
   const Value& config() const { return config_; }
@@ -156,8 +171,8 @@ class Terrain {
   };
   const std::vector<Form>& forms() const { return forms_; }
 
-  // This thread's context of this Terrain (the reference's one `ctx`).
-  TerrainCtx& ctx() const;
+  // This thread's landform memos of this Terrain.
+  LandformMemo& memo() const;
 
  private:
   Value config_;
@@ -166,7 +181,7 @@ class Terrain {
   TerrainCfg cfg_;
   SimplexNoise n_city_;
   std::vector<Form> forms_;
-  std::shared_ptr<const char> token_;  // (the identity of this Terrain for the thread contexts)
+  std::shared_ptr<const char> token_;  // (the identity of this Terrain for the threads' memos)
 };
 
 }  // namespace svx::city

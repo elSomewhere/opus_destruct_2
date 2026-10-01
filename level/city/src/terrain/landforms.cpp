@@ -207,10 +207,13 @@ void register_landforms() {
       const double r = c.mountain_height * js::pow(st.n[0].ridgedP((f.x + wx) / s, (f.y - wx) / s, f.z / s, f.w / s, 3, 2.05, c.mountain_gain), 1.2);
       return r - v_depth * valley_profile(st.n[3], st.n[4], f.x, f.y, f.z, f.w, ctx.torus_r, Mv, c.valley_scale);
     };
-    auto kernel = [&](double i, double j) -> const TerrainCtx::GullyKernel& {
-      const double key = i * 1000003 + j;
-      auto it = ctx.gully_cache.find(key);
-      if (it != ctx.gully_cache.end()) return it->second;
+    // (the kernels are kept in this thread's memo, by their exact cell: the reference's cache key
+    // i * 1000003 + j is unique for |j| < 500,001 cells, 40,000 km)
+    auto& memo = ctx.terrain->memo().gully;
+    auto kernel = [&](double i, double j) -> LandformMemo::GullyKernel {
+      const LandformMemo::Cell key{i, j};
+      auto it = memo.find(key);
+      if (it != memo.end()) return it->second;
       const double xm = (i + 0.5) * GC;
       const double ym = (j + 0.5) * GC;
       const double e = 30;
@@ -221,9 +224,10 @@ void register_landforms() {
       // (phases vary slowly, so grooves carry on from kernel to kernel)
       const double p1 = kPi * 2 * st.n[2].fbmP(f.x / 700, f.y / 700, f.z / 700, f.w / 700, 2);
       const double p2 = kPi * 2 * st.n[2].fbmP(f.x / 260 + 9.7, f.y / 260, f.z / 260, f.w / 260, 2);
-      const TerrainCtx::GullyKernel k{xm, ym, g > 1e-6 ? -gy / g : 0, g > 1e-6 ? gx / g : 0, smoothstep(0.15, 0.55, g), p1, p2};
-      if (ctx.gully_cache.size() > 60000) ctx.gully_cache.clear();
-      return ctx.gully_cache.emplace(key, k).first->second;
+      const LandformMemo::GullyKernel k{xm, ym, g > 1e-6 ? -gy / g : 0, g > 1e-6 ? gx / g : 0, smoothstep(0.15, 0.55, g), p1, p2};
+      if (memo.size() > 60000) memo.clear();
+      memo.emplace(key, k);
+      return k;
     };
     const double xm = ctx.x * 0.125;
     const double ym = ctx.y * 0.125;
@@ -234,7 +238,7 @@ void register_landforms() {
     double sw = 0, sa = 0, s1 = 0, s2 = 0;
     for (double j = j0; j <= j1; j += 1)
       for (double i = i0; i <= i1; i += 1) {
-        const TerrainCtx::GullyKernel k = kernel(i, j);
+        const LandformMemo::GullyKernel k = kernel(i, j);
         const double dx = xm - k.x;
         const double dy = ym - k.y;
         const double d2 = (dx * dx + dy * dy) / (GR * GR);

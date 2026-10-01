@@ -30,7 +30,7 @@ TEST_CASE("city terrain: the terrain conforms to the reference (stage terrain)")
     const Terrain& T = *w.terrain;
     std::string forms;
     for (const Terrain::Form& f : T.forms()) forms += (forms.empty() ? "" : ",") + f.lf->id;
-    out << (Line() << "terrain" << ws.key << T.sea_level << forms << T.ctx().torus_r);
+    out << (Line() << "terrain" << ws.key << T.sea_level << forms << TerrainCtx(T).torus_r);
     const std::vector<test::Point> pts = test::sample_points(w, r);
     for (const test::Point& p : pts) {
       const double x = p[0], y = p[1];
@@ -63,8 +63,8 @@ TEST_CASE("city terrain: the terrain conforms to the reference (stage terrain)")
       std::optional<double> prox;
       if (!(r() < 0.5)) prox = r();
       const FieldPoint f = w.chart->to_field(x * 0.125, y * 0.125);
-      const double h = T.natural(x, y, u, f.x, f.y, f.z, prox, f.w);
-      const TerrainCtx& c = T.ctx();
+      TerrainCtx c(T);
+      const double h = T.natural(c, x, y, u, f.x, f.y, f.z, prox, f.w);
       Line l;
       l << "nat" << x << y << u;
       if (prox)

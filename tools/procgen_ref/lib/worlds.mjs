@@ -106,6 +106,28 @@ export function samplePoints(w, r) {
   return pts;
 }
 
+/**
+ * Makes the base height of every town and village a terrain sample at one of the points (voxels)
+ * can read - nearestSettlements and nearestVillages, the settlements of urban()'s parts - in a fixed
+ * order, before anything samples there. The reference's Terrain reuses one context, and a sample
+ * that makes a base height on first use reads what that nested call left in it (its coast and
+ * ruggedness; on an island the waterfront grading too): with the base heights made first, its
+ * samples are what they are in any order, and what the port's are (docs/CITY.md §6). Port lakes
+ * (lakes.portLakeOf) need the same once a stage reaches them.
+ */
+export function warmBasesAt(w, pts) {
+  for (const [x, y] of pts) {
+    for (const s of w.fields.nearestSettlements(x, y)) w.terrain.settlementBase(s);
+    for (const v of w.fields.nearestVillages(x, y)) w.terrain.settlementBase(v);
+  }
+}
+
+/** The same for every town and village whose disk may reach a rect (voxels): settlementsIn, villagesIn. */
+export function warmBasesIn(w, rect) {
+  for (const s of w.fields.settlementsIn(rect)) w.terrain.settlementBase(s);
+  for (const v of w.fields.villagesIn(rect)) w.terrain.settlementBase(v);
+}
+
 /** A settlement record as a line: every field JS gives it ("-" where JS leaves it undefined or null). */
 export function settlementFields(s) {
   return [s.id, s.i, s.j, s.village ?? false, s.hamlet ?? false, s.x, s.y, s.radius, s.importance, s.style, s.peak ?? 0, s.cx ?? "-", s.cy ?? "-", s.t, s.m, s.flavor ?? "-", s.island ?? false];

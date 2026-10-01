@@ -2,7 +2,7 @@
 // (allWorlds) - the ellipse, highland threshold, fjords and the island's offset, the sited places
 // and their settlement records, the harbour, the bounds, the pointwise functions (shape,
 // highlands, fjord cuts, coast, cliffs, skerries) over the bounds, and the trunk roads (A* over
-// the arterial grid).
+// the arterial grid; the places' base heights made first, as the terrain stage does).
 import { REF, line, samples } from "../lib/rec.mjs";
 import { allWorlds, settlementFields } from "../lib/worlds.mjs";
 
@@ -32,6 +32,8 @@ export default function* island() {
       yield line("pt", x, y, lx, ly, P.shape(lx, ly), P.highRaw(lx, ly), P.highlandLocal(lx, ly), P.fjordCut(lx, ly, d), c, P.highland(x, y), P.cliff(x, y),
         P.skerry(x, y, c), P.skerry(x, y, -d / 4));
     }
+    // (the A* samples the terrain at its nodes: every place's base height first, docs/CITY.md §6)
+    for (const s of [...towns, ...villages]) w.terrain.settlementBase(s);
     const edges = P.trunkEdges(w);
     yield line("trunk", edges.size, ...edges);
   }

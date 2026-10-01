@@ -2,6 +2,7 @@
 #include "terrain/terrain.hpp"
 
 #include <array>
+#include <cstring>
 
 #include "core/hash.hpp"
 #include "core/js.hpp"
@@ -54,6 +55,9 @@ TerrainCfg::TerrainCfg(const Value& t) {
   city_relief_scale = t["cityReliefScale"].to_number();
 }
 
+TerrainCtx::TerrainCtx(const Terrain& t)
+    : terrain(&t), island(t.fields().island.get()), cfg(&t.cfg()), torus_r(t.chart().R) {}
+
 double TerrainCtx::cliff() {
   if (cliff_ < 0) cliff_ = island->cliff(x * kVoxelSize, y * kVoxelSize);
   return cliff_;
@@ -101,56 +105,45 @@ Terrain::Terrain(const Value& config, std::shared_ptr<const Chart> chart, std::s
 
 Terrain::~Terrain() = default;
 
-TerrainCtx& Terrain::ctx() const {
-  // The contexts of this thread, a few Terrains' (least recently used recycled, never one with a
-  // call in flight). A slot belongs to a Terrain while it holds that Terrain's token (a weak
-  // reference: a Terrain made later at the same address is another).
+size_t LandformMemo::CellHash::operator()(const Cell& c) const {
+  uint64_t a, b;
+  const double i = c.i + 0.0, j = c.j + 0.0;  // (-0 and 0 alike)
+  std::memcpy(&a, &i, 8);
+  std::memcpy(&b, &j, 8);
+  uint64_t h = a * 0x9e3779b97f4a7c15ull;
+  h ^= b + 0x632be59bd9b4e019ull + (h << 6) + (h >> 2);
+  return static_cast<size_t>(h ^ (h >> 31));
+}
+
+LandformMemo& Terrain::memo() const {
+  // This thread's memos, a few Terrains' (the least recently used recycled). A slot belongs to a
+  // Terrain while it holds that Terrain's token (a weak reference: a Terrain made later at the
+  // same address is another). The memos hold pure values only: recycling one costs time, never
+  // changes a result.
   struct Slot {
     std::weak_ptr<const char> owner;
-    std::unique_ptr<TerrainCtx> c;
+    std::unique_ptr<LandformMemo> m;
     uint64_t used = 0;
   };
-  thread_local std::vector<Slot> slots(4);
+  thread_local std::array<Slot, 4> slots;
   thread_local uint64_t tick = 0;
   ++tick;
   for (Slot& s : slots)
-    if (s.c && !s.owner.owner_before(token_) && !token_.owner_before(s.owner)) {
+    if (s.m && !s.owner.owner_before(token_) && !token_.owner_before(s.owner)) {
       s.used = tick;
-      return *s.c;
+      return *s.m;
     }
-  Slot* pick = nullptr;
+  Slot* pick = &slots[0];
   for (Slot& s : slots)
-    if ((!s.c || s.c->busy == 0) && (!pick || s.used < pick->used)) pick = &s;
-  if (!pick) {
-    slots.emplace_back();
-    pick = &slots.back();
-  }
+    if (!s.m || (pick->m && s.used < pick->used)) pick = &s;
   pick->owner = token_;
-  pick->c = std::make_unique<TerrainCtx>();
+  pick->m = std::make_unique<LandformMemo>();
   pick->used = tick;
-  TerrainCtx& c = *pick->c;
-  c.terrain = this;
-  c.island = fields_->island.get();
-  c.cfg = &cfg_;
-  c.torus_r = chart_->R;
-  return c;
+  return *pick->m;
 }
 
-namespace {
-// Marks a context busy while a call runs on it (so a nested call into many other Terrains on the
-// same thread never recycles it).
-struct Busy {
-  TerrainCtx& c;
-  explicit Busy(TerrainCtx& ctx) : c(ctx) { ++c.busy; }
-  ~Busy() { --c.busy; }
-  Busy(const Busy&) = delete;
-  Busy& operator=(const Busy&) = delete;
-};
-}  // namespace
-
-double Terrain::natural(double x, double y, double u, double fx, double fy, double fz, std::optional<double> prox, double fw) const {
-  TerrainCtx& c = ctx();
-  Busy busy(c);
+double Terrain::natural(TerrainCtx& c, double x, double y, double u, double fx, double fy, double fz, std::optional<double> prox,
+                        double fw) const {
   c.x = x;
   c.y = y;
   c.fx = fx;
@@ -186,12 +179,18 @@ double Terrain::natural(double x, double y, double u, double fx, double fy, doub
   return c.h;
 }
 
+double Terrain::natural(double x, double y, double u, double fx, double fy, double fz, std::optional<double> prox, double fw) const {
+  TerrainCtx c(*this);
+  return natural(c, x, y, u, fx, fy, fz, prox, fw);
+}
+
 double Terrain::settlement_base(const Settlement& s) const {
   return s.base_h.get([&] {
+    // (in a context of its own: the sample that first needs it keeps its own; docs/CITY.md §6)
+    TerrainCtx c(*this);
     const FieldPoint f = chart_->to_field(s.x * kVoxelSize, s.y * kVoxelSize);
-    natural(s.x, s.y, 1, f.x, f.y, f.z, std::nullopt, f.w);
-    // (the reference reads its one context: what this natural() left in it)
-    return js::max(2.0, ctx().lowland);
+    natural(c, s.x, s.y, 1, f.x, f.y, f.z, std::nullopt, f.w);
+    return js::max(2.0, c.lowland);
   });
 }
 
@@ -220,9 +219,8 @@ TerrainSample Terrain::sample(double x, double y, const Urban* urban, bool raw) 
   }
   const Urban& ur = *urban;
   const FieldPoint f = chart_->to_field(x * kVoxelSize, y * kVoxelSize);
-  const double nat = natural(x, y, ur.u, f.x, f.y, f.z, ur.prox, f.w);
-  TerrainCtx& c = ctx();
-  Busy busy(c);
+  TerrainCtx c(*this);
+  const double nat = natural(c, x, y, ur.u, f.x, f.y, f.z, ur.prox, f.w);
   const double mountain = c.mountain;
   const double canyon = c.canyon;
   const double ravine = c.ravine;
@@ -232,7 +230,6 @@ TerrainSample Terrain::sample(double x, double y, const Urban* urban, bool raw) 
   const std::optional<Stream> stream = c.stream && ur.u < 0.06 ? c.stream : std::nullopt;
   double w = smoothstep(0.06, 0.32, ur.u);
   double city = w > 0 ? js::max(city_meters(f.x, f.y, f.z, f.w, ur), 2.0) : 0;
-  // (from here on the context holds what nested calls left in it, as the reference's does)
   if (w > 0 && c.island) {
     const double rise = c.island->town_rise;
     if (rise > 0) {
