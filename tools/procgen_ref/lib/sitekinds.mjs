@@ -163,8 +163,10 @@ function holdPlace(world, cand) {
   const apron = { x0: ax0, y0: cy - vx(28), x1: ax0 + vx(44), y1: cy + vx(28) };
   const zf = Math.round(T.sample((apron.x0 + apron.x1) / 2, (apron.y0 + apron.y1) / 2).h);
   const zr = Math.round(tc.h);
+  // a ramp from the site's pad towards the apron (along x), or out of its south side (along y)
+  const alongY = hashFloat(seed, 2) < 0.4;
   const rx0 = side > 0 ? rect.x1 - vx(20) : apron.x1 - vx(10);
-  const ramp = { x0: rx0, y0: cy - vx(4), x1: rx0 + vx(30), y1: cy + vx(4) };
+  const ramp = alongY ? { x0: cx - vx(4), y0: rect.y1 - vx(20), x1: cx + vx(4), y1: rect.y1 + vx(10) } : { x0: rx0, y0: cy - vx(4), x1: rx0 + vx(30), y1: cy + vx(4) };
   const pts = [];
   let x = side > 0 ? apron.x1 : apron.x0;
   let y = cy;
@@ -194,7 +196,7 @@ function holdPlace(world, cand) {
     padZ: zf,
     pads: [
       { rect: apron, z: zf, margin: vx(22), round: true },
-      { rect: ramp, z: zr, margin: vx(10), ramp: { axis: "x", a0: ramp.x0, a1: ramp.x1, z0: side > 0 ? zr : zf, z1: side > 0 ? zf : zr } },
+      { rect: ramp, z: zr, margin: vx(10), ramp: alongY ? { axis: "y", a0: ramp.y0, a1: ramp.y1, z0: zr, z1: zf } : { axis: "x", a0: ramp.x0, a1: ramp.x1, z0: side > 0 ? zr : zf, z1: side > 0 ? zf : zr } },
       { rect, z: zr, margin: cand.margin },
       road,
     ],

@@ -124,6 +124,12 @@ export default function* sites() {
       const u = s.plan.under;
       yield line("st", s.id, st.boxes.length, h, st.bb ? [st.bb.x0, st.bb.y0, st.bb.z0, st.bb.x1, st.bb.y1, st.bb.z1] : "-", (st.custom ?? []).length,
         u ? `${u.sectors.length}/${u.levels.length}/${u.shafts.length}/${u.ladders.length}/${u.tram ? u.tram.stations.length : 0}` : "-");
+      // z ranges at the corners of the site's bounds (beyond its structure's, some)
+      const sb = s.plan.bounds ?? s.blend;
+      for (const [x, y] of [[sb.x0, sb.y0], [sb.x1, sb.y0], [sb.x0, sb.y1], [sb.x1, sb.y1]]) {
+        const rect = { x0: x - 40, y0: y - 40, x1: x + 40, y1: y + 40 };
+        yield line("zc", s.id, ...R(rect), siteSource.zRange(w, rect, 0) ?? "-");
+      }
       const pts = u ? complexPoints(u) : [];
       pts.push([Math.round(s.center.x), Math.round(s.center.y), s.padZ]);
       for (const lod of [0, 0, 0, 0, 1, 2, 2, 3, 4, 5]) {

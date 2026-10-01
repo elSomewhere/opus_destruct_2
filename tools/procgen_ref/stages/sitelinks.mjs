@@ -73,6 +73,19 @@ export default function* sitelinks() {
         const rect = { x0: bx, y0: by, x1: bx + 34 * s0 - 1, y1: by + 34 * s0 - 1 };
         yield line("zr", L.id, lod, ...R(rect), siteLinkSource.zRange(w, rect, lod) ?? "-");
       }
+      // round the corner of an L route: which leg owns which column
+      if (L.segs.length > 1) {
+        const c = L.segs[1].p;
+        const zl = SiteLinks.zAt(L, L.segs[1].s0);
+        for (let k = 0; k < 2; k += 1) {
+          const cx = Math.floor((c.x + Math.floor((r() - 0.5) * 48)) / 32);
+          const cy = Math.floor((c.y + Math.floor((r() - 0.5) * 48)) / 32);
+          const cz = Math.floor((zl + 20) / 32);
+          const ch = groundChunk(0, cx, cy, cz, zl + 400);
+          siteLinkSource.rasterize(w, ch);
+          yield line("corner", L.id, cx, cy, cz, ch.countNonAir(), digest(ch.data));
+        }
+      }
       for (const lod of [0, 0, 0, 1, 2]) {
         const p = pointOn(r, L);
         const zl = SiteLinks.zAt(L, p.s);

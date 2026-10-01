@@ -244,8 +244,10 @@ inline std::shared_ptr<const SitePlaced> hold_place(const World& w, const SiteCa
   const Rect apron{ax0, cy - vx(28), ax0 + vx(44), cy + vx(28)};
   const double zf = js::round(T.sample((apron.x0 + apron.x1) / 2, (apron.y0 + apron.y1) / 2).h);
   const double zr = js::round(tc.h);
+  // a ramp from the site's pad towards the apron (along x), or out of its south side (along y)
+  const bool along_y = hash_float(seed, 2) < 0.4;
   const double rx0 = side > 0 ? rect.x1 - vx(20) : apron.x1 - vx(10);
-  const Rect ramp{rx0, cy - vx(4), rx0 + vx(30), cy + vx(4)};
+  const Rect ramp = along_y ? Rect{cx - vx(4), rect.y1 - vx(20), cx + vx(4), rect.y1 + vx(10)} : Rect{rx0, cy - vx(4), rx0 + vx(30), cy + vx(4)};
   std::vector<SitePathPoint> pts;
   double x = side > 0 ? apron.x1 : apron.x0;
   double y = cy;
@@ -282,7 +284,7 @@ inline std::shared_ptr<const SitePlaced> hold_place(const World& w, const SiteCa
   pr.rect = ramp;
   pr.z = zr;
   pr.margin = vx(10);
-  pr.ramp = SiteRamp{'x', ramp.x0, ramp.x1, side > 0 ? zr : zf, side > 0 ? zf : zr};
+  pr.ramp = along_y ? SiteRamp{'y', ramp.y0, ramp.y1, zr, zf} : SiteRamp{'x', ramp.x0, ramp.x1, side > 0 ? zr : zf, side > 0 ? zf : zr};
   SitePad ps;
   ps.rect = rect;
   ps.z = zr;

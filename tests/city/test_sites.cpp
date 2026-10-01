@@ -206,6 +206,21 @@ TEST_CASE("city sites: the site layer conforms to the reference (stage sites)") 
         l << rec::kUndef;
       }
       out << l;
+      // z ranges at the corners of the site's bounds (beyond its structure's, some)
+      const Rect sb = s->plan->bounds ? *s->plan->bounds : s->blend;
+      const double corners[4][2] = {{sb.x0, sb.y0}, {sb.x1, sb.y0}, {sb.x0, sb.y1}, {sb.x1, sb.y1}};
+      for (const auto& q : corners) {
+        const Rect rect{q[0] - 40, q[1] - 40, q[0] + 40, q[1] + 40};
+        double z0 = 0, z1 = 0;
+        Line zl;
+        zl << "zc" << s->id;
+        rect_fields(zl, rect);
+        if (site_source_z_range(w, rect, &z0, &z1))
+          zl << std::vector<double>{z0, z1};
+        else
+          zl << rec::kUndef;
+        out << zl;
+      }
       std::vector<std::array<double, 3>> pts;
       if (st.under) pts = test::complex_points(*st.under);
       pts.push_back({js::round(s->center.x), js::round(s->center.y), s->pad_z});

@@ -116,6 +116,20 @@ TEST_CASE("city sitelinks: site links conform to the reference (stage sitelinks)
           l << rec::kUndef;
         out << l;
       }
+      // round the corner of an L route: which leg owns which column
+      if (L->segs.size() > 1) {
+        const Point2 c = L->segs[1].p;
+        const double zl = SiteLinks::z_at(*L, L->segs[1].s0);
+        for (int k = 0; k < 2; ++k) {
+          const double cx = std::floor((c.x + std::floor((r() - 0.5) * 48)) / 32);
+          const double cy = std::floor((c.y + std::floor((r() - 0.5) * 48)) / 32);
+          const double cz = std::floor((zl + 20) / 32);
+          ChunkBuffer ch = test::ground_chunk(0, cx, cy, cz, zl + 400);
+          site_links_rasterize(w, ch);
+          const int count = ch.count_non_air();
+          out << (Line() << "corner" << L->id << cx << cy << cz << count << test::chunk_digest(ch.data));
+        }
+      }
       for (const int lod : {0, 0, 0, 1, 2}) {
         const OnLink p = point_on(r, *L);
         const double zl = SiteLinks::z_at(*L, p.s);
