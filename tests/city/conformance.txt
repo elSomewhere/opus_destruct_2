@@ -1,6 +1,7 @@
 arterials 09ffd9590dee63af
 biomes 0ef5fa2a143f0413
 blockpoly 562ea3982a8cffbb
+caves 1176b52d2de4eeb2
 cellnet f0c71bda65c7de9e
 chamfer 46ce522084b95a42
 chart 9595d7959f4665ee
@@ -14,6 +15,7 @@ frames b7256c507fcb4722
 ids 4edd32b9f8a56a72
 industry 55bdd13e70a1d7c0
 island 6de5e618c06b37ce
+landcover 3e4d29cf9f4d0a6b
 materials 1548a45e43d835c7
 parts e6c577354df3c3aa
 prefabs be78153eebbbfcd4
@@ -25,3 +27,4 @@ streets 178f2000a7efc043
 svxmat 6929dc45e6f5ddd2
 terrain b7eb60e0c562cdee
 townplan 8bb64c2e7c9f0a7c
+water 85e6c4a02754c63a
