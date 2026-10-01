@@ -26,6 +26,7 @@ exports, natively and in WASM, on any thread count.
 | JS semantics | V8 | `core/js.hpp` | `Math.round`, `hypot`, `pow`, `log2`, `sin`/`cos`/`atan`/`atan2`/`exp`/`log` (the core's fdlibm ports), number formatting and `Array.prototype.sort` checked bit for bit against Node over millions of inputs |
 | core | `core/*.js` | `core/` | stage `core` |
 | config, presets | `config/*.js` | `config/` | stage `config` |
+| material palette | `voxel/materials.js` | `voxel/materials.*` (generated: `tools/procgen_ref/gen_materials.mjs`) | stage `materials` |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -107,6 +108,14 @@ and voxels are only reproduced if every number is.
   module evaluation, in the import graph's depth-first post-order from `createWorld.js`; in C++
   a registry is filled by an explicit function called in that same order (registration order
   decides weighted picks). Never rely on C++ static initialisation order.
+  The reference's order (the same from every entry point: `svx/source.js`, `createWorld.js`,
+  `scripts/lib/golden.js`): BIOMES (`nature/biomes.js`), LANDFORMS (`terrain/landforms.js`),
+  DISTRICTS (`city/districts.js`), FLAVORS (`city/flavors.js`), STYLES (`buildings/styles.js`),
+  ARCHETYPES and STYLES (`buildings/civic.js`: one each, before archetypes.js's), ARCHETYPES
+  (`buildings/archetypes.js`), COMPLEX_THEMES (`sites/complex.js`), DISTRICTS and SITES
+  (`sites/militaryBase.js`, `sites/researchComplex.js`, `sites/mountainBase.js`, in that order),
+  PRESETS (`config/presets.js`). `world/register_all.cpp` calls each module's `register_*()` in
+  this order, once (`register_all()`, called by `create_world` and by tests).
 - **Closures** become lambdas (`std::function` where stored). Classes become classes; a JS class
   holding a cache keeps a `MemoCache`.
 - **Throwing**: the libraries have no exceptions. Where JS throws on a programming error (an
