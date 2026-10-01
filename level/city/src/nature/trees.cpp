@@ -893,23 +893,21 @@ double reach_of(const TreeModel& m, const TreeIn& t) {
 // column and whorl instead of per voxel. (A voxel's value depends on nothing but itself: each part
 // writes only into air, every voxel once, so the order the voxels are visited in is free.)
 
-// hash32 (core/hash) on inputs already taken ToInt32, in two stages: the first three inputs' mix
-// (pre3), then the fourth's (fin; `salt`: ToInt32 of it times the last constant). The hashes of a
-// voxel differ in the seed only, so they share the first stage.
+// hash32 (core/hash) on inputs already taken ToInt32, stage by stage: hash32(a, b, c, d) is
+// in(in(in(first(a), b * kHashB), c * kHashC), d * kHashD). A chunk's first stages and products are
+// made once per axis (Grid), a voxel's hashes - which differ in the seed only - share their first
+// three stages, and a column's share its first two.
 constexpr uint32_t kHashA = 0x9e3779b9u;
 constexpr uint32_t kHashB = 0x27d4eb2du;
 constexpr uint32_t kHashC = 0x165667b1u;
 constexpr uint32_t kHashD = 0x61c88647u;
-inline uint32_t pre3(int32_t a, int32_t b, int32_t c) {
-  uint32_t h = mix32(static_cast<uint32_t>(a) ^ kHashA);
-  h = mix32(h ^ (static_cast<uint32_t>(b) * kHashB));
-  return mix32(h ^ (static_cast<uint32_t>(c) * kHashC));
-}
+inline uint32_t first(int32_t a) { return mix32(static_cast<uint32_t>(a) ^ kHashA); }
+inline uint32_t in(uint32_t h, uint32_t v) { return mix32(h ^ v); }
 inline uint32_t salt_of(double v) { return static_cast<uint32_t>(js::to_int32(v)) * kHashD; }
 // (h01: the hash as a fraction)
-inline double fin(uint32_t pre, uint32_t salt) { return mix32(pre ^ salt) / 4294967296.0; }
+inline double fin(uint32_t h, uint32_t salt) { return mix32(h ^ salt) / 4294967296.0; }
 
-// The seed's salts, ToInt32(seed + c) for each c the rasterizers add.
+// The seed's salts, ToInt32(seed + c) times kHashD for each c the rasterizers add.
 struct Salts {
   uint32_t s0, s5, s9, s11, s13, s17, s21, s22, s31, s33, s35;
   explicit Salts(double seed)
@@ -926,31 +924,42 @@ struct Salts {
         s35(salt_of(seed + 35)) {}
 };
 
-// A chunk's padded indices on each axis (0 x, 1 y, 2 z): their representatives' world coordinates
-// w, the integers JS's hashes take of them (w | 0, w >> 1, w >> 2), and of a limb's voxel centre
-// c = w + 0.5 (c | 0, and (c - 0.5) | 0 and (c - 0.5) >> 1).
+// A chunk's padded indices on each axis: their representatives' world coordinates w (0 x, 1 y,
+// 2 z), and the hash stages of the integers JS's hashes take of them - w | 0, w >> 1, w >> 2, and of
+// a limb's voxel centre c = w + 0.5: c | 0, (c - 0.5) | 0 and (c - 0.5) >> 1 - as the input they
+// are: x first (its first stage), y second (times kHashB), z third (times kHashC); for a birch's
+// marks, hashed (z, x, y), the other way round.
 struct Grid {
   double s = 0, bx = 0, by = 0, bz = 0;  // (the chunk it is made for)
   double w[3][kP];
-  int32_t i0[3][kP], i1[3][kP], i2[3][kP], c0[3][kP], m0[3][kP], m1[3][kP];
+  uint32_t x0[kP], x1[kP], x2[kP], xc[kP], xm[kP];
+  uint32_t y0[kP], y1[kP], y2[kP], yc[kP], ym[kP];
+  uint32_t z0[kP], z1[kP], z2[kP], zc[kP], zm[kP];
   void make(const ChunkBuffer& ch) {
     s = ch.s;
     bx = ch.bx;
     by = ch.by;
     bz = ch.bz;
     for (int i = 0; i < kP; ++i) {
-      const double v3[3] = {ch.wx(i), ch.wy(i), ch.wz(i)};
-      for (int a = 0; a < 3; ++a) {
-        const double v = v3[a];
-        w[a][i] = v;
-        i0[a][i] = js::to_int32(v);
-        i1[a][i] = js::sar(v, 1);
-        i2[a][i] = js::sar(v, 2);
-        const double c = v + 0.5;
-        c0[a][i] = js::to_int32(c);
-        m0[a][i] = js::to_int32(c - 0.5);
-        m1[a][i] = js::sar(c - 0.5, 1);
-      }
+      const double x = ch.wx(i), y = ch.wy(i), z = ch.wz(i);
+      w[0][i] = x;
+      w[1][i] = y;
+      w[2][i] = z;
+      x0[i] = first(js::to_int32(x));
+      x1[i] = first(js::sar(x, 1));
+      x2[i] = first(js::sar(x, 2));
+      xc[i] = first(js::to_int32(x + 0.5));
+      xm[i] = static_cast<uint32_t>(js::sar(x + 0.5 - 0.5, 1)) * kHashB;
+      y0[i] = static_cast<uint32_t>(js::to_int32(y)) * kHashB;
+      y1[i] = static_cast<uint32_t>(js::sar(y, 1)) * kHashB;
+      y2[i] = static_cast<uint32_t>(js::sar(y, 2)) * kHashB;
+      yc[i] = static_cast<uint32_t>(js::to_int32(y + 0.5)) * kHashB;
+      ym[i] = static_cast<uint32_t>(js::sar(y + 0.5 - 0.5, 1)) * kHashC;
+      z0[i] = static_cast<uint32_t>(js::to_int32(z)) * kHashC;
+      z1[i] = static_cast<uint32_t>(js::sar(z, 1)) * kHashC;
+      z2[i] = static_cast<uint32_t>(js::sar(z, 2)) * kHashC;
+      zc[i] = static_cast<uint32_t>(js::to_int32(z + 0.5)) * kHashC;
+      zm[i] = first(js::to_int32(z + 0.5 - 0.5));
     }
   }
 };
@@ -1024,8 +1033,8 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
     const double qz2 = dz2 * dz2 * irz;
     // (sunlit tops, shaded undersides: the shading's part of this height)
     const double v0 = 0.5 + 0.42 * dz * sirz;
-    const int32_t zh = g.i1[2][k];
-    const int32_t zi = g.i0[2][k];
+    const uint32_t zh = g.z1[k];
+    const uint32_t zi = g.z0[k];
     for (int j = rj.lo; j <= rj.hi; ++j) {
       const double y = g.w[1][j];
       const double dy = y + 0.5 - p.y;
@@ -1036,24 +1045,39 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
       int i1 = ri.hi;
       const double hw = std::sqrt((thr - qz) / irx - dy2) + 1;
       clip(base_x, s, p.x - 0.5 - hw, p.x - 0.5 + hw, i0, i1);
-      const int32_t yh = g.i1[1][j];
-      const int32_t yi = g.i0[1][j];
+      // (a bare cluster writes into its shell only: q > 0.68 + n, past 0.38 up close and 0.68 further
+      // out; the hollow within, a voxel short of it, is skipped)
+      int h0 = i1 + 1, h1 = i1;
+      if (bare) {
+        const double hin = std::sqrt(((fine ? 0.38 : 0.68) - qz) / irx - dy2) - 1;
+        if (hin > 0) {
+          h0 = i0;
+          h1 = i1;
+          clip(base_x, s, p.x - 0.5 - hin, p.x - 0.5 + hin, h0, h1);
+        }
+      }
+      const uint32_t yh = g.y1[j];
+      const uint32_t yi = g.y0[j];
       // (the hash of x >> 1, y >> 1, z >> 1: the noise's and the shading's; pairs of voxels share it up close)
-      int32_t last = 0;
+      uint32_t last = 0;
       bool have = false;
       uint32_t ph = 0;
       for (int i = i0; i <= i1; ++i) {
+        if (i == h0 && h0 <= h1) {
+          i = h1;
+          continue;
+        }
         const int idx = i + j * kP + k * kP2;
         if (d[idx] != 0) continue;
         const double x = g.w[0][i];
         const double dx = x + 0.5 - p.x;
         const double q = (dx * dx + dy2) * irx + qz;
         if (q >= thr) continue;
-        const int32_t xh = g.i1[0][i];
+        const uint32_t xh = g.x1[i];
         double n = 0;
         if (fine) {
           if (!have || xh != last) {
-            ph = pre3(xh, yh, zh);
+            ph = in(in(xh, yh), zh);
             last = xh;
             have = true;
           }
@@ -1065,7 +1089,7 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
         if (bare) {
           // leafless: a few twig voxels in the shell (the limbs and twigs are drawn anyway)
           if (!shell) continue;
-          const uint32_t pv = pre3(g.i0[0][i], yi, zi);
+          const uint32_t pv = in(in(g.x0[i], yi), zi);
           if (fin(pv, salt.s5) > (fine ? 0.07 : 0.16)) continue;
           d[idx] = up && fin(pv, salt.s11) < snow * 0.4 ? MAT::SNOW : MAT::TWIGS;
           continue;
@@ -1074,14 +1098,14 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
         uint32_t pv = 0;
         bool hv = false;
         if (fine && shell) {
-          pv = pre3(g.i0[0][i], yi, zi);
+          pv = in(in(g.x0[i], yi), zi);
           hv = true;
           if (fin(pv, salt.s0) < holes) continue;
         }
         if (up && (dx * dx + dy2) * irx + qz2 >= 1 + n) {
           // snow where nothing of the cluster lies above
           if (!hv) {
-            pv = pre3(g.i0[0][i], yi, zi);
+            pv = in(in(g.x0[i], yi), zi);
             hv = true;
           }
           if (fin(pv, salt.s11) < snow * 0.85) {
@@ -1090,13 +1114,13 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
           }
         }
         if (accent && shell) {
-          if (!hv) pv = pre3(g.i0[0][i], yi, zi);
+          if (!hv) pv = in(in(g.x0[i], yi), zi);
           if (fin(pv, salt.s13) < 0.06) {
             d[idx] = accent;
             continue;
           }
         }
-        if (!fine) ph = pre3(xh, yh, zh);
+        if (!fine) ph = in(in(xh, yh), zh);
         // sunlit tops, shaded undersides and interior
         const double v = v0 + (fin(ph, salt.s9) - 0.5) * 0.45 - (shell ? 0 : 0.2);
         d[idx] = v < 0.34 ? pal[0] : v < 0.74 ? pal[1] : pal[2];
@@ -1133,8 +1157,8 @@ void raster_limb(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
     const double z = g.w[2][k] + 0.5;
     const double vz = z - p.az;
     const double wz = z - 0.5;
-    const int32_t zc = g.c0[2][k];
-    const int32_t zm = g.m0[2][k];
+    const uint32_t zc = g.zc[k];
+    const uint32_t zm = g.zm[k];
     for (int j = rj.lo; j <= rj.hi; ++j) {
       const double y = g.w[1][j] + 0.5;
       const double vy = y - p.ay;
@@ -1149,8 +1173,8 @@ void raster_limb(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
         const double sq = std::sqrt(disc);
         clip(base_x, s, p.ax - 0.5 + (-bq - sq) / (2 * a) - 1, p.ax - 0.5 + (-bq + sq) / (2 * a) + 1, i0, i1);
       }
-      const int32_t yc = g.c0[1][j];
-      const int32_t ym = g.m1[1][j];
+      const uint32_t yc = g.yc[j];
+      const uint32_t ym = g.ym[j];
       for (int i = i0; i <= i1; ++i) {
         const int idx = i + j * kP + k * kP2;
         if (d[idx] != 0) continue;
@@ -1165,13 +1189,13 @@ void raster_limb(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
         if (ex * ex + ey * ey + ez * ez > r * r) continue;
         uint16_t m = part.mat;
         // birch: short dark marks on the white bark, a dark rough foot
-        if (part.birch && ((s == 1 && fin(pre3(zm, g.m1[0][i], ym), salt.s0) < 0.13) || wz - foot < 3 + (fin(pre3(g.c0[0][i], yc, 0), salt.s0) < 0.5 ? 2 : 0)))
+        if (part.birch && ((s == 1 && fin(in(in(zm, g.xm[i]), ym), salt.s0) < 0.13) || wz - foot < 3 + (fin(in(in(g.xc[i], yc), 0), salt.s0) < 0.5 ? 2 : 0)))
           m = MAT::BARK_BIRCH_MARK;
         else if (part.moss && ez > 0.3 * r && ez * ez > ex * ex + ey * ey)
           m = MAT::MOSS;
         else if (part.stump && wz >= p.az + p.dz - 1)
           m = MAT::WOOD_LIGHT;
-        else if (snowy && ez > 0 && ez * ez > (ex * ex + ey * ey) * 0.5 && fin(pre3(g.c0[0][i], yc, zc), salt.s17) < ctx.snow * 0.6)
+        else if (snowy && ez > 0 && ez * ez > (ex * ex + ey * ey) * 0.5 && fin(in(in(g.xc[i], yc), zc), salt.s17) < ctx.snow * 0.6)
           m = MAT::SNOW;
         d[idx] = m;
       }
@@ -1208,7 +1232,7 @@ Whorl whorl_at(const TreeCone& p, double H, double s, bool fine, double zz) {
 
 // The lobes of whorl ti at angle a (irregular branch lobes round the stem).
 double lobe_of(const TreeCone& p, double ti, double a, uint32_t s0) {
-  return 0.8 + 0.2 * js::sin(p.lobes * a + p.phase + ti * 2.3) + (fin(pre3(js::to_int32(ti), js::to_int32(std::floor((a + 3.2) * 1.6)), 3), s0) - 0.5) * 0.3;
+  return 0.8 + 0.2 * js::sin(p.lobes * a + p.phase + ti * 2.3) + (fin(in(in(first(js::to_int32(ti)), static_cast<uint32_t>(js::to_int32(std::floor((a + 3.2) * 1.6))) * kHashB), 3 * kHashC), s0) - 0.5) * 0.3;
 }
 
 // A column's lobes, kept per whorl (two: the snow looks one whorl up).
@@ -1280,20 +1304,21 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
       bmax = bound[k];
   }
   // a voxel of the cone: what JS computes once the voxel is air, with its angle and its lobes given
-  auto voxel = [&](int idx, int i, int j, int k, double dx, double dy, double hr, double lob, double lob2) {
+  // (c1, c0: the column's hashes of (x >> 1, y >> 1) and (x, y), their first two stages)
+  auto voxel = [&](int idx, uint32_t c1, uint32_t c0, int k, double dx, double dy, double hr, double lob, double lob2) {
     const double lop = part.lean ? 1 + (p.asym * (dx * p.ax + dy * p.ay)) / js::max(hr, 1e-9) : 1;
     const double rad = !W[k].in ? -1 : fine ? W[k].envpt * lob + 0.7 : W[k].coarse;
     const double R = part.lean ? rad * lop : rad;
     // the leader: a thin spike over the top whorl
     if (R < 0) return;
-    const uint32_t ph = pre3(g.i1[0][i], g.i1[1][j], g.i1[2][k]);
+    const uint32_t ph = in(c1, g.z1[k]);
     const double edge = fine ? R + (fin(ph, salt.s0) - 0.5) * 1.1 : R;
     if (hr > edge) return;
     const bool shell = hr > edge - 1.5;
     uint32_t pv = 0;
     bool hv = false;
     if (fine && shell) {
-      pv = pre3(g.i0[0][i], g.i0[1][j], g.i0[2][k]);
+      pv = in(c0, g.z0[k]);
       hv = true;
       if (fin(pv, salt.s0) < 0.12) return;
     }
@@ -1302,7 +1327,7 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
       const double Ra = part.lean ? rad2 * lop : rad2;
       // (snow on the upper side of every whorl, the dark needles still showing beneath)
       if (hr > Ra - 0.6) {
-        if (!hv) pv = pre3(g.i0[0][i], g.i0[1][j], g.i0[2][k]);
+        if (!hv) pv = in(c0, g.z0[k]);
         if (fin(pv, salt.s11) < snow * 0.7) {
           d[idx] = MAT::SNOW;
           return;
@@ -1329,6 +1354,8 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
         const double dx = x + 0.5 - p.x;
         const double hr = js::sqrt(dx * dx + dy * dy);
         if (hr > bmax) continue;
+        const uint32_t c1 = in(g.x1[i], g.y1[j]);
+        const uint32_t c0 = in(g.x0[i], g.y0[j]);
         double a = 0;
         bool has_a = false;
         LobeCache lc;
@@ -1345,7 +1372,7 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
             if (W[k].in) lob = lc.get(p, W[k].ti, a, salt.s0);
             if (snow > 0 && W2[k].in) lob2 = lc.get(p, W2[k].ti, a, salt.s0);
           }
-          voxel(idx, i, j, k, dx, dy, hr, lob, lob2);
+          voxel(idx, c1, c0, k, dx, dy, hr, lob, lob2);
         }
       }
     }
@@ -1370,7 +1397,7 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
           if (W[k].in) lob = lobe_of(p, W[k].ti, a, salt.s0);
           if (snow > 0 && W2[k].in) lob2 = W2[k].ti == W[k].ti && W[k].in ? lob : lobe_of(p, W2[k].ti, a, salt.s0);
         }
-        voxel(idx, i, j, k, dx, dy, hr, lob, lob2);
+        voxel(idx, in(g.x1[i], g.y1[j]), in(g.x0[i], g.y0[j]), k, dx, dy, hr, lob, lob2);
       }
     }
   }
@@ -1400,11 +1427,11 @@ void raster_curtain(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, co
       const double dx = x + 0.5 - p.x;
       const double rr = js::sqrt(dx * dx + dy * dy) / p.rx;
       if (rr > 1.02 || rr < 0.5) continue;
-      const double strand = fin(pre3(g.i0[0][i], g.i0[1][j], 0), salt.s21);
+      const double strand = fin(in(in(g.x0[i], g.y0[j]), 0), salt.s21);
       if (fine && strand > 0.45) continue;
       // hanging from the cluster's underside, longest at its rim
       const double top = p.z - p.rz * js::sqrt(js::max(0, 1 - rr * rr)) + 1;
-      const double len = p.drop * (0.45 + 0.55 * fin(pre3(g.i1[0][i], g.i1[1][j], 1), salt.s22)) * (0.3 + 0.7 * rr);
+      const double len = p.drop * (0.45 + 0.55 * fin(in(in(g.x1[i], g.y1[j]), kHashC), salt.s22)) * (0.3 + 0.7 * rr);
       const uint16_t m = strand < 0.1 ? pal[0] : strand < 0.3 ? pal[1] : pal[2];
       for (int k = rk.lo; k <= rk.hi; ++k) {
         const double z = g.w[2][k];
@@ -1478,10 +1505,10 @@ void raster_plate(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, cons
         const double a = dx * p.nx + dy * p.ny + dz * p.nz;
         if (a > p.th || a < -p.th) continue;
         // (a lobed, ragged rim: soil falls away between the roots)
-        const double rim = p.r * (0.82 + 0.3 * fin(pre3(g.i2[0][i], g.i2[1][j], g.i2[2][k]), salt.s31));
+        const double rim = p.r * (0.82 + 0.3 * fin(in(in(g.x2[i], g.y2[j]), g.z2[k]), salt.s31));
         const double q2 = dx * dx + dy * dy + dz * dz - a * a;
         if (q2 > rim * rim) continue;
-        const uint32_t pv = pre3(g.i0[0][i], g.i0[1][j], g.i0[2][k]);
+        const uint32_t pv = in(in(g.x0[i], g.y0[j]), g.z0[k]);
         if (q2 > rim * rim * 0.56 && fin(pv, salt.s35) < 0.35) continue;
         const double q = fin(pv, salt.s33);
         d[idx] = a < -p.th * 0.35 ? (q < 0.12 ? MAT::LICHEN : MAT::MOSS) : q < 0.2 ? MAT::BARK : q < 0.3 ? MAT::DEADWOOD : MAT::DIRT;
@@ -1557,8 +1584,8 @@ void shape_acacia(ChunkBuffer& chunk, const Tree& t, const Box3& bb, const Grid&
     }
     if (z >= crown0 && z <= top) {
       const double hr = js::hypot(dx, dy);
-      const double rr = t.r * (z == top ? 0.75 : 1) + (fin(pre3(g.i1[0][i], g.i1[1][j], g.i0[2][k]), s0) - 0.5) * 1.5;
-      return hr <= rr && fin(pre3(g.i0[0][i], g.i0[1][j], g.i0[2][k]), s5) > 0.1 ? MAT::LEAVES_ACACIA : 0;
+      const double rr = t.r * (z == top ? 0.75 : 1) + (fin(in(in(g.x1[i], g.y1[j]), g.z0[k]), s0) - 0.5) * 1.5;
+      return hr <= rr && fin(in(in(g.x0[i], g.y0[j]), g.z0[k]), s5) > 0.1 ? MAT::LEAVES_ACACIA : 0;
     }
     return 0;
   });
