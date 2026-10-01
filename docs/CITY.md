@@ -34,6 +34,14 @@ exports, natively and in WASM, on any thread count.
 | terrain, landforms | `terrain/*.js` | `terrain/*` | stage `terrain` (§6: nested calls isolated) |
 | arterial grid, road classes | `network/arterials.js`, `network/roadClasses.js` | `network/arterials.*`, `network/roadClasses.*` | stage `arterials` |
 | World (constructor) | `world/World.js` | `world/World.cpp` | tests (`test_world_ctor.cpp`) |
+| chunk writer | `voxel/chunk.js` | `voxel/chunk.*` | stage `chunk` |
+| export material classes, ids | `svx/materials.js`, `svx/ids.js` | `svx/materials.*`, `svx/ids.hpp` | stages `svxmat`, `ids` |
+| districts, flavors, styles, civic table | `city/districts.js`, `city/flavors.js`, `buildings/styles.js`, `buildings/civic.js` | `city/districts.*`, `city/flavors.*`, `buildings/styles.*`, `buildings/civic.*`, `buildings/archetype_registry.*` | stage `registries` |
+| building frames | `buildings/frame.js` | `buildings/frame.*` | stage `frames` |
+| oriented parts | `world/parts.js` | `world/parts.*` (`parts_in`, `parts_homed_in` come with the cell plan) | stage `parts` |
+| interior data | `buildings/interior/{prefabs,civicPrefabs,civicRules,common,stairs,grid}.js` | `buildings/interior/` | stages `prefabs`, `civicrules`, `floorgrid`, `stairs` |
+| prop prefabs, industry | `city/{propPrefabs,industry}.js` | `city/propPrefabs.*`, `city/industry.*` | stages `propprefabs`, `industry` |
+| polygon blocks, chamfers | `city/blockPoly.js`, `buildings/chamfer.js` | `city/blockPoly.*`, `buildings/chamfer.*` | stages `blockpoly`, `chamfer` |
 
 (The table grows with the port; §5 lists the order.)
 
