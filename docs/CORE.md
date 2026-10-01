@@ -495,6 +495,15 @@ Things a harness should not do:
 - Structures larger than `structure_max_nodes` (60,000 fragments or clusters) or
   `structure_max_radius` (60 m) around the event are solved in part, with their frontier held
   fixed.
+- Some work is done whole, in the tick that needs it, not spread over ticks:
+  - The first touch of a large structure: its fragments are walked and its multigrid is built.
+    A streamed one is also designed, in the same tick. The drive city's first blast at a
+    building takes about 1.3 s on 3 threads; a baked 32 m building's first carve about 0.6 s.
+  - Each patch (a shot or a carve on a registered structure) builds the structure's multigrid
+    afresh: about 50 ms a shot on a 1000-node building. Keeping the old multigrid stalls
+    where a patch cuts a load path (see the patch in `world.cpp`).
+  - In a violent collapse, the pieces' collisions and fracture checks are bounded by
+    `max_bodies` and busy mode, not by a time budget.
 - The memory budgets (`MemoryBudget`, `StreamConfig::archive_mb`) cull pieces and forget regions
   by bytes: which ones go, and when, follows from how much each weighs - which changes with the
   engine's own data (a piece's crumpling areas, a record's new fields: [`BASELINE.md`](BASELINE.md)).
