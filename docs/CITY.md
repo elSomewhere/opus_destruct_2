@@ -56,6 +56,7 @@ exports, natively and in WASM, on any thread count.
 | house, cabin and unit planners | `buildings/interior/{houses,cabins,units}.js`, plan.js's `PlanBuilder` | `buildings/interior/{houses,cabins,units}.*`, `buildings/interior/plan.*` (the builder's floors, grids and stairs: the rest of plan.js comes with the interior planners) | stages `houses`, `units` |
 | facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
 | sample buildings | `buildings/sample.js` | `buildings/sample.*` (`stage_archetype` reads a world through `StageWorld`, `StagedEnvelopes`, until the cell plan is ported) | stage `sample` |
+| the export's road network: lanes, signals, walks, parking; highway lanes | `svx/roads.js`, `svx/highwayLanes.js` | `svx/roads.*`, `svx/highwayLanes.*`; public `svx/city/roads.hpp` (`RoadNetwork` over a `make_world` World); the game's `RoadNetwork` in svx_procgen (`svx/procgen/city_roads.hpp`, [`VEHICLES.md`](VEHICLES.md)) | stage `svxroads` (worlds as the export makes them, the reference made pure: §6, the lanes handed out); tests |
 
 (The table grows with the port; §5 lists the order.)
 
