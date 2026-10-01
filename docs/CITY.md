@@ -56,6 +56,13 @@ exports, natively and in WASM, on any thread count.
 | house, cabin and unit planners | `buildings/interior/{houses,cabins,units}.js`, plan.js's `PlanBuilder` | `buildings/interior/{houses,cabins,units}.*`, `buildings/interior/plan.*` (the builder's floors, grids and stairs: the rest of plan.js comes with the interior planners) | stages `houses`, `units` |
 | facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
 | sample buildings | `buildings/sample.js` | `buildings/sample.*` (`stage_archetype` reads a world through `StageWorld`, `StagedEnvelopes`, until the cell plan is ported) | stage `sample` |
+| building shells (the coarse voxelizer), roof snow | `buildings/massing.js` | `buildings/massing.*` (`voxelize_massing`, `pitched_roof_only`, `roof_snow_cover`: `Envelope::snow`, `snow_cache`; `snow_at`) | stage `massing` (every archetype, season and snow cover, LOD 0 to 5); tests (4 threads) |
+| wings, corner and canted bays, chamfers | `buildings/wings.js` | `buildings/wings.*` (`plan_wings`, `wing_placement`, `rasterize_wing`, `rasterize_wing_part`, `kEmbed`), `buildings/wing.hpp` (the record; `nearWing` is the interior planners'), `city/lots.hpp` (`block`, `frontages`, `whole`) | stage `wings` (scripted sites: lots on scripted streets served as a World's cell roads, slanted streets, turned lots) |
+| the buildings' feature source | `buildings/source.js` | `buildings/source.*` (`building_z_range`, `rasterize_buildings` over the envelopes asked for: `World::envelopes_in` is the cell plan's) | stage `wings` (grid and parts mode) |
+| garage ramps as pitched parts | `buildings/garageRamps.js` | `buildings/garageRamps.*` (`ramp_part`, `rasterize_ramp_part`) | stage `garageramps` |
+| site grading | `city/grading.js` | `city/grading.*` (`SiteGrading`, `level_lot`, `kApron`; `Lot::underground`, `under_highway`) | stage `grading` |
+| skybridges, their feature source | `city/skybridges.js` | `city/skybridges.*` (`plan_skybridges` sets `Envelope::sky_doors`; the source over the bridges near a chunk: `skybridges_in` per cell plan) | stage `skybridges` |
+| island landmarks, their feature source | `world/landmarks.js`; createWorld's `landmarks` | `world/landmarks.*` (`Landmarks`, installed by `create_world` on an island; `landmark_z_range`, `rasterize_landmarks`) | stage `landmarks` (every island world, its open-ground answers recorded: §6; `free()` on scripted roads and plans); tests (4 threads) |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -306,7 +313,11 @@ so that it stays the oracle.
   result before the next call: a port of one that keeps it across another call copies what
   JavaScript would read then). The reference's `hash32` / `hashFloat` read four arguments and
   ignore any more (`farmland.js`, `caves.js`, `sites/links.js`): the port's take four, so such a
-  call is ported without its extra ones (a farm field's key is its strip's cut hash).
+  call is ported without its extra ones (a farm field's key is its strip's cut hash). A lot's
+  `whole` is lots.js's `true` on a lot taking its block whole and cellPlan.js's rect (the lot as
+  planned) on a lot fitLots trimmed to its block's slanted edges; planWings reads
+  `lot.whole ?? lot.rect` as a rect, so on `whole: true` (no x0) its in-lot test fails everywhere:
+  the port keeps both (`Lot::whole`, `whole_rect`), and `plan_wings` that failure.
 - **The road network's stages run on recorded inputs.** The road network reads the cell networks
   (city stage 1) and the waters (`createWorld`'s `isWet`: rivers, lakes, the island's sea). Its
   stages were made while those were not ported, and check it on the reference's own inputs: they
@@ -321,6 +332,17 @@ so that it stays the oracle.
   a `create_world` World's own cell networks and waters instead, the port grading on (the
   reference's terrain made pure with `pureTerrain`); the recorded roads are those of a createWorld
   world whose terrain has no port grading, so a harbour town's may differ from them.
+- **The landmarks' stage runs on recorded open-ground answers.** An island's landmarks
+  (`world/landmarks.js`) keep to open natural ground (`free`: no road, lot, urban space or water),
+  which asks the road views and the cell plans (`plan.lotAt`, `plan.spaceAt`), a later stage of the
+  port. The stage `landmarks` records the reference's answers on every island world
+  (`tools/procgen_ref/data/landmarks.json`; createWorld's world, its terrain made pure:
+  `pureTerrain`) and the port replays them (`Landmarks::free_source`); everything else the plan reads
+  (the island's coast, cliffs, harbour and places, the terrain, the props) is the port's own
+  `create_world`'s. `free()` itself is checked on scripted roads and plans: its cell-plan half is
+  `Landmarks::plan_occupied`, which the cell plan's port installs (until it does, `free()` fails:
+  nothing in the port plans landmarks yet). Once it does, the stage can run on the port's own
+  answers.
 - **A building's look asked with two seeds** (`buildings/facade.js` `buildingLook`): the reference
   keeps the look per envelope (a WeakMap) whatever seed asks, so a second seed would get the first
   one's look; the port keeps it on the envelope too (`Envelope::look_cache`) and fails
