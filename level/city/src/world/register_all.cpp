@@ -4,6 +4,7 @@
 
 #include <mutex>
 
+#include "buildings/archetypes.hpp"
 #include "buildings/civic.hpp"
 #include "buildings/styles.hpp"
 #include "city/districts.hpp"
@@ -23,6 +24,7 @@ void register_all() {
     register_flavors();    // FLAVORS (city/flavors.js)
     register_styles();     // STYLES (buildings/styles.js)
     register_civic();      // ARCHETYPES and STYLES (buildings/civic.js), before archetypes.js's
+    register_archetypes();  // ARCHETYPES (buildings/archetypes.js)
   });
 }
 

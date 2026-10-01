@@ -2,9 +2,12 @@
 // top: where the player starts and a coarse view for the far render tier.
 #pragma once
 
+#include <memory>
 #include <vector>
 
 #include "svx/base/vec.hpp"
+#include "svx/env/fire.hpp"
+#include "svx/game/appearance.hpp"
 #include "svx/game/roads.hpp"
 #include "svx/world/source.hpp"
 
@@ -16,6 +19,14 @@ class GameSource : public ChunkSource {
   virtual V3 spawn_dir() const = 0;
   // Its roads, for traffic (nullptr: none).
   virtual const RoadNetwork* roads() const { return nullptr; }
+  // Its looks (nullptr: its materials' colours): the game then has a regenerable "look" layer
+  // (LayerSpec::regenerable, values from generate_layer(chunk, "look", ...)) and meshes a face of
+  // (material, look) with the table's appearance (svx/game/appearance.hpp). Its oriented grids
+  // carry their looks in their own "look" layer (generate_grid).
+  virtual std::shared_ptr<const AppearanceTable> appearances() const { return nullptr; }
+  // The fire facets of its own materials (a city's roofing, furnishings, plants): set on the
+  // game's fire when it loads the source (ids no other world uses: they stay set).
+  virtual void fire_materials(FireSystem& fire) const { (void)fire; }
   // Far render tier: the voxels of n coarse cells of `factor`^3 voxels each from voxel `lo`
   // (index (x * n1 + y) * n2 + z). Thin solids must survive (a cell is solid where any solid
   // covers part of it; air only where it covers the cell). Sources without a cheap coarse view

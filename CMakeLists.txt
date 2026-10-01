@@ -120,9 +120,22 @@ if(SVX_BUILD_GAME)
   # Procedural generation (to be replaced: a module of its own): the test levels, the streamed
   # city and the endless drive city, made of the game's materials and paints.
   file(GLOB SVX_PROCGEN_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/procgen/src/*.cpp)
-  add_library(svx_procgen STATIC ${SVX_PROCGEN_SOURCES})
-  target_include_directories(svx_procgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/procgen/include)
+  # (the presets, data/presets/**/*.json, embedded: svx/procgen/presets.hpp)
+  file(GLOB_RECURSE SVX_PRESET_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/presets/*.json)
+  set(SVX_PRESETS_CPP ${CMAKE_CURRENT_BINARY_DIR}/generated/presets_data.cpp)
+  add_custom_command(OUTPUT ${SVX_PRESETS_CPP}
+                     COMMAND ${CMAKE_COMMAND} -DDIR=${CMAKE_CURRENT_SOURCE_DIR}/data/presets -DOUT=${SVX_PRESETS_CPP}
+                             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_presets.cmake
+                     DEPENDS ${SVX_PRESET_FILES} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_presets.cmake
+                     COMMENT "Embedding the presets")
+  add_library(svx_procgen STATIC ${SVX_PROCGEN_SOURCES} ${SVX_PRESETS_CPP})
+  target_include_directories(svx_procgen PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/procgen/include
+                             PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann)
   target_link_libraries(svx_procgen PUBLIC svx_game)
+  if(TARGET svx_city)
+    # (the city generator's adapter: CityWorldSource)
+    target_link_libraries(svx_procgen PUBLIC svx_city)
+  endif()
   target_compile_options(svx_procgen PRIVATE -fno-exceptions -fno-rtti ${SVX_WARNINGS})
 
   # The game's C ABI (svx/game/api/svx_api.h: the web worker's engine), which picks the levels.

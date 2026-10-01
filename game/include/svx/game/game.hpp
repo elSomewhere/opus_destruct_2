@@ -252,6 +252,10 @@ class Game {
   bool load_delta(const std::vector<u8>& bytes);  // (movers keep their state; a played session's drops are not dropped again)
   V3 spawn_pos() const { return spawn_pos_; }
   V3 spawn_dir() const { return spawn_dir_; }
+  void set_spawn(const V3& pos, const V3& dir) {  // (a preset's: where the player starts)
+    spawn_pos_ = pos;
+    spawn_dir_ = dir;
+  }
 
   // Player commands (logged when recording).
   void set_viewer(const V3& eye);
@@ -296,6 +300,10 @@ class Game {
   void set_traffic(const TrafficConfig& c);  // (logged)
   const TrafficConfig& traffic() const { return traffic_; }
   int paint_layer() const { return paint_layer_; }
+  // The loaded world's looks (GameSource::appearances; nullptr: its materials' colours) and its
+  // "look" layer (-1: none). Meshes carry kAppearanceTexture + i for a face of appearance i.
+  const AppearanceTable* appearances() const { return appearances_.get(); }
+  int look_layer() const { return look_layer_; }
 
   // Pedestrians (game/src/pedestrians.cpp). A shot or a blast frightens them; a car coming at
   // them makes them jump aside; one that hits them hurts them.
@@ -508,6 +516,8 @@ class Game {
   u32 player_vehicle_ = 0;
   VehicleInput player_input_;
   int paint_layer_ = -1;
+  std::shared_ptr<const AppearanceTable> appearances_;
+  int look_layer_ = -1;
   TrafficConfig traffic_;
   f64 traffic_clock_ = 0.0;
   std::set<u64> parked_spots_;      // (kerbside places with a parked car now, or one that is out of range)

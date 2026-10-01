@@ -86,6 +86,36 @@ struct LayerSpec {
   // chunk). Transient: dropped with the chunk (a fire's heat).
   bool persistent = true;
   LayerBind bind = LayerBind::Place;
+  // Regenerable (a city's looks): its base values are not stored - they come from the world's
+  // source on demand (ChunkSource::generate_layer, through a bounded cache: VoxelGrid::LayerBase)
+  // - and a chunk stores the layer only once something writes it in play. A solid-bound one
+  // keeps its base value under a voxel that went (what reads it reads solid voxels), and drops it
+  // when a voxel is placed there.
+  bool regenerable = false;
+};
+
+// A chunk's values of one layer: none (empty), one value over the whole chunk (uniform: a lake's
+// water), or an array of kChunkVox (Chunk::v order). Read like a vector; written through the
+// grid (VoxelGrid::set_layer, set_layer_values).
+class LayerValues {
+ public:
+  bool empty() const { return v_.empty() && one_ == 0; }
+  size_t size() const { return empty() ? 0 : static_cast<size_t>(kChunkVox); }
+  u8 operator[](size_t i) const { return one_ ? one_ : v_[i]; }
+  const u8* data() const;  // (uniform: a shared array of its value; empty: nullptr)
+  const u8* begin() const { return data(); }
+  const u8* end() const { return data() + size(); }
+  bool uniform() const { return one_ != 0; }
+  u8 uniform_value() const { return one_; }
+  // (regenerable layers) stored: written in play or restored - else the source's base values
+  bool own() const { return own_; }
+  i64 memory_bytes(Bytes kind = Bytes::Held) const { return vec_bytes(v_, kind); }
+
+ private:
+  friend class VoxelGrid;
+  std::vector<u8> v_;
+  u8 one_ = 0;
+  bool own_ = false;
 };
 
 // A chunk's broken faces are kept as a sorted list while there are few (a seam under a chair, a
@@ -103,8 +133,8 @@ struct Chunk {
   u32 vox_version = 0;          // changes (unique value) when voxels change: fragment caches
   i32 solid = 0;                // solid voxel count (mixed chunks)
   i32 free = 0;                 // ... of them not anchored: structure, not rock (mixed chunks)
-  std::array<std::vector<u8>, kMaxLayers> layer;  // kChunkVox each when the layer has values here
-  std::array<u16, kMaxLayers> layer_count{};      // nonzero values per layer
+  std::array<LayerValues, kMaxLayers> layer;  // the layers' values here (none, uniform, an array)
+  std::array<u16, kMaxLayers> layer_count{};  // nonzero values per layer (stored ones)
   std::vector<u32> jbroken;     // broken junction samples of its voxels (junction_code), sorted
   i32 free_count() const { return uniform ? (vox_free(value) ? kChunkVox : 0) : free; }
   // The broken faces of voxel i (Chunk::v order).
@@ -145,12 +175,12 @@ struct Chunk {
   i64 memory_bytes(Bytes kind = Bytes::Held) const {
     i64 b = record_bytes<Chunk>(kind, 328) + vec_bytes(v, kind) + vec_bytes(broken, kind) + vec_bytes(broken_few, kind) + vec_bytes(strength, kind) +
             vec_bytes(jbroken, kind);
-    for (const auto& l : layer) b += vec_bytes(l, kind);
+    for (const auto& l : layer) b += l.memory_bytes(kind);
     return b;
   }
   bool has_layers() const {
     for (const auto& l : layer)
-      if (!l.empty()) return true;
+      if (!l.empty() || l.own()) return true;
     return false;
   }
 };
@@ -202,6 +232,8 @@ class VoxelGrid {
   // Layers: add_layer returns a layer's index (the existing one for a name already added).
   int add_layer(const LayerSpec& spec);
   void sanitize();  // invalid voxel values (vox_valid) become air
+  // Every voxel value v becomes to[v] (uniform chunks too; counts kept right; not a change).
+  void remap(const std::array<Vox, 256>& to);
   int layer_index(const std::string& name) const;  // -1: none
   const std::vector<LayerSpec>& layers() const { return layers_; }
   // Takes these layers (by name: the values of layers it has move to their index in specs; its
@@ -212,6 +244,23 @@ class VoxelGrid {
   // not there.)
   bool set_layer(int L, const IVec3& p, u8 v);
   std::vector<u64> take_layer_dirty(int L);  // keys of chunks whose layer L changed since the last call (sorted)
+  // A chunk's values of layer L as they read - its stored ones, or a regenerable layer's base
+  // values: kChunkVox of them (nullptr: all zero), kept alive by *hold.
+  const u8* layer_values(int L, const IVec3& cc, std::shared_ptr<const void>* hold) const;
+  // Installs a chunk's values of layer L at once (kChunkVox; a generated chunk's water - one value
+  // over the whole chunk is kept as one): as set_layer of each, without the chunk's other values.
+  void set_layer_values(int L, const IVec3& cc, const u8* values);
+  // The base values of regenerable layers (LayerSpec::regenerable): a world's source, through a
+  // bounded cache. base() is called from any thread and is a pure function of (L, cc) while set.
+  class LayerBase {
+   public:
+    virtual ~LayerBase() = default;
+    // Layer L's base values in chunk cc (kChunkVox, Chunk::v order), kept alive by *hold;
+    // nullptr: none (zero).
+    virtual const u8* base(int L, const IVec3& cc, std::shared_ptr<const void>* hold) const = 0;
+  };
+  void set_layer_base(const LayerBase* b);  // (nullptr: regenerable layers read zero where not stored)
+  bool layer_regenerable(int L) const { return L >= 0 && L < static_cast<int>(layers_.size()) && layers_[size_t(L)].regenerable; }
 
   // bulk construction: fill [z0, z1) of column (x, y) (no dirty marking), then compact()
   void fill_column(i32 x, i32 y, i32 z0, i32 z1, Vox v);
@@ -274,6 +323,10 @@ class VoxelGrid {
   void touch_dirty(u64 k);
   std::vector<LayerSpec> layers_;
   std::array<std::unordered_set<u64>, kMaxLayers> layer_dirty_;
+  const LayerBase* base_ = nullptr;
+  u64 base_epoch_ = 0;     // (a fresh one each set_layer_base: the readers' per-thread memo)
+  bool any_regen_ = false;  // (a regenerable layer is registered)
+  const u8* base_values(int L, const IVec3& cc) const;  // (through a per-thread memo)
   std::vector<u64> compact_;              // chunks that may have been emptied
   std::vector<std::vector<u8>> spare_;    // recycled kChunkVox arrays
   static constexpr size_t kMaxSpare = 256;

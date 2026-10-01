@@ -111,6 +111,17 @@ material around them, tying a member together. Register or override a world's ma
 it loads (what it builds from them - fragments, structures, pieces - keeps what it was built
 with).
 
+**Decorative** materials (`Material::decorative`: plants - leaves, grass, a hedge) are solid to
+rendering and raycasts, burn and are cut like any solid, but are never structure: the fragmenter
+skips them, so they have no bond, no stress node, are never a support and never extracted, and a
+decorative voxel is never anchored (the anchor bit is dropped where one comes into a world).
+They follow what they grow on: after a change near them - a cut, an edit, something they grew on
+coming loose as a piece - a component of decorative voxels (6-connected, up to 8,192) that touches
+no other solid voxel is shed: removed with a dust event (falling leaves; carrying them with the
+piece is not done yet). **Passable** decorative materials (leaves, grass) collide with nothing:
+pieces, characters' links, wheels and the player's box go through them; a hedge is not passable.
+A world with no decorative material behaves as before.
+
 **Fragments** are the pre-scored rubble pieces the free voxels are grouped into (a jittered
 Voronoi partition per material, within each chunk). Fragments never break; **bonds** between
 fragments do.
@@ -301,7 +312,13 @@ must be resident: one point per player, camera or AI of interest.
   chunk's grids are, not while the machine is archived, again when it was forgotten.
 - Structures reaching into chunks that are not resident are held there (the unknown world is a
   support).
-- A generated structure is designed the first time something touches it.
+- A generated structure is designed the first time something touches it. With
+  `WorldConfig::pretouch_radius` (0: off, the default; a city preset uses 48 m) the world does it
+  before: while nothing is being solved, it extracts and designs the undesigned structures within
+  that distance of a focus, nearest first, at most `pretouch_work` nodes a tick (a structure at
+  least), so a first shot or blast does not pay for it. What stands on nothing (a resting object)
+  is left as it rests; a structure changed before it was pre-touched is left as a first touch
+  leaves it. Deterministic: it follows the focus (a command) and the world.
 - `ChunkSource::region(chunk)` names the unit a chunk's changes are remembered and forgotten
   with. The default is 8 × 8 chunk columns; the city generator uses its blocks, so a building
   never comes back in half.
@@ -424,7 +441,8 @@ exact as long as every peer uses the same configuration.
 ### Watching it
 
 - `World::memory()` reports the bytes held by kind (grid, fragment caches, structures, pieces,
-  archive, caches, queues).
+  archive, caches, queues, systems, and a streamed world's source: `ChunkSource::memory_bytes`, a
+  generator's caches).
 - `stats()` counts what the budgets removed.
 - `svx_soak` runs long sessions (a streamed city crossed for minutes with continuous
   destruction, or a bounded level) and prints both, together with the process's physical
@@ -449,6 +467,16 @@ points, without touching the core. `svx_env` ([`ENV.md`](ENV.md)) is built on th
     count as a player's for the design pass (only changed voxels and bonds do).
   - Layers are matched by name when a grid is loaded, so a level can carry them. A
     `ChunkSource` fills them for generated chunks (`generate_layer`).
+  - A chunk keeps a layer's values as nothing, one value over the whole chunk (a lake's or the
+    sea's water: a byte, not 32 KB), or an array; `Chunk::layer[L]` (`LayerValues`) reads the
+    same either way.
+  - A **regenerable** layer (`LayerSpec::regenerable`: a generated city's looks) stores no base
+    values: they come from the streamed world's source (`generate_layer`, called on demand from
+    any thread) through a bounded cache (512 chunks), so the layer costs nothing per resident
+    chunk; `VoxelGrid::layer_values` gives a chunk's values as they read (a renderer meshing
+    it). A chunk stores the layer only once play writes it (then it is a change: archived,
+    saved, restored over its base). A solid-bound one keeps its base value under a voxel that
+    went (nothing reads it there) and drops it when a voxel is placed there.
   - Pieces carry their voxels' layer values (`piece_layer`, `set_piece_layer`).
 - **Damage** (`kDamageLayer`, always present, bound to the solid voxel): 0 intact to 255 no
   strength left (a section at 255 fails under any load). It scales the strengths of every bond

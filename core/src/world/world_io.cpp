@@ -515,6 +515,10 @@ void World::Impl::enable_streaming(std::shared_ptr<const ChunkSource> src, const
   strm_.evict_scan_focus.clear();
   // (a bounded archive: its arena, once; an unbounded one grows)
   reset_archive(strm_.source ? static_cast<size_t>(C.archive_mb * 1048576.0) : 0);
+  // (regenerable layers read their base values from the source)
+  layer_cache_.clear();
+  layer_cache_.w = this;
+  grid_.set_layer_base(strm_.source ? &layer_cache_ : nullptr);
   if (!strm_.source) return;
   // the source's extent, held within the voxel key range and never inverted (a column's content
   // within it is at most kMaxColumnChunks tall: column_info)
@@ -528,6 +532,55 @@ void World::Impl::enable_streaming(std::shared_ptr<const ChunkSource> src, const
   strm_.hi = hi;
   grid_.lo = {lo[0] * kChunk, lo[1] * kChunk, lo[2] * kChunk};
   grid_.hi = {hi[0] * kChunk, hi[1] * kChunk, hi[2] * kChunk};
+}
+
+const u8* World::Impl::LayerCache::base(int L, const IVec3& cc, std::shared_ptr<const void>* hold) const {
+  const ChunkSource* src = w ? w->strm_.source.get() : nullptr;
+  if (!src || L < 0 || L >= static_cast<int>(w->ext_.layers.size())) return nullptr;
+  const GKey k{static_cast<u16>(L), key3(cc[0], cc[1], cc[2])};
+  {
+    std::lock_guard<std::mutex> lk(m);
+    const auto it = map.find(k);
+    if (it != map.end()) {
+      it->second.second = ++clock;
+      if (!it->second.first) return nullptr;
+      *hold = it->second.first;
+      return it->second.first->data();
+    }
+  }
+  // (made outside the lock: another thread may make the same values meanwhile)
+  auto v = std::make_shared<std::vector<u8>>();
+  const bool any = src->generate_layer(cc, w->ext_.layers[size_t(L)].name, *v) && v->size() == size_t(kChunkVox);
+  std::shared_ptr<const std::vector<u8>> made = any ? std::shared_ptr<const std::vector<u8>>(std::move(v)) : nullptr;
+  std::lock_guard<std::mutex> lk(m);
+  if (map.size() >= cap) {
+    // (the least recently used half goes)
+    std::vector<u64> uses;
+    uses.reserve(map.size());
+    for (const auto& [key, e] : map) uses.push_back(e.second);
+    std::nth_element(uses.begin(), uses.begin() + static_cast<std::ptrdiff_t>(uses.size() / 2), uses.end());
+    const u64 cut = uses[uses.size() / 2];
+    for (auto it = map.begin(); it != map.end();) it = it->second.second < cut ? map.erase(it) : std::next(it);
+  }
+  const auto [it, fresh] = map.emplace(k, std::make_pair(made, ++clock));
+  if (!fresh) made = it->second.first;
+  if (!made) return nullptr;
+  *hold = made;
+  return made->data();
+}
+
+i64 World::Impl::LayerCache::bytes() const {
+  std::lock_guard<std::mutex> lk(m);
+  i64 b = hash_bytes(map);
+  for (const auto& [k, e] : map)
+    if (e.first) b += vec_bytes(*e.first);
+  return b;
+}
+
+void World::Impl::LayerCache::clear() {
+  std::lock_guard<std::mutex> lk(m);
+  map.clear();
+  clock = 0;
 }
 
 void World::Impl::set_focus(const std::vector<V3>& points) {
@@ -668,6 +721,8 @@ void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v, bool
   if (any)
     for (Vox& x : v)
       if (!vox_valid(x)) x = kAir;
+  if (any && mats_->any_decorative())
+    for (Vox& x : v) x = entry_vox(x);  // (decorative voxels are never anchored)
   strm_.generated.insert(key);
   ext_.sys_generated.push_back(key);
   {
@@ -690,18 +745,15 @@ void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v, bool
   } else {
     grid_.release_buffer(std::move(v));
   }
-  // (the source's layers: water of a lake, ...)
+  // (the source's layers: water of a lake, ... - a regenerable one's values are asked for when
+  // they are read: VoxelGrid::LayerBase)
   for (int L = 0; from_source && L < static_cast<int>(ext_.layers.size()); ++L) {
+    if (ext_.layers[size_t(L)].regenerable) continue;
     std::vector<u8> lv;
     if (!strm_.source->generate_layer(cc, ext_.layers[size_t(L)].name, lv) || lv.size() != size_t(kChunkVox)) continue;
-    const IVec3 b{cc[0] * kChunk, cc[1] * kChunk, cc[2] * kChunk};
     const bool tracked = grid_.tracking();
     grid_.track_changes(false);  // (generated: not a change)
-    for (int i = 0; i < kChunkVox; ++i)
-      if (lv[size_t(i)]) {
-        const IVec3 l = local_of(i);
-        grid_.set_layer(L, {b[0] + l[0], b[1] + l[1], b[2] + l[2]}, lv[size_t(i)]);
-      }
+    grid_.set_layer_values(L, cc, lv.data());
     grid_.track_changes(tracked);
     changed = true;
   }
@@ -1534,6 +1586,7 @@ WorldStats World::Impl::stats() const {
 
 MemoryReport World::Impl::memory() const {
   MemoryReport m;
+  if (strm_.source) m.sources = std::max<i64>(0, strm_.source->memory_bytes());
   m.grid = grid_.memory_bytes() + hash_bytes(grid_.chunks()) + grid_.bookkeeping_bytes();
   m.chunks = static_cast<i32>(grid_.chunks().size());
   for (size_t g = 0; g < grids_.size(); ++g) {
@@ -1563,7 +1616,7 @@ MemoryReport World::Impl::memory() const {
   m.caches += hash_bytes(strm_.generated) + hash_bytes(strm_.columns) + hash_bytes(strm_.home_grids);
   // (the fragment labelling's memo: kinds of chunk seen, their labels - a few dozen at most)
   for (const auto& [k, fm] : frag_memo_) m.caches += vec_bytes(fm.v) + vec_bytes(fm.broken) + vec_bytes(fm.broken_few) + fm.frags.memory_bytes();
-  m.caches += hash_bytes(frag_memo_) + hash_bytes(solids_) + vec_bytes(touching_) + hash_bytes(loose_checked_);
+  m.caches += hash_bytes(frag_memo_) + hash_bytes(solids_) + vec_bytes(touching_) + hash_bytes(loose_checked_) + layer_cache_.bytes();
   for (const auto& [k, c] : solids_) m.caches += vec_bytes(c.bits) + vec_bytes(c.from);
   m.queues = vec_bytes(events_) + vec_bytes(strm_.evicted_chunks) + vec_bytes(queue_) + vec_bytes(seeds_) + grid_.dirty_bytes() + vec_bytes(grid_dirty_) +
              hash_bytes(ext_.host_dirty) + vec_bytes(ext_.sys_changed) + vec_bytes(ext_.sys_generated) + vec_bytes(ext_.sys_evicted);
@@ -1607,11 +1660,13 @@ u64 World::Impl::state_hash() const {
           }
         }
       }
-      for (int L = 0; L < kMaxLayers; ++L)
+      for (int L = 0; L < kMaxLayers; ++L) {
+        if (c.layer[size_t(L)].own() && c.layer[size_t(L)].empty()) mix(0x0E0E0000ull + static_cast<u64>(L));  // (a regenerable layer zeroed in play)
         if (!c.layer[size_t(L)].empty()) {
           mix(0x1A7E0000ull + static_cast<u64>(L));
           for (u8 v : c.layer[size_t(L)]) mix(v);
         }
+      }
       if (!c.jbroken.empty()) {
         mix(0x7B0E0000ull + c.jbroken.size());
         for (u32 j : c.jbroken) mix(j);
@@ -1915,6 +1970,7 @@ CollideResult World::Impl::collide(const V3& mn, const V3& mx, const V3& mv) con
   std::array<f64, 3> lo = {mn.x, mn.y, mn.z}, hi = {mx.x, mx.y, mx.z};
   const std::array<f64, 3> move = {std::clamp(mv.x, -16.0, 16.0), std::clamp(mv.y, -16.0, 16.0), std::clamp(mv.z, -16.0, 16.0)};
   auto vidx = [&](f64 x) { return static_cast<i32>(std::floor(x / h + 0.5)); };
+  const bool passable = mats_->any_passable();
   for (int a = 0; a < 3; ++a) {
     f64 dm = move[size_t(a)];
     if (dm == 0.0) continue;
@@ -1933,7 +1989,8 @@ CollideResult World::Impl::collide(const V3& mn, const V3& mx, const V3& mv) con
           p[a] = layer;
           p[b] = ib;
           p[c] = ic;
-          if (vox_solid(grid_.get(p[0], p[1], p[2]))) blocked = true;
+          const Vox v = grid_.get(p[0], p[1], p[2]);
+          if (vox_solid(v) && !(passable && (mats_->vox_kind(v) & kVoxPassable))) blocked = true;  // (grass, leaves: walked through)
         }
       if (blocked) break;
     }
@@ -1991,11 +2048,14 @@ void World::Impl::for_voxel_cubes(const V3& lo, const V3& hi, bool world_grid, F
     }
     const IVec3 vlo = voxel_of(llo, h), vhi = voxel_of(lhi, h);
     const V3 u[3] = {st.xf.dir_to(V3{1, 0, 0}), st.xf.dir_to(V3{0, 1, 0}), st.xf.dir_to(V3{0, 0, 1})};
+    const bool passable = mats_->any_passable();
     for (i32 x = vlo[0] - 1; x <= vhi[0] + 1; ++x)
       for (i32 y = vlo[1] - 1; y <= vhi[1] + 1; ++y)
-        for (i32 z = vlo[2] - 1; z <= vhi[2] + 1; ++z)
-          if (vox_solid(G.get(x, y, z)) && f(st.xf.to(V3{h * x, h * y, h * z}), u, 0.5 * h, st.id, static_cast<const Body*>(nullptr)))
-            return;
+        for (i32 z = vlo[2] - 1; z <= vhi[2] + 1; ++z) {
+          const Vox v = G.get(x, y, z);
+          if (!vox_solid(v) || (passable && (mats_->vox_kind(v) & kVoxPassable))) continue;
+          if (f(st.xf.to(V3{h * x, h * y, h * z}), u, 0.5 * h, st.id, static_cast<const Body*>(nullptr))) return;
+        }
   }
   // the pieces: their shapes' voxels (cubes in each shape's lattice, at the piece's pose)
   const V3 bc = (lo + hi) * 0.5, be = (hi - lo) * 0.5;
@@ -2243,6 +2303,48 @@ void World::Impl::design_near(const V3& c, f64 r) {
           if (!live(g) || gs(g).undesigned.empty()) break;
         }
   }
+}
+
+void World::Impl::pretouch() {
+  // (streaming: the undesigned structures near the focus, designed before something touches
+  // them - nearest first, a tick's work at most - while the stress budget is not in use)
+  if (st_.solving > 0 || strm_.focus.empty()) return;
+  GridState& G0 = gs(0);
+  if (G0.undesigned.empty()) return;
+  std::vector<std::pair<f64, u64>> cand;
+  for (u64 k : G0.undesigned) {
+    const f64 d = focus_distance(unkey3(k));
+    if (d <= cfg_.pretouch_radius) cand.push_back({d, k});
+  }
+  if (cand.empty()) return;
+  std::sort(cand.begin(), cand.end());
+  i64 work = 0;
+  pretouching_ = true;
+  for (const auto& [d, k] : cand) {
+    if (work >= cfg_.pretouch_work) break;
+    if (!G0.undesigned.count(k)) continue;  // (designed by one this tick)
+    const IVec3 cc = unkey3(k);
+    const Chunk* ch = grid_.chunk(cc);
+    if (!ch || ch->free_count() == 0 || !chunk_resident(cc)) {
+      G0.undesigned.erase(k);
+      continue;
+    }
+    // each fragment of no structure: the structure it is in (what stands on nothing is left)
+    const i32 nf = static_cast<i32>(frag_chunk(0, cc).frags.size());
+    for (i32 f = 0; f < nf && work < cfg_.pretouch_work; ++f) {
+      const FragChunk* fc = frag_chunk_if(FragKey{k, f, 0});
+      if (!fc || f >= static_cast<i32>(fc->frags.size()) || fc->frags[size_t(f)].count <= 0) continue;
+      if (owner_of(FragKey{k, f, 0}) != 0) continue;
+      const i64 before = st_.extracted_nodes;
+      extract(FragKey{k, f, 0});
+      work += std::max<i64>(1, st_.extracted_nodes - before);
+      if (!G0.undesigned.count(k)) break;
+    }
+    // (what is left undesigned here stands on nothing - a resting object - or was not pristine:
+    // a first touch has nothing to design there either)
+    if (work < cfg_.pretouch_work) G0.undesigned.erase(k);
+  }
+  pretouching_ = false;
 }
 
 }  // namespace svx

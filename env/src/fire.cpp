@@ -217,7 +217,7 @@ void FireSystem::track_heat(const World& w, const std::vector<u64>& chunks) {
     const Chunk* c = w.grid().chunk(unkey3(k));
     if (!c || c->layer[size_t(heat_)].empty()) continue;
     const IVec3 cc = unkey3(k);
-    const std::vector<u8>& a = c->layer[size_t(heat_)];
+    const LayerValues& a = c->layer[size_t(heat_)];
     for (i32 i = 0; i < kChunkVox; ++i)
       if (a[size_t(i)]) hot_.push_back(key3(cc[0] * kChunk + i / (kChunk * kChunk), cc[1] * kChunk + (i / kChunk) % kChunk, cc[2] * kChunk + i % kChunk));
   }

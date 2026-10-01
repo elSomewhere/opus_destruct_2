@@ -364,3 +364,21 @@ test('padded chunk copy matches world.get', () => {
       for (let x = -1; x <= 32; x++) assert.equal(buf[x + 1 + P * (y + 1 + P * (z + 1))], w.get(x, y, z));
   assert.deepEqual(block.grid, [0, 0, 0]);
 });
+
+test('mock engine: lists its presets at init and loads a legacy preset (anything else: rooms, with an error)', () => {
+  const { engine, messages, tick, now } = runEngine();
+  const listing = messages.find((m) => m.type === 'presets');
+  assert.ok(listing && listing.type === 'presets');
+  assert.ok(listing.presets.some((p) => p.id === 'legacy/tower' && p.available));
+  assert.equal(listing.defaultId, 'legacy/rooms');
+  messages.length = 0;
+  engine.handle({ type: 'loadPreset', id: 'legacy/tower', seed: 0 }, now());
+  tick(200);
+  assert.ok(messages.some((m) => m.type === 'ready'));
+  assert.ok(!messages.some((m) => m.type === 'error'));
+  messages.length = 0;
+  engine.handle({ type: 'loadPreset', id: 'city/angledInfiniteCity', seed: 0 }, now());
+  tick(200);
+  assert.ok(messages.some((m) => m.type === 'error' && m.command === 'loadPreset'));
+  assert.ok(messages.some((m) => m.type === 'ready'));
+});

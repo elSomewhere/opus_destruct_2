@@ -77,6 +77,8 @@ constexpr Field kFields[] = {
     SVX_T_I32("crumple_check_gap", crumple_check_gap),
     SVX_T_I32("rollback_part_voxels", rollback_part_voxels),
     SVX_T_I32("min_body_voxels", min_body_voxels),
+    SVX_T_F64("pretouch_radius", pretouch_radius),
+    SVX_T_I64("pretouch_work", pretouch_work),
     SVX_T_F64("link_loosen_force", link_loosen_force),
     SVX_T_I32("link_loosen_voxels", link_loosen_voxels),
     SVX_T_F64("blast_shatter", blast_shatter),

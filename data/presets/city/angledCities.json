@@ -1,0 +1,27 @@
+{
+  "id": "city/angledCities",
+  "label": "Cities in countryside, angled",
+  "group": "city",
+  "description": "Diagonal boulevards, curving country roads, a building in eight turned to its street.",
+  "generator": "city",
+  "params": {
+    "preset": "angledCities"
+  },
+  "seed": 1337,
+  "streaming": {
+    "load_radius": 112,
+    "evict_radius": 144,
+    "chunks_per_tick": 48,
+    "archive_mb": 128
+  },
+  "far": {
+    "radius": 520
+  },
+  "tunables": {
+    "pretouch_radius": 48
+  },
+  "atmosphere": {
+    "sky": "#b8c9d9",
+    "time_of_day": 13
+  }
+}

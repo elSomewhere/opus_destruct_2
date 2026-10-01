@@ -1,0 +1,32 @@
+{
+  "id": "city/angledOldHarbourTown",
+  "label": "Old harbour town, angled",
+  "group": "city",
+  "description": "Steep streets climbing the hillside on smooth ramps.",
+  "generator": "city",
+  "params": {
+    "preset": "angledOldHarbourTown"
+  },
+  "seed": 1337,
+  "streaming": {
+    "load_radius": 112,
+    "evict_radius": 144,
+    "chunks_per_tick": 48,
+    "archive_mb": 128
+  },
+  "far": {
+    "radius": 520
+  },
+  "tunables": {
+    "pretouch_radius": 48
+  },
+  "atmosphere": {
+    "sky": "#9ea9b0",
+    "fog": 1.9,
+    "sun": 0.55,
+    "ambient": 0.95,
+    "sun_elevation": 0.38,
+    "desaturate": 0.26,
+    "time_of_day": 13
+  }
+}

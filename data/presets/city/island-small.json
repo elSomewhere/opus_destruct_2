@@ -1,0 +1,28 @@
+{
+  "id": "city/island-small",
+  "label": "Island (small)",
+  "group": "city",
+  "description": "An island with a main town, villages and hamlets.",
+  "generator": "city",
+  "params": {
+    "preset": "island",
+    "size": "small"
+  },
+  "seed": 1337,
+  "streaming": {
+    "load_radius": 112,
+    "evict_radius": 144,
+    "chunks_per_tick": 48,
+    "archive_mb": 128
+  },
+  "far": {
+    "radius": 520
+  },
+  "tunables": {
+    "pretouch_radius": 48
+  },
+  "atmosphere": {
+    "sky": "#b8c9d9",
+    "time_of_day": 13
+  }
+}

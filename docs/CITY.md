@@ -42,7 +42,21 @@ exports, natively and in WASM, on any thread count.
 | interior data | `buildings/interior/{prefabs,civicPrefabs,civicRules,common,stairs,grid}.js` | `buildings/interior/` | stages `prefabs`, `civicrules`, `floorgrid`, `stairs` |
 | prop prefabs, industry | `city/{propPrefabs,industry}.js` | `city/propPrefabs.*`, `city/industry.*` | stages `propprefabs`, `industry` |
 | polygon blocks, chamfers | `city/blockPoly.js`, `buildings/chamfer.js` | `city/blockPoly.*`, `buildings/chamfer.*` | stages `blockpoly`, `chamfer` |
+| cell network (city stage 1), street patterns, diagonal boulevards; the road record | `city/cellNetwork.js`, `city/streets.js`, `city/diagonals.js`; `World.cellNet`; createWorld's island sea tests | `city/cellNetwork.*` (`World::cell_net`), `city/streets.*`, `city/diagonals.*`, `network/road.hpp`, `world/createWorld.cpp` (`sea_at`, `sea_hits_rect`, `sea_share`, `sea_hits_seg`) | stages `cellnet` (a World of World.js), `cellworld` (create_world's: lakes - harbour districts on a big lake's shore, `port_near` - highways, harbour grading), `streets`; tests (any order, 4 threads) |
+| town plans | `city/townPlan.js` | `city/townPlan.*` (`Settlement::plan`) | stages `townplan` (a World of World.js), `townworld` (create_world's: the highways' corridors keep civic landmarks off a block); tests (any order, 4 threads) |
+| land cover, farmland | `nature/landcover.js`, `nature/farmland.js` | `nature/landcover.*`, `nature/farmland.*` | stage `landcover` |
+| rivers, lakes, port lakes | `nature/rivers.js`, `nature/lakes.js` | `nature/rivers.*`, `nature/lakes.*` | stage `water` (§6: port lakes) |
+| createWorld (so far), harbour grading, water predicates | `world/createWorld.js` | `world/createWorld.cpp`: land cover, rivers, lakes, the terrain's `port_grade`, caves; `sea_at` ... `water_hits_rect`; marked places for the rest | stage `water`; `test_nature_threads.cpp` |
+| caves, their feature source | `nature/caves.js` | `nature/caves.*`: `cave_z_range` and `cave_rasterize` over a view of the ground tile's columns (`CaveColumns`), for compose to wrap as a `FeatureSource` | stage `caves` (synthetic tiles) |
 | trees (species, models, rasterization) | `nature/trees.js` | `nature/trees.*` | stages `trees`, `treemodels` (models part by part), `treevox` (chunks at LODs 0, 2, 5, 8) |
+| road views, road surface | `network/roadView.js`, `network/roadSurface.js`; `World.roadView` | `network/roadView.*` (`World::road_view`: the 3 x 3 cell networks' roads, or a test's through `World::cell_roads`), `network/roadSurface.*` | stages `roadview`, `roadsurface` (scripted roads, and recorded ones: §6) |
+| road levels | `network/roadLevel.js`; createWorld's `streetLevel` | `network/roadLevel.*` (`World::street_level`) | stage `roadlevel` (recorded roads: §6); tests (any order, views dropped and remade, 4 threads) |
+| pitched road pieces | `network/roadParts.js` | `network/roadParts.*` | stage `roadparts` (recorded roads and waters) |
+| highways, their feature source | `network/highways.js` | `network/highways.*` (`HighwayNetwork`, installed by `create_world`; `highway_z_range` and `rasterize_highways` over the ground tile's z, for compose to wrap as a `FeatureSource`); the town plans' corridor test (`city/townPlan.cpp`) | stage `highways` (recorded roads and waters); tests (4 threads) |
+| building archetypes and envelopes | `buildings/archetypes.js` | `buildings/archetypes.*` (the 17 after civic's; `plan_building_envelope`, its finalize), `city/lots.hpp` (the lot record, what the archetypes read) | stages `archetypes`, `registries` |
+| house, cabin and unit planners | `buildings/interior/{houses,cabins,units}.js`, plan.js's `PlanBuilder` | `buildings/interior/{houses,cabins,units}.*`, `buildings/interior/plan.*` (the builder's floors, grids and stairs: the rest of plan.js comes with the interior planners) | stages `houses`, `units` |
+| facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
+| sample buildings | `buildings/sample.js` | `buildings/sample.*` (`stage_archetype` reads a world through `StageWorld`, `StagedEnvelopes`, until the cell plan is ported) | stage `sample` |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -242,3 +256,74 @@ so that it stays the oracle.
   (to be measured when the golden stage is ported).
 - **The gullies' kernel cache** (`terrain/landforms.js`) is keyed `i * 1000003 + j` in the
   reference, which collides only for cells 40,000 km apart; the port keys it by the exact cell.
+- **Road identity.** The reference compares roads as objects: the road view's maps by road,
+  `roadLevel`'s `s.road === road` (a road is not its own through road) and `ownSeg` (a segment
+  as its owner cell's view has it). A cell network dropped by its LRU and made again makes new
+  objects for the same roads, so two road views made on either side of that hold different
+  objects for one road, and those comparisons fail (`ownSeg` falls back to the asking segment):
+  there, a road's levels depend on what the caches held. In the port a road is the same road as
+  another when it has the same id and was made by the same cell (`same_road`,
+  `network/road.hpp`: `id` alone repeats in each lap of a wrapping world); the port compares
+  roads that way across views, and by address only within one road view (which holds one object
+  per road): `throughAt` (a road found at its own end in another cell's view is a corner, its node
+  level, not a through road's) and `ownSeg` (the owner cell's segment, cached by its index there:
+  views are remade alike) give the reference's result when nothing is dropped, whatever the cache
+  sizes. A stage of the road modules makes each cell network once while it runs (the reference's
+  World caches 64: give it a cache that drops nothing, `tools/procgen_ref/lib/roads.mjs`
+  `recordingWorld`), so the reference's objects stay one per road; `test_roads_threads.cpp` remakes
+  the port's views from other road objects half way and gets the same levels.
+- **Cell networks and town plans, on both kinds of World.** The reference asks
+  `world.lakes?.shoreNear` for a harbour district (`portNear`) and `world.highways` for the
+  civic landmarks (a highway's corridor keeps them off a block), both installed by
+  `createWorld`. The stages `cellnet` and `townplan` plan on a World of `World.js` with
+  createWorld's island sea tests (`lib/worlds.mjs` `withSeaTests` on a bare World: no lakes,
+  highways or harbour grading of the terrain), `cellworld` and `townworld` on createWorld's (made
+  pure: `pureTerrain`), where `port_near` asks the lakes and `resolve_town` the highways'
+  corridors. On the bare World the base heights are made first (`warmBasesIn`, `warmIsland`); measured
+  on the `cellnet` cells, the reference's networks are the same planned cold and backwards (the
+  country roads' slope test and the trunk roads' A* read heights, but none of these cells
+  flips); a town plan's church (the highest of a few spots near the centre) compares terrain
+  samples.
+- **Port lakes and the harbour grading** (`createWorld.js`'s `portGrade` hook, `lakes.portLakeOf`).
+  A lake is a pure function of its lattice cell, and a town's port lake of the town, once the
+  terrain samples they read are (the entry above). The reference plans a town's port lake inside
+  the first terrain sample near it, in the shared context (that sample's `rugged` and `coast` then
+  come from the lakes' samples; on an island its `h` could), and keeps 512 lake cells (an LRU).
+  Measured with the base heights (the entry above) over points of the stage `water` near towns,
+  forward against backward on fresh worlds: the `rugged` of 13 of 390 points differs (cities), 29
+  of 510 (desert), the `rugged` or `coast` of 4 of 300 (island:large); the heights and the water
+  answers do not. The port plans in contexts of their own and caches the lakes (any size:
+  `Lakes(world, capacity)`) and each town's port lake (`Settlement::port_lake`), whichever thread
+  asks first. The stages make the reference pure with
+  `tools/procgen_ref/lib/worlds.mjs` `pureTerrain(world)`: every terrain sample first makes, in a
+  fixed order, the base heights and - where createWorld's hook will run (not raw, near a town) -
+  the port lakes it reads (it runs the hook once first), and a terrain call nested in a sample
+  throws, so a stage that passes nested none. A stage that samples the terrain through any plan
+  (lakes, rivers, land cover, roads ...) calls it once after making the world (`landcover`,
+  `water`, `caves` do). `test_nature_threads.cpp` checks the port: any order, a 16-cell lake
+  cache, four threads.
+- **Not differences, for the ports to come.** `Rivers.at` and `Lakes.at` return one shared object
+  per instance that the next call overwrites; the port returns values (every caller reads its
+  result before the next call: a port of one that keeps it across another call copies what
+  JavaScript would read then). The reference's `hash32` / `hashFloat` read four arguments and
+  ignore any more (`farmland.js`, `caves.js`, `sites/links.js`): the port's take four, so such a
+  call is ported without its extra ones (a farm field's key is its strip's cut hash).
+- **The road network's stages run on recorded inputs.** The road network reads the cell networks
+  (city stage 1) and the waters (`createWorld`'s `isWet`: rivers, lakes, the island's sea). Its
+  stages were made while those were not ported, and check it on the reference's own inputs: they
+  record what the reference reads - the roads of every cell a stage asks for, the questions `isWet`
+  answered yes (any other is dry) - in `tools/procgen_ref/data/<stage>.json`, and the tests serve
+  them to a World of `World.js` (no `create_world`) through two overrides: `World::cell_roads`
+  (`World::road_view` reads it instead of `cell_net(i, j)->roads` where it is set) and
+  `World::wet_source` (`World::is_wet` asks it first) (`tests/city/road_inputs.hpp`). The
+  reference's world is `createWorld`'s with its terrain's port grading off (`terrain.portGrade =
+  null`, as the port's World of `World.js` has none) and the base heights a stage reads made first
+  (`warmAround`). Once the port's cell networks ask the lakes (`port_near`), the stages can run on
+  a `create_world` World's own cell networks and waters instead, the port grading on (the
+  reference's terrain made pure with `pureTerrain`); the recorded roads are those of a createWorld
+  world whose terrain has no port grading, so a harbour town's may differ from them.
+- **A building's look asked with two seeds** (`buildings/facade.js` `buildingLook`): the reference
+  keeps the look per envelope (a WeakMap) whatever seed asks, so a second seed would get the first
+  one's look; the port keeps it on the envelope too (`Envelope::look_cache`) and fails
+  (`SVX_FAIL`) when another seed asks, so a look never depends on which seed asked first. An
+  envelope belongs to one world: generation never asks twice.

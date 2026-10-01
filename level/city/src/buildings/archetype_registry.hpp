@@ -29,7 +29,7 @@
 
 namespace svx::city {
 
-struct Lot;  // (city/lots: a later port)
+struct Lot;  // (city/lots.hpp: the lot record)
 
 // A tier of floors f0..f1 sharing footprint rects (canonical).
 struct EnvTier {

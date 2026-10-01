@@ -272,6 +272,13 @@ struct WorldConfig {
   i32 crumple_check_gap = 8;       // a piece crumpling (in place): collisions re-check it every so many substeps (else 2)
   i32 rollback_part_voxels = 500;  // a part at least this large coming apart re-solves the contact step
   i32 min_body_voxels = 16;        // smaller pieces (breaking off, or coming loose) turn to dust, not rigid pieces
+  // Pre-touch (streaming, docs/CORE.md §3; 0: off, the legacy behaviour): while nothing is being
+  // solved, the world extracts and designs the undesigned structures within this distance (m,
+  // horizontal) of a focus, nearest first, at most pretouch_work nodes a tick (a structure at
+  // least): what a first shot or blast would do in its tick is done before it. What stands on
+  // nothing is left as it rests; a structure changed before it was pre-touched is left as today.
+  f64 pretouch_radius = 0.0;
+  i64 pretouch_work = 20000;
   // Resting objects (docs/CORE.md §3, seams; only in a world with seams): a link of an
   // articulation - a character's hand, foot - pressing at least this hard (N) on a free component
   // of at most link_loosen_voxels voxels (a chair, a crate) makes it a piece (0: never)
@@ -448,8 +455,9 @@ struct MemoryReport {
   i64 caches = 0;      // warm starts, reference loads, resting loads of sleeping pieces
   i64 queues = 0;      // output the host has not taken yet (events, changed / evicted chunks)
   i64 systems = 0;     // the systems' own state (WorldSystem::memory_bytes)
+  i64 sources = 0;     // a streamed world's source's own (ChunkSource::memory_bytes: a generator's caches)
   i32 chunks = 0, fragment_chunks = 0, structure_count = 0, piece_count = 0, archived_chunks = 0;
-  i64 total() const { return grid + fragments + structures + pieces + archive + caches + queues + systems; }
+  i64 total() const { return grid + fragments + structures + pieces + archive + caches + queues + systems + sources; }
 };
 
 class World;

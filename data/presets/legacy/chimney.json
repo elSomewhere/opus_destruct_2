@@ -1,0 +1,9 @@
+{
+  "id": "legacy/chimney",
+  "label": "Chimney (test level)",
+  "group": "legacy",
+  "description": "Physics test: a 24 m masonry chimney.",
+  "generator": "level",
+  "level": "chimney",
+  "seed": 1
+}

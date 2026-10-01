@@ -2,7 +2,7 @@
  * Settings panel: engine tunables (sent as `setParams`), the debug view, the drive city's traffic
  * and people, and world loading (procedural worlds, or a WAD file + map name -> `loadWad`).
  */
-import type { EngineParams, PedestrianSettings, ProceduralKind, TrafficSettings, WadOptions } from '../engine/protocol.ts';
+import type { EngineParams, PedestrianSettings, PresetInfo, ProceduralKind, TrafficSettings, WadOptions } from '../engine/protocol.ts';
 import { DEBUG_VIEW_NAMES, DebugView, PEDESTRIAN_BODY_NAMES, PedestrianBodies, PROCEDURAL_KINDS } from '../engine/protocol.ts';
 import { h } from './dom.ts';
 
@@ -11,6 +11,8 @@ export interface SettingsCallbacks {
   /** An environment setting (`setEnv`) or a world tunable (`setTunable`) by name. */
   onSetting(kind: 'env' | 'tunable', name: string, value: number): void;
   onLoadProcedural(kind: ProceduralKind, seed: number): void;
+  /** A preset by id (docs/PRESETS.md; seed 0: the preset's own). */
+  onLoadPreset(id: string, seed: number): void;
   /** Traffic of a world with roads (the `drive` city). */
   onTraffic(traffic: TrafficSettings): void;
   /** Pedestrians of a world with walkways (the `drive` city). */
@@ -106,12 +108,13 @@ export class SettingsPanel {
   private readonly callbacks: SettingsCallbacks;
   private readonly debugSelect: HTMLSelectElement;
   private readonly pausedBox: HTMLInputElement;
+  private readonly presetSelect: HTMLSelectElement;
   private readonly sliderInputs = new Map<SliderDef['key'], { input: HTMLInputElement; value: HTMLElement }>();
 
   constructor(
     parent: HTMLElement,
     initial: EngineParams,
-    world: { kind: ProceduralKind; seed: number },
+    world: { kind: ProceduralKind; seed: number; preset?: string },
     trafficInitial: TrafficSettings,
     pedestriansInitial: PedestrianSettings,
     callbacks: SettingsCallbacks,
@@ -197,7 +200,14 @@ export class SettingsPanel {
       this.emit();
     });
 
-    // World loading.
+    // World loading: presets (listed by the engine: setPresets), procedural kinds, WADs.
+    this.presetSelect = h('select', {});
+    const presetSeed = h('input', { type: 'number', value: 0, min: 0, step: 1, class: 'narrow', title: 'Seed (0: the preset\'s own)' });
+    const loadPresetButton = h('button', { type: 'button' }, 'Load preset');
+    loadPresetButton.addEventListener('click', () => {
+      if (!this.presetSelect.value) return;
+      callbacks.onLoadPreset(this.presetSelect.value, Math.max(0, Math.floor(Number(presetSeed.value) || 0)));
+    });
     const kindSelect = h('select', {}, ...PROCEDURAL_KINDS.map((k) => h('option', { value: k }, k)));
     kindSelect.value = world.kind;
     const seedInput = h('input', { type: 'number', value: world.seed, min: 0, step: 1, class: 'narrow' });
@@ -241,6 +251,7 @@ export class SettingsPanel {
       h('h2', {}, 'People'),
       ...peopleRows,
       h('h2', {}, 'World'),
+      h('div', { class: 'row' }, this.presetSelect, h('span', {}, 'seed'), presetSeed, loadPresetButton),
       h('div', { class: 'row' }, kindSelect, h('span', {}, 'seed'), seedInput, loadProc),
       h('h2', {}, 'Doom WAD'),
       h('div', { class: 'row' }, fileInput),
@@ -261,6 +272,16 @@ export class SettingsPanel {
 
   get current(): EngineParams {
     return { ...this.params };
+  }
+
+  /** The engine's presets (its `presets` message): the loadable ones, the current one selected. */
+  setPresets(presets: readonly PresetInfo[], current: string): void {
+    this.presetSelect.replaceChildren(
+      ...presets
+        .filter((p) => p.available)
+        .map((p) => h('option', { value: p.id, title: p.description }, p.experimental ? `${p.label} (experimental)` : p.label)),
+    );
+    if (presets.some((p) => p.id === current && p.available)) this.presetSelect.value = current;
   }
 
   setVisible(v: boolean): void {

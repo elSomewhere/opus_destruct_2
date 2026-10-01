@@ -63,6 +63,8 @@ typedef struct svxc_material {
   double crush;              /* Pa: contact pressure at which it crumples (0: it does not) */
   double penetration;        /* J/m^3: the energy density an impact needs to remove it (0: any) */
   double grip;               /* a wheel's friction coefficient on it (0: from friction) */
+  int decorative;            /* plants: solid, never structure; shed with what they grow on */
+  int passable;              /* (decorative) nothing collides with it: leaves, grass */
 } svxc_material;
 
 /* Registers a material (the next free id, returned; -1 when all 127 are taken) or overrides
@@ -462,6 +464,7 @@ void svxc_get_stats(svxc_world* w, svxc_stats* out);
 typedef struct svxc_memory {
   int64_t grid, fragments, structures, pieces, archive, caches, queues, total;
   int64_t systems; /* (in total) */
+  int64_t sources; /* a streamed world's source's own (in total) */
 } svxc_memory;
 void svxc_get_memory(svxc_world* w, svxc_memory* out);
 uint64_t svxc_state_hash(svxc_world* w);   /* voxels and broken bonds */

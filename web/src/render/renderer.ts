@@ -11,8 +11,8 @@
  * after the world pipeline's draws. Skid marks are drawn translucent after the opaque world.
  */
 import type { GridFrames } from '../engine/gridframes.ts';
-import type { TextureInfo, Vec3 } from '../engine/protocol.ts';
-import { DebugView, Material, Paint, PAINT_SLOT_BASE, VERTEX_STRIDE } from '../engine/protocol.ts';
+import type { Atmosphere, TextureInfo, Vec3 } from '../engine/protocol.ts';
+import { APPEARANCE_FLOATS, DebugView, Material, Paint, PAINT_SLOT_BASE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { GpuAtlas } from './atlas.ts';
 import { CharacterRenderer, type CharacterDraw } from './characters.ts';
 import { ChunkStore } from './chunks.ts';
@@ -38,7 +38,7 @@ const DEPTH_FORMAT: GPUTextureFormat = 'depth32float';
 /** Palette entries (see shaders/frame.wgsl): materials, the default, paints. */
 const PALETTE_SIZE = 64;
 /** Floats in the Frame uniform (see shaders/frame.wgsl). */
-const FRAME_FLOATS = 16 + 8 * 4 + PALETTE_SIZE * 4;
+const FRAME_FLOATS = 16 + 9 * 4 + PALETTE_SIZE * 4;
 const OBJECT_BYTES = 80; // mat4 + vec4
 /**
  * Detached pieces drawn at once: the engine keeps up to max_bodies rigid pieces (the settings
@@ -163,6 +163,69 @@ const FOG_COLOR: Vec3 = [0.55, 0.6, 0.66];
 const ZENITH_COLOR: Vec3 = [0.16, 0.3, 0.58];
 const SUN_DIR: Vec3 = normalize([0.45, 0.28, 0.85]);
 const FOG_DENSITY = 0.0065;
+/** A preset's fog at `fog` 1 (its streamed world reaches further: a far tier to 520 m). */
+const PRESET_FOG_DENSITY = 0.0035;
+
+/** The light of a world (fog, sky, sun; frame.wgsl `atmo`): the defaults, or a preset's atmosphere. */
+export interface Light {
+  fog: Vec3;
+  fogDensity: number;
+  zenith: Vec3;
+  sun: Vec3;
+  /** Sunlight and sky light (x the defaults), night (0..1: lamps and lit windows), unused. */
+  atmo: [number, number, number, number];
+}
+
+const DEFAULT_LIGHT: Light = { fog: FOG_COLOR, fogDensity: FOG_DENSITY, zenith: ZENITH_COLOR, sun: SUN_DIR, atmo: [1, 1, 0, 0] };
+
+const smooth = (a: number, b: number, x: number): number => {
+  const t = Math.min(1, Math.max(0, (x - a) / (b - a)));
+  return t * t * (3 - 2 * t);
+};
+
+/** #rrggbb (sRGB) to linear; null when malformed. */
+function hexLinear(hex: string | undefined): Vec3 | null {
+  if (!hex || !/^#[0-9a-fA-F]{6}$/.test(hex)) return null;
+  const c = (k: number): number => {
+    const v = parseInt(hex.slice(1 + 2 * k, 3 + 2 * k), 16) / 255;
+    return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  return [c(0), c(1), c(2)];
+}
+
+const lerp3 = (a: Vec3, b: Vec3, t: number): Vec3 => [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t];
+
+/**
+ * A preset's atmosphere as the renderer's light (after voxel_city's viewer): the sun arcs from the
+ * east (6 h) through the south to the west (18 h), as high as `sun_elevation` lets it; sky and fog
+ * shift through dusk to night, when lamps and a share of the windows light up.
+ */
+export function lightOf(a: Atmosphere | null | undefined): Light {
+  if (!a) return DEFAULT_LIGHT;
+  const num = (v: unknown, d: number): number => (typeof v === 'number' && Number.isFinite(v) ? v : d);
+  const h = num(a.time_of_day, 13);
+  const grey = Math.min(1, Math.max(0, num(a.desaturate, 0)));
+  const ang = ((h - 6) / 12) * Math.PI;
+  const sa = Math.sin(ang);
+  const elev = sa > 0 ? sa * num(a.sun_elevation, 1) : sa;
+  const day = smooth(-0.12, 0.25, elev);
+  const dusk = Math.max(0, 1 - Math.abs(elev) / 0.25) * smooth(-0.2, 0.0, elev);
+  const sun: Vec3 = normalize(elev > -0.05 ? [Math.cos(ang), 0.45, Math.max(0.08, elev) * 1.3] : [-Math.cos(ang), 0.3, 0.9]);
+  const skyDay = hexLinear(a.sky) ?? (hexLinear('#b8c9d9') as Vec3);
+  const skyDusk = lerp3(hexLinear('#d99a6c') as Vec3, skyDay, grey);
+  const skyNight = hexLinear('#0b1224') as Vec3;
+  const fog = lerp3(lerp3(skyNight, skyDay, day), skyDusk, dusk * 0.7);
+  // (the zenith: deeper and bluer than the horizon)
+  const zenith: Vec3 = lerp3([fog[0] * 0.32, fog[1] * 0.55, fog[2] * 0.95], fog, grey * 0.6);
+  const night = 1 - smooth(-0.08, 0.12, elev);
+  return {
+    fog,
+    fogDensity: PRESET_FOG_DENSITY * Math.max(0, num(a.fog, 1)),
+    zenith,
+    sun,
+    atmo: [(0.15 + 0.85 * day) * Math.max(0, num(a.sun, 1)), (0.3 + 0.7 * day) * Math.max(0, num(a.ambient, 1)), night, 0],
+  };
+}
 
 export class Renderer {
   readonly gpu: GpuContext;
@@ -193,6 +256,9 @@ export class Renderer {
   private readonly sampler: GPUSampler;
   private frameBindGroup!: GPUBindGroup;
   private atlas: GpuAtlas;
+  /** The world's appearance table (shaders/world.wgsl `appearances`; one unused entry when it has none). */
+  private appearanceBuffer: GPUBuffer;
+  private light: Light = DEFAULT_LIGHT;
   private readonly skyPipeline: GPURenderPipeline;
   private readonly worldPipeline: GPURenderPipeline;
   private readonly particlePipeline: GPURenderPipeline;
@@ -282,6 +348,7 @@ export class Renderer {
         ...fieldEntries,
         { binding: 4 + MAX_FIELDS, visibility: V, sampler: { type: 'filtering' } },
         { binding: 5 + MAX_FIELDS, visibility: V, buffer: { type: 'uniform' } },
+        { binding: 6 + MAX_FIELDS, visibility: GPUShaderStage.FRAGMENT, buffer: { type: 'read-only-storage' } },
       ],
     });
     const objectLayout = device.createBindGroupLayout({
@@ -295,6 +362,11 @@ export class Renderer {
     });
 
     this.atlas = GpuAtlas.empty(device);
+    this.appearanceBuffer = device.createBuffer({
+      label: 'appearances',
+      size: APPEARANCE_FLOATS * 4,
+      usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST,
+    });
     this.rebuildFrameBindGroup();
 
     const module = (label: string, code: string): GPUShaderModule => {
@@ -345,7 +417,8 @@ export class Renderer {
       fragment: { module: world, entryPoint: 'fs', targets: [{ format }] },
       primitive: { topology: 'triangle-list', cullMode: 'back', frontFace: 'ccw' },
       depthStencil: { format: DEPTH_FORMAT, depthWriteEnabled: true, depthCompare: 'greater' },
-      multisample,
+      // (see-through appearances - glazing - cover a share of the samples: order-independent)
+      multisample: { count: SAMPLES, alphaToCoverageEnabled: true },
     });
 
     const premultiplied: GPUBlendComponent = { srcFactor: 'one', dstFactor: 'one-minus-src-alpha', operation: 'add' };
@@ -437,6 +510,26 @@ export class Renderer {
     this.rebuildFrameBindGroup();
   }
 
+  /**
+   * The world's appearance table (protocol TEXTURE_APPEARANCE_BASE: APPEARANCE_FLOATS floats per
+   * appearance); null: none (its faces in their materials' colours).
+   */
+  setAppearances(data: Float32Array | null | undefined): void {
+    const n = data ? Math.floor(data.length / APPEARANCE_FLOATS) : 0;
+    const bytes = Math.max(1, n) * APPEARANCE_FLOATS * 4;
+    if (this.appearanceBuffer.size !== bytes) {
+      this.appearanceBuffer.destroy();
+      this.appearanceBuffer = this.device.createBuffer({ label: 'appearances', size: bytes, usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST });
+    }
+    if (data && n > 0) this.device.queue.writeBuffer(this.appearanceBuffer, 0, data.buffer, data.byteOffset, n * APPEARANCE_FLOATS * 4);
+    this.rebuildFrameBindGroup();
+  }
+
+  /** The world's light: a preset's atmosphere (null: the defaults). */
+  setAtmosphere(a: Atmosphere | null | undefined): void {
+    this.light = lightOf(a);
+  }
+
   get textureBytes(): number {
     return this.atlas.bytes;
   }
@@ -468,6 +561,7 @@ export class Renderer {
         ...views.map((view, k) => ({ binding: 4 + k, resource: view })),
         { binding: 4 + MAX_FIELDS, resource: this.fieldSampler },
         { binding: 5 + MAX_FIELDS, resource: { buffer: this.fieldBuffer } },
+        { binding: 6 + MAX_FIELDS, resource: { buffer: this.appearanceBuffer } },
       ],
     });
     this.boundFieldsVersion = this.fields.version;
@@ -521,11 +615,13 @@ export class Renderer {
     f.set([right[0], right[1], right[2], tanY * aspect], 20);
     f.set([camUp[0], camUp[1], camUp[2], tanY], 24);
     f.set([cam.forward[0], cam.forward[1], cam.forward[2], input.debugView], 28);
-    f.set([...FOG_COLOR, FOG_DENSITY], 32);
-    f.set([...ZENITH_COLOR, input.voxelSize], 36);
-    f.set([...SUN_DIR, this.atlas.count], 40);
+    const L = this.light;
+    f.set([...L.fog, L.fogDensity], 32);
+    f.set([...L.zenith, input.voxelSize], 36);
+    f.set([...L.sun, this.atlas.count], 40);
     f.set([...input.flashPos, input.flashIntensity], 44);
-    f.set(PALETTE, 48);
+    f.set(L.atmo, 48);
+    f.set(PALETTE, 52);
     this.device.queue.writeBuffer(this.frameBuffer, 0, f);
 
     // Object slots of the islands: upload the range spanning the changed ones (resting rubble
@@ -576,7 +672,7 @@ export class Renderer {
         {
           view: this.colorTarget!.createView(),
           resolveTarget: this.gpu.context.getCurrentTexture().createView({ format: this.gpu.renderFormat }),
-          clearValue: { r: FOG_COLOR[0], g: FOG_COLOR[1], b: FOG_COLOR[2], a: 1 },
+          clearValue: { r: this.light.fog[0], g: this.light.fog[1], b: this.light.fog[2], a: 1 },
           loadOp: 'clear',
           storeOp: 'discard',
         },

@@ -106,6 +106,8 @@ void RigidWorld::cast_wheels(const std::vector<StaticGrid>& statics) {
       const Chunk* ch = nullptr;
     };
     std::vector<Cache> caches(statics.size());
+    const MaterialTable& gmt = mats ? *mats : default_materials();
+    const bool passable = gmt.any_passable();
     auto grid_vox = [&](u32 s, const IVec3& p) -> Vox {
       Cache& c = caches[s];
       const IVec3 cc = chunk_of(p);
@@ -114,7 +116,8 @@ void RigidWorld::cast_wheels(const std::vector<StaticGrid>& statics) {
         c.ch = statics[s].g->chunk(cc);
       }
       if (!c.ch) return kAir;
-      return c.ch->uniform ? c.ch->value : c.ch->v[size_t(chunk_index(p))];
+      const Vox v = c.ch->uniform ? c.ch->value : c.ch->v[size_t(chunk_index(p))];
+      return passable && (gmt.vox_kind(v) & kVoxPassable) ? kAir : v;  // (grass: the wheel rolls on the ground under it)
     };
     std::vector<i32> near;
     for (i64 k = w0; k < w1; ++k) {

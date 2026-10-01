@@ -148,6 +148,8 @@ Material material_of(const svxc_material& m) {
   M.crush = m.crush;
   M.penetration = m.penetration;
   M.grip = m.grip;
+  M.decorative = m.decorative != 0;
+  M.passable = m.passable != 0;
   return M;
 }
 
@@ -172,6 +174,8 @@ void put_material(const Material& M, svxc_material* out) {
   out->crush = M.crush;
   out->penetration = M.penetration;
   out->grip = M.grip;
+  out->decorative = M.decorative ? 1 : 0;
+  out->passable = M.passable ? 1 : 0;
 }
 
 // (a table's: set or registered; its properties; by name)
@@ -527,9 +531,11 @@ int svxc_chunk_layer(svxc_world* w, int layer, int cx, int cy, int cz, uint8_t* 
   if (!out) return 0;
   std::fill(out, out + kChunkVox, u8{0});
   if (!w || layer < 0 || layer >= kMaxLayers) return 0;
-  const Chunk* c = w->w.grid().chunk({cx, cy, cz});
-  if (!c || c->layer[size_t(layer)].empty()) return 0;
-  std::copy(c->layer[size_t(layer)].begin(), c->layer[size_t(layer)].end(), out);
+  // (as they read: stored values, or a regenerable layer's base values)
+  std::shared_ptr<const void> hold;
+  const u8* v = w->w.grid().layer_values(layer, {cx, cy, cz}, &hold);
+  if (!v) return 0;
+  std::copy(v, v + kChunkVox, out);
   return 1;
 }
 
@@ -955,6 +961,7 @@ void svxc_get_memory(svxc_world* w, svxc_memory* out) {
   out->queues = m.queues;
   out->total = m.total();
   out->systems = m.systems;
+  out->sources = m.sources;
 }
 
 uint64_t svxc_state_hash(svxc_world* w) { return w ? w->w.state_hash() : 0; }

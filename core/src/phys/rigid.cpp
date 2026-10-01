@@ -544,6 +544,7 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
     };
     std::vector<Cache> caches(statics.size());
     std::vector<u32> near;
+    const bool passable = mt.any_passable();
     auto grid_vox = [&](u32 s, const IVec3& p) -> Vox {
       Cache& c = caches[s];
       const IVec3 cc = chunk_of(p);
@@ -552,7 +553,8 @@ void RigidWorld::collide(const std::vector<StaticGrid>& statics, const std::vect
         c.ch = statics[s].g->chunk(cc);
       }
       if (!c.ch) return kAir;
-      return c.ch->uniform ? c.ch->value : c.ch->v[size_t(chunk_index(p))];
+      const Vox v = c.ch->uniform ? c.ch->value : c.ch->v[size_t(chunk_index(p))];
+      return passable && (mt.vox_kind(v) & kVoxPassable) ? kAir : v;  // (leaves, grass: nothing touches them)
     };
     std::vector<Contact> spec;
     CrushPatches crush;

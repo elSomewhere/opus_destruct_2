@@ -7,6 +7,7 @@
 #include <map>
 #include <memory>
 #include <unordered_map>
+#include <mutex>
 #include <unordered_set>
 #include <vector>
 
@@ -258,6 +259,30 @@ struct World::Impl {
   // it is free (seeded: the extraction detaches it). Each fragment once a tick.
   void link_contact(const GVox& v, const FragKey& f);
   bool seamed_ = false;  // (the world has seams: a source's, a level's resting objects)
+
+  // ---- regenerable layers' base values (LayerSpec::regenerable; world_io.cpp): the source's,
+  // made on demand from any thread into a bounded cache (a pure function of the chunk: dropping
+  // one changes nothing but the time to make it again)
+  struct LayerCache final : VoxelGrid::LayerBase {
+    const Impl* w = nullptr;
+    size_t cap = 512;  // chunks' arrays kept (16 MB)
+    mutable std::mutex m;
+    mutable std::unordered_map<GKey, std::pair<std::shared_ptr<const std::vector<u8>>, u64>, GKeyHash> map;  // (layer, chunk) -> (values, last use)
+    mutable u64 clock = 0;
+    const u8* base(int L, const IVec3& cc, std::shared_ptr<const void>* hold) const override;
+    i64 bytes() const;
+    void clear();
+  };
+  LayerCache layer_cache_;
+
+  // ---- decorative voxels (world.cpp; Material::decorative): never anchored, shed when orphaned
+  Vox entry_vox(Vox v) const {  // (a voxel coming into the world: a decorative one holds nothing)
+    return (v & kAnchorBit) && (mats_->vox_kind(v) & kVoxDecorative) ? static_cast<Vox>(v & ~kAnchorBit) : v;
+  }
+  void undecorate(VoxelGrid& g) const;      // (entry_vox over a grid coming in)
+  void note_decorative_near(const GVox& v);  // (a voxel left: the decorative voxels next to it are looked at)
+  void shed_orphans();                       // (those with no other solid voxel next to them go)
+  std::vector<GVox> deco_check_;
   std::unordered_set<FragKey, FragKeyHash> loose_checked_;
   i64 loose_tick_ = -1;
 
@@ -405,6 +430,11 @@ struct World::Impl {
   bool touches_undesigned(const Structure& s) const;
   bool pristine(const Structure& s) const;  // no broken bond, no changed chunk
   void design_near(const V3& c, f64 r);
+  // (streaming, WorldConfig::pretouch_radius) the undesigned structures near the focus designed
+  // ahead of their first touch, nearest first, within a tick's work (pre-touch: what stands on
+  // nothing is left as it rests - pretouching_)
+  void pretouch();
+  bool pretouching_ = false;
   void design_node(const Structure& s, i32 node, u8 cls, i64* strengthened);  // (its voxels to class cls)
   void refresh_structures();                 // seeds and stale structures -> (re)extracted
   StressOptions solver_options() const;  // (a stress solve's options, as the configuration asks)

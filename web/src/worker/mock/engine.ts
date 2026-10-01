@@ -25,12 +25,13 @@ import type {
   EngineStats,
   InitConfig,
   MeshData,
+  PresetInfo,
   ProceduralKind,
   Vec3,
   WadOptions,
   WorkerMessage,
 } from '../../engine/protocol.ts';
-import { DEBRIS_STRIDE, DEFAULT_PARAMS, DOOM_TEXELS_PER_METRE, DebugView, emptyEngineStats } from '../../engine/protocol.ts';
+import { DEBRIS_STRIDE, DEFAULT_PARAMS, DOOM_TEXELS_PER_METRE, DebugView, emptyEngineStats, PROCEDURAL_KINDS } from '../../engine/protocol.ts';
 import { MeshBuilder } from '../../engine/vertex.ts';
 import { isIndestructible, resolveFaceTextures } from './blocks.ts';
 import { collideAabb } from './collide.ts';
@@ -123,6 +124,17 @@ function sanitizeParams(p: EngineParams): EngineParams {
   };
 }
 
+/** The presets the mock engine answers: the legacy ones of its procedural kinds. */
+const MOCK_PRESETS: PresetInfo[] = PROCEDURAL_KINDS.map((k) => ({
+  id: k === 'city' ? 'legacy/city1km' : `legacy/${k}`,
+  label: `${k} (mock)`,
+  group: 'legacy',
+  description: `the mock engine's ${k}`,
+  generator: k === 'drive' ? 'drive' : k === 'city' ? 'city1km' : 'level',
+  experimental: false,
+  available: true,
+}));
+
 export class MockEngine {
   private readonly post: PostFn;
   private config: InitConfig = { voxelSize: 0.125, threads: 1, memoryMB: 512, params: { ...DEFAULT_PARAMS } };
@@ -184,7 +196,16 @@ export class MockEngine {
       case 'init':
         this.config = { ...cmd.config, params: sanitizeParams(cmd.config.params) };
         this.params = this.config.params;
+        this.post({ type: 'presets', presets: MOCK_PRESETS, defaultId: 'legacy/rooms' });
         break;
+      case 'loadPreset': {
+        // (the mock's worlds: the legacy presets of its procedural kinds; anything else is rooms)
+        this.beginLoad();
+        const kind = PROCEDURAL_KINDS.find((k) => cmd.id === `legacy/${k}` || (k === 'city' && cmd.id === 'legacy/city1km'));
+        if (!kind) this.post({ type: 'error', fatal: false, command: 'loadPreset', message: `the mock engine has no ${cmd.id}: loaded rooms` });
+        this.loadProcedural(kind ?? 'rooms', cmd.seed || 1, now);
+        break;
+      }
       case 'loadProcedural':
         this.beginLoad();
         this.loadProcedural(cmd.kind, cmd.seed, now);

@@ -1,0 +1,27 @@
+{
+  "id": "city/infiniteCity",
+  "label": "Infinite city",
+  "group": "city",
+  "description": "Urban land everywhere, every street on the grid (the axis-aligned control).",
+  "generator": "city",
+  "params": {
+    "preset": "infiniteCity"
+  },
+  "seed": 1337,
+  "streaming": {
+    "load_radius": 112,
+    "evict_radius": 144,
+    "chunks_per_tick": 48,
+    "archive_mb": 128
+  },
+  "far": {
+    "radius": 520
+  },
+  "tunables": {
+    "pretouch_radius": 48
+  },
+  "atmosphere": {
+    "sky": "#b8c9d9",
+    "time_of_day": 13
+  }
+}

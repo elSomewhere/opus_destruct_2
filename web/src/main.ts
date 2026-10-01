@@ -5,7 +5,9 @@
  *   ?engine=mock|wasm         engine worker (default wasm when it is built, else mock)
  *   ?world=drive|rooms|city|tower|...   procedural world loaded at start (default: the drive
  *                             city with the WASM engine, rooms with the mock)
- *   ?seed=N                   world seed (default 1)
+ *   ?preset=ID                a preset (docs/PRESETS.md: city/angledInfiniteCity, legacy/drive, ...):
+ *                             loaded instead of ?world=
+ *   ?seed=N                   world seed (default 1; a preset's own with ?preset=)
  *   ?debug=none|utilization|fragments   initial debug view ('bubbles', from v1 links, = fragments)
  *   ?people=N                 pedestrians about the player in the drive city (0: none)
  *   ?bodies=deep|shallow|hybrid   their bodies (default hybrid)
@@ -68,7 +70,10 @@ async function main(): Promise<void> {
   const overlay = new Overlay(uiRoot);
   const url = new URL(window.location.href);
   const kind = engineKindFromUrl(url);
-  const world = { kind: parseWorld(url.searchParams.get('world'), kind), seed: Math.max(0, Math.floor(Number(url.searchParams.get('seed') ?? 1) || 0)) };
+  const preset = url.searchParams.get('preset');
+  const seedParam = url.searchParams.get('seed');
+  const seed = seedParam === null ? (preset ? 0 : 1) : Math.max(0, Math.floor(Number(seedParam) || 0));
+  const world = { kind: parseWorld(url.searchParams.get('world'), kind), seed, ...(preset ? { preset } : {}) };
   const params = { ...DEFAULT_PARAMS, debugView: parseDebug(url.searchParams.get('debug')) };
   const pedestrians = parsePedestrians(url);
 
