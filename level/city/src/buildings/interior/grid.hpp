@@ -98,6 +98,10 @@ struct Door {
   double id = 0;  // its index in the grid's doors
   // (plan.js streetLevels: the street in front of a ground-floor door, and its raised sill)
   std::optional<double> street = std::nullopt, sill = std::nullopt;
+  // (civic.js: a fire station's roll-up doors are painted, a material id; offices.js: a skybridge
+  // door the facade could not place where the bridge lands)
+  std::optional<uint16_t> color = std::nullopt;
+  bool misplaced = false;
 };
 
 // A straight wall run between two rooms (or a room and the outside): for orient 'v' the wall

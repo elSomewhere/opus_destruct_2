@@ -55,6 +55,7 @@ exports, natively and in WASM, on any thread count.
 | highways, their feature source | `network/highways.js` | `network/highways.*` (`HighwayNetwork`, installed by `create_world`; `highway_z_range` and `rasterize_highways` over the ground tile's z, for compose to wrap as a `FeatureSource`); the town plans' corridor test (`city/townPlan.cpp`) | stage `highways` (recorded roads and waters); tests (4 threads) |
 | building archetypes and envelopes | `buildings/archetypes.js` | `buildings/archetypes.*` (the 17 after civic's; `plan_building_envelope`, its finalize) | stages `archetypes`, `registries` |
 | house, cabin and unit planners | `buildings/interior/{houses,cabins,units}.js`, plan.js's `PlanBuilder` | `buildings/interior/{houses,cabins,units}.*`, `buildings/interior/plan.*` (the builder's floors, grids and stairs: the rest of plan.js comes with the interior planners) | stages `houses`, `units` |
+| interior planners, building plans | `buildings/interior/{plan,apartments,offices,industrial,garage,school,civic,civicPrograms}.js`; createWorld's `buildingPlan` | `buildings/interior/{plan,apartments,offices,industrial,garage,school,civic,civicPrograms}.*` (`plan_building`: the dispatch to every planner, `validate_plan`, the street doors' levels; `World::building_plan`, the World's cache of plans) | stages `interiors`, `interiorstreets`; tests (any order, the cache dropped, 4 threads) |
 | facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
 | sample buildings | `buildings/sample.js` | `buildings/sample.*` (`stage_archetype` reads a world through `StageWorld`, `StagedEnvelopes`, until the cell plan is ported) | stage `sample` |
 | lots, parks, landscape (city stage 2 parts); the lot and open space records | `city/lots.js`, `city/parks.js`, `city/landscape.js`; the lots and spaces of `city/cellPlan.js` | `city/lots.*` (`Lot`: every field a lot gets anywhere), `city/parks.*`, `city/landscape.*` (`LotEnv`: what `lot_surface` reads of an envelope), `city/space.hpp` (`OpenSpace`, the park layout and frame lazy on it) | stages `lots` (the blocks of every city world's cell networks, synthetic blocks), `parks`, `landscape` (synthetic spaces and envelopes); every block of the three modules runs; tests (4 threads) |
@@ -64,6 +65,7 @@ exports, natively and in WASM, on any thread count.
 | site links | `sites/links.js` | `sites/links.*` (`site_link_source()`) | stage `sitelinks` (the same stand-in kinds) |
 | subway, its feature source | `underground/subway.js` | `underground/subway.*`: `Subway` (lines, spans, stations cached by node, tunnels, `blocks_surface`, `map_data`), `subway_z_range` and `subway_rasterize` for compose to wrap as a `FeatureSource`; installed by `create_world` unless `config.subway.enabled` is false | stages `subway` (a World of World.js, the terrain's height for a street level: §6; chunks over ground of its own), `underworld` (create_world's World, the road levels' street level); `test_underground_threads.cpp` (any order, any cache, 4 threads) |
 | sewers, their feature source; `World::blocks_surface` | `underground/sewers.js`; createWorld's `blocksSurface` | `underground/sewers.*`: `Sewers` (cell plans cached by cell: runs, nodes, hall stairs, openings; `near`, `blocks_surface`, `map_data`, `nearest_hall`, `hits_subway`), `sewer_z_range` and `sewer_rasterize` over a view of the ground tile's columns (`SewerColumns`); `create_world` installs them; `World::blocks_surface` (`world/createWorld.cpp`) | stages `sewers` (a World of World.js, the terrain's height for a street level: §6; synthetic tiles), `underworld` (create_world's: lakes, highways, harbour grading, the road levels' street level); `test_underground_threads.cpp` |
+| the export's road network: lanes, signals, walks, parking; highway lanes | `svx/roads.js`, `svx/highwayLanes.js` | `svx/roads.*`, `svx/highwayLanes.*`; public `svx/city/roads.hpp` (`RoadNetwork` over a `make_world` World); the game's `RoadNetwork` in svx_procgen (`svx/procgen/city_roads.hpp`, [`VEHICLES.md`](VEHICLES.md)) | stage `svxroads` (worlds as the export makes them, the reference made pure: §6, the lanes handed out); tests |
 
 | the props' classes (the export's change, PROCGEN_MERGE_PLAN.md §7.3, §10.2): fixed, loose, entity, decorative; uses; an entity's kind | - (the reference draws every prop and piece of furniture as isolated voxels) | `data/city/props.json` (embedded: `svx/data.hpp`), `svx/props.*` (`prop_class`) | test `city props` (every prop, piece of furniture and civic fitting has one) |
 | the public entry: a world from a preset, its materials | `svx/source.js` (`createSvxSource`'s world), `svx/materials.js` (`svxMaterials`) | `include/svx/city/world.hpp` (`make_world`), `include/svx/city/materials.hpp` (`physics_classes`, `looks`) | tests `city world api`; `svx_game_tests` `city materials` |
@@ -354,6 +356,36 @@ so that it stays the oracle.
   a `create_world` World's own cell networks and waters instead, the port grading on (the
   reference's terrain made pure with `pureTerrain`); the recorded roads are those of a createWorld
   world whose terrain has no port grading, so a harbour town's may differ from them.
+- **The road network's memory: road structures and what was handed out** (`svx/roads.js`,
+  `svx/highwayLanes.js`). The reference keeps every road's structure it made (`roadInfo`: its nodes,
+  links, junctions, corners, lanes and walks) and every highway edge's lanes for good, and remembers
+  every lane and walk a query handed out (`laneIndex`, `walkIndex`, `walkEnds`, the highways'
+  `index`): `lane(id)`, `walk(id)`, `next`, `signal` and `walkNext` answer for those alone - the
+  lanes of a road whose lanes `lanesIn`, `next` (or a ramp's way on) made, the walks of a road whose
+  walks `walksIn` or `walkNext` made. Both grow without bound as a game drives on. The port keeps
+  the structures in caches (`RoadNetworkOptions` `roads`, `edges`: a structure is a pure function of
+  its road's id, made again alike when dropped) and remembers what was handed out by road (edge):
+  the `remembered` roads (`remembered_edges` edges) whose records a query handed out or asked about
+  most recently. A lane or walk of a road forgotten that way is unknown again - `lane` and `walk`
+  answer none, `next` and `walkNext` nothing, `green` and `walkOpen` always, as the reference does
+  for an id never handed out - until a query hands its road's records out again (`lanes_in`, `next`,
+  `walks_in`, `walk_next` round it). The stage `svxroads` gives the network room for all it touches
+  (the reference's answers, ids not handed out included); `test_svxroads.cpp` shows what the bounds
+  forget, and that queries asked from four threads over small caches write the same records. The
+  reference also keeps road structures per world (a WeakMap) but the walks handed out per network,
+  so a second network over one world finds walk lists the first made and never learns their walks
+  (its `walkNext` can throw on them); the port keeps both per network (one network per world, as the
+  export's worker makes it, answers alike). The stage runs on worlds as the export makes them
+  (`make_world`), the reference made pure (`pureTerrain`, the World's caches unbounded: the road
+  identity entry above). The voxels the reference's own checks look at under lanes and walks
+  (`buildChunk`) wait for compose; the port's checks read the road levels there instead.
+- **Not differences, for the road network.** The reference compares road structures by identity
+  (`g.info === info`, a corner's `other`): it keeps one per road id, so the port compares ids; a
+  road's own segments met in its view (`e.road === road`) are skipped as JS skips them, whichever
+  object asked. In a wrapping world a road's structure is made from its canonical cell's view and
+  keyed by its id, which every lap shares: lanes and walks are those of the canonical lap, in the
+  reference and in the port. Where the reference would throw on a record it reads unguarded (a
+  turn's lane that every link has), the port skips it.
 - **A building's look asked with two seeds** (`buildings/facade.js` `buildingLook`): the reference
   keeps the look per envelope (a WeakMap) whatever seed asks, so a second seed would get the first
   one's look; the port keeps it on the envelope too (`Envelope::look_cache`) and fails
@@ -411,3 +443,8 @@ The generator reaches the game through a `GameSource` (`svx/game/source.hpp`) in
   `svx_buildings_in`, `svx_furniture_in`, `svx_zone_at`).
 - **Far tier**: the export's coarse view, and its open water as a flat surface at its level
   (`GameSource::coarse_water`).
+- **Roads**: the export's road network (`include/svx/city/roads.hpp`: lanes and their ways on,
+  signals, walks and their corners, crossings, parking, the highways' lanes) as the game's
+  `RoadNetwork` for its traffic, parked cars and pedestrians (`CityRoadNetwork`,
+  `svx/procgen/city_roads.hpp`; [`VEHICLES.md`](VEHICLES.md)); `GameSource::roads` returns it once
+  the city's chunks stream.

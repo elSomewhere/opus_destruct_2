@@ -20,6 +20,8 @@ highways a501cce38796defe
 houses 56d89cd1fbcb9cdb
 ids 4edd32b9f8a56a72
 industry 55bdd13e70a1d7c0
+interiors ad75317820b8bf00
+interiorstreets c47bfa97b8988bba
 island 6de5e618c06b37ce
 landcover 3e4d29cf9f4d0a6b
 landscape c932aa03eb06c789
@@ -44,6 +46,7 @@ stairs 721acd61aa53f91b
 streets 6119b91e790d4c74
 subway 836e3587735589cb
 svxmat 6929dc45e6f5ddd2
+svxroads b0a204729fb7a19f
 terrain b7eb60e0c562cdee
 townplan 8bb64c2e7c9f0a7c
 townworld 48efe740af849843
