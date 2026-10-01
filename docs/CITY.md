@@ -46,7 +46,7 @@ exports, natively and in WASM, on any thread count.
 | town plans | `city/townPlan.js` | `city/townPlan.*` (`Settlement::plan`) | stages `townplan` (a World of World.js), `townworld` (create_world's: the highways' corridors keep civic landmarks off a block); tests (any order, 4 threads) |
 | land cover, farmland | `nature/landcover.js`, `nature/farmland.js` | `nature/landcover.*`, `nature/farmland.*` | stage `landcover` |
 | rivers, lakes, port lakes | `nature/rivers.js`, `nature/lakes.js` | `nature/rivers.*`, `nature/lakes.*` | stage `water` (§6: port lakes) |
-| createWorld (so far), harbour grading, water predicates | `world/createWorld.js` | `world/createWorld.cpp`: land cover, rivers, lakes, the terrain's `port_grade`, caves; `sea_at` ... `water_hits_rect`; marked places for the rest | stage `water`; `test_nature_threads.cpp` |
+| createWorld (so far), harbour grading, water predicates | `world/createWorld.js` | `world/createWorld.cpp`: land cover, rivers, lakes, the terrain's `port_grade`, caves; `sea_at` ... `water_hits_rect`; highways; the site layer and the site links; marked places for the rest | stage `water`; `test_nature_threads.cpp` |
 | caves, their feature source | `nature/caves.js` | `nature/caves.*`: `cave_z_range` and `cave_rasterize` over a view of the ground tile's columns (`CaveColumns`), for compose to wrap as a `FeatureSource` | stage `caves` (synthetic tiles) |
 | road views, road surface | `network/roadView.js`, `network/roadSurface.js`; `World.roadView` | `network/roadView.*` (`World::road_view`: the 3 x 3 cell networks' roads, or a test's through `World::cell_roads`), `network/roadSurface.*` | stages `roadview`, `roadsurface` (scripted roads, and recorded ones: §6) |
 | road levels | `network/roadLevel.js`; createWorld's `streetLevel` | `network/roadLevel.*` (`World::street_level`) | stage `roadlevel` (recorded roads: §6); tests (any order, views dropped and remade, 4 threads) |
@@ -57,8 +57,9 @@ exports, natively and in WASM, on any thread count.
 | facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
 | sample buildings | `buildings/sample.js` | `buildings/sample.*` (`stage_archetype` reads a world through `StageWorld`, `StagedEnvelopes`, until the cell plan is ported) | stage `sample` |
 | lots, parks, landscape (city stage 2 parts); the lot and open space records | `city/lots.js`, `city/parks.js`, `city/landscape.js`; the lots and spaces of `city/cellPlan.js` | `city/lots.*` (`Lot`: every field a lot gets anywhere), `city/parks.*`, `city/landscape.*` (`LotEnv`: what `lot_surface` reads of an envelope), `city/space.hpp` (`OpenSpace`, the park layout and frame lazy on it) | stages `lots` (the blocks of every city world's cell networks, synthetic blocks), `parks`, `landscape` (synthetic spaces and envelopes); every block of the three modules runs; tests (4 threads) |
-| site complexes | `sites/complex.js`, `sites/kit.js` (`box`, `finishStructure`) | `sites/complex.*`, `sites/kit.*` (the kit's surface structures and `planGate` come with the site kinds) | stage `complex` |
-| site layer | `world/sites.js` | `world/sites.*` (SITES, the layer, pads, the ground override, the site source's z range and rasterizer; the kinds, and the highway and water tests of a site's placement, come later) | stage `sites` (stand-in kinds: `tools/procgen_ref/lib/sitekinds.mjs`, `tests/city/site_kinds.hpp`) |
+| site complexes | `sites/complex.js`, `sites/kit.js` (`box`, `finishStructure`) | `sites/complex.*`, `sites/kit.*` | stage `complex` |
+| site layer | `world/sites.js` | `world/sites.*` (SITES, the layer, pads, the ground override, the site source's z range and rasterizer; on create_world's worlds a site keeps off the highways' corridors and the water) | stages `sites` (stand-in kinds on World.js's worlds: `tools/procgen_ref/lib/sitekinds.mjs`, `tests/city/site_kinds.hpp`), `sitekinds` |
+| site kinds, the site kit's surface structures | `sites/militaryBase.js`, `sites/researchComplex.js`, `sites/mountainBase.js`; `sites/kit.js` (`planGate`, `fence` ... `portalBlock`) | `sites/militaryBase.*`, `sites/researchComplex.*`, `sites/mountainBase.*` (their districts and kinds, registered after the complex themes; `SiteDef::surface`, the cell plan's envelopes; the kinds' `pois`, the viewer's, not ported), `sites/kit.*` | stage `sitekinds` (create_world's worlds made pure, and one of World.js: placement, plans, surfaces, ground, structures, complexes, ports, the site source's z ranges and chunks; every branch but those its header lists: no world reaches them, or they are dead); tests (4 threads) |
 | site links | `sites/links.js` | `sites/links.*` (`site_link_source()`) | stage `sitelinks` (the same stand-in kinds) |
 
 (The table grows with the port; §5 lists the order.)
@@ -344,7 +345,13 @@ so that it stays the oracle.
   a flag; parks.js's grid key `i * 4096 + j` gives buckets 4,096 apart one list (kept).
 - **Sites and site links sample the terrain near settlements too** (the first entry): a site's
   placement (the default pad's five samples, a kind's own placement) and a link's floor profile (a
-  sample every 16 m of its route). The stages `sites` and `sitelinks` make every base height first
-  over the lattice cells they probe and the sites and links those reach (`warmBasesIn`); a stage of
-  the reference's own site kinds must reach as far as their placement samples (a stronghold's
-  service road runs up to 5 km from its apron).
+  sample every 16 m of its route). The stages `sites` and `sitelinks` (World.js's worlds, stand-in
+  kinds) make every base height first over the lattice cells they probe and the sites and links
+  those reach (`warmBasesIn`). The stage `sitekinds` runs the reference's own kinds on createWorld's
+  worlds made pure (`pureTerrain`), so every terrain sample makes what it reads first wherever it
+  lies: a stronghold's flank search and service road sample the terrain up to 5 km from its apron
+  (and ask `isWet` every 8 m), and a site's highway and water tests plan the highways, rivers and
+  lakes round its footprint. Measured without `pureTerrain`: the stage's records are the same, and
+  the 253 sites of its lattice windows are the same asked forward and backward on fresh worlds
+  (placement, pads, plans, surface envelopes, structures): the kinds stay where the urbanization is
+  at most 0.05, away from the towns whose base heights a first touch would make.
