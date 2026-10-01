@@ -52,10 +52,11 @@ exports, natively and in WASM, on any thread count.
 | road levels | `network/roadLevel.js`; createWorld's `streetLevel` | `network/roadLevel.*` (`World::street_level`) | stage `roadlevel` (recorded roads: §6); tests (any order, views dropped and remade, 4 threads) |
 | pitched road pieces | `network/roadParts.js` | `network/roadParts.*` | stage `roadparts` (recorded roads and waters) |
 | highways, their feature source | `network/highways.js` | `network/highways.*` (`HighwayNetwork`, installed by `create_world`; `highway_z_range` and `rasterize_highways` over the ground tile's z, for compose to wrap as a `FeatureSource`); the town plans' corridor test (`city/townPlan.cpp`) | stage `highways` (recorded roads and waters); tests (4 threads) |
-| building archetypes and envelopes | `buildings/archetypes.js` | `buildings/archetypes.*` (the 17 after civic's; `plan_building_envelope`, its finalize), `city/lots.hpp` (the lot record, what the archetypes read) | stages `archetypes`, `registries` |
+| building archetypes and envelopes | `buildings/archetypes.js` | `buildings/archetypes.*` (the 17 after civic's; `plan_building_envelope`, its finalize) | stages `archetypes`, `registries` |
 | house, cabin and unit planners | `buildings/interior/{houses,cabins,units}.js`, plan.js's `PlanBuilder` | `buildings/interior/{houses,cabins,units}.*`, `buildings/interior/plan.*` (the builder's floors, grids and stairs: the rest of plan.js comes with the interior planners) | stages `houses`, `units` |
 | facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
 | sample buildings | `buildings/sample.js` | `buildings/sample.*` (`stage_archetype` reads a world through `StageWorld`, `StagedEnvelopes`, until the cell plan is ported) | stage `sample` |
+| lots, parks, landscape (city stage 2 parts); the lot and open space records | `city/lots.js`, `city/parks.js`, `city/landscape.js`; the lots and spaces of `city/cellPlan.js` | `city/lots.*` (`Lot`: every field a lot gets anywhere), `city/parks.*`, `city/landscape.*` (`LotEnv`: what `lot_surface` reads of an envelope), `city/space.hpp` (`OpenSpace`, the park layout and frame lazy on it) | stages `lots` (the blocks of every city world's cell networks, synthetic blocks), `parks`, `landscape` (synthetic spaces and envelopes); every block of the three modules runs; tests (4 threads) |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -326,3 +327,15 @@ so that it stays the oracle.
   one's look; the port keeps it on the envelope too (`Envelope::look_cache`) and fails
   (`SVX_FAIL`) when another seed asks, so a look never depends on which seed asked first. An
   envelope belongs to one world: generation never asks twice.
+- **Lots, parks and the landscape: no order.** The reference caches by object - parks.js's
+  layouts, landscape.js's space frames, industry.js's layouts, frameOf's frames - and each is a
+  pure function of its object: the port keeps them as lazy fields of the open space record
+  (`OpenSpace`, `city/space.hpp`) and in what an envelope gives the landscape (`LotEnv`, made once
+  per envelope). For the ports to come: makeLot (so freeLot, wholeBlockLot) takes a stream it never
+  draws from and lotSurface a lot it never reads (the port's take neither); a lot's `whole` is
+  `true` (a block taken whole) or, once the cell plan's fitLots trimmed the lot, its rect as
+  planned (`Lot::whole_rect`), and planWings's `lot.whole ?? lot.rect` reads the boolean on a
+  whole lot fitLots left alone (its fields undefined: every comparison false, so no point of a
+  wing's outline off the building and the streets is in its lot); fitLots tells a lot it left
+  alone by `rect === lot.rect` (clearOfStreets hands back the same object), which a port keeps as
+  a flag; parks.js's grid key `i * 4096 + j` gives buckets 4,096 apart one list (kept).
