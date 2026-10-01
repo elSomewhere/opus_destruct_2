@@ -317,7 +317,8 @@ Things that break it:
   world's voxel size 1 mm to 100 m. Callbacks (`ChunkSource`, `WorldSystem`) must not throw:
   the core is built without exceptions and does not contain one.
 - Work per tick is bounded by `stress_work` (structures: solver iterations, and assemblies at
-  the cost of the products and the factorization that build their multigrids) and the busy mode
+  the cost of the products and the factorization that build their multigrids; the structures
+  solving share it in turns, so a large one slow to converge cannot hold the others back) and the busy mode
   of the rigid solver (violent collapses step once per tick with fewer iterations). A solve
   slow to converge rebuilds its preconditioner only when it is stale (bonds broke since): a
   large structure is never assembled again tick after tick. Memory is bounded as in §4.

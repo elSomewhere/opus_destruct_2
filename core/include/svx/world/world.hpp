@@ -238,6 +238,10 @@ struct WorldConfig {
   //     strength by its orientation. On, large structures fail differently (the tower's side
   //     blast brings it down: 7966 bonds broken, not 32) and a damaged building's solve costs
   //     some 2.5 times as much.
+  //   fair_solve_order: the structures solving share stress_work from where it ran out the tick
+  //     before - the first one it did not reach goes first - so a large structure slow to converge
+  //     cannot hold the others back (a demolition's remnants waited 17 ticks to fall); off: by id
+  //     every tick, the same structures first. (A tick that reached them all goes by id.)
   //   rigid.busy_hold, rigid.warm_to_step (RigidParams): busy mode decided once a tick, and held
   //     until a collapse is well under its thresholds; the solver's warm starts scaled to the
   //     substep's length; off: decided every substep, warm starts as they were.
@@ -255,6 +259,7 @@ struct WorldConfig {
   bool reaggregate_levels = true;
   bool shards_hold_together = true;
   bool cluster_cubes = false;  // (off: see above - a choice of the structural model's resolution)
+  bool fair_solve_order = true;
   i32 evict_scan_ticks = 10;
   f64 fracture_energy = 1.0;       // x the materials' fracture energies (what impacts pay for cracks)
   f64 impact_wave_speed = 400.0;   // m/s: an impact loads a piece over its length / this (crushing slows the wave)

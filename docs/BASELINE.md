@@ -56,12 +56,13 @@ car - so it is not comparable across the two; both tools print the world's hash 
 | `reaggregate_levels` | a stress solve's multigrid level whose aggregates would hold fewer than two nodes on average (its couplings mostly under the strength threshold: a large irregular structure's second level) is aggregated again at half the threshold, up to three times | aggregated once: it barely coarsens, and its smoothed coarse level fills in (a damaged building's: 180 blocks a row - each assembly 200 ms and more, each cycle twice the work) | this pass |
 | `shards_hold_together` | a fragment a blast or a punch tears out whole has its faces with the rest torn, and keeps its own: a later cut or shot breaks the shard as a piece | every face of its voxels is torn: a shard of loose voxels, all dust at the next cut | this pass |
 | `cluster_cubes` (default **off**: a choice for the quality pass) | a structure of more than `cluster_nodes` fragments has them clustered in 1 m (2 m) cubes of its chunks, as was meant - large structures fail differently (the tower's side blast brings it down: 7966 bonds broken, not 32), and a large damaged building's solve has some 1.5 times the nodes and costs 2.5 times as much | the cell key loses the cell along x: clusters a chunk (4 m) long in x - cracks along x only at chunk edges, a building's strength by its orientation | this pass |
+| `fair_solve_order` | the structures solving share `stress_work` from where it ran out the tick before - the first one it did not reach goes first - so a large structure slow to converge cannot hold the others back (a demolition's remnants waited up to 17 ticks to fall; served 66 times to 558 waits in its first 300 ticks) | by id every tick: the same structures first | this pass |
 | `rigid.busy_hold` | busy mode (one substep a tick, fewer iterations) is decided once a tick for all its substeps, and holds until the collapse is under two thirds of both thresholds | decided again every substep, at the thresholds: a collapse at their edge switches between one substep and two, tick after tick | `3ab0666` |
 | `rigid.warm_to_step` | the impulses contacts, wheels and joints start a substep from are scaled to its length (1/60 s after 1/120 s: twice them - what holds a resting load, a car on its springs) | as they were: a car dropped and kicked up at each switch of busy mode | `3ab0666` |
 
 Set them with `--tune NAME=VALUE` on `svx_engine_demo` and `svx_env_bench`, `World::configure`,
 `set_tunable` (C++, the C API, the web worker's settings panel). `tools/baseline/compare.sh
---parity` and `golden.sh`'s parity lines set all twenty.
+--parity` and `golden.sh`'s parity lines set all twenty-one.
 
 **Content.** Three procedural levels changed as well: the steel members of the `yard` (the
 greenhouse's and the shed's frames), the `angles` world (the braced portal) and the `machines`

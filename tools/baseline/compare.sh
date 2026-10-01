@@ -24,7 +24,7 @@ NEW_TUNES=()
 PARITY_TUNES=(impact_penetration=0 restart_diverging_solves=0 jointed_keep_identity=0 spread_per_partner=0 plastic_hinges=0
   rigid.piece_ccd=0 load_trigger_gap=0 design_in_place=0 patch_cut_structures=0 evict_scan_ticks=1 release_solvers=0
   recheck_vacated=0 true_solve_work=0 rebuild_stale_only=0 rigid.busy_hold=0 rigid.warm_to_step=0 coarsen_dense_levels=0
-  reaggregate_levels=0 shards_hold_together=0 cluster_cubes=0)
+  reaggregate_levels=0 shards_hold_together=0 cluster_cubes=0 fair_solve_order=0)
 while [ $# -gt 0 ]; do
   case "$1" in
     --threads) THREADS=$2; shift 2 ;;

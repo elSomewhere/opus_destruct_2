@@ -97,6 +97,7 @@ void World::Impl::load(VoxelGrid&& g) {
   std::vector<u64> old_keys;
   for (const auto& [k, c] : grid_.chunks()) old_keys.push_back(k);
   structures_.clear();
+  solve_from_ = 0;
   // the oriented grids go too (a level adds its own again)
   for (size_t g = 1; g < grids_.size(); ++g) {
     if (!grids_[g]) continue;
@@ -954,9 +955,12 @@ void World::Impl::step_structures() {
   i64 budget = cfg_.stress_work;
   st_.solving = 0;
   st_.solve_nodes = 0;
-  // (judging may detach pieces and drop structures: walk by id)
+  // (judging may detach pieces and drop structures: walk by id - from the first one solving that
+  // the budget did not reach last tick, round the list: WorldConfig::fair_solve_order)
   std::vector<i64> ids;
   for (auto& s : structures_) ids.push_back(s->id);
+  if (cfg_.fair_solve_order && solve_from_ > 0) std::rotate(ids.begin(), std::lower_bound(ids.begin(), ids.end(), solve_from_), ids.end());
+  solve_from_ = 0;
   for (i64 id : ids) {
     Structure* sp = structure(id);
     if (!sp) continue;
@@ -981,7 +985,10 @@ void World::Impl::step_structures() {
     s.idle = 0;
     ++st_.solving;
     st_.solve_nodes += static_cast<i64>(s.P.nodes.size());
-    if (budget <= 0) continue;
+    if (budget <= 0) {
+      if (solve_from_ == 0) solve_from_ = s.id;
+      continue;
+    }
     static const bool prof = diag("SVX_PROFILE");
     const auto tp = Clock::now();
     if (!s.P.assembled()) {

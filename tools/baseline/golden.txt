@@ -15,7 +15,7 @@ engine 992365b3d689163a engine_demo --world rooms --seconds 5
 engine c26a57868fcd026d engine_demo --world slab --seconds 5
 engine 79332e543e28d89c engine_demo --world bridge --seconds 5
 engine 2b6e28ea23b08f2f engine_demo --world chimney --seconds 5
-engine 5910cf88ec1932d0 engine_demo --world yard --seconds 4
+engine f781705e6bc9c365 engine_demo --world yard --seconds 4
 engine cf51a8db8143feeb engine_demo --world machines --seconds 12
 engine 94a83a4f622d8e7e engine_demo --world angles --seconds 3
 engine 6c16bd69cc68b2f0 engine_demo --world drive --seconds 4

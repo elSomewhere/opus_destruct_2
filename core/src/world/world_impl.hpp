@@ -648,6 +648,7 @@ struct World::Impl {
   };
   std::unordered_map<u64, FragMemo> frag_memo_;
   std::vector<std::unique_ptr<Structure>> structures_;  // ascending id
+  i64 solve_from_ = 0;                       // (the first structure the last tick's budget did not reach: first now)
   std::vector<GVox> seeds_;                  // voxels whose structures must be (re)extracted
   i64 fresh_from_ = INT64_MAX;               // (during a refresh: the first id made in it)
   // (both keep the chunk of the node they belong to: dropped with it when it leaves)

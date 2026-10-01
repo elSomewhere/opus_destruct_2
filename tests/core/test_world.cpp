@@ -1003,6 +1003,43 @@ TEST_CASE("materials: bars in the tension face carry a cantilever that plain con
   CHECK(stands(true));
 }
 
+TEST_CASE("structures: a large structure slow to solve does not hold back a small one's judgement (fair_solve_order)") {
+  // a plain cantilever that its own weight breaks (judged at its first solve), and a large block
+  // hit first (a lower id) and solved over many ticks on a budget it takes whole every tick
+  auto falls_after = [](bool fair, int* block_ticks) {
+    VoxelGrid g = cantilever_world(20, false);
+    box(g, {48, -40, -4}, {160, 72, 0}, kRock);
+    box(g, {64, -24, 0}, {144, 56, 24}, kConcrete);
+    g.compact();
+    WorldConfig c;
+    c.fair_solve_order = fair;
+    c.stress_work = 1000;  // (less than an iteration of the block's: it takes it whole, every tick)
+    World w;
+    w.configure(c);
+    w.load(std::move(g));
+    w.carve({kH * 104, kH * 16, kH * 23}, 0.4);
+    w.tick();
+    REQUIRE(w.stats().solving >= 1);
+    REQUIRE(w.probe_utilization({10, 1, 25}) > 1.0);
+    int falls = -1;
+    *block_ticks = -1;
+    for (int t = 1; t <= 200 && (falls < 0 || *block_ticks < 0); ++t) {
+      w.tick();
+      if (falls < 0 && !vox_solid(w.grid().get(18, 1, 25))) falls = t;
+      if (*block_ticks < 0 && w.stats().solving == 0) *block_ticks = t;
+    }
+    return falls;
+  };
+  int block_fair = 0, block_id = 0;
+  const int fair = falls_after(true, &block_fair), by_id = falls_after(false, &block_id);
+  MESSAGE("the cantilever falls after " << fair << " ticks (by id: " << by_id << "); the block's solve: " << block_fair << " ticks (by id: "
+                                        << block_id << ")");
+  CHECK(fair >= 0);
+  CHECK(fair <= 3);
+  CHECK((by_id < 0 || by_id > 3 * fair));  // (by id: it waits for the block's solve)
+  CHECK(block_fair <= block_id + 2);       // (and the block hardly waits for it)
+}
+
 TEST_CASE("materials: a blast strips concrete off its bars, and ductile bars never turn to dust") {
   VoxelGrid g = table_world();
   // a 3 m x 3 m reinforced wall 3 voxels thick under the table, bars every 4 voxels
