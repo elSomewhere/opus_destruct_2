@@ -69,7 +69,7 @@ bool touches(const Box3& b, int lod, double cx, double cy, double cz) {
 
 // A wood of 16 x 16 lattice cells (40 voxels) of a temperate (0) or boreal (1) mix of kinds, in
 // summer (0), autumn (1) or winter (2).
-std::vector<Tree> wood(int mix, int season, const std::vector<Season>& seasons) {
+std::vector<Tree> wood(int mix, int season, const std::vector<Season>& seasons, bool wild = false) {
   static const std::vector<std::vector<std::pair<const char*, double>>> kMixes = {
       {{"oak", 4}, {"maple", 3}, {"birch", 2}, {"pine", 0.6}, {"spruce", 0.8}, {"rowan", 0.4}, {"aspen", 0.45}, {"alder", 0.35}},
       {{"spruce", 5}, {"pine", 4}, {"birch", 2.5}, {"rowan", 0.4}, {"aspen", 0.45}, {"larch", 0.5}, {"alder", 0.25}},
@@ -96,6 +96,10 @@ std::vector<Tree> wood(int mix, int season, const std::vector<Season>& seasons) 
       const double y = gy * 40 + std::floor(r() * 40);
       Tree t = forest_tree(r, *tree_kind_spec(kind), x, y);
       t.look = look.tree_look(kind, t.seed, 0.45);
+      if (wild) {
+        t.wild = true;
+        t.reach = 57;  // (the forest's: MAX_R - 1 - STRAY)
+      }
       t.bb = tree_bounds(t);
       trees.push_back(t);
     }
@@ -134,6 +138,20 @@ TEST_CASE("city trees: profile forest chunks once" * doctest::skip()) {
   CHECK(written > 0);
 }
 
+TEST_CASE("city trees: profile wild forest chunks once" * doctest::skip()) {
+  const std::vector<Season> seasons = trec::seasons();
+  int written = 0;
+  for (int mix = 0; mix < 2; ++mix) {
+    const std::vector<Tree> trees = wood(mix, 0, seasons, true);
+    wood_chunks(trees, 0, [&](double cx, double cy, double cz, const std::vector<const Tree*>& in) {
+      ChunkBuffer ch(0, cx, cy, cz);
+      for (const Tree* t : in) rasterize_tree(ch, *t);
+      written += ch.count_non_air();
+    });
+  }
+  CHECK(written > 0);
+}
+
 TEST_CASE("city trees: bench rasterizing trees" * doctest::skip()) {
   const std::vector<Season> seasons = trec::seasons();
   const char* mix_names[2] = {"temperate", "boreal"};
@@ -157,6 +175,22 @@ TEST_CASE("city trees: bench rasterizing trees" * doctest::skip()) {
       }
     }
   std::printf("forest chunks at LOD 0: digest %u\n", digest);
+  // the angled world's wild woods (leaning, lopsided, kept within the forest's reach)
+  uint32_t wild_digest = 2166136261u;
+  for (int mix = 0; mix < 2; ++mix) {
+    const std::vector<Tree> trees = wood(mix, 0, seasons, true);
+    double ns = 0, written = 0, chunks = 0, pairs = 0;
+    wood_chunks(trees, 0, [&](double cx, double cy, double cz, const std::vector<const Tree*>& in) {
+      const Run run = best_of(0, cx, cy, cz, in, &wild_digest);
+      ns += run.ns;
+      written += run.written;
+      chunks += 1;
+      pairs += static_cast<double>(in.size());
+    });
+    std::printf("wild forest %-9s summer LOD 0: %5.0f chunks, %4.1f trees/chunk, %7.0f voxels/chunk, %7.1f us/chunk, %6.1f ns/voxel written\n", mix_names[mix], chunks,
+                pairs / chunks, written / chunks, ns / chunks / 1000, ns / written);
+  }
+  std::printf("wild forest chunks at LOD 0: digest %u\n", wild_digest);
   // per kind, alone
   for (const int lod : {0, 1, 2}) {
     double all_ns = 0, all_written = 0;

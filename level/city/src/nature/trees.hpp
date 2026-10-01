@@ -99,7 +99,8 @@ struct TreeKindSpec {
 };
 
 // TREE_KINDS, in its key order.
-const std::vector<TreeKindSpec>& tree_kinds();
+constexpr int kTreeKindCount = 28;
+const std::array<TreeKindSpec, kTreeKindCount>& tree_kinds();
 // TREE_KINDS[name], or null (callers fall back as JS does: TREE_KINDS[kind] ?? TREE_KINDS.oak).
 const TreeKindSpec* tree_kind_spec(std::string_view name);
 const TreeKindSpec& tree_kind_spec(TreeKind kind);  // (not Unknown)

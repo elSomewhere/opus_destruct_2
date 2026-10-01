@@ -18,7 +18,7 @@ constexpr double kPi = 3.141592653589793;
 // ---- tables
 
 // TREE_KINDS: size ranges per kind (metres): height and crown radius.
-const std::vector<TreeKindSpec> kKinds = {
+constexpr std::array<TreeKindSpec, kTreeKindCount> kKinds = {{
     {"oak", TreeKind::Oak, {8, 15}, {2.8, 4.8}},
     {"maple", TreeKind::Maple, {10, 17}, {2.4, 3.8}},
     {"autumn", TreeKind::Autumn, {10, 17}, {2.4, 3.8}},
@@ -47,9 +47,10 @@ const std::vector<TreeKindSpec> kKinds = {
     {"log", TreeKind::Log, {0.35, 0.6}, {2.5, 6}},
     {"stump", TreeKind::Stump, {0.3, 0.7}, {0.25, 0.45}},
     {"snag", TreeKind::Snag, {5, 12}, {0.2, 0.4}},
-};
+}};
 
 constexpr int kKindCount = static_cast<int>(TreeKind::Unknown);
+static_assert(kKindCount == kTreeKindCount);
 
 // PALETTE: summer foliage [shadow, body, sunlit] per kind (none: the kinds without foliage of
 // their own).
@@ -196,8 +197,8 @@ TreePart limb(double ax, double ay, double az, double bx, double by, double bz, 
   return p;
 }
 
-const LimbExtra kTrunk = {true, false, false, false, false, false, 0};
-const LimbExtra kTwig = {false, true, false, false, false, false, 0};
+constexpr LimbExtra kTrunk = {true, false, false, false, false, false, 0};
+constexpr LimbExtra kTwig = {false, true, false, false, false, false, 0};
 
 // A cluster of a crown: centre, radius, the limb's azimuth, its palette mix.
 struct Cluster {
@@ -1121,69 +1122,70 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
       const uint32_t gen = blocks.gen;
       // (the row's voxels before its hollow and after it)
       const int segs[2][2] = {{i0, h0 <= h1 ? h0 - 1 : i1}, {h0 <= h1 ? h1 + 1 : i1 + 1, i1}};
-      for (const auto& seg : segs)
-      for (int i = seg[0]; i <= seg[1]; ++i) {
-        const int idx = i + j * kP + k * kP2;
-        if (d[idx] != 0) continue;
-        const double x = g.w[0][i];
-        const double dx = x + 0.5 - p.x;
-        const double q = (dx * dx + dy2) * irx + qz;
-        if (q >= thr) continue;
-        // (the hash of x >> 1, y >> 1, z >> 1: the noise's, and the shading's)
-        double n = 0, vh = 0;
-        if (fine) {
-          BlockCache::Entry& e = brow[g.bk[0][i]];
-          if (blocky && e.stamp == gen) {
-            n = e.n;
-            vh = e.vh;
-          } else {
-            const uint32_t ph = in(in(g.x1[i], yh), zh);
-            // a lumpy surface of leaf tufts (2-voxel noise) up close
-            n = (fin(ph, salt.s0) - 0.5) * 0.6;
-            vh = fin(ph, salt.s9);
-            if (blocky) e = {gen, n, vh};
+      for (const auto& seg : segs) {
+        for (int i = seg[0]; i <= seg[1]; ++i) {
+          const int idx = i + j * kP + k * kP2;
+          if (d[idx] != 0) continue;
+          const double x = g.w[0][i];
+          const double dx = x + 0.5 - p.x;
+          const double q = (dx * dx + dy2) * irx + qz;
+          if (q >= thr) continue;
+          // (the hash of x >> 1, y >> 1, z >> 1: the noise's, and the shading's)
+          double n = 0, vh = 0;
+          if (fine) {
+            BlockCache::Entry& e = brow[g.bk[0][i]];
+            if (blocky && e.stamp == gen) {
+              n = e.n;
+              vh = e.vh;
+            } else {
+              const uint32_t ph = in(in(g.x1[i], yh), zh);
+              // a lumpy surface of leaf tufts (2-voxel noise) up close
+              n = (fin(ph, salt.s0) - 0.5) * 0.6;
+              vh = fin(ph, salt.s9);
+              if (blocky) e = {gen, n, vh};
+            }
           }
-        }
-        if (q >= 1 + n) continue;
-        const bool shell = q > 0.68 + n;
-        if (bare) {
-          // leafless: a few twig voxels in the shell (the limbs and twigs are drawn anyway)
-          if (!shell) continue;
-          const uint32_t pv = in(in(g.x0[i], yi), zi);
-          if (fin(pv, salt.s5) > (fine ? 0.07 : 0.16)) continue;
-          d[idx] = up && fin(pv, salt.s11) < snow * 0.4 ? MAT::SNOW : MAT::TWIGS;
-          continue;
-        }
-        // (the hash of x, y, z: holes, snow, berries)
-        uint32_t pv = 0;
-        bool hv = false;
-        if (fine && shell) {
-          pv = in(in(g.x0[i], yi), zi);
-          hv = true;
-          if (fin(pv, salt.s0) < holes) continue;
-        }
-        if (up && (dx * dx + dy2) * irx + qz2 >= 1 + n) {
-          // snow where nothing of the cluster lies above
-          if (!hv) {
+          if (q >= 1 + n) continue;
+          const bool shell = q > 0.68 + n;
+          if (bare) {
+            // leafless: a few twig voxels in the shell (the limbs and twigs are drawn anyway)
+            if (!shell) continue;
+            const uint32_t pv = in(in(g.x0[i], yi), zi);
+            if (fin(pv, salt.s5) > (fine ? 0.07 : 0.16)) continue;
+            d[idx] = up && fin(pv, salt.s11) < snow * 0.4 ? MAT::SNOW : MAT::TWIGS;
+            continue;
+          }
+          // (the hash of x, y, z: holes, snow, berries)
+          uint32_t pv = 0;
+          bool hv = false;
+          if (fine && shell) {
             pv = in(in(g.x0[i], yi), zi);
             hv = true;
+            if (fin(pv, salt.s0) < holes) continue;
           }
-          if (fin(pv, salt.s11) < snow * 0.85) {
-            d[idx] = MAT::SNOW;
-            continue;
+          if (up && (dx * dx + dy2) * irx + qz2 >= 1 + n) {
+            // snow where nothing of the cluster lies above
+            if (!hv) {
+              pv = in(in(g.x0[i], yi), zi);
+              hv = true;
+            }
+            if (fin(pv, salt.s11) < snow * 0.85) {
+              d[idx] = MAT::SNOW;
+              continue;
+            }
           }
+          if (accent && shell) {
+            if (!hv) pv = in(in(g.x0[i], yi), zi);
+            if (fin(pv, salt.s13) < 0.06) {
+              d[idx] = accent;
+              continue;
+            }
+          }
+          if (!fine) vh = fin(in(in(g.x1[i], yh), zh), salt.s9);
+          // sunlit tops, shaded undersides and interior
+          const double v = v0 + (vh - 0.5) * 0.45 - (shell ? 0 : 0.2);
+          d[idx] = v < 0.34 ? pal[0] : v < 0.74 ? pal[1] : pal[2];
         }
-        if (accent && shell) {
-          if (!hv) pv = in(in(g.x0[i], yi), zi);
-          if (fin(pv, salt.s13) < 0.06) {
-            d[idx] = accent;
-            continue;
-          }
-        }
-        if (!fine) vh = fin(in(in(g.x1[i], yh), zh), salt.s9);
-        // sunlit tops, shaded undersides and interior
-        const double v = v0 + (vh - 0.5) * 0.45 - (shell ? 0 : 0.2);
-        d[idx] = v < 0.34 ? pal[0] : v < 0.74 ? pal[1] : pal[2];
       }
     }
   }
@@ -1294,13 +1296,36 @@ Whorl whorl_at(const TreeCone& p, double H, double s, bool fine, double zz) {
   return w;
 }
 
-// The lobes of whorl ti at angle a (irregular branch lobes round the stem).
-double lobe_of(const TreeCone& p, double ti, double a, uint32_t s0) {
-  // (floor((a + 3.2) * 1.6): a lies within -pi and pi, the floor of a small positive number)
+// The lobes of whorl ti at angle a (irregular branch lobes round the stem): 0.8 + 0.2 sin(..) plus
+// the noise of the whorl's sector of the angle, floor((a + 3.2) 1.6) (a within -pi and pi: the
+// floor of a small positive number, 0 to 10).
+int32_t sector_of(double a) {
   const double v = (a + 3.2) * 1.6;
-  const int32_t sector = v >= 0 && v < 1e9 ? static_cast<int32_t>(v) : js::to_int32(std::floor(v));
-  return 0.8 + 0.2 * js::sin(p.lobes * a + p.phase + ti * 2.3) + (fin(in(in(first(js::to_int32(ti)), static_cast<uint32_t>(sector) * kHashB), 3 * kHashC), s0) - 0.5) * 0.3;
+  return v >= 0 && v < 1e9 ? static_cast<int32_t>(v) : js::to_int32(std::floor(v));
 }
+double lobe_noise(double ti, int32_t sector, uint32_t s0) {
+  return (fin(in(in(first(js::to_int32(ti)), static_cast<uint32_t>(sector) * kHashB), 3 * kHashC), s0) - 0.5) * 0.3;
+}
+double lobe_of(const TreeCone& p, double ti, double a, uint32_t s0) { return 0.8 + 0.2 * js::sin(p.lobes * a + p.phase + ti * 2.3) + lobe_noise(ti, sector_of(a), s0); }
+
+// A leaning cone's lobe noise, per whorl and sector (a chunk spans a few whorls; its voxels' angles
+// differ, their sectors are 11).
+struct LobeNoise {
+  static constexpr int kWhorls = 48;
+  double ti0 = 0;
+  double v[kWhorls][11];
+  bool made[kWhorls][11] = {};
+  double get(double ti, int32_t sector, uint32_t s0) {
+    const double w = ti - ti0;
+    if (!(w >= 0 && w < kWhorls) || sector < 0 || sector > 10) return lobe_noise(ti, sector, s0);
+    const int a = static_cast<int>(w);
+    if (!made[a][sector]) {
+      v[a][sector] = lobe_noise(ti, sector, s0);
+      made[a][sector] = true;
+    }
+    return v[a][sector];
+  }
+};
 
 // A column's lobes, kept per whorl (two: the snow looks one whorl up).
 struct LobeCache {
@@ -1455,13 +1480,25 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
     }
     return;
   }
-  // a cone that leans: row by row (its axis moves with the height)
+  // a cone that leans: row by row (its axis moves with the height), within the bound round it; a
+  // voxel past the widest radius its own lopsidedness allows needs no angle
+  LobeNoise noise;
+  for (int k = rk.lo; k <= rk.hi; ++k)
+    if (row[k] && W[k].in) {
+      noise.ti0 = W[k].ti;
+      break;
+    }
   for (int k = rk.lo; k <= rk.hi; ++k) {
     if (!row[k]) continue;
-    for (int j = rj.lo; j <= rj.hi; ++j) {
+    int i0 = ri.lo, i1 = ri.hi, j0 = rj.lo, j1 = rj.hi;
+    if (bound[k] < 1e9) {
+      clip(base_x, s, ox[k] - 0.5 - bound[k] - 1, ox[k] - 0.5 + bound[k] + 1, i0, i1);
+      clip(base_y, s, oy[k] - 0.5 - bound[k] - 1, oy[k] - 0.5 + bound[k] + 1, j0, j1);
+    }
+    for (int j = j0; j <= j1; ++j) {
       const double y = g.w[1][j];
       const double dy = y + 0.5 - oy[k];
-      for (int i = ri.lo; i <= ri.hi; ++i) {
+      for (int i = i0; i <= i1; ++i) {
         const int idx = i + j * kP + k * kP2;
         if (d[idx] != 0) continue;
         const double x = g.w[0][i];
@@ -1470,9 +1507,16 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const
         if (hr > bound[k]) continue;
         double lob = 0, lob2 = 0;
         if (fine) {
+          const double e = W[k].envpt;
+          if (bounded && e >= 0) {
+            const double lop = 1 + (p.asym * (dx * p.ax + dy * p.ay)) / js::max(hr, 1e-9);
+            if (lop > 0 && hr > (e * 1.16 + 0.71) * lop * 1.0000001 + 0.56) continue;
+          }
           const double a = js::atan2(dy, dx);
-          if (W[k].in) lob = lobe_of(p, W[k].ti, a, salt.s0);
-          if (snow > 0 && W2[k].in) lob2 = W2[k].ti == W[k].ti && W[k].in ? lob : lobe_of(p, W2[k].ti, a, salt.s0);
+          const int32_t sector = sector_of(a);
+          if (W[k].in) lob = 0.8 + 0.2 * js::sin(p.lobes * a + p.phase + W[k].ti * 2.3) + noise.get(W[k].ti, sector, salt.s0);
+          if (snow > 0 && W2[k].in)
+            lob2 = W2[k].ti == W[k].ti && W[k].in ? lob : 0.8 + 0.2 * js::sin(p.lobes * a + p.phase + W2[k].ti * 2.3) + noise.get(W2[k].ti, sector, salt.s0);
         }
         voxel(idx, in(g.x1[i], g.y1[j]), in(g.x0[i], g.y0[j]), k, dx, dy, hr, lob, lob2);
       }
@@ -1746,7 +1790,7 @@ void shape_palm(ChunkBuffer& chunk, const Tree& t, const Box3& bb, const Grid& g
 
 }  // namespace
 
-const std::vector<TreeKindSpec>& tree_kinds() { return kKinds; }
+const std::array<TreeKindSpec, kTreeKindCount>& tree_kinds() { return kKinds; }
 
 const TreeKindSpec* tree_kind_spec(std::string_view name) {
   for (const TreeKindSpec& k : kKinds)
