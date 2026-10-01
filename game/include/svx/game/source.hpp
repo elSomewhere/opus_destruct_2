@@ -2,6 +2,7 @@
 // top: where the player starts and a coarse view for the far render tier.
 #pragma once
 
+#include <climits>
 #include <memory>
 #include <string>
 #include <vector>
@@ -50,6 +51,14 @@ class GameSource : public ChunkSource {
   // covers part of it; air only where it covers the cell). Sources without a cheap coarse view
   // return false (no far tier).
   virtual bool coarse(const IVec3& lo, const IVec3& n, i32 factor, std::vector<Vox>& out) const {
+    (void)lo, (void)n, (void)factor, (void)out;
+    return false;
+  }
+  // Far render tier: the open water (sea, lakes) over the same n[0] x n[1] columns of `factor`^2
+  // voxels from `lo`: the level of its surface in each (the z of its top water voxel; kNoWater:
+  // none; index x * n1 + y). False: none anywhere (no water in the far tier).
+  static constexpr i32 kNoWater = INT32_MIN;
+  virtual bool coarse_water(const IVec3& lo, const IVec3& n, i32 factor, std::vector<i32>& out) const {
     (void)lo, (void)n, (void)factor, (void)out;
     return false;
   }

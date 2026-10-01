@@ -93,3 +93,78 @@ TEST_CASE("spawns: none with the traffic off") {
   g.set_viewer({0.0, 0.0, 1.6});
   CHECK(run(g, 4.0).empty());
 }
+
+namespace {
+
+// Rock below z 0, and below a lake's level (z -1: water from -8 to -1) east of x 0 (the far tier's
+// coarse view of it).
+class LakeSource final : public GameSource {
+ public:
+  IVec3 chunk_lo() const override { return {-512, -512, -1}; }
+  IVec3 chunk_hi() const override { return {512, 512, 1}; }
+  bool generate(const IVec3& cc, std::vector<Vox>& out) const override {
+    out.assign(kChunkVox, kAir);
+    if (cc[2] >= 0) return false;
+    for (i32 i = 0; i < kChunkVox; ++i) {
+      const IVec3 p = voxel_of(cc, i);
+      if (p[2] < (p[0] >= 0 ? -8 : 0)) out[size_t(i)] = make_vox(MaterialId::Rock, true);
+    }
+    return true;
+  }
+  V3 spawn_pos() const override { return {0.0, 0.0, 0.0}; }
+  V3 spawn_dir() const override { return {1, 0, 0}; }
+  bool coarse(const IVec3& lo, const IVec3& n, i32 factor, std::vector<Vox>& out) const override {
+    out.assign(size_t(n[0]) * size_t(n[1]) * size_t(n[2]), kAir);
+    for (i32 x = 0; x < n[0]; ++x)
+      for (i32 y = 0; y < n[1]; ++y)
+        for (i32 z = 0; z < n[2]; ++z) {
+          const i32 wx = lo[0] + x * factor, wz = lo[2] + z * factor;
+          if (wz < (wx >= 0 ? -8 : 0)) out[(size_t(x) * size_t(n[1]) + size_t(y)) * size_t(n[2]) + size_t(z)] = make_vox(MaterialId::Rock, true);
+        }
+    return true;
+  }
+  bool coarse_water(const IVec3& lo, const IVec3& n, i32 factor, std::vector<i32>& out) const override {
+    out.assign(size_t(n[0]) * size_t(n[1]), kNoWater);
+    bool any = false;
+    for (i32 x = 0; x < n[0]; ++x)
+      if (lo[0] + x * factor >= 0) {
+        for (i32 y = 0; y < n[1]; ++y) out[size_t(x) * size_t(n[1]) + size_t(y)] = -1;
+        any = true;
+      }
+    return any;
+  }
+};
+
+}  // namespace
+
+TEST_CASE("far tier: a source's open water is a flat surface at its level in the far tiles") {
+  Game g;
+  FarConfig far;
+  far.radius = 400.0;
+  far.tiles_per_tick = 64;
+  g.load_streaming(std::make_shared<LakeSource>(), kH, StreamConfig{}, far);
+  g.set_viewer({0.0, 0.0, 1.6});
+  i32 water = 0, land = 0, tiles = 0;
+  bool level = true, west = false;
+  for (int t = 0; t < 30; ++t) {
+    g.tick();
+    for (const ChunkMesh& m : g.take_far_meshes()) {
+      ++tiles;
+      for (const MeshVertex& v : m.vertices) {
+        if (v.texture == kFarWaterTexture) {
+          ++water;
+          level = level && std::abs(v.pos[2] - static_cast<f32>(kH * -0.5)) < 1e-4f && v.normal[2] == 127;
+          west = west || v.pos[0] < -kH;
+        } else {
+          ++land;
+        }
+      }
+    }
+    (void)g.take_meshes({});
+  }
+  MESSAGE(tiles << " far tiles: " << water << " water vertices, " << land << " others");
+  CHECK(tiles > 0);
+  CHECK(water > 0);
+  CHECK(level);
+  CHECK_FALSE(west);  // (none over the land west of x 0)
+}

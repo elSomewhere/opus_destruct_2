@@ -92,6 +92,9 @@ struct GameStats : WorldStats {
   f64 env_ms = 0.0;
 };
 
+// The far tier's open water (GameSource::coarse_water): flat, untextured, in palette slot 60.
+inline constexpr u16 kFarWaterTexture = 0xFF00 + 60;
+
 // An oriented grid's place for the front end (docs/GRIDS.md): its frame in the world and voxel
 // size. Its chunk meshes and occupancy are in its lattice.
 struct GridView {

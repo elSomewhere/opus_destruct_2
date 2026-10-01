@@ -1066,6 +1066,44 @@ ChunkMesh Game::far_mesh(i32 tx, i32 ty) const {
           }
         }
   if (any) m = mesh_coarse(occ, n, lo, f, h);
+  // its open water: a flat surface at its level, where nothing coarse stands on it (runs along y)
+  std::vector<i32> water;
+  if (source_->coarse_water(lo, n, f, water) && water.size() == size_t(n[0]) * size_t(n[1])) {
+    auto open = [&](i32 x, i32 y, i32 L) {
+      if (L == GameSource::kNoWater) return false;
+      const i32 cz = (L + 1 - lo[2]) / f;  // (the coarse cell just above the surface: land there?)
+      return cz < 0 || cz >= n[2] || !vox_solid(occ[(size_t(x) * size_t(n[1]) + size_t(y)) * size_t(n[2]) + size_t(cz)]);
+    };
+    for (i32 x = 0; x < n[0]; ++x)
+      for (i32 y = 0; y < n[1];) {
+        const i32 L = water[size_t(x) * size_t(n[1]) + size_t(y)];
+        if (!open(x, y, L)) {
+          ++y;
+          continue;
+        }
+        i32 y1 = y + 1;
+        while (y1 < n[1] && water[size_t(x) * size_t(n[1]) + size_t(y1)] == L && open(x, y1, L)) ++y1;
+        const f64 x0 = h * (lo[0] + x * f - 0.5), x1 = x0 + h * f;
+        const f64 y0 = h * (lo[1] + y * f - 0.5), ya = h * (lo[1] + y1 * f - 0.5);
+        const f64 z = h * (L + 0.5);
+        const u32 v0 = static_cast<u32>(m.vertices.size());
+        for (const V3& q : {V3{x0, y0, z}, V3{x1, y0, z}, V3{x1, ya, z}, V3{x0, ya, z}}) {
+          MeshVertex mv{};
+          mv.pos[0] = static_cast<f32>(q.x);
+          mv.pos[1] = static_cast<f32>(q.y);
+          mv.pos[2] = static_cast<f32>(q.z);
+          mv.normal[2] = 127;
+          mv.normal[3] = 127;
+          mv.uv[0] = static_cast<f32>(q.x * 32.0);
+          mv.uv[1] = static_cast<f32>(q.y * 32.0);
+          mv.texture = kFarWaterTexture;
+          mv.light = 255;
+          m.vertices.push_back(mv);
+        }
+        for (u32 i : {0u, 1u, 2u, 0u, 2u, 3u}) m.indices.push_back(v0 + i);
+        y = y1;
+      }
+  }
   m.chunk = {tx, ty, 0};
   return m;
 }

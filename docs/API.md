@@ -95,6 +95,8 @@ Texture ids:
 - `0xFFFF` means untextured, in a neutral colour.
 - `0xFF00 + m` (**ext**) means untextured, tinted with material `m`'s palette colour
   (m < 255).
+- `0xFF00 + 60` (**ext**) is the far tier's open water: the sea and lakes as flat surfaces at
+  their level in the far tiles (`GameSource::coarse_water`).
 - `0xC000 + i` (**ext**, up to `0xFDFF`) means untextured, drawn with appearance `i` of the
   world's appearance table (`ready`'s `info.appearances`; `svx_appearances`): the city's looks.
   An appearance is 8 floats: linear r, g, b, opacity (below 1: see-through glazing, drawn by alpha
