@@ -2,4 +2,6 @@ blockpoly 562ea3982a8cffbb
 chamfer 46ce522084b95a42
 config ae3c0966cb0080c5
 core 57dc6906f3179ec1
+floorgrid 529d0f7292c4e613
 materials 1548a45e43d835c7
+stairs 721acd61aa53f91b
