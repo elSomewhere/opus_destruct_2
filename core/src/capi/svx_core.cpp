@@ -148,6 +148,8 @@ Material material_of(const svxc_material& m) {
   M.crush = m.crush;
   M.penetration = m.penetration;
   M.grip = m.grip;
+  M.decorative = m.decorative != 0;
+  M.passable = m.passable != 0;
   return M;
 }
 
@@ -172,6 +174,8 @@ void put_material(const Material& M, svxc_material* out) {
   out->crush = M.crush;
   out->penetration = M.penetration;
   out->grip = M.grip;
+  out->decorative = M.decorative ? 1 : 0;
+  out->passable = M.passable ? 1 : 0;
 }
 
 // (a table's: set or registered; its properties; by name)

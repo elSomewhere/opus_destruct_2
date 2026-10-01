@@ -103,7 +103,10 @@ int main(int argc, char** argv) {
   bool ids = true;
   for (const District::Mat& m : d->mats) {
     MaterialId id{};
-    const bool ok = register_material(m.m, &id);
+    // (plants - the export's foliage class - are decorative and passable: plan §8.3)
+    Material mm = m.m;
+    if (mm.name == "foliage") mm.decorative = mm.passable = true;
+    const bool ok = register_material(mm, &id);
     if (!ok || static_cast<int>(id) != m.id) {
       std::printf("  %s: registered %d, the export says %d\n", m.m.name.c_str(), ok ? static_cast<int>(id) : -1, m.id);
       ids = false;

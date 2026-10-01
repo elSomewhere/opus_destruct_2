@@ -56,6 +56,7 @@ Material sanitized(const Material& in) {
   m.crush = std::isfinite(m.crush) ? std::clamp(m.crush, 0.0, 1e12) : 0.0;
   m.penetration = std::isfinite(m.penetration) ? std::clamp(m.penetration, 0.0, 1e15) : 0.0;
   m.grip = std::isfinite(m.grip) ? std::clamp(m.grip, 0.0, 10.0) : 0.0;
+  m.passable = m.passable && m.decorative;  // (structure is never passable)
   return m;
 }
 
@@ -103,6 +104,23 @@ void MaterialTable::reset() {
   m_[10].penetration = 5e6;
   m_[11].penetration = 1.5e5;
   for (int i = 0; i < kStandardMaterials; ++i) used_[size_t(i)] = true;
+  refresh_kinds();
+}
+
+void MaterialTable::refresh_kinds() {
+  any_decorative_ = any_passable_ = false;
+  kind_[0] = 0;
+  for (int v = 1; v < 256; ++v) {
+    const int low = v & 0x7F;
+    if (low == 0) {
+      kind_[size_t(v)] = 0;
+      continue;
+    }
+    const Material& m = (*this)[static_cast<MaterialId>(low - 1)];
+    kind_[size_t(v)] = static_cast<u8>((m.decorative ? kVoxDecorative : 0) | (m.passable ? kVoxPassable : 0));
+    any_decorative_ = any_decorative_ || m.decorative;
+    any_passable_ = any_passable_ || m.passable;
+  }
 }
 
 bool MaterialTable::add(const Material& m, MaterialId* id) {
@@ -110,6 +128,7 @@ bool MaterialTable::add(const Material& m, MaterialId* id) {
     if (used_[size_t(i)]) continue;
     m_[size_t(i)] = sanitized(m);
     used_[size_t(i)] = true;
+    refresh_kinds();
     if (id) *id = static_cast<MaterialId>(i);
     return true;
   }
@@ -121,6 +140,7 @@ void MaterialTable::set(MaterialId id, const Material& m) {
   if (i < 0 || i >= kMaxMaterials) return;
   m_[size_t(i)] = sanitized(m);
   used_[size_t(i)] = true;
+  refresh_kinds();
 }
 
 bool MaterialTable::registered(MaterialId id) const {

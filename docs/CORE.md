@@ -111,6 +111,17 @@ material around them, tying a member together. Register or override a world's ma
 it loads (what it builds from them - fragments, structures, pieces - keeps what it was built
 with).
 
+**Decorative** materials (`Material::decorative`: plants - leaves, grass, a hedge) are solid to
+rendering and raycasts, burn and are cut like any solid, but are never structure: the fragmenter
+skips them, so they have no bond, no stress node, are never a support and never extracted, and a
+decorative voxel is never anchored (the anchor bit is dropped where one comes into a world).
+They follow what they grow on: after a change near them - a cut, an edit, something they grew on
+coming loose as a piece - a component of decorative voxels (6-connected, up to 8,192) that touches
+no other solid voxel is shed: removed with a dust event (falling leaves; carrying them with the
+piece is not done yet). **Passable** decorative materials (leaves, grass) collide with nothing:
+pieces, characters' links, wheels and the player's box go through them; a hedge is not passable.
+A world with no decorative material behaves as before.
+
 **Fragments** are the pre-scored rubble pieces the free voxels are grouped into (a jittered
 Voronoi partition per material, within each chunk). Fragments never break; **bonds** between
 fragments do.

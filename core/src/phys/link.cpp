@@ -185,6 +185,8 @@ void RigidWorld::link_grid_contacts(const Body& A, i32 ia, const std::vector<Sta
   const LinkData& L = *A.link;
   if (L.gone) return;
   caches.resize(statics.size());
+  const MaterialTable& mt = mats ? *mats : default_materials();
+  const bool passable = mt.any_passable();
   auto grid_vox = [&](u32 s, const IVec3& p) -> Vox {
     GridCache& c = caches[s];
     const IVec3 cc = chunk_of(p);
@@ -193,7 +195,8 @@ void RigidWorld::link_grid_contacts(const Body& A, i32 ia, const std::vector<Sta
       c.ch = statics[s].g->chunk(cc);
     }
     if (!c.ch) return kAir;
-    return c.ch->uniform ? c.ch->value : c.ch->v[size_t(chunk_index(p))];
+    const Vox v = c.ch->uniform ? c.ch->value : c.ch->v[size_t(chunk_index(p))];
+    return passable && (mt.vox_kind(v) & kVoxPassable) ? kAir : v;  // (leaves, grass: walked through)
   };
   const M3 R = to_matrix(A.q);
   std::vector<Touch> ts;

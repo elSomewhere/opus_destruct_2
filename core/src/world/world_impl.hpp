@@ -258,6 +258,15 @@ struct World::Impl {
   // it is free (seeded: the extraction detaches it). Each fragment once a tick.
   void link_contact(const GVox& v, const FragKey& f);
   bool seamed_ = false;  // (the world has seams: a source's, a level's resting objects)
+
+  // ---- decorative voxels (world.cpp; Material::decorative): never anchored, shed when orphaned
+  Vox entry_vox(Vox v) const {  // (a voxel coming into the world: a decorative one holds nothing)
+    return (v & kAnchorBit) && (mats_->vox_kind(v) & kVoxDecorative) ? static_cast<Vox>(v & ~kAnchorBit) : v;
+  }
+  void undecorate(VoxelGrid& g) const;      // (entry_vox over a grid coming in)
+  void note_decorative_near(const GVox& v);  // (a voxel left: the decorative voxels next to it are looked at)
+  void shed_orphans();                       // (those with no other solid voxel next to them go)
+  std::vector<GVox> deco_check_;
   std::unordered_set<FragKey, FragKeyHash> loose_checked_;
   i64 loose_tick_ = -1;
 

@@ -135,6 +135,7 @@ void World::Impl::load(VoxelGrid&& g) {
   seamed_ = false;
   loose_checked_.clear();
   loose_tick_ = -1;
+  deco_check_.clear();
   // the grid's layers are the world's (by name: a grid made with layers of its own keeps them)
   for (const LayerSpec& spec : g.layers())
     if (std::none_of(ext_.layers.begin(), ext_.layers.end(), [&](const LayerSpec& l) { return l.name == spec.name; }) &&
@@ -142,6 +143,7 @@ void World::Impl::load(VoxelGrid&& g) {
       ext_.layers.push_back(spec);
   g.adopt_layers(ext_.layers);
   g.sanitize();
+  undecorate(g);
   // (a voxel size the world can work with: a NaN, zero or negative one is the default's)
   g.h = g.h > 0.0 && std::isfinite(g.h) ? std::clamp(g.h, 1e-3, 1e2) : VoxelGrid{}.h;
   grid_ = std::move(g);
@@ -885,6 +887,75 @@ void World::Impl::link_contact(const GVox& v, const FragKey& f) {
   }
   if (!loose_checked_.insert(f).second) return;
   if (free_component(v, cfg_.link_loosen_voxels, nullptr)) seeds_.push_back(v);
+}
+
+// ---------------------------------------------------------------------------------------------
+// Decorative voxels (Material::decorative)
+
+void World::Impl::undecorate(VoxelGrid& g) const {
+  if (!mats_->any_decorative()) return;
+  std::array<Vox, 256> to;
+  for (int v = 0; v < 256; ++v) to[size_t(v)] = entry_vox(static_cast<Vox>(v));
+  g.remap(to);
+}
+
+void World::Impl::note_decorative_near(const GVox& v) {
+  const VoxelGrid& G = vg(v.grid);
+  for (int a = 0; a < 3; ++a)
+    for (int s = -1; s <= 1; s += 2) {
+      IVec3 q = v.p;
+      q[a] += s;
+      if (mats_->vox_kind(G.get(q)) & kVoxDecorative) deco_check_.push_back(GVox{q, v.grid});
+    }
+}
+
+void World::Impl::shed_orphans() {
+  // A component of decorative voxels (6-connected: a crown of leaves, a vine) next to what left
+  // that touches no other solid voxel - nothing it grows on - is shed: removed, with a dust event
+  // (falling leaves). One too large to walk (kMaxShed) is kept; the unknown world holds it.
+  std::vector<GVox> todo = std::move(deco_check_);
+  deco_check_.clear();
+  constexpr size_t kMaxShed = 8192;
+  std::unordered_set<GKey, GKeyHash> seen;
+  std::vector<IVec3> comp, stack;
+  for (const GVox& v0 : todo) {
+    if (!live(v0.grid)) continue;
+    VoxelGrid& G = vg(v0.grid);
+    if (!(mats_->vox_kind(G.get(v0.p)) & kVoxDecorative)) continue;
+    if (!seen.insert(GKey{v0.grid, key3(v0.p[0], v0.p[1], v0.p[2])}).second) continue;
+    comp.clear();
+    stack.assign(1, v0.p);
+    bool held = false;
+    while (!stack.empty() && !held) {
+      const IVec3 p = stack.back();
+      stack.pop_back();
+      comp.push_back(p);
+      if (comp.size() > kMaxShed) held = true;
+      for (int a = 0; a < 3 && !held; ++a)
+        for (int s = -1; s <= 1 && !held; s += 2) {
+          IVec3 q = p;
+          q[a] += s;
+          if (v0.grid == 0 && chunk_of(q) != chunk_of(p) && !chunk_resident(chunk_of(q))) {
+            held = true;  // (the unknown world)
+            break;
+          }
+          const Vox vq = G.get(q);
+          if (!vox_solid(vq)) continue;
+          if (!(mats_->vox_kind(vq) & kVoxDecorative)) {
+            held = true;  // (it grows on something)
+            break;
+          }
+          if (seen.insert(GKey{v0.grid, key3(q[0], q[1], q[2])}).second) stack.push_back(q);
+        }
+    }
+    if (held) continue;
+    V3 c{0, 0, 0};
+    for (const IVec3& p : comp) {
+      c = c + voxel_centre(GVox{p, v0.grid});
+      G.set(p, kAir);
+    }
+    dust_event(c * (1.0 / static_cast<f64>(comp.size())), V3{}, static_cast<i32>(comp.size()), false);
+  }
 }
 
 i32 World::Impl::cluster_cell(i64 fragments, i32 limit) const {
@@ -2164,7 +2235,7 @@ i32 World::Impl::world_set_voxels(u16 g, const std::vector<VoxelEdit>& in, u32 f
   std::vector<VoxelEdit> edits;
   edits.reserve(in.size());
   for (const VoxelEdit& e : in)
-    if (in_voxel_range(e.p) && vox_valid(e.v)) edits.push_back(e);
+    if (in_voxel_range(e.p) && vox_valid(e.v)) edits.push_back(VoxelEdit{e.p, entry_vox(e.v)});
   if (edits.empty()) return 0;
   IVec3 lo{INT32_MAX, INT32_MAX, INT32_MAX}, hi{INT32_MIN, INT32_MIN, INT32_MIN};
   for (const VoxelEdit& e : edits)
@@ -2344,6 +2415,8 @@ void World::Impl::seed_near(const std::vector<GVox>& removed) {
         if (vox_free(G.get(q))) seeds_.push_back(GVox{q, v.grid});
       }
   }
+  if (mats_->any_decorative())
+    for (const GVox& v : removed) note_decorative_near(v);
   // (what other grids held through junctions to it: their voxels around it; and the chunk it
   // was in learns of it now - its fragments rebuilt, its owners stale - since the seeds may all
   // be in other grids)
@@ -2405,6 +2478,7 @@ void World::Impl::recheck_vacated(u16 g, const BodyShape& S) {
   u64 ck = 0;
   u64 last_ck = ~0ull;  // (the fragment seeded last: runs of voxels of one fragment seed it once)
   i32 last_f = -1;
+  const bool deco = mats_->any_decorative();
   const i32 cells = static_cast<i32>(S.vox.size());
   for (i32 i = 0; i < cells; ++i) {
     if (!vox_solid(S.vox[size_t(i)])) continue;
@@ -2425,7 +2499,12 @@ void World::Impl::recheck_vacated(u16 g, const BodyShape& S) {
           }
           if (!ch) continue;
           const i32 li = chunk_index(q);
-          if (!vox_free(ch->uniform ? ch->value : ch->v[size_t(li)])) continue;
+          const Vox vq = ch->uniform ? ch->value : ch->v[size_t(li)];
+          if (!vox_free(vq)) continue;
+          if (deco && (mats_->vox_kind(vq) & kVoxDecorative)) {
+            deco_check_.push_back(GVox{q, g});  // (what grew on it is looked at)
+            continue;
+          }
           if (fc) {
             const i32 f = fc->at(li);
             if (f < 0) continue;
@@ -2818,6 +2897,7 @@ void World::Impl::tick() {
   st_.loads_ms = loads_ms;
   const auto ts = Clock::now();
   step_structures();
+  if (!deco_check_.empty()) shed_orphans();  // (leaves on what came loose, was cut)
   st_.structural_ms = ms_since(ts);
   static const bool tprof = diag("SVX_PROFILE_TICK");
   if (tprof && st_.ticks % 30 == 0)

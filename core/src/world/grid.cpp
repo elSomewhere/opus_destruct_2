@@ -23,6 +23,29 @@ void VoxelGrid::sanitize() {
   }
 }
 
+void VoxelGrid::remap(const std::array<Vox, 256>& to) {
+  for (auto& [k, c] : chunks_) {
+    if (c.uniform) {
+      c.value = to[c.value];
+      continue;
+    }
+    bool any = false;
+    for (Vox& v : c.v) {
+      const Vox w = to[v];
+      any = any || w != v;
+      v = w;
+    }
+    if (!any) continue;
+    c.solid = 0;
+    c.free = 0;
+    for (Vox v : c.v) {
+      c.solid += vox_solid(v) ? 1 : 0;
+      c.free += vox_free(v) ? 1 : 0;
+    }
+    c.vox_version = ++vox_seq_;
+  }
+}
+
 Vox VoxelGrid::get(i32 x, i32 y, i32 z) const {
   const IVec3 p{x, y, z};
   const Chunk* c = chunk(chunk_of(p));

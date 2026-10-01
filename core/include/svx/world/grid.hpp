@@ -202,6 +202,8 @@ class VoxelGrid {
   // Layers: add_layer returns a layer's index (the existing one for a name already added).
   int add_layer(const LayerSpec& spec);
   void sanitize();  // invalid voxel values (vox_valid) become air
+  // Every voxel value v becomes to[v] (uniform chunks too; counts kept right; not a change).
+  void remap(const std::array<Vox, 256>& to);
   int layer_index(const std::string& name) const;  // -1: none
   const std::vector<LayerSpec>& layers() const { return layers_; }
   // Takes these layers (by name: the values of layers it has move to their index in specs; its

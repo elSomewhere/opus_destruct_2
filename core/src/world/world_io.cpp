@@ -668,6 +668,8 @@ void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v, bool
   if (any)
     for (Vox& x : v)
       if (!vox_valid(x)) x = kAir;
+  if (any && mats_->any_decorative())
+    for (Vox& x : v) x = entry_vox(x);  // (decorative voxels are never anchored)
   strm_.generated.insert(key);
   ext_.sys_generated.push_back(key);
   {
@@ -1915,6 +1917,7 @@ CollideResult World::Impl::collide(const V3& mn, const V3& mx, const V3& mv) con
   std::array<f64, 3> lo = {mn.x, mn.y, mn.z}, hi = {mx.x, mx.y, mx.z};
   const std::array<f64, 3> move = {std::clamp(mv.x, -16.0, 16.0), std::clamp(mv.y, -16.0, 16.0), std::clamp(mv.z, -16.0, 16.0)};
   auto vidx = [&](f64 x) { return static_cast<i32>(std::floor(x / h + 0.5)); };
+  const bool passable = mats_->any_passable();
   for (int a = 0; a < 3; ++a) {
     f64 dm = move[size_t(a)];
     if (dm == 0.0) continue;
@@ -1933,7 +1936,8 @@ CollideResult World::Impl::collide(const V3& mn, const V3& mx, const V3& mv) con
           p[a] = layer;
           p[b] = ib;
           p[c] = ic;
-          if (vox_solid(grid_.get(p[0], p[1], p[2]))) blocked = true;
+          const Vox v = grid_.get(p[0], p[1], p[2]);
+          if (vox_solid(v) && !(passable && (mats_->vox_kind(v) & kVoxPassable))) blocked = true;  // (grass, leaves: walked through)
         }
       if (blocked) break;
     }
@@ -1991,11 +1995,14 @@ void World::Impl::for_voxel_cubes(const V3& lo, const V3& hi, bool world_grid, F
     }
     const IVec3 vlo = voxel_of(llo, h), vhi = voxel_of(lhi, h);
     const V3 u[3] = {st.xf.dir_to(V3{1, 0, 0}), st.xf.dir_to(V3{0, 1, 0}), st.xf.dir_to(V3{0, 0, 1})};
+    const bool passable = mats_->any_passable();
     for (i32 x = vlo[0] - 1; x <= vhi[0] + 1; ++x)
       for (i32 y = vlo[1] - 1; y <= vhi[1] + 1; ++y)
-        for (i32 z = vlo[2] - 1; z <= vhi[2] + 1; ++z)
-          if (vox_solid(G.get(x, y, z)) && f(st.xf.to(V3{h * x, h * y, h * z}), u, 0.5 * h, st.id, static_cast<const Body*>(nullptr)))
-            return;
+        for (i32 z = vlo[2] - 1; z <= vhi[2] + 1; ++z) {
+          const Vox v = G.get(x, y, z);
+          if (!vox_solid(v) || (passable && (mats_->vox_kind(v) & kVoxPassable))) continue;
+          if (f(st.xf.to(V3{h * x, h * y, h * z}), u, 0.5 * h, st.id, static_cast<const Body*>(nullptr))) return;
+        }
   }
   // the pieces: their shapes' voxels (cubes in each shape's lattice, at the piece's pose)
   const V3 bc = (lo + hi) * 0.5, be = (hi - lo) * 0.5;

@@ -63,6 +63,8 @@ typedef struct svxc_material {
   double crush;              /* Pa: contact pressure at which it crumples (0: it does not) */
   double penetration;        /* J/m^3: the energy density an impact needs to remove it (0: any) */
   double grip;               /* a wheel's friction coefficient on it (0: from friction) */
+  int decorative;            /* plants: solid, never structure; shed with what they grow on */
+  int passable;              /* (decorative) nothing collides with it: leaves, grass */
 } svxc_material;
 
 /* Registers a material (the next free id, returned; -1 when all 127 are taken) or overrides

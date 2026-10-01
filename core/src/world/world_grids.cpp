@@ -382,6 +382,7 @@ GridId World::Impl::add_grid_impl(const GridDesc& d, VoxelGrid&& voxels, GridId 
   // the world's layers, by name (a grid made with layers of its own keeps those the world has)
   voxels.adopt_layers(ext_.layers);
   voxels.sanitize();
+  undecorate(voxels);
   voxels.compact();
   st->g = std::move(voxels);
   st->g.lo = {0, 0, 0};

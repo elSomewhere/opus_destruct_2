@@ -108,7 +108,7 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
       for (int sg = -1; sg <= 1; sg += 2) {
         if (c[a] + sg < 0 || c[a] + sg >= S) continue;
         const Vox n = vox_at(i + sg * kStride[a]);
-        if (vox_free(n) && !mats[vox_mat(n)].reinforcement) return vox_mat(n);
+        if (vox_free(n) && !mats[vox_mat(n)].reinforcement && !(mats.vox_kind(n) & kVoxDecorative)) return vox_mat(n);
       }
     return own;
   };
@@ -172,7 +172,7 @@ FragChunk fragment_chunk(const VoxelGrid& g, const IVec3& cc, const FragParams& 
       for (int z = 0; z < S; ++z) {
         const int i = (x * S + y) * S + z;
         const Vox v = vox_at(i);
-        if (!vox_free(v)) continue;
+        if (!vox_free(v) || (mats.vox_kind(v) & kVoxDecorative)) continue;  // (decorative: never structure)
         const MaterialId mid = host_of(i, x, y, z);
         const Seeds& sd = seeds_for(mid);
         const i64 gx = base[0] + x, gy = base[1] + y, gz = base[2] + z;
