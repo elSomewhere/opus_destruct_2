@@ -39,3 +39,4 @@ terrain b7eb60e0c562cdee
 townplan 8bb64c2e7c9f0a7c
 units 84535102ced7d220
 water 85e6c4a02754c63a
+wings 7b492eca9fd4ea67
