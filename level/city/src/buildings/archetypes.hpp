@@ -19,6 +19,7 @@
 #include "buildings/chamfer.hpp"
 #include "buildings/facade.hpp"
 #include "buildings/frame.hpp"
+#include "buildings/wing.hpp"
 #include "city/districts.hpp"
 #include "city/lots.hpp"
 #include "core/cache.hpp"
@@ -83,7 +84,8 @@ struct Envelope {
   bool pitched_ramps = false;    // (a garage on a slope)
   std::string part{};            // the part it is cast into ("": none)
   std::optional<Chamfer> chamfer{};  // a chamfered front corner (wings.js)
-  // (wings and skyDoors come with the ports of buildings/wings.js and city/skybridges.js)
+  std::vector<Wing> wings{};         // its wings (wings.js planWings; empty: none - JS undefined)
+  // (skyDoors comes with the port of city/skybridges.js)
 
   // frameOf(env) and buildingLook(env, seed), made on first use (envelope_frame, building_look).
   Lazy<Frame> frame_cache{};
