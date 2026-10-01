@@ -8,7 +8,9 @@
 // the bodies' split, the people made and gone, and the memory.
 //
 // usage: svx_people_bench [--seconds S] [--speed M_PER_S] [--counts 24,48,96] [--policies deep,shallow,hybrid]
-//                         [--threads T] [--seed N] [--no-traffic]
+//                         [--threads T] [--seed N] [--no-traffic] [--preset ID]
+// --preset: a preset's world instead of the drive city (docs/PRESETS.md; its seed unless --seed,
+// its streaming), the viewer going along +x from its spawn.
 #include <algorithm>
 #include <chrono>
 #include <cstdio>
@@ -21,6 +23,7 @@
 #include "svx/base/parallel.hpp"
 #include "svx/game/game.hpp"
 #include "svx/procgen/drive_city.hpp"
+#include "svx/procgen/presets.hpp"
 
 using namespace svx;
 
@@ -49,6 +52,8 @@ f64 pct(std::vector<f64> v, f64 q) {
 int main(int argc, char** argv) {
   f64 seconds = 30.0, speed = 8.0;
   u64 seed = 11;
+  bool seed_given = false;
+  std::string preset;
   bool traffic = true;
   std::vector<std::string> counts = {"24", "48", "96"}, policies = {"deep", "shallow", "hybrid"};
   for (int i = 1; i < argc; ++i) {
@@ -58,7 +63,11 @@ int main(int argc, char** argv) {
     else if (a == "--counts" && i + 1 < argc) counts = split(argv[++i]);
     else if (a == "--policies" && i + 1 < argc) policies = split(argv[++i]);
     else if (a == "--threads" && i + 1 < argc) set_num_threads(std::atoi(argv[++i]));
-    else if (a == "--seed" && i + 1 < argc) seed = std::strtoull(argv[++i], nullptr, 10);
+    else if (a == "--seed" && i + 1 < argc) {
+      seed = std::strtoull(argv[++i], nullptr, 10);
+      seed_given = true;
+    } else if (a == "--preset" && i + 1 < argc)
+      preset = argv[++i];
     else if (a == "--no-traffic") traffic = false;
   }
   std::printf("%-8s %6s | %8s %8s %8s | %8s %8s %8s | %5s %5s %5s %5s | %5s %5s | %8s %8s\n", "bodies", "people", "tick", "p95", "worst", "chars", "p95", "worst", "deep",
@@ -67,11 +76,19 @@ int main(int argc, char** argv) {
     for (const std::string& cs : counts) {
       const i32 n = std::atoi(cs.c_str());
       Game game;
-      std::shared_ptr<GameSource> src = make_drive_city(seed);
-      StreamConfig sc;
-      sc.load_radius = 100.0;
-      sc.evict_radius = 130.0;
-      game.load_streaming(src, 0.125, sc);
+      if (!preset.empty()) {
+        const Preset* p = find_preset(preset);
+        std::string err;
+        if (!p || !load_preset(game, *p, seed_given ? seed : 0, 0.125, &err)) {
+          std::fprintf(stderr, "cannot load preset %s: %s\n", preset.c_str(), p ? err.c_str() : "unknown");
+          return 2;
+        }
+      } else {
+        StreamConfig sc;
+        sc.load_radius = 100.0;
+        sc.evict_radius = 130.0;
+        game.load_streaming(make_drive_city(seed), 0.125, sc);
+      }
       TrafficConfig tc;
       tc.enabled = traffic;
       game.set_traffic(tc);
@@ -80,7 +97,7 @@ int main(int argc, char** argv) {
       pc.bodies = pol == "deep" ? 0 : pol == "shallow" ? 1 : 2;
       pc.max_deep = n;
       game.set_pedestrians(pc);
-      V3 eye = src->spawn_pos();
+      V3 eye = game.spawn_pos();
       game.set_viewer(eye);
       // (the ground about the start, and the people)
       for (int t = 0; t < 60 * 15; ++t) game.tick();

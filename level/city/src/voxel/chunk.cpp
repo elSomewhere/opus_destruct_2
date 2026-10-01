@@ -27,12 +27,14 @@ void ChunkBuffer::fill_box(double x0, double y0, double z0, double x1, double y1
   uint16_t* d = data.data();
   if (isolating && !iso.empty()) {
     uint16_t* is = iso.data();
+    uint32_t* ob = obj.empty() ? nullptr : obj.data();
     for (int k = rk.lo; k <= rk.hi; ++k)
       for (int j = rj.lo; j <= rj.hi; ++j)
         for (int i = ri.lo, idx = index(ri.lo, j, k); i <= ri.hi; ++i, ++idx)
           if (mode == 0 || (mode == 1 && d[idx] == 0) || (mode == 2 && d[idx] != 0)) {
             d[idx] = m;
             is[idx] = m;
+            if (ob) ob[idx] = object;
           }
     return;
   }

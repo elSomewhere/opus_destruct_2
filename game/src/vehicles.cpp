@@ -619,7 +619,8 @@ void Game::vehicles_before_tick() {
 }
 
 void Game::vehicles_after_tick() {
-  if (vehicles_.empty() && !(source_ && source_->roads() && traffic_.enabled)) return;
+  // (a streamed world's traffic: its roads' drivers and parked cars, its entities)
+  if (vehicles_.empty() && !(source_ && traffic_.enabled)) return;
   sync_vehicles();
   // wrecks: a driven car that hit something hard, rolled over or lost a wheel stops for good
   for (auto& [id, v] : vehicles_) {

@@ -248,7 +248,7 @@ inline WingSite wing_site(rec::Samples& r, const World& w, CellRoads& cell_roads
         pts = {{R.x0 - o, R.y0 - ext}, {R.x0 - o, R.y1 + 1 + ext}};
       else
         pts = {{R.x1 + 1 + o, R.y0 - ext}, {R.x1 + 1 + o, R.y1 + 1 + ext}};
-      if (cls != "alley") lot.frontages.push_back(LotFrontage{ws, cls, false, std::nullopt});
+      if (cls != "alley") lot.frontages.push_back(Frontage{ws, cls, false, std::nullopt});
     }
     street(std::move(pts), cls, owned);
   }
@@ -301,10 +301,10 @@ inline WingSite wing_site(rec::Samples& r, const World& w, CellRoads& cell_roads
       lot.rect = t->rect;
       for (const TrimmedSide& tr : t->trimmed) {
         if (!tr.cls || *tr.cls == "alley") continue;
-        std::vector<LotFrontage> kept;
-        for (const LotFrontage& q : lot.frontages)
+        std::vector<Frontage> kept;
+        for (const Frontage& q : lot.frontages)
           if (q.side != tr.side) kept.push_back(q);
-        kept.push_back(LotFrontage{tr.side, *tr.cls, true, tr.id});
+        kept.push_back(Frontage{tr.side, *tr.cls, true, tr.id});
         lot.frontages = std::move(kept);
       }
       Block b;
@@ -360,9 +360,9 @@ inline std::string lot_line(const char* tag, const Lot& lot, const Block* block)
   const std::string turn = lot.turn ? js::cat(lot.turn->yaw, "/", lot.turn->origin.x, "/", lot.turn->origin.y, "/", lot.turn->U, "/", lot.turn->V) : "-";
   std::string fronts;
   for (size_t q = 0; q < lot.frontages.size(); ++q) {
-    const LotFrontage& f = lot.frontages[q];
+    const Frontage& f = lot.frontages[q];
     fronts += js::cat(q ? ";" : "", std::string(1, f.side), f.cls);
-    if (f.slant) fronts += "@" + (f.slant_id ? *f.slant_id : std::string("null"));
+    if (f.slanted) fronts += "@" + (f.slant ? *f.slant : std::string("null"));
   }
   if (fronts.empty()) fronts = "-";
   const std::string whole = lot.whole_rect ? js::cat(lot.whole_rect->x0, ",", lot.whole_rect->y0, ",", lot.whole_rect->x1, ",", lot.whole_rect->y1)

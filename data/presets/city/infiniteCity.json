@@ -5,7 +5,14 @@
   "description": "Urban land everywhere, every street on the grid (the axis-aligned control).",
   "generator": "city",
   "params": {
-    "preset": "infiniteCity"
+    "preset": "infiniteCity",
+    "config": {
+      "world": {
+        "angles": {
+          "residentRadius": 144
+        }
+      }
+    }
   },
   "seed": 1337,
   "streaming": {

@@ -5,7 +5,14 @@
   "description": "A north Russian town by the White Sea.",
   "generator": "city",
   "params": {
-    "preset": "whiteSeaTown"
+    "preset": "whiteSeaTown",
+    "config": {
+      "world": {
+        "angles": {
+          "residentRadius": 144
+        }
+      }
+    }
   },
   "seed": 1337,
   "streaming": {

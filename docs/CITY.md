@@ -42,27 +42,35 @@ exports, natively and in WASM, on any thread count.
 | interior data | `buildings/interior/{prefabs,civicPrefabs,civicRules,common,stairs,grid}.js` | `buildings/interior/` | stages `prefabs`, `civicrules`, `floorgrid`, `stairs` |
 | prop prefabs, industry | `city/{propPrefabs,industry}.js` | `city/propPrefabs.*`, `city/industry.*` | stages `propprefabs`, `industry` |
 | polygon blocks, chamfers | `city/blockPoly.js`, `buildings/chamfer.js` | `city/blockPoly.*`, `buildings/chamfer.*` | stages `blockpoly`, `chamfer` |
-| cell network (city stage 1), street patterns, diagonal boulevards; the road record | `city/cellNetwork.js`, `city/streets.js`, `city/diagonals.js`; `World.cellNet`; createWorld's island sea tests | `city/cellNetwork.*` (`World::cell_net`), `city/streets.*`, `city/diagonals.*`, `network/road.hpp`, `world/createWorld.cpp` (`sea_at`, `sea_hits_rect`, `sea_share`, `sea_hits_seg`) | stages `cellnet`, `streets`; tests (any order, 4 threads); on a World without lakes and highways (§6) |
-| town plans | `city/townPlan.js` | `city/townPlan.*` (`Settlement::plan`) | stage `townplan`; tests (any order, 4 threads); without highways (§6) |
+| cell network (city stage 1), street patterns, diagonal boulevards; the road record | `city/cellNetwork.js`, `city/streets.js`, `city/diagonals.js`; `World.cellNet`; createWorld's island sea tests | `city/cellNetwork.*` (`World::cell_net`), `city/streets.*`, `city/diagonals.*`, `network/road.hpp`, `world/createWorld.cpp` (`sea_at`, `sea_hits_rect`, `sea_share`, `sea_hits_seg`) | stages `cellnet` (a World of World.js), `cellworld` (create_world's: lakes - harbour districts on a big lake's shore, `port_near` - highways, harbour grading), `streets`; tests (any order, 4 threads) |
+| town plans | `city/townPlan.js` | `city/townPlan.*` (`Settlement::plan`) | stages `townplan` (a World of World.js), `townworld` (create_world's: the highways' corridors keep civic landmarks off a block); tests (any order, 4 threads) |
 | land cover, farmland | `nature/landcover.js`, `nature/farmland.js` | `nature/landcover.*`, `nature/farmland.*` | stage `landcover` |
 | rivers, lakes, port lakes | `nature/rivers.js`, `nature/lakes.js` | `nature/rivers.*`, `nature/lakes.*` | stage `water` (§6: port lakes) |
 | createWorld (so far), harbour grading, water predicates | `world/createWorld.js` | `world/createWorld.cpp`: land cover, rivers, lakes, the terrain's `port_grade`, caves; `sea_at` ... `water_hits_rect`; marked places for the rest | stage `water`; `test_nature_threads.cpp` |
 | caves, their feature source | `nature/caves.js` | `nature/caves.*`: `cave_z_range` and `cave_rasterize` over a view of the ground tile's columns (`CaveColumns`), for compose to wrap as a `FeatureSource` | stage `caves` (synthetic tiles) |
+| trees (species, models, rasterization) | `nature/trees.js` | `nature/trees.*` | stages `trees`, `treemodels` (models part by part), `treevox` (chunks at LODs 0, 2, 5, 8) |
 | road views, road surface | `network/roadView.js`, `network/roadSurface.js`; `World.roadView` | `network/roadView.*` (`World::road_view`: the 3 x 3 cell networks' roads, or a test's through `World::cell_roads`), `network/roadSurface.*` | stages `roadview`, `roadsurface` (scripted roads, and recorded ones: §6) |
 | road levels | `network/roadLevel.js`; createWorld's `streetLevel` | `network/roadLevel.*` (`World::street_level`) | stage `roadlevel` (recorded roads: §6); tests (any order, views dropped and remade, 4 threads) |
 | pitched road pieces | `network/roadParts.js` | `network/roadParts.*` | stage `roadparts` (recorded roads and waters) |
 | highways, their feature source | `network/highways.js` | `network/highways.*` (`HighwayNetwork`, installed by `create_world`; `highway_z_range` and `rasterize_highways` over the ground tile's z, for compose to wrap as a `FeatureSource`); the town plans' corridor test (`city/townPlan.cpp`) | stage `highways` (recorded roads and waters); tests (4 threads) |
-| building archetypes and envelopes | `buildings/archetypes.js` | `buildings/archetypes.*` (the 17 after civic's; `plan_building_envelope`, its finalize), `city/lots.hpp` (the lot record, what the archetypes read) | stages `archetypes`, `registries` |
+| building archetypes and envelopes | `buildings/archetypes.js` | `buildings/archetypes.*` (the 17 after civic's; `plan_building_envelope`, its finalize) | stages `archetypes`, `registries` |
 | house, cabin and unit planners | `buildings/interior/{houses,cabins,units}.js`, plan.js's `PlanBuilder` | `buildings/interior/{houses,cabins,units}.*`, `buildings/interior/plan.*` (the builder's floors, grids and stairs: the rest of plan.js comes with the interior planners) | stages `houses`, `units` |
 | facades | `buildings/facade.js` | `buildings/facade.*` | stage `facade` (§6: a look asked with two seeds) |
 | sample buildings | `buildings/sample.js` | `buildings/sample.*` (`stage_archetype` reads a world through `StageWorld`, `StagedEnvelopes`, until the cell plan is ported) | stage `sample` |
 | building shells (the coarse voxelizer), roof snow | `buildings/massing.js` | `buildings/massing.*` (`voxelize_massing`, `pitched_roof_only`, `roof_snow_cover`: `Envelope::snow`, `snow_cache`; `snow_at`) | stage `massing` (every archetype, season and snow cover, LOD 0 to 5); tests (4 threads) |
-| wings, corner and canted bays, chamfers | `buildings/wings.js` | `buildings/wings.*` (`plan_wings`, `wing_placement`, `rasterize_wing`, `rasterize_wing_part`, `kEmbed`), `buildings/wing.hpp` (the record; `nearWing` is the interior planners'), `city/lots.hpp` (`block`, `frontages`, `whole`) | stage `wings` (scripted sites: lots on scripted streets served as a World's cell roads, slanted streets, turned lots) |
+| wings, corner and canted bays, chamfers | `buildings/wings.js` | `buildings/wings.*` (`plan_wings`, `wing_placement`, `rasterize_wing`, `rasterize_wing_part`, `kEmbed`), `buildings/wing.hpp` (the record; `nearWing` is the interior planners') | stage `wings` (scripted sites: lots on scripted streets served as a World's cell roads, slanted streets, turned lots) |
 | the buildings' feature source | `buildings/source.js` | `buildings/source.*` (`building_z_range`, `rasterize_buildings` over the envelopes asked for: `World::envelopes_in` is the cell plan's) | stage `wings` (grid and parts mode) |
 | garage ramps as pitched parts | `buildings/garageRamps.js` | `buildings/garageRamps.*` (`ramp_part`, `rasterize_ramp_part`) | stage `garageramps` |
 | site grading | `city/grading.js` | `city/grading.*` (`SiteGrading`, `level_lot`, `kApron`; `Lot::underground`, `under_highway`) | stage `grading` |
 | skybridges, their feature source | `city/skybridges.js` | `city/skybridges.*` (`plan_skybridges` sets `Envelope::sky_doors`; the source over the bridges near a chunk: `skybridges_in` per cell plan) | stage `skybridges` |
 | island landmarks, their feature source | `world/landmarks.js`; createWorld's `landmarks` | `world/landmarks.*` (`Landmarks`, installed by `create_world` on an island; `landmark_z_range`, `rasterize_landmarks`) | stage `landmarks` (every island world, its open-ground answers recorded: §6; `free()` on scripted roads and plans); tests (4 threads) |
+| lots, parks, landscape (city stage 2 parts); the lot and open space records | `city/lots.js`, `city/parks.js`, `city/landscape.js`; the lots and spaces of `city/cellPlan.js` | `city/lots.*` (`Lot`: every field a lot gets anywhere), `city/parks.*`, `city/landscape.*` (`LotEnv`: what `lot_surface` reads of an envelope), `city/space.hpp` (`OpenSpace`, the park layout and frame lazy on it) | stages `lots` (the blocks of every city world's cell networks, synthetic blocks), `parks`, `landscape` (synthetic spaces and envelopes); every block of the three modules runs; tests (4 threads) |
+| site complexes | `sites/complex.js`, `sites/kit.js` (`box`, `finishStructure`) | `sites/complex.*`, `sites/kit.*` (the kit's surface structures and `planGate` come with the site kinds) | stage `complex` |
+| site layer | `world/sites.js` | `world/sites.*` (SITES, the layer, pads, the ground override, the site source's z range and rasterizer; the kinds, and the highway and water tests of a site's placement, come later) | stage `sites` (stand-in kinds: `tools/procgen_ref/lib/sitekinds.mjs`, `tests/city/site_kinds.hpp`) |
+| site links | `sites/links.js` | `sites/links.*` (`site_link_source()`) | stage `sitelinks` (the same stand-in kinds) |
+
+| the props' classes (the export's change, PROCGEN_MERGE_PLAN.md §7.3, §10.2): fixed, loose, entity, decorative; uses; an entity's kind | - (the reference draws every prop and piece of furniture as isolated voxels) | `data/city/props.json` (embedded: `svx/data.hpp`), `svx/props.*` (`prop_class`) | test `city props` (every prop, piece of furniture and civic fitting has one) |
+| the public entry: a world from a preset, its materials | `svx/source.js` (`createSvxSource`'s world), `svx/materials.js` (`svxMaterials`) | `include/svx/city/world.hpp` (`make_world`), `include/svx/city/materials.hpp` (`physics_classes`, `looks`) | tests `city world api`; `svx_game_tests` `city materials` |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -278,14 +286,14 @@ so that it stays the oracle.
   World caches 64: give it a cache that drops nothing, `tools/procgen_ref/lib/roads.mjs`
   `recordingWorld`), so the reference's objects stay one per road; `test_roads_threads.cpp` remakes
   the port's views from other road objects half way and gets the same levels.
-- **Cell networks and town plans, on a World without lakes and highways.** The reference asks
+- **Cell networks and town plans, on both kinds of World.** The reference asks
   `world.lakes?.shoreNear` for a harbour district (`portNear`) and `world.highways` for the
   civic landmarks (a highway's corridor keeps them off a block), both installed by
-  `createWorld`. Until the port installs them (`create_world`), its cell network and town plans
-  are those of a World of `World.js` with createWorld's island sea tests (the stages:
-  `lib/worlds.mjs` `withSeaTests` on a bare World; no lakes, highways or harbour grading of the
-  terrain): `port_near` fails on a World that has lakes, the place to wire them (`resolve_town`
-  asks the highways' corridors on a World that has them: `network/highways`). Their base heights are made first (`warmBasesIn`, `warmIsland`); measured
+  `createWorld`. The stages `cellnet` and `townplan` plan on a World of `World.js` with
+  createWorld's island sea tests (`lib/worlds.mjs` `withSeaTests` on a bare World: no lakes,
+  highways or harbour grading of the terrain), `cellworld` and `townworld` on createWorld's (made
+  pure: `pureTerrain`), where `port_near` asks the lakes and `resolve_town` the highways'
+  corridors. On the bare World the base heights are made first (`warmBasesIn`, `warmIsland`); measured
   on the `cellnet` cells, the reference's networks are the same planned cold and backwards (the
   country roads' slope test and the trunk roads' A* read heights, but none of these cells
   flips); a town plan's church (the highest of a few spots near the centre) compares terrain
@@ -348,3 +356,49 @@ so that it stays the oracle.
   one's look; the port keeps it on the envelope too (`Envelope::look_cache`) and fails
   (`SVX_FAIL`) when another seed asks, so a look never depends on which seed asked first. An
   envelope belongs to one world: generation never asks twice.
+- **Lots, parks and the landscape: no order.** The reference caches by object - parks.js's
+  layouts, landscape.js's space frames, industry.js's layouts, frameOf's frames - and each is a
+  pure function of its object: the port keeps them as lazy fields of the open space record
+  (`OpenSpace`, `city/space.hpp`) and in what an envelope gives the landscape (`LotEnv`, made once
+  per envelope). For the ports to come: makeLot (so freeLot, wholeBlockLot) takes a stream it never
+  draws from and lotSurface a lot it never reads (the port's take neither); a lot's `whole` is
+  `true` (a block taken whole) or, once the cell plan's fitLots trimmed the lot, its rect as
+  planned (`Lot::whole_rect`), and planWings's `lot.whole ?? lot.rect` reads the boolean on a
+  whole lot fitLots left alone (its fields undefined: every comparison false, so no point of a
+  wing's outline off the building and the streets is in its lot); fitLots tells a lot it left
+  alone by `rect === lot.rect` (clearOfStreets hands back the same object), which a port keeps as
+  a flag; parks.js's grid key `i * 4096 + j` gives buckets 4,096 apart one list (kept).
+- **Sites and site links sample the terrain near settlements too** (the first entry): a site's
+  placement (the default pad's five samples, a kind's own placement) and a link's floor profile (a
+  sample every 16 m of its route). The stages `sites` and `sitelinks` make every base height first
+  over the lattice cells they probe and the sites and links those reach (`warmBasesIn`); a stage of
+  the reference's own site kinds must reach as far as their placement samples (a stronghold's
+  service road runs up to 5 km from its apron).
+
+## 7. In the engine
+
+The generator reaches the game through a `GameSource` (`svx/game/source.hpp`) in `svx_procgen`
+(PROCGEN_MERGE_PLAN.md §10; `svx_level` after the restructuring), built from these pieces:
+
+- **The world**: `make_world(spec)` (`include/svx/city/world.hpp`) - a voxel_city preset, its size
+  and season, a seed and config overrides - is the world the export makes (`svx/source.js`:
+  makeConfig, the angled world's parts as grids of their own). The game's presets name it
+  (`data/presets/city/*.json`, generator `city`: `params.preset`, `size`, `season`, `config`);
+  their parts budget holds in a disc of the 144 m evict radius (`world.angles.residentRadius`).
+- **Materials**: the city's own physics classes (21: roofing, partition, soft, ice, snow,
+  foliage) registered at their ids, foliage decorative and passable (`register_city_materials`,
+  `svx/procgen/city_materials.hpp`); their fire facets (`set_city_fire_materials`, set when the
+  game loads the source: `GameSource::fire_materials`); the 454 looks as the game's appearance
+  table, keyed (class, 1 + look): the world's regenerable "look" layer holds 1 + a voxel's look
+  within its class, 0 none (`city_appearances`; `svx/game/appearance.hpp`, `docs/API.md`).
+- **Props and furniture by attachment** (§7.3's change of the export): `data/city/props.json`
+  classes every street prop, piece of furniture and civic fitting (`svx/props.hpp`): fixed ones
+  are structure bonded to what holds them; loose ones rest where they stand with seams on every
+  outer face (`svx/seams.hpp` `export_seams`, from the objects the chunk writer marks:
+  `ChunkBuffer::begin_object` / `end_object`, `track_objects`); entities are left out of the
+  voxels and come as the game's vehicles (`GameSource::spawns_in`); plants are decorative.
+- **What the world means**: buildings with their entrances, furniture with its uses, zones and
+  entities, from the plans (`svx/game/semantics.hpp`, `GameSource::semantics`, the C ABI's
+  `svx_buildings_in`, `svx_furniture_in`, `svx_zone_at`).
+- **Far tier**: the export's coarse view, and its open water as a flat surface at its level
+  (`GameSource::coarse_water`).

@@ -469,7 +469,7 @@ std::vector<Wing> plan_wings(const World& world, const Envelope& env, const Lot*
   if (env.turn) {
     street_f = true;
   } else {
-    for (const LotFrontage& fr : lot->frontages) {
+    for (const Frontage& fr : lot->frontages) {
       if (fr.cls.empty() || fr.cls == "alley") continue;
       const char cs = F.canon_side(fr.side);
       if (cs == 'F') street_f = true;
@@ -518,16 +518,16 @@ std::vector<Wing> plan_wings(const World& world, const Envelope& env, const Lot*
     }
   }
   // a wing to the slanted street a lot was cut back by
-  const LotFrontage* sl = nullptr;
-  for (const LotFrontage& fr : lot->frontages)
-    if (fr.slant && !fr.cls.empty() && fr.cls != "alley") {
+  const Frontage* sl = nullptr;
+  for (const Frontage& fr : lot->frontages)
+    if (fr.slanted && !fr.cls.empty() && fr.cls != "alley") {
       sl = &fr;
       break;
     }
   const BlockCut* cut = nullptr;
   if (sl)
     for (const BlockCut& k : cuts)
-      if (k.id == sl->slant_id) {
+      if (k.id == sl->slant) {
         cut = &k;
         break;
       }
