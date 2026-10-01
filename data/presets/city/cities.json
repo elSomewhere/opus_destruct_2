@@ -5,7 +5,14 @@
   "description": "An endless plane of towns, villages, farms, mountains and biomes.",
   "generator": "city",
   "params": {
-    "preset": "cities"
+    "preset": "cities",
+    "config": {
+      "world": {
+        "angles": {
+          "residentRadius": 144
+        }
+      }
+    }
   },
   "seed": 1337,
   "streaming": {

@@ -48,6 +48,7 @@ exports, natively and in WASM, on any thread count.
 | rivers, lakes, port lakes | `nature/rivers.js`, `nature/lakes.js` | `nature/rivers.*`, `nature/lakes.*` | stage `water` (§6: port lakes) |
 | createWorld (so far), harbour grading, water predicates | `world/createWorld.js` | `world/createWorld.cpp`: land cover, rivers, lakes, the terrain's `port_grade`, caves; `sea_at` ... `water_hits_rect`; highways; the site layer and the site links; marked places for the rest | stage `water`; `test_nature_threads.cpp` |
 | caves, their feature source | `nature/caves.js` | `nature/caves.*`: `cave_z_range` and `cave_rasterize` over a view of the ground tile's columns (`CaveColumns`), for compose to wrap as a `FeatureSource` | stage `caves` (synthetic tiles) |
+| trees (species, models, rasterization) | `nature/trees.js` | `nature/trees.*` | stages `trees`, `treemodels` (models part by part), `treevox` (chunks at LODs 0, 2, 5, 8) |
 | road views, road surface | `network/roadView.js`, `network/roadSurface.js`; `World.roadView` | `network/roadView.*` (`World::road_view`: the 3 x 3 cell networks' roads, or a test's through `World::cell_roads`), `network/roadSurface.*` | stages `roadview`, `roadsurface` (scripted roads, and recorded ones: §6) |
 | road levels | `network/roadLevel.js`; createWorld's `streetLevel` | `network/roadLevel.*` (`World::street_level`) | stage `roadlevel` (recorded roads: §6); tests (any order, views dropped and remade, 4 threads) |
 | pitched road pieces | `network/roadParts.js` | `network/roadParts.*` | stage `roadparts` (recorded roads and waters) |
@@ -61,6 +62,11 @@ exports, natively and in WASM, on any thread count.
 | site layer | `world/sites.js` | `world/sites.*` (SITES, the layer, pads, the ground override, the site source's z range and rasterizer; on create_world's worlds a site keeps off the highways' corridors and the water) | stages `sites` (stand-in kinds on World.js's worlds: `tools/procgen_ref/lib/sitekinds.mjs`, `tests/city/site_kinds.hpp`), `sitekinds` |
 | site kinds, the site kit's surface structures | `sites/militaryBase.js`, `sites/researchComplex.js`, `sites/mountainBase.js`; `sites/kit.js` (`planGate`, `fence` ... `portalBlock`) | `sites/militaryBase.*`, `sites/researchComplex.*`, `sites/mountainBase.*` (their districts and kinds, registered after the complex themes; `SiteDef::surface`, the cell plan's envelopes; the kinds' `pois`, the viewer's, not ported), `sites/kit.*` | stage `sitekinds` (create_world's worlds made pure, and one of World.js: placement, plans, surfaces, ground, structures, complexes, ports, the site source's z ranges and chunks; every branch but those its header lists: no world reaches them, or they are dead); tests (4 threads) |
 | site links | `sites/links.js` | `sites/links.*` (`site_link_source()`) | stage `sitelinks` (the same stand-in kinds) |
+| subway, its feature source | `underground/subway.js` | `underground/subway.*`: `Subway` (lines, spans, stations cached by node, tunnels, `blocks_surface`, `map_data`), `subway_z_range` and `subway_rasterize` for compose to wrap as a `FeatureSource`; installed by `create_world` unless `config.subway.enabled` is false | stages `subway` (a World of World.js, the terrain's height for a street level: §6; chunks over ground of its own), `underworld` (create_world's World, the road levels' street level); `test_underground_threads.cpp` (any order, any cache, 4 threads) |
+| sewers, their feature source; `World::blocks_surface` | `underground/sewers.js`; createWorld's `blocksSurface` | `underground/sewers.*`: `Sewers` (cell plans cached by cell: runs, nodes, hall stairs, openings; `near`, `blocks_surface`, `map_data`, `nearest_hall`, `hits_subway`), `sewer_z_range` and `sewer_rasterize` over a view of the ground tile's columns (`SewerColumns`); `create_world` installs them; `World::blocks_surface` (`world/createWorld.cpp`) | stages `sewers` (a World of World.js, the terrain's height for a street level: §6; synthetic tiles), `underworld` (create_world's: lakes, highways, harbour grading, the road levels' street level); `test_underground_threads.cpp` |
+
+| the props' classes (the export's change, PROCGEN_MERGE_PLAN.md §7.3, §10.2): fixed, loose, entity, decorative; uses; an entity's kind | - (the reference draws every prop and piece of furniture as isolated voxels) | `data/city/props.json` (embedded: `svx/data.hpp`), `svx/props.*` (`prop_class`) | test `city props` (every prop, piece of furniture and civic fitting has one) |
+| the public entry: a world from a preset, its materials | `svx/source.js` (`createSvxSource`'s world), `svx/materials.js` (`svxMaterials`) | `include/svx/city/world.hpp` (`make_world`), `include/svx/city/materials.hpp` (`physics_classes`, `looks`) | tests `city world api`; `svx_game_tests` `city materials` |
 
 (The table grows with the port; §5 lists the order.)
 
@@ -306,6 +312,28 @@ so that it stays the oracle.
   (lakes, rivers, land cover, roads ...) calls it once after making the world (`landcover`,
   `water`, `caves` do). `test_nature_threads.cpp` checks the port: any order, a 16-cell lake
   cache, four threads.
+- **The underground's street level.** The subway's stations (their platform, mezzanine and
+  entrances) and the sewers' nodes (their invert, the street a manhole opens in, a hall's stair) are
+  built against `world.streetLevel` (createWorld.js: the nearest road's graded level within 3 m,
+  else the terrain; the port's `World::street_level`, `network/roadLevel`). The port's `Subway` and
+  `Sewers` take it as a function (`StreetLevel`, `underground/subway.hpp`), which `create_world`
+  makes `World::street_level`. The stages `subway` and `sewers` give both sides the terrain's
+  height instead (`tools/procgen_ref/lib/underground.mjs` `undergroundWorld`,
+  `tests/city/underground_records.hpp`), on a World of `World.js` with createWorld's island sea
+  tests and rivers (the cell networks' bare World, the entry above): they check the underground's
+  own logic, the road network's stages the street level. With that street level (pure:
+  `pureTerrain`) the reference's sewer plans and stations are pure functions of the cell and the
+  node: measured on 8 of the stages' worlds (cities, the infinite city and its angled twin, a
+  torus, a wrapping world, an island, mountains, a wet cube face), its plans and stations made
+  backwards with its own cache sizes (64 cell networks, 48 plans, 64 or 2 stations) are those made
+  forwards with caches that drop nothing. (A plan compares roads as objects only among the networks
+  of its own 3 x 3 cells, fetched together; the port's `same_road`.) The stage `underworld` checks
+  them as the generator runs them, on createWorld's worlds with the road levels' street level (each
+  cell network made once): identical. There too, measured on 6 worlds (cities, the infinite city, a
+  wrapping world, an island, an old harbour town, angled cities), the reference's plans and
+  stations made backwards with its own cache sizes (64 cell networks, 32 road views, 48 plans, 64
+  stations) are those made forwards with caches that drop nothing: whatever its road levels may
+  depend on (road identity, above) flips nothing there. The port's are pure.
 - **Not differences, for the ports to come.** `Rivers.at` and `Lakes.at` return one shared object
   per instance that the next call overwrites; the port returns values (every caller reads its
   result before the next call: a port of one that keeps it across another call copies what
@@ -355,3 +383,31 @@ so that it stays the oracle.
   the 253 sites of its lattice windows are the same asked forward and backward on fresh worlds
   (placement, pads, plans, surface envelopes, structures): the kinds stay where the urbanization is
   at most 0.05, away from the towns whose base heights a first touch would make.
+
+## 7. In the engine
+
+The generator reaches the game through a `GameSource` (`svx/game/source.hpp`) in `svx_procgen`
+(PROCGEN_MERGE_PLAN.md §10; `svx_level` after the restructuring), built from these pieces:
+
+- **The world**: `make_world(spec)` (`include/svx/city/world.hpp`) - a voxel_city preset, its size
+  and season, a seed and config overrides - is the world the export makes (`svx/source.js`:
+  makeConfig, the angled world's parts as grids of their own). The game's presets name it
+  (`data/presets/city/*.json`, generator `city`: `params.preset`, `size`, `season`, `config`);
+  their parts budget holds in a disc of the 144 m evict radius (`world.angles.residentRadius`).
+- **Materials**: the city's own physics classes (21: roofing, partition, soft, ice, snow,
+  foliage) registered at their ids, foliage decorative and passable (`register_city_materials`,
+  `svx/procgen/city_materials.hpp`); their fire facets (`set_city_fire_materials`, set when the
+  game loads the source: `GameSource::fire_materials`); the 454 looks as the game's appearance
+  table, keyed (class, 1 + look): the world's regenerable "look" layer holds 1 + a voxel's look
+  within its class, 0 none (`city_appearances`; `svx/game/appearance.hpp`, `docs/API.md`).
+- **Props and furniture by attachment** (§7.3's change of the export): `data/city/props.json`
+  classes every street prop, piece of furniture and civic fitting (`svx/props.hpp`): fixed ones
+  are structure bonded to what holds them; loose ones rest where they stand with seams on every
+  outer face (`svx/seams.hpp` `export_seams`, from the objects the chunk writer marks:
+  `ChunkBuffer::begin_object` / `end_object`, `track_objects`); entities are left out of the
+  voxels and come as the game's vehicles (`GameSource::spawns_in`); plants are decorative.
+- **What the world means**: buildings with their entrances, furniture with its uses, zones and
+  entities, from the plans (`svx/game/semantics.hpp`, `GameSource::semantics`, the C ABI's
+  `svx_buildings_in`, `svx_furniture_in`, `svx_zone_at`).
+- **Far tier**: the export's coarse view, and its open water as a flat surface at its level
+  (`GameSource::coarse_water`).

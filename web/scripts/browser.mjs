@@ -58,3 +58,11 @@ export async function afterLoad(page) {
     window.__structvox.renderer.drawEvery = 6;
   });
 }
+
+/**
+ * The world a check loads, as URL parameters: its own (`world=drive&seed=1`), or SMOKE_WORLD's -
+ * e.g. `SMOKE_WORLD=preset=city/angledInfiniteCity` runs a check on the city preset.
+ */
+export function worldQuery(own) {
+  return process.env.SMOKE_WORLD ?? own;
+}

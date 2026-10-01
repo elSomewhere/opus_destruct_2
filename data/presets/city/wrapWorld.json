@@ -5,7 +5,14 @@
   "description": "Runs as an unwrapped plane: its changes are not shared between laps.",
   "generator": "city",
   "params": {
-    "preset": "wrapWorld"
+    "preset": "wrapWorld",
+    "config": {
+      "world": {
+        "angles": {
+          "residentRadius": 144
+        }
+      }
+    }
   },
   "seed": 1337,
   "streaming": {

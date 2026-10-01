@@ -11,12 +11,13 @@
  * WebGPU errors, or when no one comes, no one is drawn, the shot one does not die (or bleed, or
  * the blast make no gibs). Usage (dev server running, e.g. `npm run dev -- --port 5190`):
  *   node scripts/people-wasm.mjs [baseUrl] [outDir]
- * Env: CHROME_PATH (browser binary), SMOKE_HEADFUL=1 (show the window), PEOPLE_BODIES
+ * Env: CHROME_PATH (browser binary), SMOKE_HEADFUL=1 (show the window), SMOKE_WORLD (another world:
+ *   preset=city/angledInfiniteCity), PEOPLE_BODIES
  * (deep|shallow|hybrid: ?bodies=).
  */
 import { mkdirSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { beforeLoad, launch, softwareWebGPU } from './browser.mjs';
+import { beforeLoad, launch, softwareWebGPU, worldQuery } from './browser.mjs';
 
 const puppeteer = (await import('puppeteer-core')).default;
 const base = process.argv[2] ?? 'http://localhost:5190/';
@@ -48,7 +49,7 @@ try {
   page.on('pageerror', (e) => errors.push(`pageerror ${e.message}`));
   await beforeLoad(page);  // (in software WebGPU: the engine on two threads)
   const bodies = process.env.PEOPLE_BODIES ? `&bodies=${process.env.PEOPLE_BODIES}` : '';
-  await page.goto(`${base}?engine=wasm&world=drive&seed=1${bodies}`, { waitUntil: 'load' });
+  await page.goto(`${base}?engine=wasm&${worldQuery('world=drive&seed=1')}${bodies}`, { waitUntil: 'load' });
   // (software WebGPU: fewer pixels, and a frame drawn in six but for the screenshots - or the GPU
   // process takes the cores the page and the engine need, and the page falls minutes behind)
   const slow = softwareWebGPU();
