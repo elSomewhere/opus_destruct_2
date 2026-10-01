@@ -156,8 +156,6 @@ Lean lean_of(Prng& R, double max) {
   return {(Y.c / Y.r) * m, (Y.s / Y.r) * m, Y.c / Y.r, Y.s / Y.r};
 }
 
-double h01(double x, double y, double z, double s) { return hash32(x, y, z, s) / 4294967296.0; }
-
 using Parts = std::vector<TreePart>;
 
 TreePart blob(double x, double y, double z, double rx, double rz, double mix) {
@@ -885,6 +883,98 @@ double reach_of(const TreeModel& m, const TreeIn& t) {
 }
 
 // ---- rasterization
+//
+// Every voxel is computed as the reference computes it: the same operations on the same values, in
+// the same order. What the rasterizers below leave out is only work that cannot change a voxel -
+// rows, columns and voxels a conservative bound puts where JS's own tests would skip them (a spare
+// voxel beyond every bound), the integers the hashes take of the chunk's coordinates converted once
+// per chunk instead of per voxel (and hashes sharing their first three inputs mixed once), values of
+// one axis hoisted out of the loops over the others, and a cone's angle and lobes taken once per
+// column and whorl instead of per voxel. (A voxel's value depends on nothing but itself: each part
+// writes only into air, every voxel once, so the order the voxels are visited in is free.)
+
+// hash32 (core/hash) on inputs already taken ToInt32, in two stages: the first three inputs' mix
+// (pre3), then the fourth's (fin; `salt`: ToInt32 of it times the last constant). The hashes of a
+// voxel differ in the seed only, so they share the first stage.
+constexpr uint32_t kHashA = 0x9e3779b9u;
+constexpr uint32_t kHashB = 0x27d4eb2du;
+constexpr uint32_t kHashC = 0x165667b1u;
+constexpr uint32_t kHashD = 0x61c88647u;
+inline uint32_t pre3(int32_t a, int32_t b, int32_t c) {
+  uint32_t h = mix32(static_cast<uint32_t>(a) ^ kHashA);
+  h = mix32(h ^ (static_cast<uint32_t>(b) * kHashB));
+  return mix32(h ^ (static_cast<uint32_t>(c) * kHashC));
+}
+inline uint32_t salt_of(double v) { return static_cast<uint32_t>(js::to_int32(v)) * kHashD; }
+// (h01: the hash as a fraction)
+inline double fin(uint32_t pre, uint32_t salt) { return mix32(pre ^ salt) / 4294967296.0; }
+
+// The seed's salts, ToInt32(seed + c) for each c the rasterizers add.
+struct Salts {
+  uint32_t s0, s5, s9, s11, s13, s17, s21, s22, s31, s33, s35;
+  explicit Salts(double seed)
+      : s0(salt_of(seed)),
+        s5(salt_of(seed + 5)),
+        s9(salt_of(seed + 9)),
+        s11(salt_of(seed + 11)),
+        s13(salt_of(seed + 13)),
+        s17(salt_of(seed + 17)),
+        s21(salt_of(seed + 21)),
+        s22(salt_of(seed + 22)),
+        s31(salt_of(seed + 31)),
+        s33(salt_of(seed + 33)),
+        s35(salt_of(seed + 35)) {}
+};
+
+// A chunk's padded indices on each axis (0 x, 1 y, 2 z): their representatives' world coordinates
+// w, the integers JS's hashes take of them (w | 0, w >> 1, w >> 2), and of a limb's voxel centre
+// c = w + 0.5 (c | 0, and (c - 0.5) | 0 and (c - 0.5) >> 1).
+struct Grid {
+  double s = 0, bx = 0, by = 0, bz = 0;  // (the chunk it is made for)
+  double w[3][kP];
+  int32_t i0[3][kP], i1[3][kP], i2[3][kP], c0[3][kP], m0[3][kP], m1[3][kP];
+  void make(const ChunkBuffer& ch) {
+    s = ch.s;
+    bx = ch.bx;
+    by = ch.by;
+    bz = ch.bz;
+    for (int i = 0; i < kP; ++i) {
+      const double v3[3] = {ch.wx(i), ch.wy(i), ch.wz(i)};
+      for (int a = 0; a < 3; ++a) {
+        const double v = v3[a];
+        w[a][i] = v;
+        i0[a][i] = js::to_int32(v);
+        i1[a][i] = js::sar(v, 1);
+        i2[a][i] = js::sar(v, 2);
+        const double c = v + 0.5;
+        c0[a][i] = js::to_int32(c);
+        m0[a][i] = js::to_int32(c - 0.5);
+        m1[a][i] = js::sar(c - 0.5, 1);
+      }
+    }
+  }
+};
+
+// The grid of a chunk: made once per chunk geometry and thread (trees come chunk by chunk).
+const Grid& grid_of(const ChunkBuffer& ch) {
+  thread_local Grid g;
+  thread_local bool made = false;
+  if (!made || g.s != ch.s || g.bx != ch.bx || g.by != ch.by || g.bz != ch.bz) {
+    g.make(ch);
+    made = true;
+  }
+  return g;
+}
+
+// Narrows the padded indices [lo, hi] to those whose representatives lie in the world interval
+// [a, b] on an axis whose index 0 lies at `base` (s apart). A bound that is no number narrows
+// nothing.
+inline void clip(double base, double s, double a, double b, int& lo, int& hi) {
+  const double l = std::ceil((a - base) / s);
+  const double h = std::floor((b - base) / s);
+  if (l > lo) lo = l > hi ? hi + 1 : static_cast<int>(l);
+  if (h < hi) hi = h < lo ? lo - 1 : static_cast<int>(h);
+}
 
 // rasterizeTree's context: the look's snow, bare branches, palettes, holes.
 struct Ctx {
@@ -895,13 +985,13 @@ struct Ctx {
   double mix;
   uint16_t accent;  // (0: none)
   double holes;
-  double seed;
+  Salts salt;
 };
 
 // The palette of one cluster: the season's on `mix` of them, else summer's.
 const LeafPalette& palette_of(double mix, const Ctx& ctx) { return ctx.season && mix < ctx.mix ? *ctx.season : *ctx.pal; }
 
-void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
+void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const Grid& g) {
   const TreeBlob& p = part.blob;
   const Box3& b = part.bb;
   const IdxRange ri = chunk.range_x(b.x0, b.x1);
@@ -914,57 +1004,108 @@ void raster_blob(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
   const double infl = fine ? 0 : s * 0.5;
   const double irx = 1 / js::pow(p.rx + infl, 2);
   const double irz = 1 / js::pow(p.rz + infl, 2);
+  const double sirz = js::sqrt(irz);
   const LeafPalette& pal = palette_of(p.mix, ctx);
-  const double seed = ctx.seed;
+  const Salts& salt = ctx.salt;
   const double snow = ctx.snow;
   const bool bare = ctx.bare;
   const double holes = ctx.holes;
+  const uint16_t accent = ctx.accent;
+  // at q >= thr a voxel lies outside the cluster whatever its noise (|n| < 0.3 up close, 0 further out)
+  const double thr = fine ? 1.3 : 1;
+  const double base_x = chunk.bx + chunk.half;
   for (int k = rk.lo; k <= rk.hi; ++k) {
-    const double z = chunk.wz(k);
+    const double z = g.w[2][k];
     const double dz = z + 0.5 - p.z;
     const double qz = dz * dz * irz;
     if (qz > 1.3) continue;
+    const bool up = snow > 0 && dz > 0;
+    const double dz2 = dz + s;
+    const double qz2 = dz2 * dz2 * irz;
+    // (sunlit tops, shaded undersides: the shading's part of this height)
+    const double v0 = 0.5 + 0.42 * dz * sirz;
+    const int32_t zh = g.i1[2][k];
+    const int32_t zi = g.i0[2][k];
     for (int j = rj.lo; j <= rj.hi; ++j) {
-      const double y = chunk.wy(j);
+      const double y = g.w[1][j];
       const double dy = y + 0.5 - p.y;
-      for (int i = ri.lo; i <= ri.hi; ++i) {
+      const double dy2 = dy * dy;
+      // (every voxel of the row at q >= thr; else those with |x + 0.5 - p.x| below the bound)
+      if (dy2 * irx + qz >= thr) continue;
+      int i0 = ri.lo;
+      int i1 = ri.hi;
+      const double hw = std::sqrt((thr - qz) / irx - dy2) + 1;
+      clip(base_x, s, p.x - 0.5 - hw, p.x - 0.5 + hw, i0, i1);
+      const int32_t yh = g.i1[1][j];
+      const int32_t yi = g.i0[1][j];
+      // (the hash of x >> 1, y >> 1, z >> 1: the noise's and the shading's; pairs of voxels share it up close)
+      int32_t last = 0;
+      bool have = false;
+      uint32_t ph = 0;
+      for (int i = i0; i <= i1; ++i) {
         const int idx = i + j * kP + k * kP2;
         if (d[idx] != 0) continue;
-        const double x = chunk.wx(i);
+        const double x = g.w[0][i];
         const double dx = x + 0.5 - p.x;
-        const double q = (dx * dx + dy * dy) * irx + qz;
-        // a lumpy surface of leaf tufts (2-voxel noise) up close
-        const double n = fine ? (h01(js::sar(x, 1), js::sar(y, 1), js::sar(z, 1), seed) - 0.5) * 0.6 : 0;
+        const double q = (dx * dx + dy2) * irx + qz;
+        if (q >= thr) continue;
+        const int32_t xh = g.i1[0][i];
+        double n = 0;
+        if (fine) {
+          if (!have || xh != last) {
+            ph = pre3(xh, yh, zh);
+            last = xh;
+            have = true;
+          }
+          // a lumpy surface of leaf tufts (2-voxel noise) up close
+          n = (fin(ph, salt.s0) - 0.5) * 0.6;
+        }
         if (q >= 1 + n) continue;
         const bool shell = q > 0.68 + n;
         if (bare) {
           // leafless: a few twig voxels in the shell (the limbs and twigs are drawn anyway)
-          if (!shell || h01(x, y, z, seed + 5) > (fine ? 0.07 : 0.16)) continue;
-          d[idx] = snow > 0 && dz > 0 && h01(x, y, z, seed + 11) < snow * 0.4 ? MAT::SNOW : MAT::TWIGS;
+          if (!shell) continue;
+          const uint32_t pv = pre3(g.i0[0][i], yi, zi);
+          if (fin(pv, salt.s5) > (fine ? 0.07 : 0.16)) continue;
+          d[idx] = up && fin(pv, salt.s11) < snow * 0.4 ? MAT::SNOW : MAT::TWIGS;
           continue;
         }
-        if (fine && shell && h01(x, y, z, seed) < holes) continue;
-        if (snow > 0 && dz > 0) {
+        // (the hash of x, y, z: holes, snow, berries)
+        uint32_t pv = 0;
+        bool hv = false;
+        if (fine && shell) {
+          pv = pre3(g.i0[0][i], yi, zi);
+          hv = true;
+          if (fin(pv, salt.s0) < holes) continue;
+        }
+        if (up && (dx * dx + dy2) * irx + qz2 >= 1 + n) {
           // snow where nothing of the cluster lies above
-          const double dz2 = dz + s;
-          if ((dx * dx + dy * dy) * irx + dz2 * dz2 * irz >= 1 + n && h01(x, y, z, seed + 11) < snow * 0.85) {
+          if (!hv) {
+            pv = pre3(g.i0[0][i], yi, zi);
+            hv = true;
+          }
+          if (fin(pv, salt.s11) < snow * 0.85) {
             d[idx] = MAT::SNOW;
             continue;
           }
         }
-        if (ctx.accent && shell && h01(x, y, z, seed + 13) < 0.06) {
-          d[idx] = ctx.accent;
-          continue;
+        if (accent && shell) {
+          if (!hv) pv = pre3(g.i0[0][i], yi, zi);
+          if (fin(pv, salt.s13) < 0.06) {
+            d[idx] = accent;
+            continue;
+          }
         }
+        if (!fine) ph = pre3(xh, yh, zh);
         // sunlit tops, shaded undersides and interior
-        const double v = 0.5 + 0.42 * dz * js::sqrt(irz) + (h01(js::sar(x, 1), js::sar(y, 1), js::sar(z, 1), seed + 9) - 0.5) * 0.45 - (shell ? 0 : 0.2);
+        const double v = v0 + (fin(ph, salt.s9) - 0.5) * 0.45 - (shell ? 0 : 0.2);
         d[idx] = v < 0.34 ? pal[0] : v < 0.74 ? pal[1] : pal[2];
       }
     }
   }
 }
 
-void raster_limb(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
+void raster_limb(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const Grid& g) {
   const TreeLimb& p = part.limb;
   const double s = chunk.s;
   // twigs vanish at a distance; thin limbs thicken a little so trunks still read
@@ -977,18 +1118,44 @@ void raster_limb(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
   const IdxRange rk = chunk.range_z(b.z0, b.z1);
   if (ri.lo > ri.hi || rj.lo > rj.hi || rk.lo > rk.hi) return;
   uint16_t* d = chunk.data.data();
+  const Salts& salt = ctx.salt;
   const double foot = part.has_foot ? p.foot : p.az;
+  const bool snowy = ctx.snow > 0.2 && !part.trunk;
+  // A row's voxels within reach of the limb's line (rm: its radius and a voxel to spare), where
+  // a vx^2 + bq vx + cq <= 0 (vx = x - ax): the limb's own voxels among them. (A limb nearly along x
+  // is taken row by row whole.)
+  const double rm = js::max(p.r0, p.r1) + grow + 1;
+  const double rm2 = rm * rm;
+  const double a = 1 - p.dx * p.dx / p.L2;
+  const bool lined = a > 1e-3 && a <= 1 && rm < 1e6;
+  const double base_x = chunk.bx + chunk.half;
   for (int k = rk.lo; k <= rk.hi; ++k) {
-    const double z = chunk.wz(k) + 0.5;
+    const double z = g.w[2][k] + 0.5;
+    const double vz = z - p.az;
+    const double wz = z - 0.5;
+    const int32_t zc = g.c0[2][k];
+    const int32_t zm = g.m0[2][k];
     for (int j = rj.lo; j <= rj.hi; ++j) {
-      const double y = chunk.wy(j) + 0.5;
-      for (int i = ri.lo; i <= ri.hi; ++i) {
+      const double y = g.w[1][j] + 0.5;
+      const double vy = y - p.ay;
+      int i0 = ri.lo;
+      int i1 = ri.hi;
+      if (lined) {
+        const double c0 = vy * p.dy + vz * p.dz;
+        const double bq = -2 * p.dx * c0 / p.L2;
+        const double cq = vy * vy + vz * vz - c0 * c0 / p.L2 - rm2;
+        const double disc = bq * bq - 4 * a * cq;
+        if (disc < 0) continue;
+        const double sq = std::sqrt(disc);
+        clip(base_x, s, p.ax - 0.5 + (-bq - sq) / (2 * a) - 1, p.ax - 0.5 + (-bq + sq) / (2 * a) + 1, i0, i1);
+      }
+      const int32_t yc = g.c0[1][j];
+      const int32_t ym = g.m1[1][j];
+      for (int i = i0; i <= i1; ++i) {
         const int idx = i + j * kP + k * kP2;
         if (d[idx] != 0) continue;
-        const double x = chunk.wx(i) + 0.5;
+        const double x = g.w[0][i] + 0.5;
         const double vx = x - p.ax;
-        const double vy = y - p.ay;
-        const double vz = z - p.az;
         double u = (vx * p.dx + vy * p.dy + vz * p.dz) / p.L2;
         u = u < 0 ? 0 : u > 1 ? 1 : u;
         const double ex = vx - p.dx * u;
@@ -997,15 +1164,14 @@ void raster_limb(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
         const double r = p.r0 + (p.r1 - p.r0) * u + grow;
         if (ex * ex + ey * ey + ez * ez > r * r) continue;
         uint16_t m = part.mat;
-        const double wz = z - 0.5;
         // birch: short dark marks on the white bark, a dark rough foot
-        if (part.birch && ((s == 1 && h01(wz, js::sar(x - 0.5, 1), js::sar(y - 0.5, 1), ctx.seed) < 0.13) || wz - foot < 3 + (h01(x, y, 0, ctx.seed) < 0.5 ? 2 : 0)))
+        if (part.birch && ((s == 1 && fin(pre3(zm, g.m1[0][i], ym), salt.s0) < 0.13) || wz - foot < 3 + (fin(pre3(g.c0[0][i], yc, 0), salt.s0) < 0.5 ? 2 : 0)))
           m = MAT::BARK_BIRCH_MARK;
         else if (part.moss && ez > 0.3 * r && ez * ez > ex * ex + ey * ey)
           m = MAT::MOSS;
         else if (part.stump && wz >= p.az + p.dz - 1)
           m = MAT::WOOD_LIGHT;
-        else if (ctx.snow > 0.2 && !part.trunk && ez > 0 && ez * ez > (ex * ex + ey * ey) * 0.5 && h01(x, y, z, ctx.seed + 17) < ctx.snow * 0.6)
+        else if (snowy && ez > 0 && ez * ez > (ex * ex + ey * ey) * 0.5 && fin(pre3(g.c0[0][i], yc, zc), salt.s17) < ctx.snow * 0.6)
           m = MAT::SNOW;
         d[idx] = m;
       }
@@ -1013,14 +1179,62 @@ void raster_limb(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
   }
 }
 
+// A cone's whorl at one height (what JS's radius() computes of the height alone): in (rel within
+// [0, 1]: else the radius is -1), the radius at coarse LODs, and up close env (1 - 0.4 pt) - the
+// radius being that times the lobe term, plus 0.7 - and the whorl's index.
+struct Whorl {
+  bool in = false;
+  double coarse = 0;
+  double envpt = 0;
+  double ti = 0;
+};
+
+Whorl whorl_at(const TreeCone& p, double H, double s, bool fine, double zz) {
+  Whorl w;
+  const double rel = (zz - p.z0) / H;
+  if (rel < 0 || rel > 1) return w;
+  w.in = true;
+  const double env = p.r * js::pow(1 - rel, 1.05);
+  if (!fine) {
+    w.coarse = env * 0.9 + 0.8 + s * 0.5;
+    return w;
+  }
+  const double fz = (zz - p.z0) / p.tier;
+  w.ti = std::floor(fz);
+  const double pt = fz - std::floor(fz);
+  w.envpt = env * (1 - 0.4 * pt);
+  return w;
+}
+
+// The lobes of whorl ti at angle a (irregular branch lobes round the stem).
+double lobe_of(const TreeCone& p, double ti, double a, uint32_t s0) {
+  return 0.8 + 0.2 * js::sin(p.lobes * a + p.phase + ti * 2.3) + (fin(pre3(js::to_int32(ti), js::to_int32(std::floor((a + 3.2) * 1.6)), 3), s0) - 0.5) * 0.3;
+}
+
+// A column's lobes, kept per whorl (two: the snow looks one whorl up).
+struct LobeCache {
+  double ti[2] = {js::kNaN, js::kNaN};
+  double lob[2] = {0, 0};
+  int next = 0;
+  double get(const TreeCone& p, double t, double a, uint32_t s0) {
+    if (ti[0] == t) return lob[0];
+    if (ti[1] == t) return lob[1];
+    const int e = next;
+    next ^= 1;
+    ti[e] = t;
+    lob[e] = lobe_of(p, t, a, s0);
+    return lob[e];
+  }
+};
+
 // Conifer cone (spruce, juniper): whorls every few voxels that droop (each widest at its foot),
 // their branches in irregular lobes round the stem; dead lower whorls in a crowded stand; snow on
 // every whorl.
-void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
+void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const Grid& g) {
   const TreeCone& p = part.cone;
   const Box3& b = part.bb;
-  const IdxRange ri = chunk.range_x(b.x0, b.x1);
-  const IdxRange rj = chunk.range_y(b.y0, b.y1);
+  IdxRange ri = chunk.range_x(b.x0, b.x1);
+  IdxRange rj = chunk.range_y(b.y0, b.y1);
   const IdxRange rk = chunk.range_z(b.z0, b.z1);
   if (ri.lo > ri.hi || rj.lo > rj.hi || rk.lo > rk.hi) return;
   uint16_t* d = chunk.data.data();
@@ -1028,56 +1242,135 @@ void raster_cone(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
   const bool fine = s == 1;
   const double H = js::max(1, p.z1 - p.z0);
   const LeafPalette& pal = *ctx.pal;
-  const double seed = ctx.seed;
-  auto radius = [&](double zz, double a) {
-    const double rel = (zz - p.z0) / H;
-    if (rel < 0 || rel > 1) return -1.0;
-    const double env = p.r * js::pow(1 - rel, 1.05);
-    if (!fine) return env * 0.9 + 0.8 + s * 0.5;
-    const double fz = (zz - p.z0) / p.tier;
-    const double ti = std::floor(fz);
-    const double pt = fz - std::floor(fz);
-    const double lob = 0.8 + 0.2 * js::sin(p.lobes * a + p.phase + ti * 2.3) + (h01(ti, std::floor((a + 3.2) * 1.6), 3, seed) - 0.5) * 0.3;
-    return env * (1 - 0.4 * pt) * lob + 0.7;
-  };
+  const Salts& salt = ctx.salt;
+  const double snow = ctx.snow;
+  // per height: in the cone's rows or not, the whorls at zz and zz + s (the snow's), the shading's
+  // phase, and how far out its voxels may lie (the radius at the lobes' widest, its noise, the lean's
+  // lopsidedness: past it, hr > edge)
+  bool row[kP];
+  Whorl W[kP], W2[kP];
+  double pts[kP], bound[kP], ox[kP], oy[kP];
+  // (a lean's lop lies within 1 -+ |asym|: positive below 1, when a row out of the cone - R = -1
+  // times it - writes nothing, and the bounds hold)
+  const bool bounded = !part.lean || js::abs(p.asym) < 0.999;
+  const double lopmax = part.lean ? 1 + js::abs(p.asym) * 1.0001 + 1e-9 : 1;
+  double bmax = 0;
   for (int k = rk.lo; k <= rk.hi; ++k) {
-    const double z = chunk.wz(k);
-    const double zz = z + 0.5;
-    if (zz < p.z0 || zz > p.z1 + 1) continue;
-    // (a wild cone leans with its trunk: the axis at this height)
-    const double ox = part.lean ? p.x + p.lx * ((zz - p.zf) / p.hh) : p.x;
-    const double oy = part.lean ? p.y + p.ly * ((zz - p.zf) / p.hh) : p.y;
+    const double zz = g.w[2][k] + 0.5;
+    row[k] = !(zz < p.z0 || zz > p.z1 + 1);
+    if (!row[k]) continue;
+    W[k] = whorl_at(p, H, s, fine, zz);
+    if (!W[k].in && bounded) {
+      row[k] = false;
+      continue;
+    }
+    W2[k] = whorl_at(p, H, s, fine, zz + s);
+    pts[k] = fine ? std::fmod((zz - p.z0) / p.tier, 1) : 0.5;
+    // (a cone that leans: the axis at this height)
+    ox[k] = part.lean ? p.x + p.lx * ((zz - p.zf) / p.hh) : p.x;
+    oy[k] = part.lean ? p.y + p.ly * ((zz - p.zf) / p.hh) : p.y;
+    // the radius at its widest (the lobes lie within 0.45 and 1.15), past which hr > edge (the
+    // noise adds less than 0.55 up close)
+    const double e = W[k].envpt;
+    const double r = fine ? (e >= 0 ? e * 1.16 : e * 0.44) + 0.71 : W[k].coarse;
+    bound[k] = W[k].in && bounded ? r * lopmax * 1.0000001 + (fine ? 0.56 : 1e-6) : js::kInf;
+    if (bound[k] != bound[k])
+      bmax = js::kInf;
+    else if (bound[k] > bmax)
+      bmax = bound[k];
+  }
+  // a voxel of the cone: what JS computes once the voxel is air, with its angle and its lobes given
+  auto voxel = [&](int idx, int i, int j, int k, double dx, double dy, double hr, double lob, double lob2) {
+    const double lop = part.lean ? 1 + (p.asym * (dx * p.ax + dy * p.ay)) / js::max(hr, 1e-9) : 1;
+    const double rad = !W[k].in ? -1 : fine ? W[k].envpt * lob + 0.7 : W[k].coarse;
+    const double R = part.lean ? rad * lop : rad;
+    // the leader: a thin spike over the top whorl
+    if (R < 0) return;
+    const uint32_t ph = pre3(g.i1[0][i], g.i1[1][j], g.i1[2][k]);
+    const double edge = fine ? R + (fin(ph, salt.s0) - 0.5) * 1.1 : R;
+    if (hr > edge) return;
+    const bool shell = hr > edge - 1.5;
+    uint32_t pv = 0;
+    bool hv = false;
+    if (fine && shell) {
+      pv = pre3(g.i0[0][i], g.i0[1][j], g.i0[2][k]);
+      hv = true;
+      if (fin(pv, salt.s0) < 0.12) return;
+    }
+    if (snow > 0) {
+      const double rad2 = !W2[k].in ? -1 : fine ? W2[k].envpt * lob2 + 0.7 : W2[k].coarse;
+      const double Ra = part.lean ? rad2 * lop : rad2;
+      // (snow on the upper side of every whorl, the dark needles still showing beneath)
+      if (hr > Ra - 0.6) {
+        if (!hv) pv = pre3(g.i0[0][i], g.i0[1][j], g.i0[2][k]);
+        if (fin(pv, salt.s11) < snow * 0.7) {
+          d[idx] = MAT::SNOW;
+          return;
+        }
+      }
+    }
+    // outer needles lighter, the inside and the underside of a whorl dark
+    const double v = 0.25 + 0.55 * (hr / js::max(1, R)) + 0.25 * pts[k] + (fin(ph, salt.s9) - 0.5) * 0.35;
+    d[idx] = v < 0.42 ? pal[0] : v < 0.82 ? pal[1] : pal[2];
+  };
+  const double base_x = chunk.bx + chunk.half;
+  const double base_y = chunk.by + chunk.half;
+  if (!part.lean) {
+    // column by column: the angle once per column, the lobes once per whorl
+    if (bmax < 1e9) {
+      clip(base_x, s, p.x - 0.5 - bmax - 1, p.x - 0.5 + bmax + 1, ri.lo, ri.hi);
+      clip(base_y, s, p.y - 0.5 - bmax - 1, p.y - 0.5 + bmax + 1, rj.lo, rj.hi);
+    }
     for (int j = rj.lo; j <= rj.hi; ++j) {
-      const double y = chunk.wy(j);
-      const double dy = y + 0.5 - oy;
+      const double y = g.w[1][j];
+      const double dy = y + 0.5 - p.y;
+      for (int i = ri.lo; i <= ri.hi; ++i) {
+        const double x = g.w[0][i];
+        const double dx = x + 0.5 - p.x;
+        const double hr = js::sqrt(dx * dx + dy * dy);
+        if (hr > bmax) continue;
+        double a = 0;
+        bool has_a = false;
+        LobeCache lc;
+        for (int k = rk.lo; k <= rk.hi; ++k) {
+          if (!row[k] || hr > bound[k]) continue;
+          const int idx = i + j * kP + k * kP2;
+          if (d[idx] != 0) continue;
+          double lob = 0, lob2 = 0;
+          if (fine) {
+            if (!has_a) {
+              a = js::atan2(dy, dx);
+              has_a = true;
+            }
+            if (W[k].in) lob = lc.get(p, W[k].ti, a, salt.s0);
+            if (snow > 0 && W2[k].in) lob2 = lc.get(p, W2[k].ti, a, salt.s0);
+          }
+          voxel(idx, i, j, k, dx, dy, hr, lob, lob2);
+        }
+      }
+    }
+    return;
+  }
+  // a cone that leans: row by row (its axis moves with the height)
+  for (int k = rk.lo; k <= rk.hi; ++k) {
+    if (!row[k]) continue;
+    for (int j = rj.lo; j <= rj.hi; ++j) {
+      const double y = g.w[1][j];
+      const double dy = y + 0.5 - oy[k];
       for (int i = ri.lo; i <= ri.hi; ++i) {
         const int idx = i + j * kP + k * kP2;
         if (d[idx] != 0) continue;
-        const double x = chunk.wx(i);
-        const double dx = x + 0.5 - ox;
+        const double x = g.w[0][i];
+        const double dx = x + 0.5 - ox[k];
         const double hr = js::sqrt(dx * dx + dy * dy);
-        const double a = js::atan2(dy, dx);
-        // (and it is lopsided: fuller on the lit side)
-        const double lop = part.lean ? 1 + (p.asym * (dx * p.ax + dy * p.ay)) / js::max(hr, 1e-9) : 1;
-        const double R = part.lean ? radius(zz, a) * lop : radius(zz, a);
-        // the leader: a thin spike over the top whorl
-        if (R < 0) continue;
-        const double edge = fine ? R + (h01(js::sar(x, 1), js::sar(y, 1), js::sar(z, 1), seed) - 0.5) * 1.1 : R;
-        if (hr > edge) continue;
-        const bool shell = hr > edge - 1.5;
-        if (fine && shell && h01(x, y, z, seed) < 0.12) continue;
-        if (ctx.snow > 0) {
-          const double Ra = part.lean ? radius(zz + s, a) * lop : radius(zz + s, a);
-          // (snow on the upper side of every whorl, the dark needles still showing beneath)
-          if (hr > Ra - 0.6 && h01(x, y, z, seed + 11) < ctx.snow * 0.7) {
-            d[idx] = MAT::SNOW;
-            continue;
-          }
+        if (hr > bound[k]) continue;
+        double lob = 0, lob2 = 0;
+        if (fine) {
+          const double a = js::atan2(dy, dx);
+          if (W[k].in) lob = lobe_of(p, W[k].ti, a, salt.s0);
+          if (snow > 0 && W2[k].in) lob2 = W2[k].ti == W[k].ti && W[k].in ? lob : lobe_of(p, W2[k].ti, a, salt.s0);
         }
-        // outer needles lighter, the inside and the underside of a whorl dark
-        const double pt = fine ? std::fmod((zz - p.z0) / p.tier, 1) : 0.5;
-        const double v = 0.25 + 0.55 * (hr / js::max(1, R)) + 0.25 * pt + (h01(js::sar(x, 1), js::sar(y, 1), js::sar(z, 1), seed + 9) - 0.5) * 0.35;
-        d[idx] = v < 0.42 ? pal[0] : v < 0.82 ? pal[1] : pal[2];
+        voxel(idx, i, j, k, dx, dy, hr, lob, lob2);
       }
     }
   }
@@ -1087,7 +1380,7 @@ constexpr LeafPalette kTwigs = {MAT::TWIGS, MAT::TWIGS, MAT::TWIGS};
 
 // Willow curtains: thin strands of leaves hanging from the underside of a cluster, longer
 // towards its rim, swaying in small groups.
-void raster_curtain(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
+void raster_curtain(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const Grid& g) {
   if (ctx.bare && chunk.s == 1) return;
   const TreeCurtain& p = part.curtain;
   const Box3& b = part.bb;
@@ -1098,31 +1391,33 @@ void raster_curtain(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
   uint16_t* d = chunk.data.data();
   const bool fine = chunk.s == 1;
   const LeafPalette& pal = ctx.bare ? kTwigs : palette_of(p.mix, ctx);
+  const Salts& salt = ctx.salt;
   for (int j = rj.lo; j <= rj.hi; ++j) {
-    const double y = chunk.wy(j);
+    const double y = g.w[1][j];
     const double dy = y + 0.5 - p.y;
     for (int i = ri.lo; i <= ri.hi; ++i) {
-      const double x = chunk.wx(i);
+      const double x = g.w[0][i];
       const double dx = x + 0.5 - p.x;
       const double rr = js::sqrt(dx * dx + dy * dy) / p.rx;
       if (rr > 1.02 || rr < 0.5) continue;
-      const double strand = h01(x, y, 0, ctx.seed + 21);
+      const double strand = fin(pre3(g.i0[0][i], g.i0[1][j], 0), salt.s21);
       if (fine && strand > 0.45) continue;
       // hanging from the cluster's underside, longest at its rim
       const double top = p.z - p.rz * js::sqrt(js::max(0, 1 - rr * rr)) + 1;
-      const double len = p.drop * (0.45 + 0.55 * h01(js::sar(x, 1), js::sar(y, 1), 1, ctx.seed + 22)) * (0.3 + 0.7 * rr);
+      const double len = p.drop * (0.45 + 0.55 * fin(pre3(g.i1[0][i], g.i1[1][j], 1), salt.s22)) * (0.3 + 0.7 * rr);
+      const uint16_t m = strand < 0.1 ? pal[0] : strand < 0.3 ? pal[1] : pal[2];
       for (int k = rk.lo; k <= rk.hi; ++k) {
-        const double z = chunk.wz(k);
+        const double z = g.w[2][k];
         if (z > top || z < top - len) continue;
         const int idx = i + j * kP + k * kP2;
-        if (d[idx] == 0) d[idx] = strand < 0.1 ? pal[0] : strand < 0.3 ? pal[1] : pal[2];
+        if (d[idx] == 0) d[idx] = m;
       }
     }
   }
 }
 
 // A fern: fronds arching out from the crown in every direction.
-void raster_fern(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
+void raster_fern(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const Grid& g) {
   // (ferns die back in winter)
   if (chunk.s > 1 || ctx.bare) return;
   const TreeFern& p = part.fern;
@@ -1134,9 +1429,9 @@ void raster_fern(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
   uint16_t* d = chunk.data.data();
   const LeafPalette& pal = ctx.season ? *ctx.season : *ctx.pal;
   for (int j = rj.lo; j <= rj.hi; ++j) {
-    const double dy = chunk.wy(j) + 0.5 - p.y;
+    const double dy = g.w[1][j] + 0.5 - p.y;
     for (int i = ri.lo; i <= ri.hi; ++i) {
-      const double dx = chunk.wx(i) + 0.5 - p.x;
+      const double dx = g.w[0][i] + 0.5 - p.x;
       const double hr = js::sqrt(dx * dx + dy * dy);
       if (hr > p.r) continue;
       // near a frond's axis?
@@ -1145,11 +1440,13 @@ void raster_fern(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
       const double off = js::abs(std::fmod(std::fmod(a, sector) + sector * 1.5, sector) - sector / 2) * hr;
       if (off > 0.75 + hr * 0.12) continue;
       const double zf = p.z + js::round(p.h * js::sin(js::min(1, hr / p.r) * kPi * 0.85));
+      const double zb = zf - (hr < 1.5 ? p.h : 0);
+      const uint16_t m = ctx.snow > 0.3 ? static_cast<uint16_t>(MAT::SNOW) : off < 0.4 ? pal[0] : pal[1];
       for (int k = rk.lo; k <= rk.hi; ++k) {
-        const double z = chunk.wz(k);
-        if (z < zf - (hr < 1.5 ? p.h : 0) || z > zf) continue;
+        const double z = g.w[2][k];
+        if (z < zb || z > zf) continue;
         const int idx = i + j * kP + k * kP2;
-        if (d[idx] == 0) d[idx] = ctx.snow > 0.3 ? static_cast<uint16_t>(MAT::SNOW) : off < 0.4 ? pal[0] : pal[1];
+        if (d[idx] == 0) d[idx] = m;
       }
     }
   }
@@ -1157,7 +1454,7 @@ void raster_fern(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
 
 // A windthrow's root plate: a ragged disc (normal n, radius r, half thickness th) of soil threaded
 // with roots, its face towards the trunk the mossy forest floor it lifted. Up close only.
-void raster_plate(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
+void raster_plate(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx, const Grid& g) {
   if (chunk.s > 2) return;
   const TreePlate& p = part.plate;
   const Box3& b = part.bb;
@@ -1166,46 +1463,58 @@ void raster_plate(ChunkBuffer& chunk, const TreePart& part, const Ctx& ctx) {
   const IdxRange rk = chunk.range_z(b.z0, b.z1);
   if (ri.lo > ri.hi || rj.lo > rj.hi || rk.lo > rk.hi) return;
   uint16_t* d = chunk.data.data();
-  const double seed = ctx.seed;
+  const Salts& salt = ctx.salt;
   for (int k = rk.lo; k <= rk.hi; ++k) {
-    const double z = chunk.wz(k);
+    const double z = g.w[2][k];
     const double dz = z + 0.5 - p.z;
     for (int j = rj.lo; j <= rj.hi; ++j) {
-      const double y = chunk.wy(j);
+      const double y = g.w[1][j];
       const double dy = y + 0.5 - p.y;
       for (int i = ri.lo; i <= ri.hi; ++i) {
         const int idx = i + j * kP + k * kP2;
         if (d[idx] != 0) continue;
-        const double x = chunk.wx(i);
+        const double x = g.w[0][i];
         const double dx = x + 0.5 - p.x;
         const double a = dx * p.nx + dy * p.ny + dz * p.nz;
         if (a > p.th || a < -p.th) continue;
         // (a lobed, ragged rim: soil falls away between the roots)
-        const double rim = p.r * (0.82 + 0.3 * h01(js::sar(x, 2), js::sar(y, 2), js::sar(z, 2), seed + 31));
+        const double rim = p.r * (0.82 + 0.3 * fin(pre3(g.i2[0][i], g.i2[1][j], g.i2[2][k]), salt.s31));
         const double q2 = dx * dx + dy * dy + dz * dz - a * a;
-        if (q2 > rim * rim || (q2 > rim * rim * 0.56 && h01(x, y, z, seed + 35) < 0.35)) continue;
-        const double q = h01(x, y, z, seed + 33);
+        if (q2 > rim * rim) continue;
+        const uint32_t pv = pre3(g.i0[0][i], g.i0[1][j], g.i0[2][k]);
+        if (q2 > rim * rim * 0.56 && fin(pv, salt.s35) < 0.35) continue;
+        const double q = fin(pv, salt.s33);
         d[idx] = a < -p.th * 0.35 ? (q < 0.12 ? MAT::LICHEN : MAT::MOSS) : q < 0.2 ? MAT::BARK : q < 0.3 ? MAT::DEADWOOD : MAT::DIRT;
       }
     }
   }
 }
 
-// Visit every representative voxel of a bounding box (fills only air).
-template <class F>
-void each_voxel(ChunkBuffer& chunk, const Box3& bb, F fn) {
+// The voxels of a shape of its own (eachVoxel: every representative of its bounds, filling only
+// air), height by height: at each, only within the rect cand(z, rect) gives (false: none) - every
+// voxel fn could fill there, with room to spare.
+template <class Cand, class F>
+void each_voxel(ChunkBuffer& chunk, const Box3& bb, const Grid& g, Cand cand, F fn) {
   const IdxRange ri = chunk.range_x(bb.x0, bb.x1);
   const IdxRange rj = chunk.range_y(bb.y0, bb.y1);
   const IdxRange rk = chunk.range_z(bb.z0, bb.z1);
   uint16_t* d = chunk.data.data();
+  const double s = chunk.s;
+  const double base_x = chunk.bx + chunk.half;
+  const double base_y = chunk.by + chunk.half;
   for (int k = rk.lo; k <= rk.hi; ++k) {
-    const double z = chunk.wz(k);
-    for (int j = rj.lo; j <= rj.hi; ++j) {
-      const double y = chunk.wy(j);
-      for (int i = ri.lo; i <= ri.hi; ++i) {
+    const double z = g.w[2][k];
+    Rect c;
+    if (!cand(z, c)) continue;
+    int i0 = ri.lo, i1 = ri.hi, j0 = rj.lo, j1 = rj.hi;
+    clip(base_x, s, c.x0, c.x1, i0, i1);
+    clip(base_y, s, c.y0, c.y1, j0, j1);
+    for (int j = j0; j <= j1; ++j) {
+      const double y = g.w[1][j];
+      for (int i = i0; i <= i1; ++i) {
         const int idx = i + j * kP + k * kP2;
         if (d[idx] != 0) continue;
-        const uint16_t m = fn(chunk.wx(i), y, z);
+        const uint16_t m = fn(i, j, k, g.w[0][i], y, z);
         if (m) d[idx] = m;
       }
     }
@@ -1213,31 +1522,50 @@ void each_voxel(ChunkBuffer& chunk, const Box3& bb, F fn) {
 }
 
 // umbrella crown on a leaning, forking trunk
-void shape_acacia(ChunkBuffer& chunk, const Tree& t, const Box3& bb) {
+void shape_acacia(ChunkBuffer& chunk, const Tree& t, const Box3& bb, const Grid& g) {
   const double top = t.z + t.h;
   const double crown0 = top - 3;
   const double lean = static_cast<double>(js::shr(t.seed, 4) & 3) - 1.5;
-  each_voxel(chunk, bb, [&](double x, double y, double z) -> uint16_t {
+  const uint32_t s0 = salt_of(t.seed);
+  const uint32_t s5 = salt_of(t.seed + 5);
+  // (the crown reaches out to t.r (0.75 t.r on top) plus its noise, < 0.75; the trunk 1.1 round its
+  // axis, the fork 0.8 round its own)
+  const double crown = js::max(t.r, t.r * 0.75) + 0.8;
+  auto cand = [&](double z, Rect& c) {
+    if (z >= t.z && z < crown0) {
+      const double k = (z - t.z) / js::max(1, crown0 - t.z);
+      const double ax = t.x + lean * k * 3;
+      const double fx = k > 0.6 ? ax - (k - 0.6) * 8 : ax;
+      c = {js::min(ax, fx) - 1.2, t.y - 1.2, js::max(ax, fx) + 1.2, t.y + 1.2};
+      return true;
+    }
+    if (z >= crown0 && z <= top) {
+      c = {t.x - crown, t.y - crown, t.x + crown, t.y + crown};
+      return true;
+    }
+    return false;
+  };
+  each_voxel(chunk, bb, g, cand, [&](int i, int j, int k, double x, double y, double z) -> uint16_t {
     const double dx = x - t.x;
     const double dy = y - t.y;
     if (z >= t.z && z < crown0) {
-      const double k = (z - t.z) / js::max(1, crown0 - t.z);
-      const double ax = lean * k * 3;
+      const double kk = (z - t.z) / js::max(1, crown0 - t.z);
+      const double ax = lean * kk * 3;
       if (js::hypot(dx - ax, dy) <= 1.1) return MAT::BARK;
-      if (k > 0.6 && js::hypot(dx - ax + (k - 0.6) * 8, dy) <= 0.8) return MAT::BARK;
+      if (kk > 0.6 && js::hypot(dx - ax + (kk - 0.6) * 8, dy) <= 0.8) return MAT::BARK;
       return 0;
     }
     if (z >= crown0 && z <= top) {
       const double hr = js::hypot(dx, dy);
-      const double rr = t.r * (z == top ? 0.75 : 1) + (h01(js::sar(x, 1), js::sar(y, 1), z, t.seed) - 0.5) * 1.5;
-      return hr <= rr && h01(x, y, z, t.seed + 5) > 0.1 ? MAT::LEAVES_ACACIA : 0;
+      const double rr = t.r * (z == top ? 0.75 : 1) + (fin(pre3(g.i1[0][i], g.i1[1][j], g.i0[2][k]), s0) - 0.5) * 1.5;
+      return hr <= rr && fin(pre3(g.i0[0][i], g.i0[1][j], g.i0[2][k]), s5) > 0.1 ? MAT::LEAVES_ACACIA : 0;
     }
     return 0;
   });
 }
 
 // saguaro: a column with one or two upturned arms
-void shape_cactus(ChunkBuffer& chunk, const Tree& t, const Box3& bb) {
+void shape_cactus(ChunkBuffer& chunk, const Tree& t, const Box3& bb, const Grid& g) {
   struct Arm {
     double ox, oy, z0;
   };
@@ -1248,7 +1576,15 @@ void shape_cactus(ChunkBuffer& chunk, const Tree& t, const Box3& bb) {
     const double z0 = t.z + js::round(t.h * (0.35 + 0.15 * a));
     arms[a] = {js::round(js::cos(ang) * 4), js::round(js::sin(ang) * 4), z0};
   }
-  each_voxel(chunk, bb, [&](double x, double y, double z) -> uint16_t {
+  const double up = js::round(t.h * 0.35);
+  // (the column within 1.5 of its axis, the arms within 5 (|ox|, |oy| <= 4, then 1 round them))
+  auto cand = [&](double z, Rect& c) {
+    bool any = z >= t.z && z <= t.z + t.h;
+    for (int q = 0; q < n; ++q) any = any || z == arms[q].z0 || z == arms[q].z0 + 1 || (z >= arms[q].z0 && z <= arms[q].z0 + up);
+    c = {t.x - 5.5, t.y - 5.5, t.x + 5.5, t.y + 5.5};
+    return any;
+  };
+  each_voxel(chunk, bb, g, cand, [&](int, int, int, double x, double y, double z) -> uint16_t {
     const double dx = x - t.x;
     const double dy = y - t.y;
     if (z >= t.z && z <= t.z + t.h && dx * dx + dy * dy <= 2) return MAT::CACTUS;
@@ -1259,26 +1595,41 @@ void shape_cactus(ChunkBuffer& chunk, const Tree& t, const Box3& bb) {
         const double tt = (dx * a.ox + dy * a.oy) / 16;
         if (tt >= 0 && tt <= 1 && js::hypot(dx - a.ox * tt, dy - a.oy * tt) <= 1) return MAT::CACTUS;
       }
-      if (z >= a.z0 && z <= a.z0 + js::round(t.h * 0.35) && js::hypot(dx - a.ox, dy - a.oy) <= 1) return MAT::CACTUS;
+      if (z >= a.z0 && z <= a.z0 + up && js::hypot(dx - a.ox, dy - a.oy) <= 1) return MAT::CACTUS;
     }
     return 0;
   });
 }
 
 // straight thin trunk with drooping fronds
-void shape_palm(ChunkBuffer& chunk, const Tree& t, const Box3& bb) {
+void shape_palm(ChunkBuffer& chunk, const Tree& t, const Box3& bb, const Grid& g) {
   const double top = t.z + t.h;
   const double lean_x = (static_cast<double>(js::shr(t.seed, 2) & 7) - 3.5) * 0.35;
   const double lean_y = (static_cast<double>(js::shr(t.seed, 5) & 7) - 3.5) * 0.35;
   const double nF = 7;
   const double turn = static_cast<double>(js::to_int32(t.seed) & 7) * 0.3;
-  each_voxel(chunk, bb, [&](double x, double y, double z) -> uint16_t {
+  const double fx = t.x + lean_x * 6;
+  const double fy = t.y + lean_y * 6;
+  // (the trunk within 0.9 of its axis at each height, the fronds within t.r of the crown's centre)
+  auto cand = [&](double z, Rect& c) {
+    const bool trunk = z >= t.z && z <= top;
+    const bool fronds = !(z > top + 1 || z < top - 4);
+    if (!trunk && !fronds) return false;
+    const double k = (z - t.z) / t.h;
+    const double cx = t.x + lean_x * k * k * 6;
+    const double cy = t.y + lean_y * k * k * 6;
+    c = {js::kInf, js::kInf, -js::kInf, -js::kInf};
+    if (trunk) c = {cx - 1, cy - 1, cx + 1, cy + 1};
+    if (fronds) c = {js::min(c.x0, fx - t.r - 0.1), js::min(c.y0, fy - t.r - 0.1), js::max(c.x1, fx + t.r + 0.1), js::max(c.y1, fy + t.r + 0.1)};
+    return true;
+  };
+  each_voxel(chunk, bb, g, cand, [&](int, int, int, double x, double y, double z) -> uint16_t {
     const double k = (z - t.z) / t.h;
     const double cx = t.x + lean_x * k * k * 6;
     const double cy = t.y + lean_y * k * k * 6;
     if (z >= t.z && z <= top && js::hypot(x - cx, y - cy) <= 0.9) return MAT::BARK_PALM;
-    const double dx = x - (t.x + lean_x * 6);
-    const double dy = y - (t.y + lean_y * 6);
+    const double dx = x - fx;
+    const double dy = y - fy;
     const double dr = js::hypot(dx, dy);
     if (dr > t.r || z > top + 1 || z < top - 4) return 0;
     const double want = js::round(top + 1 - js::pow(dr / t.r, 2) * 4);
@@ -1351,12 +1702,13 @@ void rasterize_tree(ChunkBuffer& chunk, const Tree& t, double snow) {
   if (is_shape(t.kind)) {
     const Box3 bb = tree_bounds(t);
     if (chunk.touches(bb.x0, bb.y0, bb.z0, bb.x1, bb.y1, bb.z1)) {
+      const Grid& g = grid_of(chunk);
       if (t.kind == TreeKind::Acacia)
-        shape_acacia(chunk, t, bb);
+        shape_acacia(chunk, t, bb, g);
       else if (t.kind == TreeKind::Cactus)
-        shape_cactus(chunk, t, bb);
+        shape_cactus(chunk, t, bb, g);
       else
-        shape_palm(chunk, t, bb);
+        shape_palm(chunk, t, bb, g);
     }
     return;
   }
@@ -1364,26 +1716,28 @@ void rasterize_tree(ChunkBuffer& chunk, const Tree& t, double snow) {
   const Box3& bb = m.bb;
   if (!m.has_bb || !chunk.touches(bb.x0, bb.y0, bb.z0, bb.x1, bb.y1, bb.z1)) return;
   const TreeLook* look = t.look ? &*t.look : nullptr;
-  Ctx ctx;
-  ctx.snow = look ? look->snow : snow;
-  ctx.bare = look ? look->bare : snow > 0.4 && !tree_evergreen(t.kind);
-  ctx.pal = m.pal;
-  ctx.season = look ? look->leaves : nullptr;
-  ctx.mix = look ? look->mix : 1;
-  ctx.accent = look ? look->accent : 0;
   const bool airy = t.kind == TreeKind::Birch || t.kind == TreeKind::Pine || t.kind == TreeKind::Rowan || t.kind == TreeKind::ShrubDry;
-  ctx.holes = (airy ? 0.26 : 0.14) + (look ? look->holes : 0);
-  ctx.seed = t.seed;
+  const Ctx ctx = {
+      look ? look->snow : snow,
+      look ? look->bare : snow > 0.4 && !tree_evergreen(t.kind),
+      m.pal,
+      look ? look->leaves : nullptr,
+      look ? look->mix : 1,
+      look ? look->accent : static_cast<uint16_t>(0),
+      (airy ? 0.26 : 0.14) + (look ? look->holes : 0),
+      Salts(t.seed),
+  };
+  const Grid& g = grid_of(chunk);
   for (const TreePart& p : m.parts) {
     const Box3& b = p.bb;
     if (!chunk.touches(b.x0, b.y0, b.z0, b.x1, b.y1, b.z1)) continue;
     switch (p.k) {
-      case TreePartKind::Blob: raster_blob(chunk, p, ctx); break;
-      case TreePartKind::Limb: raster_limb(chunk, p, ctx); break;
-      case TreePartKind::Cone: raster_cone(chunk, p, ctx); break;
-      case TreePartKind::Curtain: raster_curtain(chunk, p, ctx); break;
-      case TreePartKind::Fern: raster_fern(chunk, p, ctx); break;
-      case TreePartKind::Plate: raster_plate(chunk, p, ctx); break;
+      case TreePartKind::Blob: raster_blob(chunk, p, ctx, g); break;
+      case TreePartKind::Limb: raster_limb(chunk, p, ctx, g); break;
+      case TreePartKind::Cone: raster_cone(chunk, p, ctx, g); break;
+      case TreePartKind::Curtain: raster_curtain(chunk, p, ctx, g); break;
+      case TreePartKind::Fern: raster_fern(chunk, p, ctx, g); break;
+      case TreePartKind::Plate: raster_plate(chunk, p, ctx, g); break;
     }
   }
 }
