@@ -45,6 +45,19 @@ if(SVX_BUILD_ANIM)
   add_test(NAME svx_anim_tests COMMAND svx_anim_tests)
 endif()
 
+# City generator tests: the port of voxel_city against its reference, stage by stage (records
+# whose digests tests/city/conformance.txt holds), and the reference's own golden samples.
+if(SVX_BUILD_CITY)
+  file(GLOB SVX_CITY_TEST_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/city/*.cpp)
+  add_executable(svx_city_tests test_main.cpp ${SVX_CITY_TEST_SOURCES})
+  target_include_directories(svx_city_tests PRIVATE ${PROJECT_SOURCE_DIR}/third_party/doctest
+                             ${PROJECT_SOURCE_DIR}/level/city/src ${CMAKE_CURRENT_SOURCE_DIR}/city)
+  target_link_libraries(svx_city_tests PRIVATE svx_city)
+  target_compile_definitions(svx_city_tests PRIVATE SVX_SOURCE_DIR="${PROJECT_SOURCE_DIR}")
+  svx_wasm_exe_options(svx_city_tests)
+  add_test(NAME svx_city_tests COMMAND svx_city_tests)
+endif()
+
 # Game harness tests: levels (procedural, city, Doom), movers, replays, meshing, the C ABI.
 if(NOT SVX_BUILD_GAME)
   return()

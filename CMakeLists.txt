@@ -93,6 +93,19 @@ if(SVX_BUILD_ANIM)
   target_compile_options(svx_anim PRIVATE -fno-exceptions -fno-rtti ${SVX_WARNINGS})
 endif()
 
+# The city generator (docs/CITY.md): a C++ port of voxel_city (reference/voxel_city, pinned),
+# reproducing it bit for bit. A level generator: it depends on the core's base utilities (its
+# deterministic math), never on the game.
+option(SVX_BUILD_CITY "svx_city (the city generator)" ${SVX_BUILD_GAME})
+if(SVX_BUILD_CITY)
+  file(GLOB_RECURSE SVX_CITY_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/level/city/src/*.cpp)
+  add_library(svx_city STATIC ${SVX_CITY_SOURCES})
+  target_include_directories(svx_city PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/level/city/include>
+                             PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/level/city/src)
+  target_link_libraries(svx_city PUBLIC svx_core)
+  target_compile_options(svx_city PRIVATE -fno-exceptions -fno-rtti ${SVX_WARNINGS})
+endif()
+
 if(SVX_BUILD_GAME)
   # The game: its authored systems (vehicles, traffic, people, movers, replays, the Doom importer)
   # on the core and the modules. Levels and streamed worlds are handed to it (svx/game/level.hpp,
