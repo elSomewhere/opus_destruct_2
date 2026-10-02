@@ -39,10 +39,7 @@ Zone zone_of_part(i32 part) {
   }
 }
 
-void Injuries::add(const Injury& i) {
-  list.push_back(i);
-  if (list.size() > 12) list.pop_front();
-}
+void Injuries::add(const Injury& i) { list.push_back(i); }
 
 void Injuries::update(f64 dt) {
   legL = legR = armL = armR = trunk = head = 0.0;

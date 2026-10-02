@@ -76,8 +76,10 @@ TEST_CASE("refinement: localized hits conserve requested linear momentum includi
     // Stun/pain may change later muscle forces, but cannot add momentum at impact.
     hit.force=2;hit.impulse_ns=0;const V3 after=momentum(c);c.hit_at(hit);
     CHECK(norm(momentum(c)-after)<1e-8);
-    const auto wounds=c.behaviours.injuries.list.size();hit.force=0;c.hit_at(hit);
-    CHECK(c.behaviours.injuries.list.size()==wounds);
+    const auto wounds = c.behaviours.damage.wound_count();
+    hit.force = 0;
+    c.hit_at(hit);
+    CHECK(c.behaviours.damage.wound_count() == wounds);
     run(s,c,.5);
   }
 }

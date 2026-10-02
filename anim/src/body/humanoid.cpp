@@ -416,6 +416,25 @@ void HumanoidBody::track(const WorldPose& target, const Pose& local, const World
   extras_.copy_from(local);
 }
 
+void HumanoidBody::refresh_mass() {
+  total_mass = 0;
+  for (const auto* b : parts) total_mass += b->mass;
+  for (i32 i = 1; i < kBodyCount; ++i) {
+    f64 I = 0;
+    const V3 jp = joint_point(i);
+    for (i32 c : subtree(i)) {
+      const auto& b = *parts[size_t(c)];
+      const V3 d = skeleton->rest_head[size_t(kBodyBone[size_t(c)])] + com_local[size_t(c)] - jp;
+      I += b.mass * dot(d, d) + (1 / b.inv_i.x + 1 / b.inv_i.y + 1 / b.inv_i.z) / 3;
+    }
+    const f64 w = kMuscle[i][0], zeta = kMuscle[i][1];
+    inertia_at[size_t(i)] = f32(I);
+    base_stiffness[size_t(i)] = f32(I * w * w);
+    base_damping[size_t(i)] = f32(2 * zeta * w * I);
+    joints[size_t(i)]->eff_inertia = I;
+  }
+}
+
 void HumanoidBody::apply_tone() {
   for (i32 i = 1; i < kBodyCount; ++i) {
     Joint& j = *joints[size_t(i)];

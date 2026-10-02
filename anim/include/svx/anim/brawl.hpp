@@ -16,6 +16,7 @@
 #include <vector>
 
 #include "svx/anim/character.hpp"
+#include "svx/anim/damage/strike.hpp"
 
 namespace svx::anim {
 
@@ -32,6 +33,7 @@ struct LandedBlow {
   V3 point, dir;
   HitKind kind = HitKind::Blunt;  // the strike's: Blunt (fists, feet, a rifle butt) or Blade
   bool blocked = false;           // it met a block (it landed blunt, and softer)
+  DamageDescriptor descriptor;
   WoundResult result;             // (its zone: where it landed)
 };
 
@@ -59,7 +61,9 @@ class Brawler {
   std::string reacted_;  // the opponent's strike last seen coming (each answered once, if at all)
   std::string last_strike_;
 
-  bool knife() const { return self.weapon && self.weapon->kind == PropKind::Knife; }
+  StrikeTracker tracker_;
+  f64 dt_ = 1.0 / 60;
+  u64 landed_serial_ = ~u64(0);
   V3 aim_point(std::string_view strike) const;
 };
 

@@ -76,6 +76,8 @@ bool World::set_articulation_data(ArticulationId id, std::vector<u8> data) { ret
 bool World::set_link(ArticulationId id, u16 link, const V3& pos, const Quat& rot, const V3& vel, const V3& ang) { return impl_->set_link(id, link, pos, rot, vel, ang); }
 bool World::add_link_velocity(ArticulationId id, u16 link, const V3& dv, const V3& dw) { return impl_->add_link_velocity(id, link, dv, dw); }
 bool World::apply_link_impulse(ArticulationId id, u16 link, const V3& point, const V3& impulse) { return impl_->apply_link_impulse(id, link, point, impulse); }
+bool World::set_link_mass(ArticulationId id, u16 link, f64 mass, const V3& inertia) { return impl_->set_link_mass(id, link, mass, inertia); }
+
 bool World::lose_link(ArticulationId id, u16 link, f64 mass_scale) { return impl_->lose_link(id, link, mass_scale); }
 bool World::wake_articulation(ArticulationId id) { return impl_->wake_articulation(id); }
 bool World::articulation_asleep(ArticulationId id) const { return impl_->articulation_asleep(id); }

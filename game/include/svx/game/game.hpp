@@ -11,6 +11,8 @@
 //     charring, smoke); blasts raise dust into the smoke.
 // The core never sees any of it: a different game (or tool) builds its own harness on World.
 #pragma once
+#include "svx/anim/damage/descriptor.hpp"
+#include "svx/anim/characters/attachments.hpp"
 
 #include <array>
 #include <functional>
@@ -170,6 +172,7 @@ struct PedestrianConfig {
   f64 near_radius = 30.0;    // m: not spawned nearer (out of sight)
   f64 radius = 70.0;         // m: spawned within, the living removed beyond
   i32 bodies = 2;            // 0: deep (every physical body an articulation of the world), 1: shallow (their own), 2: hybrid
+  f64 armed_share = 0, carrying_share = 0;  // opt-in, deterministic population loadouts
   i32 max_deep = 24;         // (hybrid) the most deep bodies: the nearest
 };
 
@@ -251,7 +254,7 @@ class Game {
   void load(VoxelGrid&& g, const V3& spawn_pos, const V3& spawn_dir);
   void load_streaming(std::shared_ptr<const GameSource> src, f64 h, const StreamConfig& sc = {}, const FarConfig& far = {});
   bool bake(f64* ms = nullptr) { return world_.bake(ms); }
-  std::vector<u8> save_delta() const { return world_.save_delta(); }
+  std::vector<u8> save_delta() const;
   bool load_delta(const std::vector<u8>& bytes);  // (movers keep their state; a played session's drops are not dropped again)
   V3 spawn_pos() const { return spawn_pos_; }
   V3 spawn_dir() const { return spawn_dir_; }
@@ -337,6 +340,11 @@ class Game {
   // the same line at the bone nearest that point); `energy` (J) and `radius` as shoot's (the
   // wound's hole some 0.3 of it). False: no such character, or no body there now.
   bool wound_character(u32 id, const V3& pos, f64 radius, f64 energy);
+  bool damage_character(u32 id, const anim::DamageDescriptor& descriptor);
+  bool attach_prop(u32 id, std::string_view archetype, anim::AttachPoint point, std::string_view socket = "primary",
+                   anim::WieldStyle style = anim::WieldStyle::OneHand);
+  bool detach_prop(u32 id, anim::AttachPoint point, anim::ReleaseReason reason = anim::ReleaseReason::Voluntary);
+  void set_loadout_shares(f64 armed, f64 carrying);
   // Character meshes and palettes the front end has not had, and meshes no character draws any more.
   std::vector<CharacterMeshData> take_character_meshes();
   std::vector<u32> take_removed_character_meshes();

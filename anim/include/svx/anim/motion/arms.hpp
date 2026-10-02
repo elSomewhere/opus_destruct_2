@@ -63,6 +63,7 @@ struct HoldContext {
   f64 w_p = 0.0;
   const ChannelFrame* ch_a = nullptr;
   f64 w_a = 0.0;
+  bool primary_left = false;
   bool free_left = false;  // let go with the support hand (it has something else to do)
 };
 

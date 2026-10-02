@@ -61,9 +61,18 @@ f64 sample1(const Track& tr, f64 t) {
 }
 
 // The original's props (their attach points: the plan needs no model).
+enum class PropKind { Rifle, Lmg, Pistol, Knife };
 PropPtr make_prop(PropKind kind) {
   auto p = std::make_shared<Prop>();
-  p->kind = kind;
+  p->tags = kind == PropKind::Knife    ? std::vector<std::string>{"short_blade", "edged", "pointed", "one_handed"}
+            : kind == PropKind::Pistol ? std::vector<std::string>{"firearm", "handgun", "one_handed", "two_handed"}
+                                       : std::vector<std::string>{"firearm", "long_firearm", "two_handed"};
+  p->hanging_rotation = kind == PropKind::Knife ? Quat{} : qx(kind == PropKind::Pistol ? -0.3 : -0.9);
+  if (kind == PropKind::Lmg) {
+    p->ready_pitch = -0.32;
+    p->ready_roll = 0.45;
+    p->ready_stock_offset = {.01, -.12, -.1};
+  }
   switch (kind) {
     case PropKind::Rifle:
       p->support = V3{0, 0.3 * 0.8, 0.03};
@@ -92,6 +101,10 @@ PropPtr make_prop(PropKind kind) {
     default:
       break;
   }
+  p->id = "fixture";
+  p->model = make_knife()->model;
+  p->attachments = {"rightHand", "leftHand"};
+  p->sockets = {{"primary", p->grip}, {"secondary", p->support}};
   return p;
 }
 
@@ -208,7 +221,7 @@ TEST_CASE("anim motion: players fade in and out; one-shot events fire once, loop
 }
 
 TEST_CASE("anim motion: every action samples finite values on all channels over its duration") {
-  CHECK(actions().size() == 88);
+  CHECK(actions().size() == 128);
   for (const ActionDef& def : actions()) {
     ActionPlayer p(&def);
     ChannelFrame frame;
@@ -334,10 +347,10 @@ std::unique_ptr<MotionPlan> armed(PropKind kind, Carry carry) {
 
 }  // namespace
 
-TEST_CASE("anim motion: every prop has voxels (small ones on a finer lattice) and drops as a gib") {
+TEST_CASE("anim motion: every prop has voxels (small ones on a finer lattice) and drops as a persistent instance") {
   const HumanVariant civilian = make_civilian(1);
   for (const PropPtr& prop : {make_rifle(), make_smg(), make_lmg(), make_pistol(), make_knife()}) {
-    CAPTURE(int(prop->kind));
+    CAPTURE(prop->id);
     const VoxelPart* part = prop->model->parts.empty() ? nullptr : &prop->model->parts[0];
     CHECK_MESSAGE((part && part->count >= 40), (part ? part->count : 0) << " voxels");
     CharacterOptions o;
@@ -348,11 +361,15 @@ TEST_CASE("anim motion: every prop has voxels (small ones on a finer lattice) an
     Character c(o);
     c.place(V3{0, 0, 0}, 0.0);
     c.update(DT);
-    const std::optional<GibSpec> g = c.drop_weapon();
-    REQUIRE(g);
-    // (the spec carries the prop's part as a copy: the same voxels)
-    CHECK((part && g->part.cells == part->cells && g->part.dims == part->dims && g->part.origin == part->origin));
-    CHECK(g->voxel_size == prop->model->voxel_size);
+    const auto held = c.attachments().held();
+    REQUIRE(held);
+    const auto id = held->id;
+    c.drop_weapon();
+    CHECK_FALSE(c.weapon);
+    CHECK(held->location == PropLocation::Loose);
+    CHECK(c.attachments().registry->get(id) == held);
+    CHECK(held->model().parts[0].cells == part->cells);
+    CHECK(held->model().voxel_size == prop->model->voxel_size);
   }
 }
 

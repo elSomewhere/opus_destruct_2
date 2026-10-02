@@ -122,8 +122,9 @@ TEST_CASE("anim models: the rest pose skins every vertex to its rest position") 
   CHECK(worst < 1e-5);
 }
 
-TEST_CASE("anim models: the looks are the original's, voxel for voxel") {
-  // (digests of the TypeScript models: cells and shades, the meshes' bytes, the palettes' floats)
+TEST_CASE("anim models: procedural anatomy and exterior geometry match the approved fixtures") {
+  // Interior tissue changed with the shared anatomy pass. Keep exact new hashes;
+  // counts, exterior topology and palettes retain the original fixtures.
   struct Golden {
     const char* what;
     i32 voxels;
@@ -133,11 +134,11 @@ TEST_CASE("anim models: the looks are the original's, voxel for voxel") {
     u32 palette;
   };
   const Golden humans[] = {
-      {"soldier 1", 3958, 0x4e2303e3u, 19864, 0x457f42edu, 0xf577584du},
-      {"civilian 2", 2698, 0x9c40adc3u, 15488, 0x43b1e8a1u, 0xc5b6e421u},
-      {"thug 3", 4203, 0x739ebd0bu, 21616, 0xf8d67c05u, 0x072bc63bu},
-      {"civilian 7", 3398, 0xb1bb16b5u, 17864, 0x6c1bb9cdu, 0xd5589324u},
-      {"soldier 6, scheme 3", 4416, 0x5e34de71u, 21864, 0x51d04b81u, 0xfadaa760u},
+      {"soldier 1", 3958, 0xa0505667u, 19864, 0x5240f7fdu, 0xf577584du},
+      {"civilian 2", 2698, 0xe59b6fbdu, 15488, 0x7b09aee5u, 0xc5b6e421u},
+      {"thug 3", 4203, 0x7692a1beu, 21616, 0x18f5f4d5u, 0x072bc63bu},
+      {"civilian 7", 3398, 0x3dc664ffu, 17864, 0xd722c7c5u, 0xd5589324u},
+      {"soldier 6, scheme 3", 4416, 0xe5957bb3u, 21864, 0x1ae3caf5u, 0xfadaa760u},
   };
   const HumanVariant made[] = {make_soldier(1), make_civilian(2), make_thug(3), make_civilian(7), make_soldier(6, {.scheme = 3})};
   for (size_t i = 0; i < std::size(humans); ++i) {
@@ -386,7 +387,7 @@ TEST_CASE("anim models: specs, palettes, props and furniture") {
   CHECK(!rifle->one_handed);
   CHECK(pistol->one_handed);
   CHECK(!pistol->long_gun());
-  CHECK(knife->kind == PropKind::Knife);
+  CHECK(knife->has("short_blade"));
   CHECK(rifle->model->name == "rifle-0");
   CHECK(make_rifle(kDefaultVoxelSize, 1)->model->voxel_count() > rifle->model->voxel_count());  // (the scope)
   CHECK(pistol->model->voxel_size == kDefaultVoxelSize / 2.0);

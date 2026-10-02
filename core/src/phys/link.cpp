@@ -599,6 +599,11 @@ void RigidWorld::fine_islands(const std::vector<i32>& fb) {
     ends[k] = {ia >= 0 && fine_[size_t(ia)] ? ia : -1, ib >= 0 && fine_[size_t(ib)] ? ib : -1};
     if (ends[k].first >= 0 && ends[k].second >= 0) unite(ends[k].first, ends[k].second);
   }
+  for (const Target& target : targets)
+    if (target.drive.on && target.reference_body) {
+      const i32 a = index_of(target.body), b = index_of(target.reference_body);
+      if (a >= 0 && b >= 0 && fine_[size_t(a)] && fine_[size_t(b)]) unite(a, b);
+    }
   for (const Contact& c : fine_cs_)
     if (c.b >= 0 && fine_[size_t(c.b)]) unite(c.a, c.b);
   // (in the order of their first body)

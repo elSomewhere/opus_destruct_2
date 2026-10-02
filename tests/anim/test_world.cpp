@@ -45,7 +45,7 @@ TEST_CASE("world: a heavy piece driven into a standing body knocks it down, and 
     f64 bump = 0.0;
     for (const RigidBody* p : x.body.parts) bump += p->bumped;
     blow = std::max(blow, bump / x.body.total_mass);
-    down = down || x.down();
+    down = down || x.down() || !x.alive();
   });
   const V3 p1 = c.pose.p[H::pelvis];
   MESSAGE("a " << piece->mass << " kg block at 9 m/s: the body's largest blow " << blow << " m/s, it went " << p1.x - p0.x << " m; down " << down);

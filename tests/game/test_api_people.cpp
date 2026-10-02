@@ -13,6 +13,7 @@
 
 #include "doctest.h"
 #include "svx/game/api/svx_api.h"
+#include "svx/anim/rig.hpp"
 
 namespace {
 
@@ -21,6 +22,7 @@ constexpr int kSkinFloats = 23 * 16;
 
 struct Person {
   unsigned id = 0, mesh = 0, palette = 0, flags = 0;
+  double head[3]{};
   double c[3]{}, radius = 0.0, flash = 0.0, health = 0.0;
 };
 
@@ -82,6 +84,9 @@ struct Worker {
         p.palette = static_cast<unsigned>(r[2]);
         p.flags = static_cast<unsigned>(r[3]);
         for (int a = 0; a < 3; ++a) p.c[a] = r[4 + a];
+        const auto brain = svx::anim::humanoid_skeleton()->rest_head[svx::anim::H::head] + svx::V3{0, 0, .1};
+        const float* head = &skin[(static_cast<size_t>(k) * 23 + svx::anim::H::head) * 16];
+        for (int a = 0; a < 3; ++a) p.head[a] = head[a] * brain.x + head[4 + a] * brain.y + head[8 + a] * brain.z + head[12 + a];
         p.radius = r[7];
         p.flash = r[8];
         p.health = r[10];
@@ -178,6 +183,17 @@ TEST_CASE("C API: the people as the web worker polls them - shot, blasted, left 
     }
   }
   MESSAGE("rounds " << rounds << ", dead " << dead);
+  CHECK(rounds > 0);
+  // Repeated channels can pass through an existing wound. Death is anatomical,
+  // so exercise a fresh brain channel through the descriptor API explicitly.
+  if (!dead)
+    if (const Person* p = wk.find(id)) {
+      double shot[25] = {0, p->head[0], p->head[1] + .3, p->head[2], 0, -1, 0, .004, 900, .00556, .003, 1, 1, .2, 3, 100000, 0, svx::anim::H::head, 0};
+      REQUIRE(svx_damage_character(e, id, shot, 25) == 1);
+      tick(2);
+      const auto* q = wk.find(id);
+      dead = q && !(q->flags & 1);
+    }
   CHECK(dead);
   // rounds into the body where it lies
   tick(60 * 3);

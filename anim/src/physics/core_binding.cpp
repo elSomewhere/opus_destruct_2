@@ -183,9 +183,13 @@ void CoreBinding::push(World& w) {
   // the assists
   const size_t na = s.attachments.size();
   c->target_local.resize(na);
+  c->target_reference.assign(na, -1);
+  c->target_reference_local.resize(na);
   for (size_t k = 0; k < na && k < c->targets.size(); ++k) {
     const Attachment& a = *s.attachments[k];
     c->target_local[k] = a.local;
+    c->target_reference[k] = a.reference && !a.reference->gone ? a.reference->index : -1;
+    c->target_reference_local[k] = a.reference_local;
     TargetDrive& t = c->targets[k];
     t.on = a.enabled;
     t.pos = a.target;

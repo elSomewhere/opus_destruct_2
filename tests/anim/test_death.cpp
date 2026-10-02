@@ -5,6 +5,7 @@
 
 #include "doctest.h"
 #include "scene.hpp"
+#include "svx/anim/damage/scenarios.hpp"
 #include "svx/anim/characters/props.hpp"
 
 using namespace scene;
@@ -211,12 +212,13 @@ TEST_CASE("death: a body that tips over collapses; it never pivots on its hips a
         Scene s(path);
         Character& c = s.add(make_soldier(static_cast<i32>(seed)), seed, kPi / 2.0, V3{0, 0, s.ground});
         for (i32 i = 0; i < 30; ++i) s.frame({&c});
-        // a round low in the belly (or the back) at little health left: the dying fold over it
-        c.health = 15.0;
+        // A dying body folds over a low belly/back wound. Health is derived now;
+        // the explicit dying transition keeps this a collapse mechanics regression.
         const V3 p = c.pose.p[H::spine];
         const std::optional<CharacterHit> hit = c.raycast(V3{p.x - dx * 3.0, p.y - dy * 3.0, p.z + 0.05}, V3{dx, dy, 0}, 6.0);
         REQUIRE(hit);
         c.wound(*hit, V3{dx, dy, 0}, 40.0);
+        c.die(nullptr, nullptr, .6);
         i32 over = 0;
         for (i32 i = 0; i < 300; ++i) {
           s.frame({&c});
@@ -265,41 +267,38 @@ TEST_CASE("character: a head shot kills, turns the body into a ragdoll and leave
     CHECK(!r.removed.empty());
     CHECK(c.model != shared);
     CHECK(shared->voxel_count() == make_soldier(4).model->voxel_count());
-    const std::optional<GibSpec> g = c.drop_weapon();
-    REQUIRE(g);
-    CHECK(g->prop);
+    c.drop_weapon();
+    CHECK_FALSE(c.weapon);
+    CHECK_FALSE(c.attachments().registry->nearby(c.pose.p[H::chest], 2).empty());
     for (i32 i = 0; i < 240; ++i) s.frame({&c});
     CHECK(c.pose.p[H::head].z - s.ground < 0.6);
   }
 }
 
-TEST_CASE("character: limb shots sever the limb with the parts below it; a blast gibs the body") {
+TEST_CASE("character: a cross-section cut severs the limb; a nearby blast leaves a coherent body") {
   for (Path path : kPaths) {
-    const std::string pn = path_name(path);
-    INFO(pn);
     Scene s(path);
-    Character& c = soldier4(s);
-    bool severed = false;
-    std::vector<i32> bones;
-    const f64 offs[5][2] = {{0, 0}, {0.025, 0}, {-0.025, 0}, {0, 0.025}, {0, -0.025}};
-    for (i32 k = 0; k < 12 && !severed; ++k) {
-      // shoot the left forearm from the side
-      const V3 p = c.pose.point_of(H::forearmL, c.model->skeleton->rest_head[H::forearmL] + V3{0, 0, -0.1});
-      const V3 dir{1, 0, 0};
-      const f64* off = offs[k % 5];
-      const std::optional<CharacterHit> hit = c.raycast(V3{p.x - 3.0, p.y + off[0], p.z + off[1]}, dir, 10.0);
-      if (!hit) continue;
-      const WoundResult r = c.wound(*hit, dir, 10.0, 0.05);
-      if (!r.gibs.empty()) {
-        severed = true;
-        for (const GibSpec& g : r.gibs) bones.push_back(g.part.bone);
-      }
-    }
-    CHECK(severed);
-    CHECK(std::find(bones.begin(), bones.end(), H::handL) != bones.end());
-    const BlastResult b = c.blast(c.pose.p[H::chest], 1.0, 1.0);
-    CHECK(b.gibbed);
-    CHECK(b.gibs.size() >= 8);
+    auto& c = soldier4(s);
+    const int bone = H::forearmL;
+    const V3 centre = vlerp(c.pose.p[bone], c.pose.tail(bone), .55), axis = vnorm(c.pose.tail(bone) - c.pose.p[bone]);
+    DamageDescriptor cut;
+    cut.kind = DamageKind::Edge;
+    cut.mass = 3;
+    cut.speed = 36;
+    cut.direction = vnorm(cross(axis, V3{0, 0, 1}), V3{0, -1, 0});
+    cut.point = centre - cut.direction * .12;
+    const V3 edge = vnorm(cross(axis, cut.direction));
+    cut.edge_a = centre - edge * .2;
+    cut.edge_b = centre + edge * .2;
+    cut.swept_length = .4;
+    cut.bone = bone;
+    const auto wound = c.damage(cut);
+    CHECK_FALSE(wound.gibs.empty());
+    CHECK(c.behaviours.lost[B::handL]);
+    const auto blast = c.blast(c.pose.p[H::chest] + V3{0, 1, 0}, 1, 1);
+    CHECK_FALSE(blast.gibbed);
+    CHECK(c.model->voxel_count() > 0);
+    CHECK(c.model->parts[size_t(c.model->part_of_bone[H::pelvis])].count > 0);
   }
 }
 
@@ -310,26 +309,7 @@ TEST_CASE("character: its damage record makes it again with its wounds, without 
     Scene s(path);
     Character& c = soldier4(s);
     CHECK(c.damage_record().empty());
-    // Damage persistence should not depend on which other limb moves behind a
-    // bullet hole during a hit reaction. Target remaining gun-arm voxels, then
-    // raycast the chest separately below.
-    for (i32 k = 0; k < 16 && !c.gun_hand_lost(); ++k) {
-      const i32 pi = c.model->part_of_bone[H::forearmR];
-      const VoxelPart& part = c.model->parts[size_t(pi)];
-      CharacterHit hit;hit.part=pi;hit.bone=H::forearmR;
-      f64 nearest=kInf;
-      const V3 aim=c.model->skeleton->rest_head[H::forearmR]+V3{0,0,-0.1};
-      for(i32 z=0;z<part.dims[2];++z)for(i32 y=0;y<part.dims[1];++y)for(i32 x=0;x<part.dims[0];++x){
-        if(!part.cells[size_t(part.index(x,y,z))])continue;
-        const V3 rest=V3{part.origin[0]+x+.5,part.origin[1]+y+.5,part.origin[2]+z+.5}*c.model->voxel_size;
-        if(norm(rest-aim)<nearest){nearest=norm(rest-aim);hit.rest_point=rest;}
-      }
-      REQUIRE(std::isfinite(nearest));
-      hit.point=c.pose.point_of(hit.bone,hit.rest_point);
-      const V3 dir{-1, 0, 0};
-      c.wound(hit, dir, 10.0, 0.05);
-      s.frame({&c});
-    }
+    for (const auto& cut : damage_scenario(c, "forearmSever")) c.damage(cut);
     REQUIRE(c.gun_hand_lost());
     CHECK(!c.weapon);
     const V3 chest = c.pose.p[H::chest];

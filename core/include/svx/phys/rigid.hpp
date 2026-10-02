@@ -572,6 +572,10 @@ void joint_stillness();  // joined bodies count towards sleep together (sleep_up
   // ---- targets (target.cpp): per target, its rows this substep
   struct TargetPrep {
     bool on = false;
+    i32 ia = -1;  // optional physical anchor
+    f64 ma = 0.0;
+    M3 Ia;
+    V3 ra;
     i32 ib = -1;          // the body (awake)
     f64 mb = 0.0;
     M3 Ib;

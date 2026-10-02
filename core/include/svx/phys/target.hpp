@@ -37,6 +37,8 @@ struct Target {
   Kind kind = Kind::Point;
   V3 local;           // (Point) the point in the body frame, relative to its centre of mass
   TargetDrive drive;
+  i64 reference_body = 0;  // point target attached to another body; zero means world
+  V3 reference_local;
   // the solver's state: the accumulated impulses of its spring and its damper (world: N s, N m s;
   // warm start), and what its spring gave the body in the last substep (N, N m)
   V3 imp, imp_d;

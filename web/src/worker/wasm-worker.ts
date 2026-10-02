@@ -169,6 +169,10 @@ interface SvxModule {
   _svx_characters_skin(e: number): number;
   _svx_characters_prop(e: number): number;
   _svx_raycast_shot(e: number, ox: number, oy: number, oz: number, dx: number, dy: number, dz: number, max: number, out10: number): number;
+  _svx_attach_character_prop(e:number,id:number,archetype:number,point:number,socket:number,style:number):number;
+  _svx_detach_character_prop(e:number,id:number,point:number,reason:number):number;
+  _svx_set_pedestrian_loadouts(e:number,armed:number,carrying:number):void;
+  _svx_damage_character(e: number, id: number, descriptor: number, count: number): number;
   _svx_wound_character(e: number, id: number, x: number, y: number, z: number, r: number, energy: number): number;
   // (modules from before the people's gibs and blood have none of these)
   _svx_blood?(e: number): number;
@@ -1128,6 +1132,22 @@ async function handle(cmd: EngineCommand): Promise<void> {
       const m = await ensureModule();
       const p = cmd.pedestrians;
       m._svx_set_pedestrians(eng, p.enabled ? 1 : 0, p.count | 0, p.nearRadius, p.radius, p.bodies | 0, p.maxDeep | 0);
+      break;
+    }
+    case 'attachProp':
+      if(mod&&loaded)withString(cmd.archetype,a=>withString(cmd.socket,s=>mod!._svx_attach_character_prop(eng,cmd.id,a,cmd.point,s,cmd.style)));
+      break;
+    case 'detachProp':
+      if(mod&&loaded)mod._svx_detach_character_prop(eng,cmd.id,cmd.point,cmd.reason);
+      break;
+    case 'pedestrianLoadouts':
+      if(mod&&loaded)mod._svx_set_pedestrian_loadouts(eng,cmd.armed,cmd.carrying);
+      break;
+    case 'damageCharacter': {
+      if (!mod || !loaded) break;
+      const values = [cmd.kind, ...cmd.pos, ...cmd.direction, cmd.mass, cmd.speed, cmd.diameter ?? .009, cmd.area ?? .001, 1, 1, .1, 1, 100000, 24, -1, cmd.construction ?? 0, ...cmd.pos, ...cmd.pos];
+      const p = mod._malloc(200);
+      try { mod.HEAPF64.set(values, p >>> 3); mod._svx_damage_character(eng, cmd.id >>> 0, p, 25); } finally { mod._free(p); }
       break;
     }
     case 'woundCharacter':

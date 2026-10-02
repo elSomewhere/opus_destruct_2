@@ -36,7 +36,7 @@
 #include <string>
 #include <vector>
 
-#include "svx/anim/behaviour/injuries.hpp"
+#include "svx/anim/damage/state.hpp"
 #include "svx/anim/behaviour/senses.hpp"
 #include "svx/anim/body/humanoid.hpp"
 #include "svx/anim/motion/plan.hpp"
@@ -75,7 +75,8 @@ class Behaviours {
 
   MotionPlan& plan;
   HumanoidBody& body;
-  Injuries injuries;
+  DamageState damage;
+  const Capabilities& capabilities() const { return damage.capabilities(); }
   Surroundings surroundings;
   SupportPolygon support;
   BodyMode mode = BodyMode::Animated;

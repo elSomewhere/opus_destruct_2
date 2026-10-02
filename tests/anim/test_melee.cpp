@@ -133,6 +133,7 @@ TEST_CASE("melee: every knife attack reaches a body in front of it") {
     REQUIRE(hit);
     CHECK(hit->limb == Limb::Blade);
     INFO("the blade " << vdist(hit->pos, target) << " m from the target");
+    MESSAGE(nm << " tip " << hit->pos.x << "," << hit->pos.y << "," << hit->pos.z << " error " << vdist(hit->pos, target));
     CHECK(vdist(hit->pos, target) < 0.3);
   }
 }

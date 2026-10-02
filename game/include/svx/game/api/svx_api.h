@@ -289,6 +289,18 @@ const float* svx_blood_drops(svx_engine* e);
 int svx_blood_stain_count(svx_engine* e);
 const float* svx_blood_stains(svx_engine* e);
 int svx_raycast_shot(svx_engine* e, double ox, double oy, double oz, double dx, double dy, double dz, double max_dist, double* out10);
+/* SI damage command: 25 doubles: kind (projectile=0, edge=1, point=2, blunt=3,
+ * blast=4, crush=5), point xyz, direction xyz, mass kg, speed m/s, diameter m,
+ * contact area m2, sharpness, alignment, swept edge length m, blast radius m,
+ * pressure Pa, fragment count, bone (-1: infer), construction (FMJ=0, expanding=1,
+ * buckshot=2), edge start xyz, edge end xyz. Invalid commands have no effect.
+ * All three commands below are logged for replay/lockstep. */
+// Returns 19 values: 6 leg, 6 arm, trunk, neck, consciousness, vigor, pain, speed limit, mobility.
+int svx_character_capabilities(svx_engine* e, unsigned id, double* out19);
+int svx_damage_character(svx_engine* e, unsigned id, const double* descriptor, int count);
+int svx_attach_character_prop(svx_engine* e, unsigned id, const char* archetype, int point, const char* socket, int style);
+int svx_detach_character_prop(svx_engine* e, unsigned id, int point, int reason);
+void svx_set_pedestrian_loadouts(svx_engine* e, double armed_share, double carrying_share);
 int svx_wound_character(svx_engine* e, unsigned id, double x, double y, double z, double radius, double energy);
 
 /* The number of doubles svx_stats writes. */

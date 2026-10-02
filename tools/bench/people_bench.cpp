@@ -20,6 +20,8 @@
 #include <vector>
 
 #include "svx/anim/system.hpp"
+#include "svx/anim/characters/humans.hpp"
+#include "svx/anim/physics/world_collision.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/game/game.hpp"
 #include "svx/procgen/drive_city.hpp"
@@ -49,7 +51,61 @@ f64 pct(std::vector<f64> v, f64 q) {
 
 }  // namespace
 
+int wound_bench() {
+  using namespace anim;
+  for (bool deep : {false, true}) {
+    World world;
+    VoxelGrid grid;
+    grid.h = .125;
+    for (int x = -16; x < 16; ++x)
+      for (int y = -16; y < 16; ++y) grid.fill_column(x, y, -2, 1, make_vox(MaterialId::Rock, true));
+    grid.compact();
+    world.load(std::move(grid));
+    FlatGround shallow;
+    WorldCollision collision(world);
+    const auto human = make_civilian(7);
+    double wound_ms = 0, tick_ms = 0;
+    size_t removed = 0;
+    for (int sample = 0; sample < 32; ++sample) {
+      CharacterOptions options;
+      options.model = human.model;
+      options.collision = deep ? static_cast<const CollisionWorld*>(&collision) : &shallow;
+      options.backend = deep ? BodyBackend::Deep : BodyBackend::Shallow;
+      options.world = deep ? &world : nullptr;
+      options.seed = 7;
+      Character c(options);
+      c.place({0, 0, deep ? .0625 : 0}, kPi / 2);
+      c.begin(1.0 / 60);
+      if (deep) world.tick();
+      c.end();
+      const V3 at = c.body.parts[B::thighL]->x;
+      auto hit = c.raycast(at + V3{0, 1, 0}, {0, -1, 0}, 2);
+      if (!hit) return 2;
+      DamageDescriptor d;
+      d.kind = DamageKind::Projectile;
+      d.point = hit->point;
+      d.direction = {0, -1, 0};
+      auto start = std::chrono::steady_clock::now();
+      const auto result = c.damage(d);
+      wound_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+      removed += result.removed.size();
+      start = std::chrono::steady_clock::now();
+      for (int i = 0; i < 120; ++i) {
+        c.begin(1.0 / 60);
+        if (deep) world.tick();
+        c.end();
+      }
+      tick_ms += std::chrono::duration<double, std::milli>(std::chrono::steady_clock::now() - start).count();
+      c.unbound();
+    }
+    std::printf("{\"backend\":\"%s\",\"wounds\":32,\"woundMs\":%.9f,\"characterTickMs\":%.9f,\"removedCells\":%zu}\n", deep ? "deep" : "shallow", wound_ms / 32,
+                tick_ms / (32 * 120), removed);
+  }
+  return 0;
+}
+
 int main(int argc, char** argv) {
+  if (argc > 1 && std::string(argv[1]) == "--wounds") return wound_bench();
   f64 seconds = 30.0, speed = 8.0;
   u64 seed = 11;
   bool seed_given = false;

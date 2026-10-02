@@ -69,6 +69,7 @@ struct ActionEvent {
   f64 t = 0.0;
   std::string name;
   Limb limb = Limb::None;
+  std::string feature;
 };
 
 // Pose: held postures (idles, guard, talk); Act: one-shots on top.
@@ -85,11 +86,14 @@ struct ActionDef {
   // How far (m, horizontally from the root, at body scale 1) the strike lands without moving in:
   // a target further away makes the body step into it (the pelvis drives forward with the
   // strike; punches also lean the trunk in). 0: none.
+  f64 step_distance = .36;  // maximum forward support step, scaled by build
   f64 reach = 0.0;
   // Kicks: the foot's pitch (rad) at the strike (-0.6 pointed, > 0 toes up: a push kick).
   std::optional<f64> kick_pitch;
   // Needs a prop in the right hand (a knife).
-  std::optional<PropKind> prop;
+  std::vector<std::string> requires_tags;
+  bool free_hands = false, two_hands = false, reverse_grip = false;
+  f64 minimum_leg = .25, minimum_arm = .2;
   f64 target_height = 1.5;  // untargeted strikes aim here, metres at height scale 1
   i32 lead_side = 0;       // combat support step: -1 left lead, +1 right lead; 0 no step
   f64 support_turn = 0.12; // outward angle of the lead foot (rad)

@@ -115,6 +115,7 @@ class HumanoidBody {
   // matter) and, from the target `dt` seconds before, how fast they move; and the local rotations
   // the physics lacks (clavicles, the neck's share, toes).
   void track(const WorldPose& target, const Pose& local, const WorldPose* prev = nullptr, f64 dt = 0.0);
+  void refresh_mass();
   void apply_tone();          // muscle stiffness and damping from tone
   void compensate_gravity();  // feed-forward muscle torques that hold each limb's weight (scaled by hold_weight)
   // Writes the bodies' pose into `out` (all 23 bones): bodies give their bones; the neck takes a

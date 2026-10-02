@@ -367,6 +367,24 @@ bool World::Impl::apply_link_impulse(ArticulationId id, u16 link, const V3& poin
   return true;
 }
 
+bool World::Impl::set_link_mass(ArticulationId id, u16 link, f64 mass, const V3& inertia) {
+  ArticulationRec* a = art(id);
+  Body* b = a ? art_link(*a, link) : nullptr;
+  if (!b || b->link->kinematic || !std::isfinite(mass) || mass <= 0 || !finite3(inertia) || inertia.x <= 0 || inertia.y <= 0 || inertia.z <= 0) return false;
+  b->mass = mass;
+  b->inv_mass = 1 / mass;
+  b->inertia = M3{};
+  b->inv_inertia = M3{};
+  b->inertia.m[0] = inertia.x;
+  b->inertia.m[4] = inertia.y;
+  b->inertia.m[8] = inertia.z;
+  b->inv_inertia.m[0] = 1 / inertia.x;
+  b->inv_inertia.m[4] = 1 / inertia.y;
+  b->inv_inertia.m[8] = 1 / inertia.z;
+  wake_articulation(id);
+  return true;
+}
+
 bool World::Impl::lose_link(ArticulationId id, u16 link, f64 mass_scale) {
   ArticulationRec* a = art(id);
   Body* b = a ? art_link(*a, link) : nullptr;
@@ -466,6 +484,17 @@ void World::Impl::apply_articulation_controls() {
         }
         it->local = C.target_local[k];
       }
+      i64 reference = 0;
+      if (k < C.target_reference.size() && k < C.target_reference_local.size() && C.target_reference[k] >= 0 &&
+          size_t(C.target_reference[k]) < a.links.size() && finite3(C.target_reference_local[k]) && norm(C.target_reference_local[k]) < 8.0) {
+        if (const Body* b = art_link(a, u16(C.target_reference[k])); b && b->id != it->body) reference = b->id;
+      }
+      if (reference != it->reference_body) {
+        it->imp = it->imp_d = V3{};
+        it->step = 0;
+      }
+      it->reference_body = reference;
+      if (reference) it->reference_local = C.target_reference_local[k];
       TargetDrive d = C.targets[k];
       if (!finite3(d.pos) || !finite3(d.vel) || !finite_q(d.rot) || !finite3(d.up) || !std::isfinite(d.stiffness) || !std::isfinite(d.damping) ||
           !std::isfinite(d.max))
@@ -489,7 +518,7 @@ using world_detail::Rd;
 
 // v1: links (their state, flags), joints (anchors as they are now, limits, muscle), targets (and
 // their drives), rules, control, host data
-constexpr u8 kArticulationVersion = 1;
+constexpr u8 kArticulationVersion = 2;
 
 void put_drive(std::vector<u8>& out, const TargetDrive& d) {
   out.push_back(static_cast<u8>((d.on ? 1 : 0) | (d.axes[0] ? 2 : 0) | (d.axes[1] ? 4 : 0) | (d.axes[2] ? 8 : 0) | (d.tilt_only ? 16 : 0)));
@@ -619,6 +648,8 @@ std::vector<u8> World::Impl::articulation_record(const ArticulationRec& a) const
     }
     put3(out, local);
     put_drive(out, k < C.targets.size() ? C.targets[k] : TargetDrive{});
+    put32(out, k < C.target_reference.size() ? u32(C.target_reference[k] + 1) : 0);
+    put3(out, k < C.target_reference_local.size() ? C.target_reference_local[k] : V3{});
   }
   put32(out, static_cast<u32>(a.collide.size()));
   for (const auto& [x, y] : a.collide) {
@@ -633,7 +664,8 @@ std::vector<u8> World::Impl::articulation_record(const ArticulationRec& a) const
 }
 
 bool World::Impl::read_articulation_record(Rd& in, ArticulationSaved* out) const {
-  if (in.u8_() != kArticulationVersion) return false;
+  const u8 version = in.u8_();
+  if (version < 1 || version > kArticulationVersion) return false;
   ArticulationSaved& s = *out;
   s.id = in.u32_();
   s.desc.group = in.u32_();
@@ -714,6 +746,11 @@ bool World::Impl::read_articulation_record(Rd& in, ArticulationSaved* out) const
     s.desc.targets.push_back(T);
     s.control.targets.push_back(d);
     s.control.target_local.push_back(T.local);
+    const u32 reference = version >= 2 ? in.u32_() : 0;
+    const V3 local = version >= 2 ? in.v3() : V3{};
+    if (!in.ok || reference > nl || !finite3(local)) return false;
+    s.control.target_reference.push_back(i32(reference) - 1);
+    s.control.target_reference_local.push_back(local);
   }
   const u32 nc = in.u32_();
   if (!in.ok || u64(nc) * 8 > in.b.size()) return false;

@@ -25,11 +25,13 @@ struct Walk {
 // (the original's rifle: its attach points)
 PropPtr rifle() {
   auto p = std::make_shared<Prop>();
-  p->kind = PropKind::Rifle;
+  p->tags = {"firearm", "long_firearm", "two_handed"};
   p->support = V3{0, 0.3 * 0.8, 0.03};
   p->stock = V3{0, -0.43 * 0.8, 0.05};
   p->muzzle = V3{0, 0.68 * 0.8, 0.068};
   p->magazine = V3{0, 0.12 * 0.8, -0.06};
+  p->model = make_rifle()->model;
+  p->sockets = {{"primary", p->grip}, {"secondary", p->support}};
   return p;
 }
 

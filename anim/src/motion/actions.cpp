@@ -84,8 +84,14 @@ ActionDef mirror_action(const ActionDef& def, std::string name) {
   out.layer = def.layer;
   out.targeted = def.targeted;
   out.reach = def.reach;
+  out.step_distance = def.step_distance;
   out.kick_pitch = def.kick_pitch;
-  out.prop = def.prop;
+  out.requires_tags = def.requires_tags;
+  out.free_hands = def.free_hands;
+  out.two_hands = def.two_hands;
+  out.reverse_grip = def.reverse_grip;
+  out.minimum_leg = def.minimum_leg;
+  out.minimum_arm = def.minimum_arm;
   out.target_height = def.target_height;
   out.lead_side = -def.lead_side;
   out.support_turn = def.support_turn;
@@ -226,7 +232,7 @@ std::vector<ActionDef> build() {
     // a knife fighter's guard: the blade low and forward, the free hand up in front
     ActionDef& a = def("knifeGuard", 1.4, 0.2, 0.25);
     a.lead_side = -1;
-    a.prop = PropKind::Knife;
+    a.requires_tags = {"short_blade"};
     a.layer = ActionLayer::Pose;
     a.loop = true;
     a.set(C::HandR, {k(0, {0.17, 0.28, 0.02}), k(0.7, {0.19, 0.3, 0.05}), k(1.4, {0.17, 0.28, 0.02})});
@@ -351,9 +357,9 @@ std::vector<ActionDef> build() {
     a.targeted = true;
     a.lead_side = -1;
     a.reach = 0.66;
-    a.prop = PropKind::Knife;
+    a.requires_tags = {"short_blade"};
     a.target_height = 1.2;
-    a.set(C::HandR, {k(0, {0.2, 0.2, 0.0}), k(0.16, {0.38, 0.12, -0.08}, inout), k(0.6, {0.2, 0.2, 0.0})});
+    a.set(C::HandR, {k(0, {0.2, 0.2, 0.0}), k(0.16, {0.25, 0.25, 0.1}, inout), k(0.6, {0.2, 0.2, 0.0})});
     a.set(C::HandRrot, {k(0, {0, 90, 0}), k(0.6, {0, 90, 0})});
     a.set(C::StrikeR, {k(0, 0), k(0.16, 0), k(0.28, 1, inout), k(0.34, 1), k(0.58, 0, out)});
     a.set(C::ElbowR, {k(0, {0.6, -0.4, -0.8}), k(0.6, {0.6, -0.4, -0.8})});
@@ -371,7 +377,7 @@ std::vector<ActionDef> build() {
     a.targeted = true;
     a.lead_side = -1;
     a.reach = 0.62;
-    a.prop = PropKind::Knife;
+    a.requires_tags = {"short_blade"};
     a.target_height = 1.2;
     a.set(C::HandR, {k(0, {0.2, 0.2, 0.0}), k(0.14, {0.46, 0.3, 0.22}, inout), k(0.3, {-0.12, 0.46, 0.05}, inout), k(0.6, {0.2, 0.2, 0.0}, inout)});
     a.set(C::StrikeR, {k(0, 0), k(0.14, 0), k(0.22, 0.75, inout), k(0.3, 0.3), k(0.6, 0)});
@@ -388,7 +394,7 @@ std::vector<ActionDef> build() {
     a.targeted = true;
     a.lead_side = -1;
     a.reach = 0.62;
-    a.prop = PropKind::Knife;
+    a.requires_tags = {"short_blade"};
     a.target_height = 1.0;
     a.set(C::HandR, {k(0, {0.18, 0.12, -0.12}), k(0.2, {0.2, -0.02, -0.2}, out), k(0.7, {0.18, 0.12, -0.12})});
     a.set(C::HandRrot, {k(0, {-40, 90, 0}), k(0.7, {-40, 90, 0})});
@@ -408,7 +414,7 @@ std::vector<ActionDef> build() {
     a.targeted = true;
     a.lead_side = -1;
     a.reach = 0.62;
-    a.prop = PropKind::Knife;
+    a.requires_tags = {"short_blade"};
     a.target_height = 1.2;
     a.set(C::HandR, {k(0, {0.2, 0.2, 0.0}), k(0.16, {-0.08, 0.4, 0.28}, inout), k(0.25, {0.12, 0.48, 0.14}, inout), k(0.34, {0.4, 0.36, -0.08}), k(0.64, {0.2, 0.2, 0.0}, inout)});
     a.set(C::StrikeR, {k(0, 0), k(0.16, 0), k(0.25, 0.9, inout), k(0.32, 0.3), k(0.64, 0)});
@@ -422,10 +428,12 @@ std::vector<ActionDef> build() {
   {
     // shove / rifle jab: both hands (or the weapon) driven forward
     ActionDef& a = def("riflePush", 0.55, 0.05, 0.15);
+    a.requires_tags = {"long_firearm"};
+    a.set(C::StrikeR, {k(0, 0), k(.1, 0), k(.2, 1), k(.3, .6), k(.5, 0)});
     a.targeted = true;
     a.lead_side = -1;
     a.reach = 0.7;
-    a.set(C::WeaponPos, {k(0, {0, 0, 0}), k(0.1, {0, -0.08, 0}), k(0.2, {0, 0.32, 0.02}, inout), k(0.26, {0, 0.3, 0.02}), k(0.52, {0, 0, 0}, out)});
+    a.set(C::WeaponPos, {k(0, {0, 0, 0}), k(0.1, {0, -0.24, -0.04}), k(0.2, {0, 0.32, -0.1}, inout), k(0.26, {0, 0.3, -0.1}), k(0.52, {0, 0, 0}, out)});
     a.set(C::WeaponRot, {k(0, {0, 0, 0}), k(0.2, {-8, 0, 0}), k(0.52, {0, 0, 0})});
     a.set(C::Chest, {k(0, {0, 0, 0}), k(0.1, {4, 0, -8}), k(0.2, {-10, 0, 6}, inout), k(0.52, {0, 0, 0})});
     a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.2, {0, 0.12, -0.02}, inout), k(0.52, {0, 0, 0}, out)});
@@ -742,6 +750,82 @@ std::vector<ActionDef> build() {
     a.set(C::Chest, {k(0, {0, 0, 0}), k(0.2, {4, 0, 0}), k(0.35, {-2, 0, 0}), k(0.5, {4, 0, 0}), k(0.65, {-2, 0, 0}), k(0.8, {4, 0, 0}), k(1.6, {0, 0, 0})});
     a.set(C::ClavR, {k(0, {0, 0, 0}), k(0.35, {0, -8, 0}), k(0.65, {0, -8, 0}), k(1.6, {0, 0, 0})});
     a.set(C::ClavL, {k(0, {0, 0, 0}), k(0.35, {0, 8, 0}), k(0.65, {0, 8, 0}), k(1.6, {0, 0, 0})});
+  }
+  // Shared street strikes: clear windup, committed contact, visible follow-through.
+  struct Strike {
+    const char* name;
+    const char* tag;
+    const char* feature;
+    V3 wind, follow;
+    f64 duration;
+    bool two, reverse;
+  };
+  constexpr Strike strikes[] = {{"reverseStab", "short_blade", "tip", {.28, .12, .46}, {.1, .46, -.12}, .85, false, true},
+                                {"reverseSlash", "short_blade", "edge", {.4, .18, .3}, {-.12, .43, -.12}, .88, false, true},
+                                {"bladeChop", "long_blade", "edge", {.24, .13, .48}, {.12, .5, -.24}, 1.2, false, false},
+                                {"bladeDiagonal", "long_blade", "edge", {.42, .18, .35}, {-.16, .5, -.2}, 1.15, false, false},
+                                {"bladeBackhand", "long_blade", "edge", {-.15, .33, .26}, {.42, .4, -.08}, 1.15, false, false},
+                                {"bladeThrust", "long_blade", "tip", {.3, .12, .05}, {.14, .55, .04}, 1.05, false, false},
+                                {"clubOverhead", "club", "surface", {.26, .12, .48}, {.14, .5, -.22}, 1.2, false, false},
+                                {"clubForehand", "club", "surface", {.43, .14, .22}, {-.15, .45, -.14}, 1.15, false, false},
+                                {"clubBackhand", "club", "surface", {-.12, .32, .2}, {.44, .43, -.1}, 1.15, false, false},
+                                {"clubJab", "club", "pommel", {.23, .1, .06}, {.18, .52, .05}, .85, false, false},
+                                {"batSwing", "club", "surface", {.24, .18, .2}, {-.08, .4, -.06}, 1.8, true, false},
+                                {"batOverhead", "club", "surface", {.12, .22, .38}, {.1, .4, -.16}, 1.85, true, false},
+                                {"batButtJab", "club", "pommel", {.26, .12, .05}, {.14, .5, .08}, .95, true, false}};
+  for (const auto& s : strikes) {
+    ActionDef& a = def(s.name, s.duration, .14, .25);
+    a.requires_tags = {s.tag};
+    a.two_hands = s.two;
+    a.reverse_grip = s.reverse;
+    a.targeted = true;
+    a.reach = s.reverse ? .3 : std::string_view(s.feature) == "pommel" ? (s.two ? .4 : .5) : .9;
+    a.step_distance = s.reverse ? .52 : s.two && std::string_view(s.feature) == "pommel" ? .5 : .36;
+    a.target_height = 1.25;
+    a.lead_side = -1;
+    const f64 t = s.duration;
+    const V3 guard{.2, .28, .08};
+    a.set(C::HandR, {k(0, {guard.x, guard.y, guard.z}), k(t * .25, {s.wind.x, s.wind.y, s.wind.z}), k(t * .52, {s.follow.x, s.follow.y, s.follow.z}, inout),
+                     k(t, {guard.x, guard.y, guard.z}, inout)});
+    if (s.reverse)
+      a.set(C::HandRrot, {k(0, {35, 60, 0}), k(t * .25, {50, 70, -15}), k(t * .52, {130, 30, 0}), k(t, {35, 60, 0})});
+    else if (s.two)
+      a.set(C::HandRrot, {k(0, {0, 20, 0}), k(t * .25, {20, 25, -5}), k(t * .52, {-20, 25, -25}), k(t, {0, 20, 0})});
+    else
+      a.set(C::HandRrot, {k(0, {0, 60, 0}), k(t * .25, {20, 80, -25}), k(t * .52, {-20, 80, 35}), k(t, {0, 60, 0})});
+    a.set(C::ElbowR, {k(0, {.8, -.3, -.4}), k(t, {.8, -.3, -.4})});
+    a.set(C::HandL, {k(0, {-.12, .28, .27}), k(t, {-.12, .28, .27})});
+    a.set(C::Chest, {k(0, {0, 0, 0}), k(t * .25, {4, -5, -28}), k(t * .52, {-12, 5, 32}), k(t, {0, 0, 0})});
+    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(t * .25, {0, 0, -15}), k(t * .52, {-4, 0, 20}), k(t, {0, 0, 0})});
+    a.set(C::Crouch, {k(0, .18), k(t * .52, .3), k(t, .18)});
+    a.set(C::StrikeR, {k(0, 0), k(t * .27, 0), k(t * .42, s.reverse ? 1.15 : .9, inout), k(t * .56, s.reverse ? .95 : .5), k(t * .75, 0)});
+    a.events = {{t * .44, "strike", Limb::Blade, s.feature}};
+  }
+  for (const auto& spec : std::vector<std::pair<std::string, std::string>>{
+           {"bladeGuard", "long_blade"}, {"clubGuard", "club"}, {"batStance", "club"}, {"propBlock", "blocking"}}) {
+    ActionDef& a = def(spec.first.c_str(), spec.first == "propBlock" ? .8 : 1.4, .2, .25);
+    a.requires_tags = {spec.second};
+    a.two_hands = spec.first == "batStance";
+    a.lead_side = -1;
+    a.layer = spec.first == "propBlock" ? ActionLayer::Act : ActionLayer::Pose;
+    a.loop = a.layer == ActionLayer::Pose;
+    guard_hands(a, 0, a.duration);
+    a.set(C::HandR, {k(0, {.18, .32, .25}), k(a.duration, {.18, .32, .25})});
+    a.set(C::HandRrot, {k(0, {20, 70, -20}), k(a.duration, {20, 70, -20})});
+  }
+  for (const auto* name : {"overcommitRecover", "fumble", "releaseForFall"}) {
+    ActionDef& a = def(name, 1.1, .16, .28);
+    a.lead_side = -1;
+    a.set(C::HandR, {k(0, {.28, .35, -.18}), k(.5, {.3, .2, -.1}), k(1.1, {.18, .22, .05})});
+    a.set(C::Chest, {k(0, {-16, 0, 20}), k(.5, {-8, 0, 8}), k(1.1, {0, 0, 0})});
+    if (a.name == "releaseForFall") a.events = {{.1, "release", Limb::None}};
+  }
+  for (auto& a : list) {
+    if (a.name == "pockets" || a.name == "armsCrossed" || a.name == "checkWatch" || a.name == "handsFolded" || a.name == "handsBehind") a.free_hands = true;
+    for (auto& e : a.events)
+      if (e.limb == Limb::Blade && e.feature.empty()) e.feature = a.name == "stab" || a.name == "gutStab" ? "tip" : "edge";
+    for (auto& e : a.events)
+      if (e.limb == Limb::Muzzle) e.feature = "muzzle";
   }
   return list;
 }

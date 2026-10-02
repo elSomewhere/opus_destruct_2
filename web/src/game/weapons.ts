@@ -197,7 +197,9 @@ export class Weapons {
       .then((hit: RaycastHit | null) => {
         if (!hit) return;
         if (hit.character) {
-          this.engine.woundCharacter(hit.character, hit.pos, radius, energy);
+          const pellet = energy < 250;
+          const mass = pellet ? .0035 : .008;
+          this.engine.damageCharacter(hit.character, hit.pos, dir, mass, Math.sqrt(2 * energy / mass), pellet ? .0084 : .009, pellet ? 2 : 0);
           this.effects.bloodHit(hit.pos, dir);
           return;
         }

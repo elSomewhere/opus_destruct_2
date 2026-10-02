@@ -49,6 +49,7 @@ void CharacterSystem::on_load(World& w) {
   rebind(w);
   // (a new grid: the world's articulations went with the old one, and so do the characters)
   chars_.clear();
+  props = std::make_shared<PropRegistry>(collision_.get());
 }
 
 CharacterSystem::Entry* CharacterSystem::entry(CharacterId id) {
@@ -87,6 +88,9 @@ CharacterId CharacterSystem::spawn(const CharacterDesc& d) {
   o.palette = d.palette;
   o.collision = collision_.get();
   o.weapon = d.weapon;
+  o.loadout = d.loadout;
+  o.wield = d.wield;
+  o.prop_registry = props;
   o.health = d.health;
   o.seed = d.seed;
   o.mass = d.mass;
@@ -161,7 +165,7 @@ void CharacterSystem::record(World& w) {
     if (!c.bound()) continue;
     const ArticulationId id = c.articulation();
     // (the dead with their wounds: a corpse shot again is recorded again)
-    if (id == e.recorded && c.alive() == e.recorded_alive && (c.alive() || c.geometry_version == e.recorded_geometry)) continue;
+    if (id == e.recorded && c.alive() == e.recorded_alive && c.alive()) continue;
     w.set_articulation_data(id, encode_record(e.kind, c.alive(), c.health, e.data, c.alive() ? std::vector<u8>{} : c.damage_record()));
     e.recorded = id;
     e.recorded_alive = c.alive();
@@ -208,6 +212,9 @@ void CharacterSystem::take_back(World& w) {
     o.palette = d.palette;
     o.collision = collision_.get();
     o.weapon = d.weapon;
+    o.loadout = d.loadout;
+    o.wield = d.wield;
+    o.prop_registry = props;
     o.health = d.health;
     o.seed = d.seed;
     o.mass = d.mass;
@@ -364,6 +371,8 @@ void CharacterSystem::level_of_detail(World& w) {
 }
 
 void CharacterSystem::step(World& w, f64 /*dt*/) {
+  props->collision(collision_.get());
+  props->update(w.config().dt);
   const auto t0 = std::chrono::steady_clock::now();
   rebind(w);
   if (chars_.empty()) {
@@ -417,6 +426,20 @@ u64 CharacterSystem::state_hash() const {
       h = mix64(h, bits(p.z));
     }
     h = mix64(h, bits(c.health));
+    for (u8 byte : c.damage_record()) h = mix64(h, byte);
+  }
+  for (const auto& [id, p] : props->all()) {
+    h = mix64(h, id);
+    h = mix64(h, u64(p->location));
+    h = mix64(h, p->character);
+    h = mix64(h, u64(p->point));
+    h = mix64(h, u64(p->style));
+    for (char ch : p->archetype->id) h = mix64(h, u8(ch));
+    for (f64 v : {p->pos.x, p->pos.y, p->pos.z, p->rotation.x, p->rotation.y, p->rotation.z, p->rotation.w, p->velocity.x, p->velocity.y, p->velocity.z,
+                  p->state.condition, p->state.strap})
+      h = mix64(h, bits(v));
+    for (const auto& part : p->model().parts)
+      for (u8 cell : part.cells) h = mix64(h, cell);
   }
   return h;
 }
@@ -425,6 +448,16 @@ std::optional<CharacterSystem::Hit> CharacterSystem::raycast(const V3& origin, c
   std::optional<Hit> best;
   f64 bd = max_dist;
   for (const Entry& e : chars_) {
+    for (const auto& prop : e.c->attachments().slots)
+      if (prop) {
+        std::array<f32, 16> matrix{};
+        write_rigid(matrix.data(), prop->pos, prop->rotation, {});
+        if (auto hit = raycast_model(prop->model(), matrix, origin, dir, bd)) {
+          hit->bone = -1;
+          bd = hit->distance;
+          best = Hit{e.id, *hit};
+        }
+      }
     const std::optional<CharacterHit> h = e.c->raycast(origin, dir, bd);
     if (h && h->distance < bd) {
       bd = h->distance;

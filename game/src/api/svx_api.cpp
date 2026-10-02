@@ -914,6 +914,70 @@ int svx_raycast_shot(svx_engine* e, double ox, double oy, double oz, double dx, 
   return h.character ? 2 : 1;
 }
 
+int svx_character_capabilities(svx_engine* e, unsigned id, double* out) {
+  if (!e || !out || !e->eng.characters()) return 0;
+  const auto* c = e->eng.characters()->get(id);
+  if (!c) return 0;
+  const auto& a = c->capabilities();
+  const double values[] = {a.legs[0].support,
+                           a.legs[0].drive,
+                           a.legs[0].control,
+                           a.legs[1].support,
+                           a.legs[1].drive,
+                           a.legs[1].control,
+                           a.arms[0].strength,
+                           a.arms[0].control,
+                           a.arms[0].grip,
+                           a.arms[1].strength,
+                           a.arms[1].control,
+                           a.arms[1].grip,
+                           a.trunk,
+                           a.neck,
+                           a.consciousness,
+                           a.vigor,
+                           a.pain,
+                           a.max_speed,
+                           double(a.mobility)};
+  std::copy(values, values + 19, out);
+  return 1;
+}
+int svx_damage_character(svx_engine* e, unsigned id, const double* v, int count) {
+  if (!e || !v || count != 25) return 0;
+  for (int i = 0; i < count; ++i)
+    if (!std::isfinite(v[i])) return 0;
+  if (v[0] < 0 || v[0] > 6 || v[0] != std::floor(v[0]) || v[16] < 0 || v[16] > 512 || v[16] != std::floor(v[16]) || v[17] < -1 || v[17] > 22 ||
+      v[17] != std::floor(v[17]) || v[18] < 0 || v[18] > 2 || v[18] != std::floor(v[18]))
+    return 0;
+  anim::DamageDescriptor d;
+  d.kind = anim::DamageKind(int(v[0]));
+  d.point = {v[1], v[2], v[3]};
+  d.direction = {v[4], v[5], v[6]};
+  d.mass = v[7];
+  d.speed = v[8];
+  d.diameter = v[9];
+  d.area = v[10];
+  d.sharpness = v[11];
+  d.alignment = v[12];
+  d.swept_length = v[13];
+  d.radius = v[14];
+  d.pressure = v[15];
+  d.fragments = int(v[16]);
+  d.bone = int(v[17]);
+  d.construction = anim::ProjectileConstruction(int(v[18]));
+  d.edge_a = {v[19], v[20], v[21]};
+  d.edge_b = {v[22], v[23], v[24]};
+  return e->eng.damage_character(id, d) ? 1 : 0;
+}
+int svx_attach_character_prop(svx_engine* e, unsigned id, const char* archetype, int point, const char* socket, int style) {
+  return e && archetype && socket && point >= 0 && point < 9 && style >= 0 && style <= 5 &&
+         e->eng.attach_prop(id, archetype, anim::AttachPoint(point), socket, anim::WieldStyle(style));
+}
+int svx_detach_character_prop(svx_engine* e, unsigned id, int point, int reason) {
+  return e && point >= 0 && point < 9 && reason >= 0 && reason < 9 && e->eng.detach_prop(id, anim::AttachPoint(point), anim::ReleaseReason(reason));
+}
+void svx_set_pedestrian_loadouts(svx_engine* e, double armed, double carrying) {
+  if (e) e->eng.set_loadout_shares(armed, carrying);
+}
 int svx_wound_character(svx_engine* e, unsigned id, double x, double y, double z, double radius, double energy) {
   return e->eng.wound_character(id, V3{x, y, z}, radius, energy) ? 1 : 0;
 }

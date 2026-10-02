@@ -210,6 +210,14 @@ export class EngineClient {
     this.send({ type: 'woundCharacter', id, pos, radius, energy });
   }
 
+  attachProp(id:number,archetype:string,point=0,socket='primary',style=0):void {this.send({type:'attachProp',id,archetype,point,socket,style});}
+  detachProp(id:number,point=0,reason=0):void {this.send({type:'detachProp',id,point,reason});}
+  pedestrianLoadouts(armed:number,carrying:number):void {this.send({type:'pedestrianLoadouts',armed,carrying});}
+
+  damageCharacter(id: number, pos: Vec3, direction: Vec3, mass: number, speed: number, diameter: number, construction = 0): void {
+    this.send({type: 'damageCharacter', id, kind: 0, pos, direction, mass, speed, diameter, construction});
+  }
+
   /** The last pose message handled (once per frame). */
   frameAck(seq: number): void {
     this.send({ type: 'frameAck', seq });

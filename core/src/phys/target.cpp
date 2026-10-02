@@ -65,15 +65,28 @@ void RigidWorld::prepare_target(size_t k, f64 dt, const std::vector<M3>& Iw, con
   };
   if (t.kind == Target::Kind::Point) {
     P.r = rotate(B.q, t.local);
-    const V3 C = B.x + P.r - D.pos;
+    V3 goal = D.pos;
     P.vel = D.vel;
+    if (t.reference_body) {
+      const auto ref = std::lower_bound(bodies.begin(), bodies.end(), t.reference_body, [](const auto& b, i64 id) { return b->id < id; });
+      if (ref == bodies.end() || (*ref)->id != t.reference_body || ref == it) return;
+      P.ia = i32(ref - bodies.begin());
+      const Body& A = **ref;
+      P.ma = A.inv_mass;
+      P.Ia = Iw[size_t(P.ia)];
+      P.ra = rotate(A.q, t.reference_local);
+      goal = A.x + P.ra;
+      P.vel = V3{};
+    }
+    const V3 C = B.x + P.r - goal;
     for (int a = 0; a < 3; ++a) {
       if (!D.axes[a]) continue;
       V3 e;
       e[a] = 1.0;
       const V3 re = cross(P.r, e);
       P.axis[P.rows] = e;
-      row(P.mb + dot(re, P.Ib * re), C[a]);
+      const V3 ae = cross(P.ra, e);
+      row(P.mb + dot(re, P.Ib * re) + (P.ia >= 0 ? P.ma + dot(ae, P.Ia * ae) : 0.0), C[a]);
     }
   } else {
     // how far the body is turned past its target (world); tilting only: its up axis onto the
@@ -123,6 +136,11 @@ void RigidWorld::prepare_target(size_t k, f64 dt, const std::vector<M3>& Iw, con
   if (t.kind == Target::Kind::Point) {
     Bm.v += J * P.mb;
     Bm.w += P.Ib * cross(P.r, J);
+    if (P.ia >= 0) {
+      Body& A = *bodies[size_t(P.ia)];
+      A.v -= J * P.ma;
+      A.w -= P.Ia * cross(P.ra, J);
+    }
   } else {
     Bm.w += P.Ib * J;
   }
@@ -142,12 +160,21 @@ void RigidWorld::solve_target(size_t k) {
     if (point) {
       B.v += J * P.mb;
       B.w += P.Ib * cross(P.r, J);
+      if (P.ia >= 0) {
+        Body& A = *bodies[size_t(P.ia)];
+        A.v -= J * P.ma;
+        A.w -= P.Ia * cross(P.ra, J);
+      }
     } else {
       B.w += P.Ib * J;
     }
   };
   // (the point's velocity relative to the target's; the body's spin)
-  auto rate = [&](const V3& n) { return point ? dot(n, B.v + cross(B.w, P.r) - P.vel) : dot(n, B.w); };
+  auto rate = [&](const V3& n) {
+    if (!point) return dot(n, B.w);
+    const V3 velocity = P.ia >= 0 ? bodies[size_t(P.ia)]->v + cross(bodies[size_t(P.ia)]->w, P.ra) : P.vel;
+    return dot(n, B.v + cross(B.w, P.r) - velocity);
+  };
   // the spring, then the damper, each within its most
   for (int which = 0; which < 2; ++which) {
     if (which == 0 ? !P.spring : !P.damper) continue;

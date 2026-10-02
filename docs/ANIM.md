@@ -1,5 +1,10 @@
 # Characters: svx_anim
 
+Props and anatomical character damage are documented in [PROPS.md](PROPS.md) and
+[WOUNDS.md](WOUNDS.md). The motion/behavior boundary reads `Capabilities`; damage
+state is private to the damage module. The rig remains 23 bones and 16 body parts.
+
+
 Voxel people that move like people and fall like bodies: the character library of the
 "euphoria_3" prototype (TypeScript), ported to C++ as the module `svx_anim` on top of the core.
 A character is
@@ -17,7 +22,7 @@ A character is
 - a `Character` that ties them together with health, hit zones and wounds, and a
   `CharacterSystem` that owns characters in a core `World`. `Brawler` choreographs fist and knife
   fights between two characters; `GibSystem` (`physics/debris`) moves what comes off them - limbs
-  shot off, a body a blast tore apart, a dropped weapon - and their blood (drops that stain the
+  severed, wound fragments - and their blood (drops that stain the
   surfaces they hit).
 
 The port is faithful: the same constants, algorithms, order of operations and random draws as
@@ -112,8 +117,9 @@ policy and `max_deep`.
   hurts it - a car at 40 km/h kills - and the physics knocks it down. Drivers brake for people in
   their path. A shot's ray sees the characters (`raycast_shot`); a round into one is a logged
   command (`wound_character`: a round the host asks for a tick or more after its ray finds a body
-  that moved on along the same line); a blast throws, hurts, kills, tears apart (the body goes:
-  all of it is gibs). What comes off - limbs, pieces, blood - is the game's `GibSystem`'s: gibs
+  that moved on along the same line). Blasts throw and wound the body, with localized
+  fragmentation and structural severing. Coherent bodies remain. Detached pieces
+  and blood use bounded `GibSystem` effects; identified loose props use a persistent pool. Pieces
   are drawn as characters of one matrix, the blood as drops and stains (`Game::blood`).
 - **Population**: every half second, as the traffic: the living out of range go, new people come
   on resident sidewalks out of sight; the dead in range stay (the longest dead beyond ten go),
@@ -171,7 +177,7 @@ characters, melee), those with a body on both paths; bodies in a world (a heavy 
 body down, and the body feels the blow). `svx_game_tests` (`pedestrians:`): people walk the
 sidewalks, wait and cross; replays the same; they come and go with the viewer in bounded memory;
 the dead stay where they fell across the streaming, with their wounds; a car driven into someone
-knocks them down; a rocket among people tears them apart into gibs and blood.
+knocks them down; a rocket wounds and throws people while retaining coherent bodies.
 
 ## 8. Known limits
 

@@ -388,7 +388,7 @@ void FootPlanner::update(f64 dt, const FeetContext& c, f64 prev_phase) {
       const f64 base_lift = f.forced ? 0.07 * k : c.moving ? g.lift : 0.06 * k;
       const f64 step_up = std::abs(rise) > 0.04 * k ? 0.045 * k : 0.0;
       const f64 lift = (base_lift + step_up) * peak + std::max(0.0, rise) * 0.15 * peak + std::max(0.0, f.clear) * sin(kPi * clamp(s * 1.15, 0.0, 1.0));
-      hz.z += lift;
+      hz.z += lift * lerp(.08, 1.0, c.control[f.side < 0 ? 0 : 1]);
       // the sole keeps above what is under and just ahead of the foot on its way (a stair's
       // edge, a kerb): the toe does not stub on it
       if ((step_up > 0.0 || f.clear > 0.0) && s < 0.92) {

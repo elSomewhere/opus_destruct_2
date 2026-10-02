@@ -121,6 +121,7 @@ struct World::Impl {
   bool add_link_velocity(ArticulationId id, u16 link, const V3& dv, const V3& dw);
   bool apply_link_impulse(ArticulationId id, u16 link, const V3& point, const V3& impulse);
   bool lose_link(ArticulationId id, u16 link, f64 mass_scale);
+  bool set_link_mass(ArticulationId id, u16 link, f64 mass, const V3& inertia);
   bool wake_articulation(ArticulationId id);
   bool articulation_asleep(ArticulationId id) const;
   i64 link_body(ArticulationId id, u16 link) const;

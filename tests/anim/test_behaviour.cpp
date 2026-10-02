@@ -143,9 +143,9 @@ TEST_CASE("behaviour: a gut wound folds the body over it and a hand goes to it; 
       hi.bone = H::thighL;
       d.hit_at(hi);
       run(s, d, 3.0);
-      const Injuries& inj = d.behaviours.injuries;
-      CHECK(inj.legL > 0.2);
-      CHECK(inj.legR == 0.0);
+      const auto& inj = d.capabilities();
+      CHECK((1 - inj.legs[0].control) > 0.2);
+      CHECK((1 - inj.legs[1].control) == 0.0);
       CHECK(d.motion.control.limp[0] > 0.2);
     }
   }
@@ -408,8 +408,7 @@ TEST_CASE("behaviour: a heavy blow drops the body; it stays down, then gets up")
     Character& c = s.civilian();
     run(s, c, 0.5);
     const V3 head = c.pose.p[H::head];
-    c.health = 5.0;
-    c.melee(V3{head.x, head.y + 0.1, head.z + 0.05}, V3{0, -1, 0}, HitKind::Blunt, 2.3);
+    c.melee(V3{head.x, head.y + 0.1, head.z + 0.05}, V3{0, -1, 0}, HitKind::Blunt, 3.0);
     CHECK(c.knocked_out);
     f64 lay = 0.0;
     run(s, c, 4.0, 0.0, [&](Character& x, f64, Host&) {
@@ -627,28 +626,19 @@ TEST_CASE("behaviour: a runner catches a foot on a body lying across the way") {
   }
 }
 
-TEST_CASE("behaviour: a leg shot off, the body goes down and does not stand again") {
+TEST_CASE("behaviour: one lost leg permits a hobble but refuses kicks") {
   for (Path path : kPaths) {
-    const std::string pn = path_name(path);
-    INFO("path: " << pn);
     Scene s(path);
-    Character& c = s.soldier();
-    run(s, c, 1.0);
-    auto shoot = [&](i32 bone, i32 times) {
-      for (i32 k = 0; k < times; ++k) {
-        const V3 p = c.pose.p[size_t(bone)], t = c.pose.tail(bone);
-        const V3 mid = (p + t) * 0.5;
-        const std::optional<CharacterHit> hit = c.raycast(V3{mid.x - 3.0, mid.y, mid.z}, V3{1, 0, 0}, 6.0);
-        if (hit && hit->bone == bone) c.wound(*hit, V3{1, 0, 0}, 10.0, 0.07);
-        run(s, c, 0.1);
-      }
-    };
-    shoot(H::shinL, 3);
-    CHECK(c.behaviours.legless);
-    run(s, c, 12.0);
+    auto& c = s.civilian();
+    run(s, c, 1);
+    c.behaviours.lose_limb(B::shinL);
+    run(s, c, 1);
+    CHECK_FALSE(c.behaviours.legless);
+    CHECK(c.capabilities().legs[0].support == 0);
+    CHECK(c.capabilities().legs[1].support > 0);
+    CHECK(c.capabilities().mobility == Mobility::Hobble);
+    CHECK_FALSE(c.motion.play("frontKick"));
     CHECK(c.alive());
-    INFO("pelvis at " << c.pose.p[H::pelvis].z);
-    CHECK(c.pose.p[H::pelvis].z < 0.45 + s.ground);
-    CHECK(c.behaviours.mode != BodyMode::Animated);
+    for (const auto& p : c.pose.p) CHECK(std::isfinite(norm(p)));
   }
 }

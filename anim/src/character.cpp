@@ -7,18 +7,6 @@ namespace svx::anim {
 
 namespace {
 
-// Damage multipliers by bone (rifle rounds ~ 30-40 damage, health 100).
-f64 zone_mult(i32 bone, f64 fallback) {
-  switch (bone) {
-    case H::head: return 4.0;
-    case H::neck: return 3.0;
-    case H::chest: return 1.1;
-    case H::spine: return 1.0;
-    case H::pelvis: return 0.9;
-    default: return fallback;
-  }
-}
-
 bool near_tail(const VoxelPart& p, const V3& tail, f64 s) {
   const i32 nx = p.dims[0], ny = p.dims[1], nz = p.dims[2];
   const f64 r2 = (2.5 * s) * (2.5 * s);
@@ -44,12 +32,25 @@ Character::Character(const CharacterOptions& o)
       behaviours(motion, body, o.seed),
       pose(o.model->skeleton),
       prev_pose(o.model->skeleton),
-      weapon(o.weapon),
       health(o.health),
       max_health(o.health),
+      effects(o.collision),
       switch_from_(o.model->skeleton),
       rng_(o.seed * 7919.0 + 13.0) {
-  motion.weapon = weapon;
+  bare_total_ = body.total_mass;
+  owns_registry_ = !o.prop_registry;
+  if (o.prop_registry) motion.props.registry = o.prop_registry;
+  motion.props.registry->collision(o.collision);
+  motion.props.owner = o.tag;
+  motion.props.wield = o.wield;
+  for (i32 i = 0; i < kBodyCount; ++i) {
+    const auto& b = *body.parts[size_t(i)];
+    bare_mass_[size_t(i)] = b.mass;
+    bare_inertia_[size_t(i)] = {1 / b.inv_i.x, 1 / b.inv_i.y, 1 / b.inv_i.z};
+  }
+  if (o.weapon) weapon = o.weapon;
+  for (const auto& entry : o.loadout) swap(prop_archetype(entry.archetype), entry.point, entry.socket, entry.style);
+  update_load();
   skin.assign(size_t(model->skeleton->count) * 16, 0.0f);
   for (const VoxelPart& p : model->parts) part_full_.push_back(p.count);
   whole_ = model;
@@ -60,7 +61,10 @@ Character::Character(const CharacterOptions& o)
 }
 
 // (its articulation is its host's to remove: a character outlived by its world does not touch it)
-Character::~Character() = default;
+Character::~Character() {
+  for (const auto& p : motion.props.slots)
+    if (p && p->location == PropLocation::Attached) motion.props.registry->retire(p);
+}
 
 bool Character::down() const {
   const BodyMode m = behaviours.mode;
@@ -138,14 +142,28 @@ void Character::place(const V3& pos, f64 yaw) {
 
 void Character::set_root(const V3& pos, f64 yaw) {
   if (!alive() || controlled()) return;
-  motion.set_root(pos, yaw);
+  const V3 delta = pos - motion.root_pos;
+  const f64 length = hypot2(delta.x, delta.y), limit = capabilities().max_speed * last_dt_ / (1 + .35 * motion.load_fraction);
+  V3 allowed = pos;
+  if (length > limit && length > 0) {
+    allowed.x = motion.root_pos.x + delta.x * limit / length;
+    allowed.y = motion.root_pos.y + delta.y * limit / length;
+  }
+  motion.set_root(allowed, yaw);
 }
 
 std::vector<AnimEvent> Character::take_events() {
   std::vector<AnimEvent> ev = motion.take_events();
   if (behaviours.physical)
     for (AnimEvent& e : ev)
-      if (e.limb != Limb::None) e.pos = limb_pos(e.limb);
+      if (e.limb != Limb::None) {
+        e.pos = limb_pos(e.limb);
+        if (weapon && !e.feature.empty())
+          if (const auto* feature = weapon->feature(e.feature)) e.pos = prop_point(feature->b);
+      }
+  for (const auto& e : ev)
+    if (e.name == "release")
+      for (auto point : {AttachPoint::LeftHand, AttachPoint::RightHand}) detach(point, ReleaseReason::BreakingFall);
   return ev;
 }
 
@@ -157,7 +175,7 @@ void Character::fire() {
   firing_ = 0.15;
   if (behaviours.physical && weapon) {
     // the kick goes into the hands and the shoulder
-    const bool pistol = weapon->kind == PropKind::Pistol;
+    const bool pistol = weapon->has("handgun");
     const V3 dir = rotate(weapon_rot, V3{0, -1, 0.35});
     const f64 j = pistol ? 1.2 : 2.6;
     body.parts[B::handR]->apply_impulse(dir * j, V3{});
@@ -172,15 +190,22 @@ bool Character::begin_start(f64 dt_in) {
   Behaviours& b = behaviours;
   pending_post_ = false;
   frame_dt_ = dt;
+  crush_cooldown_ = std::max(0.0, crush_cooldown_ - dt);
   if (dt > 0.0) last_dt_ = dt;
   flash = std::max(0.0, flash - dt * 6.0);
   pain_ = std::max(0.0, pain_ - dt);
   firing_ = std::max(0.0, firing_ - dt);
   if (!placed_) place(motion.root_pos, motion.root_yaw);
+  if (owns_registry_) motion.props.registry->update(dt);
+  if (load_revision_ != motion.props.revision) update_load();
+  effects.update(dt);
   if (!alive()) dead_time += dt;
+  behaviours.damage.bleed(dt, alive() ? motion.time : dead_time, pose, effects);
+  if (owns_model && behaviours.damage.stain(*model, pose, dt, alive() ? motion.time : dead_time)) ++geometry_version;
   if (b.mode == BodyMode::Dead && body.system.asleep) {
     // (deep: unless the world woke it - something ran into the body)
     if (!(binding_.bound() && world_ && !world_->articulation_asleep(binding_.id()))) {
+      behaviours.damage.update(dt);
       pose.write_skin(skin.data());
       return false;
     }
@@ -198,7 +223,21 @@ void Character::begin_body() {
   const f64 dt = frame_dt_;
   Behaviours& b = behaviours;
   b.prepare(dt, pose);
+  health = alive() ? max_health * behaviours.damage.health_fraction() : 0;
+  if (capabilities().fatal && alive()) die(nullptr, nullptr, .25);
+  if (capabilities().consciousness < .12 && alive() && b.conscious) knock_out(30);
+  if (capabilities().mobility == Mobility::Kneel) motion.input.stance = Stance::Kneel;
+  if (capabilities().mobility == Mobility::Crawl || capabilities().mobility == Mobility::Immobile) {
+    motion.input.stance = Stance::Prone;
+    if ((b.mode == BodyMode::Animated || b.mode == BodyMode::Reacting) && motion.stance != Stance::Prone) b.collapse(2);
+  }
   motion.update(dt);
+  for (const auto& p : motion.props.slots)
+    if (p) {
+      auto& anchor = *body.parts[size_t(HumanoidBody::body_of_bone(attachment_bone(p->point)))];
+      const V3 com = p->pos + rotate(p->rotation, p->archetype->centre);
+      anchor.torque += cross(com - anchor.x, V3{0, 0, -9.81 * p->archetype->mass});
+    }
   prev_pose.copy_from(pose);
   if (b.physical && backend_ == BodyBackend::Deep && binding_.bound() && world_) {
     // (the drives for the world's tick; begin_push takes them, and what the host did to the
@@ -238,6 +277,28 @@ void Character::end() {
   // spinning about its length reads as a flip)
   if (b.mode == BodyMode::Dying || b.mode == BodyMode::Dead || b.mode == BodyMode::Falling) limit_turns(0.6);
   finish_frame();
+  // World contacts already supplied momentum. Report their work once to wound mechanics.
+  if (alive() && crush_cooldown_ <= 0) {
+    f64 impulse = 0;
+    RigidBody* struck = body.parts[0];
+    for (auto* part : body.parts) {
+      impulse += part->bumped;
+      if (part->bumped > struck->bumped) struck = part;
+    }
+    const f64 dv = impulse / std::max(1.0, body.total_mass);
+    if (dv > 2.2) {
+      DamageDescriptor d;
+      d.kind = DamageKind::Crush;
+      d.mass = body.total_mass;
+      d.speed = dv;
+      d.area = .12;
+      d.point = struck->x;
+      d.direction = vnorm(struck->v, V3{0, 1, 0});
+      d.impulse_delivered = true;
+      crush_cooldown_ = .2;
+      damage(d);
+    }
+  }
 }
 
 void Character::finish_frame() {
@@ -252,6 +313,7 @@ void Character::finish_frame() {
   }
   if (knocked_out && behaviours.conscious && behaviours.mode != BodyMode::Lying) knocked_out = false;
   place_weapon();
+  update_props(frame_dt_);
   pose.write_skin(skin.data());
 }
 
@@ -292,7 +354,7 @@ void Character::place_weapon() {
   }
   // the plan's prop relative to the plan's hand, carried by the body's hand
   const WorldPose& ph = motion.world;
-  const i32 hand = weapon->kind == PropKind::Knife ? motion.weapon_hand : H::handR;
+  const i32 hand = motion.weapon_hand;
   const Quat hq = ph.q[hand];
   const V3 hp = ph.p[hand];
   const Quat inv = conj(hq);
@@ -337,17 +399,7 @@ void Character::knock_out(f64 seconds) {
 void Character::add_injury(i32 bone, f64 severity) {
   const i32 part = HumanoidBody::body_of_bone(bone);
   const f64 s = clamp(severity, 0.0, 1.0);
-  Injury i;
-  i.part = part;
-  i.local = V3{0.0, 0.06 * motion.k, 0.0};
-  i.normal = V3{0, 1, 0};
-  i.zone = zone_of_part(part);
-  i.kind = HitKind::Bullet;
-  i.severity = s;
-  i.lasting = s;
-  i.age = 30.0;
-  i.hold_until = 0.0;
-  behaviours.injuries.add(i);
+  behaviours.damage.old_wound(part, s);
 }
 
 void Character::collision_spheres(std::vector<Obstacle>& out, i32 owner) const { body.spheres_of(behaviours.physical ? nullptr : &pose, out, owner); }
@@ -414,12 +466,23 @@ f64 Character::bounds_radius() const { return alive() ? 1.05 : 1.2; }
 
 std::optional<CharacterHit> Character::raycast(const V3& origin, const V3& dir, f64 max_dist) const {
   const V3 c = bounds_center();
-  const f64 r = bounds_radius();
+  const f64 r = bounds_radius() + 1.5;
   const V3 oc = origin - c;
   const f64 t = -(oc.x * dir.x + oc.y * dir.y + oc.z * dir.z);
   const f64 c2 = oc.x * oc.x + oc.y * oc.y + oc.z * oc.z - t * t;
   if (c2 > r * r || t < -r || t - r > max_dist) return std::nullopt;
-  return raycast_model(*model, skin, origin, dir, max_dist);
+  auto closest = raycast_model(*model, skin, origin, dir, max_dist);
+  for (const auto& item : motion.props.slots)
+    if (item) {
+      std::array<f32, 16> matrix;
+      write_rigid(matrix.data(), item->pos, item->rotation, {});
+      auto hit = raycast_model(item->model(), matrix, origin, dir, closest ? closest->distance : max_dist);
+      if (hit) {
+        hit->bone = -1;
+        closest = hit;
+      }
+    }
+  return closest;
 }
 
 void Character::own_model() {
@@ -429,106 +492,33 @@ void Character::own_model() {
   ++geometry_version;
 }
 
-WoundResult Character::wound(const CharacterHit& hit, const V3& dir, f64 damage, f64 radius, f64 impulse_ns) {
-  WoundResult res;
-  own_model();
-  carve_model(*model, hit.rest_point, radius, nullptr, &res.removed);
-  // the exit side: a round also opens the body a little further along its path
-  const V3 exit = hit.rest_point + rest_dir(hit.bone, dir) * (radius * 2.2);
-  carve_model(*model, exit, radius * 0.8, nullptr, &res.removed);
-  ++geometry_version;
-  const f64 mult = zone_mult(hit.bone, 0.6);
-  res.damage = damage * mult;
-  res.headshot = hit.bone == H::head || hit.bone == H::neck;
-  flash = 1.0;
-  const bool was_alive = alive();
-  health -= res.damage;
-  for (GibSpec& g : sever_after_damage(hit.bone, dir)) res.gibs.push_back(std::move(g));
-  if (was_alive) {
-    pain_ = 0.25;
-    HitInfo info;
-    info.point = hit.point;
-    info.dir = dir;
-    info.force = damage / 30.0;
-    info.kind = HitKind::Bullet;
-    info.impulse_ns = impulse_ns;
-    info.bone = hit.bone;
-    res.zone = hit_at(info);
-    bool head_off = false;
-    for (const GibSpec& g : res.gibs) head_off = head_off || g.part.bone == H::head;
-    if (health <= 0.0 || head_off) {
-      // (a head shot drops the body at once; elsewhere it goes over a moment)
-      die(nullptr, nullptr, res.headshot ? 0.08 : 0.55 + random() * 0.6);
-      res.killed = true;
-    } else if (health < max_health * 0.3 || std::max(behaviours.injuries.legL, behaviours.injuries.legR) > 0.8) {
-      // too hurt to stand: down, writhing
-      if (random() < 0.75) behaviours.collapse(5.0 + random() * 9.0);
-    }
-  } else {
-    HitInfo info;info.point = hit.point;info.dir = dir;info.force = damage / 30.0;
-    info.kind = HitKind::Bullet;info.bone = hit.bone;info.impulse_ns = impulse_ns;
-    res.zone = hit_at(info);
+WoundResult Character::wound(const CharacterHit& hit, const V3& dir, f64 amount, f64 radius, f64 impulse_ns) {
+  DamageDescriptor d;
+  d.kind = DamageKind::Projectile;
+  d.point = hit.point;
+  d.direction = dir;
+  d.bone = hit.bone;
+  const f64 energy = std::max(0.0, amount) / .07;
+  d.mass = .008;
+  d.speed = std::sqrt(2 * energy / d.mass);
+  d.diameter = clamp(radius * .2, .004, .02);
+  if (impulse_ns > 0 && energy > 0) {
+    d.mass = impulse_ns * impulse_ns / (2 * energy);
+    d.speed = 2 * energy / impulse_ns;
   }
-  return res;
+  return damage(d);
 }
-
 WoundResult Character::melee(const V3& point, const V3& dir, HitKind kind, f64 force) {
-  WoundResult res;
-  if (!alive()) {
-    HitInfo info;info.point=point;info.dir=dir;info.kind=kind;info.force=kind==HitKind::Blade?force*0.8:force;
-    res.zone=hit_at(info);
-    return res;
-  }
-  const i32 bone = nearest_bone(point);
-  const f64 mult = kind == HitKind::Blade ? zone_mult(bone, 0.6) * 1.2 : bone == H::head || bone == H::neck ? 1.6 : bone == H::spine ? 1.2 : 0.8;
-  res.damage = (kind == HitKind::Blade ? 22.0 : 6.0) * force * mult;
-  res.headshot = bone == H::head || bone == H::neck;
-  if (kind == HitKind::Blade) {
-    own_model();
-    const Quat q = pose.q[size_t(bone)];
-    // the edge meets the body at its surface: from the bone's axis out towards the blade, a body's
-    // depth at most (a blade stopped by the skin still cuts into it)
-    const V3 a = pose.p[size_t(bone)];
-    const V3 tail = pose.tail(bone);
-    const V3 ab = tail - a;
-    const f64 l2 = dot(ab, ab);
-    const f64 u = l2 > 0.0 ? clamp(dot(point - a, ab) / l2, 0.0, 1.0) : 0.0;
-    const V3 axis = a + ab * u;
-    const V3 out = point - axis;
-    const f64 ol = hypot3(out.x, out.y, out.z);
-    const f64 depth = (bone == H::chest || bone == H::spine || bone == H::pelvis ? 0.09 : bone == H::head ? 0.07 : 0.035) * motion.k;
-    const V3 at = ol > depth ? axis + out * (depth / ol) : point;
-    const V3 rest = model->skeleton->rest_head[size_t(bone)] + rotate(conj(q), at - pose.p[size_t(bone)]);
-    carve_model(*model, rest, 0.028, nullptr, &res.removed);
-    const V3 exit = rest + rest_dir(bone, dir) * 0.035;
-    carve_model(*model, exit, 0.022, nullptr, &res.removed);
-    ++geometry_version;
-    for (GibSpec& g : sever_after_damage(bone, dir)) res.gibs.push_back(std::move(g));
-  }
-  flash = kind == HitKind::Blade ? 1.0 : 0.6;
-  // fists and feet knock people out rather than kill them
-  const bool knockout = kind == HitKind::Blunt && (health - res.damage <= 0.0 || (health - res.damage < max_health * 0.3 && res.headshot && force >= 1.2));
-  health = kind == HitKind::Blunt ? std::max(1.0, health - res.damage) : health - res.damage;
-  HitInfo info;
-  info.point = point;
-  info.dir = dir;
-  info.force = kind == HitKind::Blade ? force * 0.8 : force;
-  info.kind = kind;
-  info.bone = bone;
-  res.zone = hit_at(info);
-  pain_ = 0.3;
-  if (knockout) {
-    knock_out(6.0 + random() * 5.0);
-  } else if (kind == HitKind::Blunt && force >= 2.0 && (res.zone == Zone::Head || res.zone == Zone::Chest)) {
-    // a hard blow puts the body down for a moment
-    behaviours.knock_out(0.8 + random());
-    knocked_out = false;
-  }
-  if (health <= 0.0) {
-    die(nullptr, nullptr, 0.5);
-    res.killed = true;
-  }
-  return res;
+  DamageDescriptor d;
+  d.kind = kind == HitKind::Blade ? DamageKind::Edge : DamageKind::Blunt;
+  d.point = point;
+  d.direction = dir;
+  d.mass = kind == HitKind::Blade ? 1.2 : 2.5;
+  d.speed = clamp(force, 0.0, 8.0) * 6;
+  d.area = .004;
+  d.swept_length = .16;
+  d.bone = nearest_bone(point);
+  return damage(d);
 }
 
 // Direction `dir` (world) in the rest space of bone b.
@@ -551,9 +541,7 @@ std::vector<GibSpec> Character::sever_after_damage(i32 bone, const V3& dir) {
     const VoxelPart& part = m.parts[size_t(pi)];
     if (part.count == 0) continue;
     std::vector<VoxelPart> pieces;
-    if (part_integrity(part) < 0.55) {
-      pieces = detach_subtree(m, b, true);
-    } else {
+    {
       pieces = sever_disconnected(m, pi, 0.045 * (sk.rest_head[H::pelvis].z / 0.97));
       const V3 tail = sk.rest_tail[size_t(b)];
       bool near = false;
@@ -572,11 +560,8 @@ std::vector<GibSpec> Character::sever_after_damage(i32 bone, const V3& dir) {
       if (behaviours.lost[size_t(i)]) continue;
       const i32 pi = m.part_of_bone[size_t(kBodyBone[size_t(i)])];
       const i32 full = pi >= 0 && size_t(pi) < part_full_.size() ? part_full_[size_t(pi)] : 0;
-      if (pi < 0 || full == 0 || m.parts[size_t(pi)].count > 0.4 * full) continue;
+      if (pi < 0 || full == 0 || m.parts[size_t(pi)].count > 0) continue;
       behaviours.lose_limb(i);
-      if (weapon && gun_hand_lost()) {
-        if (std::optional<GibSpec> w = drop_weapon()) out.push_back(std::move(*w));
-      }
     }
   }
   return out;
@@ -606,93 +591,32 @@ void Character::die(const V3* point, const V3* dv, f64 collapse) {
   if (!alive()) return;
   health = std::min(health, 0.0);
   if (!behaviours.physical) wake();
+  for (auto point : {AttachPoint::LeftHand, AttachPoint::RightHand}) detach(point, ReleaseReason::Death);
   behaviours.die(collapse);
   if (point && dv) impulse(*point, *dv, 0.35);
 }
 
 std::optional<GibSpec> Character::drop_weapon() {
-  const PropPtr prop = weapon;
-  if (!prop) return std::nullopt;
-  weapon.reset();
-  motion.weapon.reset();
-  if (!prop->model || prop->model->parts.empty() || prop->model->parts[0].count == 0) return std::nullopt;
-  const RigidBody& hand = *body.parts[B::handR];
-  const V3 v = behaviours.physical ? hand.v : (pose.p[H::chest] - prev_pose.p[H::chest]) * (1.0 / last_dt_);
-  GibSpec g;
-  g.part = prop->model->parts[0];
-  g.voxel_size = prop->model->voxel_size;
-  g.bone_pos = weapon_pos;
-  g.bone_rot = weapon_rot;
-  g.bone_rest_head = V3{};
-  const f64 r0 = random(), r1 = random();
-  g.vel = V3{v.x + (r0 - 0.5), v.y + (r1 - 0.5), v.z + 1.0};
-  const f64 a0 = random(), a1 = random(), a2 = random();
-  g.ang = V3{a0 * 6.0 - 3.0, a1 * 6.0 - 3.0, a2 * 6.0 - 3.0};
-  g.prop = true;
-  return g;
+  if (auto p = motion.props.held()) detach(p->point, alive() ? ReleaseReason::Voluntary : ReleaseReason::Death);
+  return std::nullopt;  // compatibility: persistent loose instances are drawn by their registry
 }
 
 BlastResult Character::blast(const V3& center, f64 radius, f64 strength) {
-  BlastResult res;
-  const V3 c = bounds_center();
-  const f64 d = vdist(c, center);
-  const f64 reach = radius * 3.5;
-  if (d > reach) return res;
-  const f64 f = std::max(0.0, 1.0 - d / reach);
-  const f64 damage = 330.0 * strength * f * f;
-  const V3 away = vnorm(c - center, V3{0, 0, 1});
-  const bool was_alive = alive();
-  health -= damage;
-  flash = 1.0;
-  bool gibbed = false;
-  if (health <= -40.0 || d < radius * 1.3) {
-    gibbed = true;
-    own_model();
-    if (was_alive) die(nullptr, nullptr, 0.0);
-    VoxelModel& m = *model;
-    const Skeleton& sk = *m.skeleton;
-    for (size_t pi = 0; pi < m.parts.size(); ++pi) {
-      const VoxelPart& p = m.parts[pi];
-      if (p.count == 0) continue;
-      const V3 mid = (sk.rest_head[size_t(p.bone)] + sk.rest_tail[size_t(p.bone)]) * 0.5;
-      const f64 j0 = random(), j1 = random();
-      const std::vector<i32> only{static_cast<i32>(pi)};
-      carve_model(m, V3{mid.x + (j0 - 0.5) * 0.1, mid.y + (j1 - 0.5) * 0.1, mid.z}, 0.05, &only, nullptr);
-    }
-    for (i32 b = 0; b < sk.count; ++b) {
-      const i32 pi = m.part_of_bone[size_t(b)];
-      if (pi < 0 || m.parts[size_t(pi)].count == 0) continue;
-      for (VoxelPart& piece : detach_subtree(m, b, false)) {
-        GibSpec g = gib_spec(std::move(piece), away, 4.0 + 8.0 * f * strength);
-        const V3 pc = pose.p[size_t(b)];
-        const V3 out = vnorm(pc - center, V3{0, 0, 1});
-        const f64 r0 = random(), r1 = random(), r2 = random();
-        g.vel = V3{out.x * (5.0 + 9.0 * f) + (r0 - 0.5) * 3.0, out.y * (5.0 + 9.0 * f) + (r1 - 0.5) * 3.0, std::abs(out.z) * 6.0 + 3.0 + r2 * 4.0};
-        res.gibs.push_back(std::move(g));
-      }
-    }
-    ++geometry_version;
-  } else if (health <= 0.0) {
-    if (was_alive) die(nullptr, nullptr, 0.0);
-    blast_push(center, reach, 9.0 * f * strength + 2.0);
-  } else {
-    // thrown: a hit on the trunk, the whole body shoved away, dazed
-    HitInfo info;
-    info.point = pose.p[H::chest];
-    info.dir = away;
-    info.force = 2.5 * f * strength;
-    info.kind = HitKind::Blast;
-    info.bone = H::chest;
-    hit_at(info);
-    // (blast_push falls off with distance itself: near, thrown off the feet; at the edge, a stagger)
-    blast_push(center, reach, 7.0 * strength);
-    pain_ = 0.3;
-  }
-  if (!was_alive && !gibbed) blast_push(center, reach, 9.0 * f * strength);
-  res.damage = damage;
-  res.killed = was_alive && !alive();
-  res.gibbed = gibbed;
-  return res;
+  DamageDescriptor d;
+  d.kind = DamageKind::Blast;
+  d.point = center;
+  d.direction = vnorm(bounds_center() - center, V3{0, 0, 1});
+  d.radius = radius;
+  d.pressure = 100000 * strength;
+  d.mass = 1;
+  d.speed = 30 * std::sqrt(std::max(0.0, strength));
+  auto w = damage(d);
+  BlastResult out;
+  out.damage = w.damage;
+  out.killed = w.killed;
+  out.gibs = std::move(w.gibs);
+  out.gibbed = model->voxel_count() == 0;
+  return out;
 }
 
 // ---- damage kept with the body -------------------------------------------------------------------
@@ -700,39 +624,6 @@ BlastResult Character::blast(const V3& center, f64 radius, f64 strength) {
 // The lost limbs (u16: a bit per body part) and the model's cells gone (encode_damage).
 
 static_assert(kBodyCount <= 16);
-
-std::vector<u8> Character::damage_record() const {
-  u32 lost = 0;
-  for (i32 i = 0; i < kBodyCount; ++i)
-    if (behaviours.lost[size_t(i)]) lost |= 1u << i;
-  const std::vector<u8> cells = owns_model && whole_ ? encode_damage(*whole_, *model) : std::vector<u8>{};
-  if (lost == 0 && cells.empty()) return {};
-  std::vector<u8> out{static_cast<u8>(lost), static_cast<u8>(lost >> 8)};
-  out.insert(out.end(), cells.begin(), cells.end());
-  return out;
-}
-
-bool Character::restore_damage(std::span<const u8> record) {
-  if (record.empty()) return true;
-  if (record.size() < 2) return false;
-  const u32 lost = u32(record[0]) | (u32(record[1]) << 8);
-  const std::span<const u8> cells = record.subspan(2);
-  if (!cells.empty()) {
-    // (on a copy: a record that does not fit leaves the model as it was)
-    ModelPtr m = model->clone();
-    if (!apply_damage(*m, cells)) return false;
-    model = std::move(m);
-    owns_model = true;
-    ++geometry_version;
-  }
-  for (i32 i = 1; i < kBodyCount; ++i)
-    if (lost & (1u << i)) behaviours.lose_limb(i);
-  if (gun_hand_lost() && weapon) {
-    weapon.reset();
-    motion.weapon.reset();
-  }
-  return true;
-}
 
 // ---- where things are -------------------------------------------------------------------------------
 

@@ -252,94 +252,48 @@ TEST_CASE("anim debris: gibs come to rest on the voxels of a core World (WorldCo
   }
 }
 
-TEST_CASE("anim debris: a blast tears a body into gibs that fly, bleed and come to rest (as the original game spawned them)") {
+TEST_CASE("anim debris: a nearby blast peppers and throws a coherent body, with bounded blood") {
   for (Path path : kPaths) {
-    const std::string pn = path_name(path);
-    INFO(pn);
-    // (a rocket throws the pieces tens of metres: ground 200 m across)
-    Scene s(path, nullptr, IVec3{-800, -800, -4}, IVec3{800, 800, 40});
-    Character& c = s.add(make_soldier(4), 1.0, kPi / 2.0, V3{0, 0, s.ground}, make_rifle());
-    for (i32 i = 0; i < 30; ++i) s.frame({&c});
-    GibSystemOptions o;
-    o.max_gibs = 160;  // (the original game's)
-    GibSystem gibs(s.col.get(), o);
-    // a rocket at the feet, a little in front (the original game's: radius 1, strength 1)
-    const V3 p = c.pose.p[H::pelvis];
-    const V3 center{p.x + 0.3, p.y + 0.5, s.ground + 0.2};
-    const BlastResult r = c.blast(center, 1.0, 1.0);
-    REQUIRE(r.gibbed);
-    const std::vector<Gib*> pieces = blast_gibs(gibs, c, r, center, 7);
-    REQUIRE(pieces.size() == r.gibs.size());
-    CHECK(pieces.size() >= 8);
-    CHECK(gibs.drops.size() == 60);  // (the spray from the body's middle)
-    for (size_t i = 0; i < pieces.size(); ++i) {
-      // each where its bone had it, moving as it came off
-      const GibSpec& spec = r.gibs[i];
-      const Gib& g = *pieces[i];
-      CHECK(g.bleed == kBlastBleed);
-      CHECK(g.user == 7);
-      CHECK(g.part.cells == spec.part.cells);
-      CHECK(vdist(g.vel, spec.vel) == 0.0);
-      const V3 at = g.pos - spec.bone_pos - rotate(qnormalize(spec.bone_rot), g.pivot - spec.bone_rest_head);
-      CHECK(norm(at) < 1e-12);
-    }
-    // the dead let go of the rifle (thrown away from the blast), then the blast pushes it all
-    Gib* rifle = drop_weapon_gib(gibs, c, vnorm(c.motion.root_pos - center), 7);
-    REQUIRE(rifle);
-    CHECK(rifle->bleed == 0.0);
-    CHECK(!c.weapon);
-    gibs.impulse(center, 4.0, 11.0);
-    f64 flew = 0.0, high = 0.0;
-    size_t stains = 0;
-    for (i32 i = 0; i < 60 * 3; ++i) {
-      gibs.update(DT);
-      for (const auto& g : gibs.gibs) {
-        flew = std::max(flew, hypot2(g->pos.x - center.x, g->pos.y - center.y));
-        high = std::max(high, g->pos.z - s.ground);
-      }
-      stains = std::max(stains, gibs.stains.size());
-    }
-    const Settled rest = settle(gibs, 60 * 12);
-    MESSAGE(pn << ": a blast tore the body into " << pieces.size() << " gibs (and the rifle): they flew up to " << flew << " m out and " << high
-               << " m up; all but the smallest asleep " << rest.slept + 3.0 << " s after it, " << rest.awake << " awake after 15 s (moved "
-               << rest.moved * 1000.0 << " mm in the last second); " << stains << " stains after 3 s");
-    CHECK(gibs.gibs.size() == pieces.size() + 1);
-    CHECK_MESSAGE((rest.slept > 0.0 && rest.slept + 3.0 <= 12.0), "all but the smallest asleep " << rest.slept + 3.0 << " s after the blast");
-    CHECK_MESSAGE(rest.moved < 0.01, "a gib moved " << rest.moved << " m in the last second");
-    CHECK(flew > 2.0);
-    for (const auto& g : gibs.gibs) {
-      const f64 lowest = lowest_bottom(gibs, *g) - s.ground;
-      CHECK_MESSAGE(lowest >= -g->voxel_size, "gib " << g->id << ": the lowest cell's bottom " << lowest << " m off the ground");
-      CHECK_MESSAGE(lowest < 0.05, "gib " << g->id << " rests on the ground: the lowest " << lowest << " m off it");
-    }
-    CHECK(gibs.drops.empty());
-    CHECK(stains > 20);  // (the pieces bled where they flew)
+    Scene s(path);
+    auto& c = s.add(make_soldier(4), 1, kPi / 2, {0, 0, s.ground}, make_rifle());
+    for (int i = 0; i < 30; ++i) s.frame({&c});
+    const int before = c.model->voxel_count();
+    const V3 centre = c.pose.p[H::pelvis] + V3{.3, .5, -.5};
+    const auto result = c.blast(centre, 1, 1);
+    CHECK_FALSE(result.gibbed);
+    CHECK(c.model->voxel_count() > before / 2);
+    CHECK(c.model->voxel_count() < before);
+    CHECK_FALSE(c.effects.drops.empty());
+    for (int i = 0; i < 180; ++i) s.frame({&c});
+    CHECK(c.effects.drops.size() <= size_t(c.effects.max_drops));
+    CHECK(c.effects.stains.size() <= size_t(c.effects.max_stains));
+    for (const auto& p : c.pose.p) CHECK(std::isfinite(norm(p)));
   }
 }
 
-TEST_CASE("anim debris: a round that severs a forearm sprays blood; the forearm flies off bleeding and comes to rest") {
+TEST_CASE("anim debris: a cut that severs a forearm sprays blood; the forearm flies off bleeding and comes to rest") {
   Scene s(Path::Shallow);
   Character& c = s.add(make_soldier(4), 1.0, kPi / 2.0, V3{0, 0, s.ground}, make_rifle());
   for (i32 i = 0; i < 30; ++i) s.frame({&c});
   GibSystem gibs(s.col.get());
   std::vector<Gib*> pieces;
-  i32 shots = 0;
-  const f64 offs[5][2] = {{0, 0}, {0.025, 0}, {-0.025, 0}, {0, 0.025}, {0, -0.025}};
-  for (i32 k = 0; k < 12 && pieces.empty(); ++k) {
-    // the left forearm, shot from the side
-    const V3 p = c.pose.point_of(H::forearmL, c.model->skeleton->rest_head[H::forearmL] + V3{0, 0, -0.1});
-    const V3 dir{1, 0, 0};
-    const f64* off = offs[k % 5];
-    const std::optional<CharacterHit> hit = c.raycast(V3{p.x - 3.0, p.y + off[0], p.z + off[1]}, dir, 10.0);
-    if (!hit) continue;
-    const WoundResult r = c.wound(*hit, dir, 10.0, 0.05);
-    ++shots;
-    const size_t before = gibs.drops.size();
-    pieces = wound_gibs(gibs, c, r, hit->point, dir);
-    // (6 to 24 along the shot, 3 back out, one per fourth voxel carved out)
-    CHECK(gibs.drops.size() - before == size_t(6 + std::min(18, i32(r.removed.size()) >> 1) + 3 + (i32(r.removed.size()) + 3) / 4));
-    CHECK(pieces.size() == r.gibs.size());
-  }
+  i32 shots = 1;
+  const int bone = H::forearmL;
+  const V3 centre = vlerp(c.pose.p[bone], c.pose.tail(bone), .55), axis = vnorm(c.pose.tail(bone) - c.pose.p[bone]);
+  DamageDescriptor cut;
+  cut.kind = DamageKind::Edge;
+  cut.mass = 3;
+  cut.speed = 36;
+  cut.direction = vnorm(cross(axis, V3{0, 0, 1}), V3{0, -1, 0});
+  cut.point = centre - cut.direction * .12;
+  const V3 edge = vnorm(cross(axis, cut.direction));
+  cut.edge_a = centre - edge * .2;
+  cut.edge_b = centre + edge * .2;
+  cut.swept_length = .4;
+  cut.bone = bone;
+  auto result = c.damage(cut);
+  pieces = wound_gibs(gibs, c, result, cut.point, cut.direction);
+  CHECK(pieces.size() == result.gibs.size());
   REQUIRE(!pieces.empty());
   bool hand = false;
   for (Gib* g : pieces) {

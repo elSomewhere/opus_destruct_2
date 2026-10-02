@@ -613,9 +613,12 @@ void RigidSystem::damp_joint(Joint& j, f64 h) {
 void RigidSystem::solve_attachment(Attachment& a, f64 h) {
   RigidBody* B = a.body;
   const V3 r = RigidBody::rotate_by(B->q, a.local);
-  f64 dx = a.axes[0] ? a.target.x - B->x.x - r.x : 0.0;
-  f64 dy = a.axes[1] ? a.target.y - B->x.y - r.y : 0.0;
-  f64 dz = a.axes[2] ? a.target.z - B->x.z - r.z : 0.0;
+  RigidBody* A = a.reference && !a.reference->gone ? a.reference : nullptr;
+  const V3 ra = A ? RigidBody::rotate_by(A->q, a.reference_local) : V3{};
+  const V3 target = A ? A->x + ra : a.target;
+  f64 dx = a.axes[0] ? target.x - B->x.x - r.x : 0.0;
+  f64 dy = a.axes[1] ? target.y - B->x.y - r.y : 0.0;
+  f64 dz = a.axes[2] ? target.z - B->x.z - r.z : 0.0;
   const f64 c = std::sqrt(dx * dx + dy * dy + dz * dz);
   a.applied = V3{};
   if (c < 1e-9) return;
@@ -623,13 +626,14 @@ void RigidSystem::solve_attachment(Attachment& a, f64 h) {
   dy /= c;
   dz /= c;
   const V3 d{dx, dy, dz};
-  const f64 w = B->inv_mass_at(r, d);
+  const f64 w = B->inv_mass_at(r, d) + (A ? A->inv_mass_at(ra, d) : 0.0);
   if (w <= 0.0) return;
   const f64 compliance = std::isinf(a.stiffness) ? 0.0 : 1.0 / (a.stiffness * h * h);
   f64 p = c / (w + compliance);
   const f64 max = a.max_force * h * h;
   if (p > max) p = max;
   B->apply_pos(d * p, r);
+  if (A) A->apply_pos(d * -p, ra);
   const f64 f = p / (h * h);
   a.applied = d * f;
 }
@@ -637,21 +641,25 @@ void RigidSystem::solve_attachment(Attachment& a, f64 h) {
 void RigidSystem::damp_attachment(Attachment& a, f64 h) {
   RigidBody* B = a.body;
   const V3 r = RigidBody::rotate_by(B->q, a.local);
-  f64 vx = a.axes[0] ? a.target_vel.x - (B->v.x + B->w.y * r.z - B->w.z * r.y) : 0.0;
-  f64 vy = a.axes[1] ? a.target_vel.y - (B->v.y + B->w.z * r.x - B->w.x * r.z) : 0.0;
-  f64 vz = a.axes[2] ? a.target_vel.z - (B->v.z + B->w.x * r.y - B->w.y * r.x) : 0.0;
+  RigidBody* A = a.reference && !a.reference->gone ? a.reference : nullptr;
+  const V3 ra = A ? RigidBody::rotate_by(A->q, a.reference_local) : V3{};
+  const V3 velocity = A ? A->v + cross(A->w, ra) : a.target_vel;
+  f64 vx = a.axes[0] ? velocity.x - (B->v.x + B->w.y * r.z - B->w.z * r.y) : 0.0;
+  f64 vy = a.axes[1] ? velocity.y - (B->v.y + B->w.z * r.x - B->w.x * r.z) : 0.0;
+  f64 vz = a.axes[2] ? velocity.z - (B->v.z + B->w.x * r.y - B->w.y * r.x) : 0.0;
   const f64 s = std::sqrt(vx * vx + vy * vy + vz * vz);
   if (s < 1e-9) return;
   vx /= s;
   vy /= s;
   vz /= s;
   const V3 u{vx, vy, vz};
-  const f64 w = B->inv_mass_at(r, u);
+  const f64 w = B->inv_mass_at(r, u) + (A ? A->inv_mass_at(ra, u) : 0.0);
   if (w <= 0.0) return;
   f64 j = s * std::min(a.damping * h, 1.0 / w);
   const f64 max = a.max_force * h;
   if (j > max) j = max;
   B->apply_impulse(u * j, r);
+  if (A) A->apply_impulse(u * -j, ra);
 }
 
 void RigidSystem::solve_orienter(Orienter& o, f64 h) {

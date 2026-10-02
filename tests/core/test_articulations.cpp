@@ -947,3 +947,36 @@ TEST_CASE("articulations: moving a point attachment changes the contact and surv
   REQUIRE(restored.articulation_state(id, &state));
   CHECK(norm(state.links[0].pos + rotate(state.links[0].rot, offset) - loaded->targets[0].pos) < 0.01);
 }
+
+TEST_CASE("articulations: a relative point target shares momentum and survives saving") {
+  World w;
+  w.load(ground());
+  ArticulationDesc d;
+  d.links = {ball({-.2, 0, 4}, .05, 2), ball({.2, 0, 4}, .05, 1)};
+  d.targets.push_back({1, Target::Kind::Point, {}});
+  const auto id = w.add_articulation(d);
+  REQUIRE(id != 0);
+  auto* control = w.articulation_control(id);
+  control->keep_linear = control->keep_angular = 1;
+  control->targets[0].on = true;
+  control->targets[0].stiffness = 10000;
+  control->targets[0].damping = 150;
+  control->targets[0].max = 800;
+  control->target_reference = {0};
+  control->target_reference_local = {{.4, 0, 0}};
+  w.add_link_velocity(id, 1, {2, 0, 0}, {});
+  for (int i = 0; i < 20; ++i) w.tick();
+  ArticulationState state;
+  REQUIRE(w.articulation_state(id, &state));
+  CHECK(state.links[0].vel.x > .5);
+  CHECK(std::abs(2 * state.links[0].vel.x + state.links[1].vel.x - 2) < 1e-6);
+  CHECK(norm(state.links[1].pos - state.links[0].pos - rotate(state.links[0].rot, V3{.4, 0, 0})) < .02);
+  World restored;
+  restored.load(ground());
+  REQUIRE(restored.load_delta(w.save_delta()));
+  const auto* loaded = restored.articulation_control(id);
+  REQUIRE(loaded);
+  REQUIRE(loaded->target_reference.size() == 1);
+  CHECK(loaded->target_reference[0] == 0);
+  CHECK(norm(loaded->target_reference_local[0] - V3{.4, 0, 0}) < 1e-12);
+}

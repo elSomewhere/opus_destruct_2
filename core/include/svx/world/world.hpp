@@ -652,6 +652,7 @@ class World {
   bool apply_link_impulse(ArticulationId id, u16 link, const V3& point, const V3& impulse);
   // A link lost (a limb shot off): it touches nothing any more and keeps mass_scale of its mass.
   bool lose_link(ArticulationId id, u16 link, f64 mass_scale);
+  bool set_link_mass(ArticulationId id, u16 link, f64 mass, const V3& inertia);
   bool wake_articulation(ArticulationId id);
   bool articulation_asleep(ArticulationId id) const;  // all its links asleep (false: awake, or none)
   // A link's body id (0: none): its joints to pieces (JointAnchor::Kind::Link), queries.

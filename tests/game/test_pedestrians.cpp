@@ -7,6 +7,7 @@
 
 #include "doctest.h"
 #include "svx/anim/system.hpp"
+#include "svx/anim/damage/scenarios.hpp"
 #include "svx/game/game.hpp"
 #include "svx/procgen/drive_city.hpp"
 
@@ -162,7 +163,7 @@ TEST_CASE("pedestrians: the dead stay where they fell - the world keeps a body w
   city(game, 7, 80.0, 8, false);
   const V3 spawn = make_drive_city(7)->spawn_pos();
   const V3 eye{spawn.x, spawn.y, spawn.z + 1.6};
-  // the nearest person, shot (a round no one survives)
+  // A fatal brain channel: energy alone no longer guarantees death through an arbitrary limb.
   u32 victim = 0;
   for (int t = 0; t < 60 * 30 && !victim; ++t) {
     game.tick();
@@ -175,7 +176,19 @@ TEST_CASE("pedestrians: the dead stay where they fell - the world keeps a body w
       const f64 l = std::sqrt(dir.x * dir.x + dir.y * dir.y + dir.z * dir.z);
       const Game::ShotHit h = game.raycast_shot(eye, V3{dir.x / l, dir.y / l, dir.z / l}, 80.0);
       if (h.character != v.id) continue;
-      if (game.wound_character(v.id, h.pos, 0.05, 1.0e5)) {
+      anim::Character* character = game.characters()->get(v.id);
+      REQUIRE(character);
+      anim::DamageDescriptor shot;
+      shot.kind = anim::DamageKind::Projectile;
+      shot.mass = .008;
+      shot.speed = 600;
+      shot.diameter = .009;
+      const auto regions = anim::anatomy_regions(*character->model->skeleton);
+      const auto brain = std::find_if(regions.begin(), regions.end(), [](const auto& v) { return v.kind == anim::VitalKind::Brain; });
+      REQUIRE(brain != regions.end());
+      shot.point = character->pose.point_of(brain->bone, brain->centre) - V3{0, .2, 0};
+      shot.direction = {0, 1, 0};
+      if (game.damage_character(v.id, shot)) {
         victim = v.id;
         best = d;
       }
@@ -300,7 +313,7 @@ TEST_CASE("pedestrians: a car driven into someone knocks them down and hurts the
   CHECK(moved > 1.5);
 }
 
-TEST_CASE("pedestrians: a rocket among people tears them apart - gibs and blood the front end draws") {
+TEST_CASE("pedestrians: a rocket wounds and throws a coherent body, with blood and detached parts") {
   Game game;
   city(game, 7, 80.0, 6, false);
   const V3 spawn = make_drive_city(7)->spawn_pos();
@@ -339,11 +352,77 @@ TEST_CASE("pedestrians: a rocket among people tears them apart - gibs and blood 
     body = body || v.id == who;
   }
   MESSAGE("a rocket at someone's feet: " << gibs << " gibs (" << gib_meshes << " with their meshes), " << drops << " blood drops at most, " << stains << " stains");
-  // (torn apart: the body goes - all of it is gibs now - with its articulation)
-  CHECK(!body);
-  CHECK(game.characters()->get(who) == nullptr);
-  CHECK(gibs >= 4);
+  // Ordinary blasts retain the trunk; detached parts and blood are separate render instances.
+  CHECK(body);
+  REQUIRE(game.characters()->get(who));
+  CHECK(game.characters()->get(who)->model->voxel_count() > 0);
+  CHECK(game.characters()->get(who)->health < game.characters()->get(who)->max_health);
   CHECK(gib_meshes == gibs);
   CHECK(drops > 20);
   CHECK(stains > 10);
+}
+
+#include "svx/game/replay.hpp"
+TEST_CASE("pedestrians: loadouts, runtime attachments and physical damage replay with their render meshes") {
+  auto run = [](CommandLog* record, const CommandLog* replay) {
+    Game game;
+    city(game, 7, 80, 4, false);
+    if (record) game.record_to(record);
+    std::vector<u64> hashes;
+    u32 id = 0;
+    for (int t = 0; t < 240; ++t) {
+      if (replay) {
+        for (const auto& command : replay->commands())
+          if (command.tick == game.ticks()) apply_command(game, command);
+      } else {
+        if (t == 0) game.set_loadout_shares(1, 1);
+        if (t == 60) {
+          const auto ids = game.characters()->ids();
+          REQUIRE_FALSE(ids.empty());
+          id = ids.front();
+          REQUIRE(game.attach_prop(id, "sword", anim::AttachPoint::RightHand));
+          CHECK_FALSE(game.attach_prop(id, "unknown-prop", anim::AttachPoint::Back));
+        }
+        if (t == 100) {
+          auto* c = game.characters()->get(id);
+          REQUIRE(c);
+          for (const auto& d : anim::damage_scenario(*c, "thighShot")) REQUIRE(game.damage_character(id, d));
+        }
+        if (t == 120) REQUIRE(game.detach_prop(id, anim::AttachPoint::RightHand));
+      }
+      game.tick();
+      if (t % 30 == 29) hashes.push_back(game.session_hash());
+    }
+    size_t attached = 0, loose = 0;
+    for (const auto& [id, p] : game.characters()->props->all()) {
+      attached += p->location == anim::PropLocation::Attached;
+      loose += p->location == anim::PropLocation::Loose;
+    }
+    CHECK(attached > 0);
+    CHECK(loose > 0);
+    size_t meshes = 0;
+    for (const auto& view : game.character_views()) meshes += (view.prop_mesh != 0) || ((view.flags & 64) != 0 && view.mesh != 0);
+    CHECK(meshes > 0);
+    const auto snapshot = game.save_delta(), items = game.characters()->props->record_loose();
+    Game restored;
+    city(restored, 7, 80, 0, false);
+    REQUIRE(restored.load_delta(snapshot));
+    REQUIRE(restored.characters());
+    CHECK(restored.characters()->props->record_loose() == items);
+    auto truncated = snapshot;
+    truncated.pop_back();
+    Game untouched;
+    city(untouched, 7, 80, 0, false);
+    const auto before = untouched.world().state_hash();
+    CHECK_FALSE(untouched.load_delta(truncated));
+    CHECK(untouched.world().state_hash() == before);
+    return hashes;
+  };
+  CommandLog log;
+  const auto first = run(&log, nullptr);
+  CommandLog decoded;
+  REQUIRE(CommandLog::parse(log.serialize(), &decoded));
+  CHECK(first == run(nullptr, &decoded));
+  for (auto type : {Command::Type::AttachProp, Command::Type::DetachProp, Command::Type::Damage, Command::Type::Loadouts})
+    CHECK(std::any_of(log.commands().begin(), log.commands().end(), [&](const auto& command) { return command.type == type; }));
 }

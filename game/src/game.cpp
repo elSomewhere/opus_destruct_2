@@ -14,6 +14,8 @@
 #include "svx/base/diag.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/base/rotation.hpp"
+#include "svx/anim/system.hpp"
+#include "svx/anim/damage/record.hpp"
 #include "svx/game/materials.hpp"
 #include "svx/game/replay.hpp"
 #include "svx/world/tunables.hpp"
@@ -152,8 +154,35 @@ void Game::load_streaming(std::shared_ptr<const GameSource> src, f64 h, const St
     for (int k = 0; k < static_cast<int>(VehicleKind::Count); ++k) (void)vehicle_model(static_cast<VehicleKind>(k));
 }
 
+std::vector<u8> Game::save_delta() const {
+  if (!chars_) return world_.save_delta();
+  anim::record::Writer w;
+  w.integer(0x47585653);  // SVXG: host state around the core's unchanged delta.
+  w.integer(1);
+  w.block(world_.save_delta());
+  w.block(chars_->props->record_loose());
+  return w.bytes;
+}
+
 bool Game::load_delta(const std::vector<u8>& bytes) {
-  if (!world_.load_delta(bytes)) return false;
+  anim::record::Reader r{bytes};
+  std::vector<u8> core = bytes;
+  std::shared_ptr<anim::PropRegistry> props;
+  if (bytes.size() >= 8 && r.integer() == 0x47585653) {
+    if (r.integer() != 1) return false;
+    const auto world = r.block(), items = r.block();
+    props = std::make_shared<anim::PropRegistry>();
+    if (!r.done() || !props->restore_loose(items)) return false;
+    core.assign(world.begin(), world.end());
+  }
+  if (!world_.load_delta(core)) return false;
+  if (props) {
+    if (!chars_) {
+      chars_ = std::make_shared<anim::CharacterSystem>();
+      world_.add_system(chars_);
+    }
+    chars_->props = std::move(props);
+  }
   // (its vehicles: from their wheels)
   vehicles_.clear();
   player_vehicle_ = 0;

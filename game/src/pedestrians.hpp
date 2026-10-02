@@ -109,7 +109,19 @@ class Pedestrians {
     bool sent = false;
     std::array<f32, 16> skin{};
   };
-  std::map<u32, GibEntry> gib_meshes_;  // gib id -> its mesh
+  std::map<u32, GibEntry> gib_meshes_;
+  struct EffectRender {
+    GibEntry entry;
+    const anim::Gib* gib = nullptr;
+    u32 palette = 0;
+  };
+  std::map<std::pair<u32, u32>, EffectRender> effect_meshes_;
+  struct PropRender {
+    u32 mesh = 0, palette = 0;
+    std::array<f32, 16> skin{};
+    bool primary = false;
+  };
+  std::map<u64, PropRender> prop_meshes_;  // gib id -> its mesh
   anim::GibSystem* gibs();
   u64 palette_id(const anim::Palette& p);
 

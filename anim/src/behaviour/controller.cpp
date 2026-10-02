@@ -19,7 +19,10 @@ f64 wrap_pi(f64 a) {
 
 size_t region_index(Region r) { return static_cast<size_t>(r); }
 
-bool long_gun(const PropPtr& w) { return w && w->kind != PropKind::Knife && w->kind != PropKind::Pistol; }
+bool primary_occupied(const MotionPlan& p) {
+  const auto item = p.props.held();
+  return item && item->point == AttachPoint::RightHand;
+}
 
 }  // namespace
 
@@ -131,18 +134,7 @@ Zone Behaviours::hit(const HitInfo& info, i32 part, const WorldPose& pose) {
     const Quat q = pose.q[bone];
     const V3 local = rotate(conj(q), info.point - pose.p[bone]) - body.com_local[size_t(part)];
     const V3 nrm = vnorm(rotate(conj(q), d * -1.0));
-    const f64 sev = clamp(0.25 + 0.35 * f, 0.0, 1.0);
-    Injury inj;
-    inj.part = part;
-    inj.local = local;
-    inj.normal = nrm;
-    inj.zone = zone;
-    inj.kind = info.kind;
-    inj.severity = sev;
-    inj.lasting = sev * 0.45;
-    inj.age = 0.0;
-    inj.hold_until = 1.6 + 2.6 * sev + (zone == Zone::Gut || zone == Zone::Chest ? 2.0 : 0.0);
-    injuries.add(inj);
+    damage.reaction(part, local, nrm, info.kind, f);
   }
   // the body flinches from the blow (the eyes close, the shoulders come up), a beat after the blow
   // itself has shown
@@ -244,15 +236,15 @@ void Behaviours::lose_limb(i32 part) {
     if (lost[size_t(i)]) return;
     lost[size_t(i)] = true;
     body.parts[size_t(i)]->lose();
+    damage.lost(i);
     for (i32 j = 1; j < kBodyCount; ++j)
       if (kParentOf[j] == i) self(self, j);
   };
   mark(mark, part);
   const bool leg = part >= B::thighL;
   if (leg) {
-    legless = true;
-    if (part <= B::footL) injuries.legL = 1.0;
-    else injuries.legR = 1.0;
+    legless = (lost[B::thighL] || lost[B::shinL]) && (lost[B::thighR] || lost[B::shinR]);
+    damage.lost(part);
     if (alive) {
       writhing = false;
       collapse(30.0);
@@ -398,6 +390,15 @@ void Behaviours::prepare(f64 dt, const WorldPose& pose) {
   mode_time += dt;
   const f64 kk = k();
   PlanControl& ctl = plan.control;
+  i32 pressed_part = -1;
+  if (const auto& care = capabilities().care; care && care->from_bone && conscious) {
+    const auto bone = size_t(kBodyBone[size_t(care->part)]);
+    const V3 wound = pose.p[bone] + rotate(pose.q[bone], care->local);
+    for (size_t hand = 0; hand < 2; ++hand)
+      if (ctl.arms[hand] && ctl.arms[hand]->weight > .5 && vdist(ctl.arms[hand]->target, wound) < .07 * k() &&
+          vdist(pose.p[hand == 0 ? H::handL : H::handR], wound) < .13 * k())
+        pressed_part = care->part;
+  }
   ctl.reset();
   impact_reflex_.update(V3{}, dt);
   if ((alive && conscious && (mode == BodyMode::Animated || mode == BodyMode::Reacting)) ||
@@ -406,7 +407,8 @@ void Behaviours::prepare(f64 dt, const WorldPose& pose) {
     ctl.chest += impact_reflex_.x * 0.65;
   }
   grip_[0] = grip_[1] = 0.0;
-  injuries.update(dt);
+  damage.update(dt, pressed_part);
+  plan.capabilities = capabilities();
   for (i32 i = 0; i < kBodyCount; ++i) {
     const f64 s = stun_[size_t(i)];
     stun_[size_t(i)] = static_cast<f32>(std::max(0.0, s - dt * (0.9 + 0.8 * s)));
@@ -444,7 +446,8 @@ void Behaviours::prepare(f64 dt, const WorldPose& pose) {
     body_root = plan.root_pos;
   }
   // what is around (walls to hold on to), now and then, more often when it may matter
-  const bool wants = mode != BodyMode::Animated || injuries.pain > 0.3 || injuries.legL + injuries.legR > 0.3;
+  const bool wants =
+      mode != BodyMode::Animated || capabilities().pain > 0.3 || (1 - capabilities().legs[0].control) + (1 - capabilities().legs[1].control) > 0.3;
   surroundings.age += dt;
   if (wants && surroundings.age > (mode == BodyMode::Animated ? 0.4 : 0.12)) surroundings.probe(*plan.collision, body_root_or_plan(), kk, 1.05);
 
@@ -452,14 +455,15 @@ void Behaviours::prepare(f64 dt, const WorldPose& pose) {
   modes(dt, pose);
 
   // ---- the plan's controls ----
-  const Injuries& inj = injuries;
   // injuries: a limp, pain, a hunch
-  ctl.limp[0] = clamp(inj.legL * 1.1, 0.0, 1.0);
-  ctl.limp[1] = clamp(inj.legR * 1.1, 0.0, 1.0);
-  ctl.pain = inj.pain;
-  ctl.fold += inj.trunk * 0.22 * smoothstep(0.12, 0.4, time_ - hit_at_) + (mode == BodyMode::Dying ? 0.25 : 0.0);
+  ctl.limp[0] = clamp((1 - capabilities().legs[0].control) * 1.1, 0.0, 1.0);
+  ctl.limp[1] = clamp((1 - capabilities().legs[1].control) * 1.1, 0.0, 1.0);
+  ctl.pain = capabilities().pain;
+  ctl.fold += (1 - capabilities().trunk) * 0.22 * smoothstep(0.12, 0.4, time_ - hit_at_) + (mode == BodyMode::Dying ? 0.25 : 0.0);
   ctl.crouch += nerves * 0.25;
-  ctl.care = clamp(1.0 - 0.6 * smoothstep(2.2, 5.0, hypot2(plan.velocity.x, plan.velocity.y)) - 0.4 * (plan.input.mood == Mood::Panic ? 1.0 : 0.0) - 0.3 * inj.pain, 0.1, 1.0);
+  ctl.care = clamp(1.0 - 0.6 * smoothstep(2.2, 5.0, hypot2(plan.velocity.x, plan.velocity.y)) - 0.4 * (plan.input.mood == Mood::Panic ? 1.0 : 0.0) -
+                       0.3 * capabilities().pain,
+                   0.1, 1.0);
   if (mode != BodyMode::Animated) ctl.busy = true;
   // the body leads: the plan's pelvis is where the physics has it, its root under the body
   if (physical && (mode == BodyMode::Reacting || mode == BodyMode::Falling || mode == BodyMode::Dying || mode == BodyMode::Dead)) {
@@ -614,7 +618,7 @@ void Behaviours::modes(f64 dt, const WorldPose& pose) {
       align_lying(pose, true);
       if (!conscious && time_ >= down_until_) conscious = true;
       // (face down and hurting, a host that wants it away has it crawl off: the struggle of it)
-      const bool crawl = (writhing || legless) && !plan.lying_on_back() && plan.input.stance == Stance::Prone && mode_time > 1.5;
+      const bool crawl = (writhing || legless || capabilities().mobility == Mobility::Crawl) && plan.input.stance == Stance::Prone && mode_time > 1.5;
       // (on one leg it does not stand again: it crawls, or lies)
       if (alive && conscious && mode_time > 0.8 && ((time_ >= down_until_ && !legless) || crawl)) set_mode(BodyMode::Rising);
       break;
@@ -622,7 +626,8 @@ void Behaviours::modes(f64 dt, const WorldPose& pose) {
     case BodyMode::Rising: {
       writhing = false;
       // gather for a moment, then get up through the stances: briskly unhurt, slowly hurt
-      const f64 hurt = clamp(injuries.pain + 0.6 * std::max(injuries.legL, injuries.legR) + 0.5 * daze_, 0.0, 1.0);
+      const f64 hurt =
+          clamp(capabilities().pain + 0.6 * std::max((1 - capabilities().legs[0].control), (1 - capabilities().legs[1].control)) + 0.5 * daze_, 0.0, 1.0);
       if (mode_time > 0.3 + 0.5 * hurt && plan.down() && plan.stance == Stance::Down && plan.stance_progress() >= 1.0) plan.get_up(lerp(1.45, 0.7, hurt));
       // (up to the host's stance: standing, or prone to crawl away)
       if (mode_time > 0.6 && !plan.down() && plan.stance != Stance::Down && plan.stance == plan.stance_target() && plan.stance_progress() >= 1.0) set_mode(BodyMode::Animated);
@@ -652,7 +657,7 @@ void Behaviours::carry_body(f64 ex, f64 ey, f64 ez, f64 amount) {
 void Behaviours::enter_lying(const WorldPose& pose) {
   set_mode(BodyMode::Lying);
   align_lying(pose);
-  if (down_until_ < time_) down_until_ = time_ + 1.2 + rng_.next() * 1.4 + 2.0 * injuries.pain;
+  if (down_until_ < time_) down_until_ = time_ + 1.2 + rng_.next() * 1.4 + 2.0 * capabilities().pain;
 }
 
 void Behaviours::align_lying(const WorldPose& pose, bool only_if_changed) {
@@ -677,9 +682,10 @@ void Behaviours::align_lying(const WorldPose& pose, bool only_if_changed) {
 }
 
 f64 Behaviours::leg_strength() const {
-  const f64 legs = 1.0 - 0.5 * std::max(injuries.legL, injuries.legR) - 0.2 * std::min(injuries.legL, injuries.legR);
+  const f64 legs = 1.0 - 0.5 * std::max((1 - capabilities().legs[0].control), (1 - capabilities().legs[1].control)) -
+                   0.2 * std::min((1 - capabilities().legs[0].control), (1 - capabilities().legs[1].control));
   const f64 stun = std::max({static_cast<f64>(stun_[B::thighL]), static_cast<f64>(stun_[B::shinL]), static_cast<f64>(stun_[B::thighR]), static_cast<f64>(stun_[B::shinR])});
-  return legless ? 0.0 : clamp(legs * (1.0 - 0.6 * stun) * (1.0 - daze_), 0.0, 1.0);
+  return legless ? 0.0 : clamp(std::max(capabilities().legs[0].support, capabilities().legs[1].support) * legs * (1.0 - 0.6 * stun) * (1.0 - daze_), 0.0, 1.0);
 }
 
 f64 Behaviours::tilt(const WorldPose& pose) const {
@@ -781,7 +787,7 @@ void Behaviours::arms_out(f64 w, f64 /*dt*/) {
   for (i32 i = 0; i < 2; ++i) {
     if (plan.control.arms[size_t(i)]) continue;
     // a long gun stays in the right hand
-    if (i == 1 && long_gun(plan.weapon)) continue;
+    if (!plan.props.free_hand(i == 0)) continue;
     const f64 side = i == 0 ? -1.0 : 1.0;
     const V3 sh = wp.p[size_t(i == 0 ? H::upperarmL : H::upperarmR)];
     // out to the side, a little forward, circling (no higher than the shoulder)
@@ -868,7 +874,6 @@ void Behaviours::catch_fall(f64 dt, const WorldPose& pose) {
 void Behaviours::bracing(f64 dt, const WorldPose& pose) {
   const f64 kk = k();
   PlanControl& ctl = plan.control;
-  const Injuries& inj = injuries;
   // why a hand would go to a wall now (and a reason once found holds a while: a hand does not come
   // and go with every wobble)
   std::optional<BraceWhy> why;
@@ -880,8 +885,9 @@ void Behaviours::bracing(f64 dt, const WorldPose& pose) {
   } else if (mode == BodyMode::Dying && mode_time < dying_for_ * 0.9 && !dying_head_) {
     why = BraceWhy::Slump;
     dir = vnorm(V3{com_vel.x, com_vel.y, 0.0}, V3{cos(body_yaw), sin(body_yaw), 0.0});
-  } else if (mode == BodyMode::Animated && alive && (inj.pain > 0.45 || std::max(inj.legL, inj.legR) > 0.4) && hypot2(plan.velocity.x, plan.velocity.y) < 0.25 &&
-             plan.stance == Stance::Stand && !plan.busy()) {
+  } else if (mode == BodyMode::Animated && alive &&
+             (capabilities().pain > 0.45 || std::max((1 - capabilities().legs[0].control), (1 - capabilities().legs[1].control)) > 0.4) &&
+             hypot2(plan.velocity.x, plan.velocity.y) < 0.25 && plan.stance == Stance::Stand && !plan.busy()) {
     why = BraceWhy::Lean;
   }
   if (!why) {
@@ -901,7 +907,8 @@ void Behaviours::bracing(f64 dt, const WorldPose& pose) {
     const V3 right{sin(body_yaw), -cos(body_yaw), 0.0};
     i32 hand = dot(to_wall, right) > 0.0 ? 1 : 0;
     // (a right hand on a long gun: the left one goes)
-    if (hand == 1 && long_gun(plan.weapon)) hand = 0;
+    if (!plan.props.free_hand(hand == 0)) hand = 1 - hand;
+    if (!plan.props.free_hand(hand == 0)) return;
     const f64 height = *why == BraceWhy::Lean ? 1.25 : *why == BraceWhy::Slump ? 1.05 : 1.2;
     V3 t{s->point.x + s->normal.x * 0.035 * kk, s->point.y + s->normal.y * 0.035 * kk, ground_z + height * kk};
     // (along the wall, towards the hand's side)
@@ -1021,7 +1028,7 @@ void Behaviours::flinch(f64 dt, const WorldPose& pose) {
   ctl.crouch += (0.42 + 0.3 * cover) * w;
   // a hand up between the face and the danger (a two-handed gun: the body hunches over it); under
   // fire both arms cover the head
-  const bool lg = long_gun(plan.weapon);
+  const bool lg = primary_occupied(plan);
   if (!lg || w > 0.9) {
     const i32 hand = lg ? 0 : side_of > 0.0 ? 1 : 0;
     if (!ctl.arms[size_t(hand)] || ctl.arms[size_t(hand)]->weight < 0.5) {
@@ -1053,32 +1060,33 @@ void Behaviours::flinch(f64 dt, const WorldPose& pose) {
 // ---- holding a wound ----------------------------------------------------------------------------
 
 void Behaviours::hold_wound(f64 /*dt*/, const WorldPose& pose) {
-  const Injury* inj = injuries.to_hold();
+  const CareTarget* inj = capabilities().care ? &*capabilities().care : nullptr;
   PlanControl& ctl = plan.control;
   if (!inj || (!conscious && mode != BodyMode::Dying)) return;
   const f64 kk = k();
   const f64 tone = mode == BodyMode::Dying ? clamp(1.0 - mode_time / std::max(0.3, dying_for_), 0.0, 1.0) : 1.0;
   if (tone < 0.1 || dying_head_) return;
   // the free hand, or the other one for an arm
-  const bool lg = long_gun(plan.weapon);
+  const bool lg = primary_occupied(plan);
   const size_t bone = size_t(kBodyBone[size_t(inj->part)]);
   const Quat q = pose.q[bone];
-  const V3 wound = pose.p[bone] + rotate(q, body.com_local[size_t(inj->part)] + inj->local);
+  const V3 wound = pose.p[bone] + rotate(q, (inj->from_bone ? V3{} : body.com_local[size_t(inj->part)]) + inj->local);
   const V3 n = rotate(q, inj->normal);
   i32 hand;
-  if (inj->zone == Zone::ArmL) {
+  if ((inj->part >= B::upperarmL && inj->part <= B::handL)) {
     hand = 1;
-  } else if (inj->zone == Zone::ArmR) {
+  } else if ((inj->part >= B::upperarmR && inj->part <= B::handR)) {
     hand = 0;
   } else {
     const V3 right{sin(body_yaw), -cos(body_yaw), 0.0};
     hand = dot(wound - pose.p[H::pelvis], right) > 0.0 ? 1 : 0;
     if (lg && hand == 1) hand = 0;
   }
-  if (hand == 1 && lg && inj->zone == Zone::ArmL) {
+  if (hand == 1 && lg && (inj->part >= B::upperarmL && inj->part <= B::handL)) {
     // the gun hand lets go of nothing: the wounded arm just hangs
     return;
   }
+  if (!plan.props.free_hand(hand == 0)) return;
   if (ctl.arms[size_t(hand)] && ctl.arms[size_t(hand)]->weight > 0.6) return;
   // a moment to react, then the hand presses on it
   const f64 w = smoothstep(0.12, 0.4, inj->age) * (1.0 - smoothstep(inj->hold_until - 0.6, inj->hold_until, inj->age)) * tone;
@@ -1091,7 +1099,7 @@ void Behaviours::hold_wound(f64 /*dt*/, const WorldPose& pose) {
   ctl.arms[size_t(hand)] = t;
   grip_[size_t(hand)] = 0.35 * w;
   // reaching a leg: the body bends to it
-  if (inj->zone == Zone::LegL || inj->zone == Zone::LegR) {
+  if (inj->part >= B::thighL) {
     const f64 reach = clamp((pose.p[H::chest].z - target.z - 0.5 * kk) / (0.5 * kk), 0.0, 1.0);
     ctl.fold += 0.5 * reach * w;
     ctl.crouch += 0.3 * reach * w;
@@ -1131,7 +1139,6 @@ void Behaviours::drive_pre(f64 dt) {
   const f64 idt = dt > 0.0 ? 1.0 / dt : 0.0;
 
   // ---- tone ----
-  const Injuries& inj = injuries;
   f64 base = 1.0;
   f64 legs = 1.0, arms = 1.0, neck = 1.0, trunk = 1.0;
   switch (mode) {
@@ -1177,17 +1184,22 @@ void Behaviours::drive_pre(f64 dt) {
   // The hand still needs support while returning to rest after an action ends.
   const f64 turn = clamp(norm(qerror(prev_t.q[H::chest], target.q[H::chest])) * idt / 4.0, 0.0, 1.0);
   for (size_t i = 0; i < 2; ++i) {
-    const f64 want = mode == BodyMode::Animated ? std::max({arm_held(i32(i)), plan.effort[i], turn}) : 0.0;
+    f64 load = 0;
+    if (const auto held = plan.props.at(i == 0 ? AttachPoint::LeftHand : AttachPoint::RightHand))
+      load = clamp(held->archetype->mass / 8.0, .2, 1.0);
+    else if (const auto held = plan.props.held(); held && held->style == WieldStyle::TwoHands)
+      load = clamp(held->archetype->mass / 16.0, .2, 1.0);
+    const f64 want = mode == BodyMode::Animated ? std::max({arm_held(i32(i)), plan.effort[i], turn, load}) : 0.0;
     arm_activation_[i] += (want - arm_activation_[i]) * (1.0 - exp(-(want > arm_activation_[i] ? 24.0 : 4.0) * dt));
   }
   auto arm_base = [&](i32 i) { return lerp(arms, std::max(arms, 1.15), arm_activation_[size_t(i)]); };
   std::array<f64, kRegionCount> region_t{};
-  region_t[region_index(Region::Trunk)] = base * trunk * dz * tense * (1.0 - 0.3 * inj.trunk);
-  region_t[region_index(Region::Neck)] = base * neck * dz * tense * (1.0 - 0.3 * inj.head);
-  region_t[region_index(Region::ArmL)] = base * arm_base(0) * dz * (1.0 - 0.65 * inj.armL) * (1.0 + 0.8 * tension_);
-  region_t[region_index(Region::ArmR)] = base * arm_base(1) * dz * (1.0 - 0.65 * inj.armR) * (1.0 + 0.8 * tension_);
-  region_t[region_index(Region::LegL)] = base * legs * dz * (1.0 - 0.45 * inj.legL);
-  region_t[region_index(Region::LegR)] = base * legs * dz * (1.0 - 0.45 * inj.legR);
+  region_t[region_index(Region::Trunk)] = base * trunk * dz * tense * (1.0 - 0.3 * (1 - capabilities().trunk));
+  region_t[region_index(Region::Neck)] = base * neck * dz * tense * (1.0 - 0.3 * (1 - capabilities().neck));
+  region_t[region_index(Region::ArmL)] = base * arm_base(0) * dz * (1.0 - 0.65 * (1 - capabilities().arms[0].strength)) * (1.0 + 0.8 * tension_);
+  region_t[region_index(Region::ArmR)] = base * arm_base(1) * dz * (1.0 - 0.65 * (1 - capabilities().arms[1].strength)) * (1.0 + 0.8 * tension_);
+  region_t[region_index(Region::LegL)] = base * legs * dz * (1.0 - 0.45 * (1 - capabilities().legs[0].control));
+  region_t[region_index(Region::LegR)] = base * legs * dz * (1.0 - 0.45 * (1 - capabilities().legs[1].control));
   region_tone = region_t;
   // a limb that strikes is thrown hard (tensed), one an action moves is firmer
   auto limb_t = [&](Region r) {
@@ -1206,12 +1218,25 @@ void Behaviours::drive_pre(f64 dt) {
   const auto& feet = plan.feet_planner.feet;
   for (i32 i = 1; i < kBodyCount; ++i) {
     const Region r = kRegion[size_t(i)];
-    const f64 t = region_t[region_index(r)] * limb_t(r) * (1.0 - 0.85 * stun_[size_t(i)]);
+    const f64 t = region_t[region_index(r)] * limb_t(r) * (1.0 - 0.85 * stun_[size_t(i)]) * capabilities().muscle[size_t(i)];
     bd.tone[size_t(i)] = static_cast<f32>(t);
     // standing legs are held by the ground, hanging limbs by the muscles
     const bool leg = i >= B::thighL;
     const bool planted = leg && feet[i < B::thighR ? 0 : 1].planted && (mode == BodyMode::Animated || mode == BodyMode::Reacting || mode == BodyMode::Rising);
     bd.hold_weight[size_t(i)] = planted || mode == BodyMode::Lying ? 0.0f : 1.0f;
+  }
+  if (auto held = plan.props.held(); held && held->style == WieldStyle::TwoHands && !held->archetype->has("firearm")) {
+    const bool left = held->point == AttachPoint::RightHand;
+    const size_t side = left ? 0 : 1;
+    if (plan.striking[1 - side]) {
+      bd.parts[left ? B::forearmL : B::forearmR]->ghost = true;
+      bd.parts[left ? B::handL : B::handR]->ghost = true;
+    }
+    if (!plan.control.arms[side] || plan.control.arms[side]->weight < .35) {
+      // The second arm follows the shared grip; it must not fight it with a
+      // separate, strongly driven wrist trajectory during the follow-through.
+      for (i32 part : {left ? B::upperarmL : B::upperarmR, left ? B::forearmL : B::forearmR, left ? B::handL : B::handR}) bd.tone[size_t(part)] *= .15f;
+    }
   }
   bd.apply_tone();
   bd.compensate_gravity();
@@ -1357,17 +1382,29 @@ void Behaviours::drive_pre(f64 dt) {
     }
   }
 
+  // A broken or paralysed leg cannot pin itself to the plan with a foot assist.
+  for (size_t side = 0; side < 2; ++side) {
+    const f64 control = capabilities().legs[side].control;
+    bd.feet[side]->max_force *= control;
+    bd.feet[side]->stiffness *= control;
+    bd.feet_turn[side]->max_torque *= control;
+    bd.feet_turn[side]->stiffness *= control;
+  }
+
   // ---- hands: on the weapon, or where a behaviour sends them ----
   for (i32 i = 0; i < 2; ++i) {
     Attachment& att = *bd.hands[size_t(i)];
     Orienter& turn = *bd.hands_turn[size_t(i)];
     att.enabled = turn.enabled = false;
+    att.reference = nullptr;
+    att.local = bd.com_local[i == 0 ? B::handL : B::handR] * -1;
     const size_t hand_bone = size_t(i == 0 ? H::handL : H::handR);
     const f64 tone = region_t[region_index(i == 0 ? Region::ArmL : Region::ArmR)];
     const std::optional<ArmTask>& task = plan.control.arms[size_t(i)];
     f64 grip = grip_[size_t(i)];
     // the weapon: the gun hand keeps its aim, the support hand its hold
-    const bool on_weapon = plan.weapon && plan.weapon->kind != PropKind::Knife && !plan.weapon_in_hand && (i == 1 || !task || task->weight < 0.35);
+    const auto held = plan.props.held();
+    const bool on_weapon = held && (held->style == WieldStyle::TwoHands || attachment_bone(held->point) == i32(hand_bone)) && (!task || task->weight < .35);
     if (on_weapon && tone > 0.3 && (mode == BodyMode::Animated || mode == BodyMode::Reacting || mode == BodyMode::Rising)) grip = std::max(grip, i == 1 ? 0.8 : 0.6);
     // (an action's hand: a fist thrown at a jaw, a hand on a magazine)
     if (mode == BodyMode::Animated && plan.effort[size_t(i)] > 0.05) grip = std::max(grip, plan.effort[size_t(i)] * (plan.striking[size_t(i)] ? 1.0 : 0.5));
@@ -1386,6 +1423,23 @@ void Behaviours::drive_pre(f64 dt) {
     att.target = w;
     att.target_vel = hv;
     turn.target = target.q[hand_bone];
+    // The support hand follows the physical grip, including the primary arm's
+    // lag under load. Following only the plan would let it slip off a heavy bat.
+    const bool support_grip =
+        on_weapon && held->style == WieldStyle::TwoHands && attachment_bone(held->point) != i32(hand_bone) && !held->archetype->has("firearm");
+    if (support_grip) {
+      if (const auto* socket = held->archetype->socket("secondary")) {
+        const Side side = i == 0 ? Side::L : Side::R;
+        auto& primary = *bd.parts[size_t(HumanoidBody::body_of_bone(attachment_bone(held->point)))];
+        turn.target = held->rotation * socket->rotation * plan.arms.canonical(side);
+        att.local += plan.arms.palm_offset(side);
+        att.target = held->pos + rotate(held->rotation, socket->point);
+        att.reference = &primary;
+        att.reference_local = rotate(conj(primary.q), att.target - primary.x);
+        att.target_vel = primary.v + cross(primary.w, att.target - primary.x);
+        grip = std::max(grip, .9);
+      }
+    }
     const f64 hm = bd.parts[i == 0 ? B::handL : B::handR]->mass;
     att.enabled = true;
     att.stiffness = hm * 2500.0 * grip * std::min(1.0, tone);
@@ -1395,6 +1449,14 @@ void Behaviours::drive_pre(f64 dt) {
     turn.stiffness = 30.0 * grip;
     turn.max_torque = 12.0 * grip;
     turn.damping = 1.5 * grip;
+    if (support_grip) {
+      att.stiffness *= 24;
+      att.damping *= 3;
+      att.max_force *= 8;
+      turn.stiffness *= 2;
+      turn.max_torque *= 2;
+      turn.damping *= 2;
+    }
   }
 
   // writhing on the back: the pain rolls the body from side to side about its length
@@ -1424,14 +1486,37 @@ void Behaviours::drive_post(f64 dt, WorldPose& out) {
   detect_trips(out, dt);
   // (a body gone limp is heavy: no part of it whirls about on an impact)
   bd.system.spin_cap = mode == BodyMode::Dead || mode == BodyMode::Dying || mode == BodyMode::Falling ? 14.0 : 80.0;
+  // Soft tissue dissipates a trunk landing; inert limbs should not spring the body upright.
+  if ((mode == BodyMode::Dying || mode == BodyMode::Dead) && (bd.parts[B::pelvis]->contact || bd.parts[B::chest]->contact)) {
+    bd.system.linear_drag = .002;
+    bd.system.angular_drag = .004;
+  }
   // the dead settle (a body at rest does not keep rocking on its contacts) and sleep
   if (mode == BodyMode::Dead) {
-    const bool slow = bd.system.last_speed < 0.25 || mode_time > 2.5;
+    const bool slow = bd.system.last_speed < 0.25 || mode_time > 2.5 || bd.parts[B::pelvis]->contact || bd.parts[B::chest]->contact;
     bd.system.linear_drag = slow ? 0.05 : 0.98;
     bd.system.angular_drag = slow ? 0.02 : 0.9;
+    // A corpse landing on its trunk has no active rebound. Dissipate the normal
+    // component across the connected mass, including limbs transferring a landing impulse.
+    if (bd.parts[B::pelvis]->contact || bd.parts[B::chest]->contact) {
+      V3 normal = bd.parts[B::chest]->contact ? bd.parts[B::chest]->contact_normal : bd.parts[B::pelvis]->contact_normal;
+      normal = vnorm(normal, V3{0, 0, 1});
+      V3 momentum;
+      f64 mass = 0;
+      for (const auto* p : bd.parts)
+        if (!p->gone) {
+          momentum += p->v * p->mass;
+          mass += p->mass;
+        }
+      const f64 rebound = dot(momentum, normal) / std::max(1.0, mass);
+      if (rebound > .05)
+        for (auto* p : bd.parts)
+          if (!p->gone) p->v -= normal * (rebound * .9);
+    }
     // (once down, the limbs lie where they lie: keeping them out of the trunk would only squeeze a
     // trapped arm out from under the body)
-    bd.system.pairs_enabled = !(mode_time > 1.2 && bd.system.last_speed < 0.6);
+    bd.system.pairs_enabled =
+        bd.system.pairs_enabled && !(bd.parts[B::pelvis]->contact || bd.parts[B::chest]->contact || (mode_time > 1.2 && bd.system.last_speed < 0.6));
     if (mode_time > 1.0) bd.system.try_sleep(0.5);
   }
 }

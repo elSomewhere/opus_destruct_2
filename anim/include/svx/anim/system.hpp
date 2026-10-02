@@ -58,6 +58,8 @@ struct CharacterDesc {
   ModelPtr model;
   Palette palette{};
   PropPtr weapon;
+  std::vector<LoadoutEntry> loadout;
+  WieldProfile wield;
   f64 health = 100.0;
   f64 seed = 1.0;
   f64 mass = 0.0;
@@ -86,6 +88,7 @@ class CharacterSystem final : public WorldSystem {
   i64 memory_bytes() const override;
   u64 state_hash() const override;
 
+  std::shared_ptr<PropRegistry> props = std::make_shared<PropRegistry>();
   CharacterSystemConfig config;
   // The focus points of the level of detail (the player, the camera), set by the host each frame.
   std::vector<V3> focus;

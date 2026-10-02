@@ -151,6 +151,8 @@ class Attachment {
   V3 local;  // the point in the body's frame
   V3 target;
   V3 target_vel;  // velocity of the target (the damping works relative to it)
+  RigidBody* reference = nullptr;  // optional physical anchor; receives the opposite force
+  V3 reference_local;
   f64 stiffness = kInf;  // N/m (kInf: rigid)
   f64 max_force = kInf;  // N
   f64 damping = 0.0;     // damping force per unit velocity of the point relative to the target's (N s/m)

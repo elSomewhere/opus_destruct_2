@@ -1,3 +1,4 @@
+#include "svx/anim/damage/anatomy.hpp"
 #include "svx/anim/voxel/sculpt.hpp"
 
 #include <algorithm>
@@ -402,7 +403,10 @@ ModelPtr Sculptor::finish(const FinishOptions& opts) {
     part.version = 0;
     parts.push_back(std::move(part));
   }
-  return std::make_shared<VoxelModel>(skeleton, s, std::move(parts), opts.name);
+  auto model = std::make_shared<VoxelModel>(skeleton, s, std::move(parts), opts.name);
+  if (sk.count == 23) fill_interior(*model);
+  for (auto& part : model->parts) part.version = 0;
+  return model;
 }
 
 }  // namespace svx::anim

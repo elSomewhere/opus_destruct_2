@@ -484,9 +484,7 @@ void Pedestrians::move(Walker& w, anim::Character& c, f64 dt) {
       if (remaining < 0.5) {
         at_corner(w, w.mind == Mind::Flee);
       } else if (d > 1e-3) {
-        const anim::Injuries& inj = c.behaviours.injuries;
-        const f64 limp = std::max(inj.legL, inj.legR);
-        want_speed = w.speed * (1.0 - 0.5 * limp) * (1.0 - 0.3 * inj.pain);
+        want_speed = std::min(w.speed, c.capabilities().max_speed);
         want_dir = V3{(point.x - w.pos.x) / d, (point.y - w.pos.y) / d, 0.0};
         has_dir = true;
         // (setting off away from where the body faces: it turns first, then walks)
@@ -617,8 +615,6 @@ void Pedestrians::blows(Walker& w, anim::Character& c) {
   const f64 dv = bump / std::max(1.0, c.body.total_mass);
   if (dv < 2.2) return;
   w.touched = true;
-  const f64 damage = (dv - 2.0) * 14.0;
-  c.health -= damage;
   c.flash = 1.0;
   w.fear = 2.0;
   w.threat = c.bounds_center();
@@ -633,8 +629,7 @@ void Pedestrians::blows(Walker& w, anim::Character& c) {
       w.threat = b->x;
     }
   }
-  if (c.health <= 0.0 && c.alive()) {
-    c.health = 0.0;
+  if (c.capabilities().fatal && c.alive()) {
     c.die();
     noise(w.pos, 18.0, kDeath, w.id);
   } else if (w.mind != Mind::Flee) {
@@ -668,7 +663,7 @@ void Pedestrians::blast(const V3& pos, f64 radius, f64 energy) {
     }
     const bool was = c->alive();
     const anim::BlastResult r = c->blast(pos, radius, strength);
-    if (anim::GibSystem* gs = gibs()) anim::blast_gibs(*gs, *c, r, pos, palette_id(c->palette));
+
     if (was && r.killed) noise(c->bounds_center(), 18.0, kDeath);
     if (r.gibbed) torn.push_back(id);
     const auto it = walkers_.find(id);
@@ -676,7 +671,7 @@ void Pedestrians::blast(const V3& pos, f64 radius, f64 energy) {
     it->second.touched = true;
     if (was && r.killed) it->second.alive = false;
   }
-  // (torn apart: all of it is gibs now - the body goes, as the original's actor did)
+  // Only a body with no coherent geometry left is removed.
   for (u32 id : torn) {
     walkers_.erase(id);
     cs.despawn(id);
@@ -713,7 +708,7 @@ bool Pedestrians::wound(u32 id, const V3& from, const V3& pos, f64 radius, f64 e
   // This hitscan API supplies energy, not projectile mass: use an 8 g reference
   // round and p = sqrt(2 m E). The animation API accepts explicit N s when known.
   const anim::WoundResult r = c->wound(*hit, dir, 0.07 * energy, std::clamp(0.3 * radius, 0.02, 0.06), std::sqrt(2.0 * 0.008 * std::min(energy, 20000.0)));
-  if (anim::GibSystem* gs = gibs()) anim::wound_gibs(*gs, *c, r, hit->point, dir, palette_id(c->palette));
+
   noise(pos, 12.0, kImpact);
   const auto it = walkers_.find(id);
   if (it == walkers_.end()) return true;
@@ -780,6 +775,7 @@ void Pedestrians::after_tick() {
     for (auto& [id, w] : walkers_) {
       anim::Character* c = cs.get(id);
       if (!c) continue;
+      c->take_attachment_events();  // replay commands and simulation reproduce these releases
       if (w.alive && c->alive()) blows(w, *c);
       if (!c->alive()) {
         w.alive = false;
@@ -920,6 +916,20 @@ void Pedestrians::populate() {
     d.yaw = dm::atan2(dir.y, dir.x);
     d.kind = kPedestrian;
     d.data = {static_cast<u8>(li)};
+    const u64 loadout = mix(0x70726f70u ^ u64(d.seed));
+    if (f64(loadout % 10000) / 10000 < g_->peds_.armed_share) {
+      const char* ids[] = {"knife", "baton", "bat"};
+      const i32 choice = i32((loadout >> 16) % 3);
+      d.loadout.push_back({ids[choice], anim::AttachPoint::RightHand, "primary", choice == 2 ? anim::WieldStyle::TwoHands : anim::WieldStyle::OneHand});
+    } else if (f64((loadout >> 8) % 10000) / 10000 < g_->peds_.carrying_share) {
+      const char* ids[] = {"backpack", "shoulder_bag", "suitcase", "phone"};
+      const i32 choice = i32((loadout >> 24) % 4);
+      const anim::AttachPoint points[] = {anim::AttachPoint::Back, anim::AttachPoint::Shoulder, anim::AttachPoint::RightHand, anim::AttachPoint::RightHand};
+      d.loadout.push_back({ids[choice], points[choice], choice < 2 ? "strap" : "primary",
+                           choice < 2    ? anim::WieldStyle::Worn
+                           : choice == 2 ? anim::WieldStyle::Hanging
+                                         : anim::WieldStyle::OneHand});
+    }
     const u32 id = cs.spawn(d);
     if (!id) continue;
     Walker w;
@@ -970,6 +980,44 @@ void Pedestrians::output() {
       palette_of_[id] = static_cast<u32>(palette_id(c->palette));
     }
   }
+  std::map<std::pair<u32, u32>, EffectRender> effects;
+  if (g_->chars_)
+    for (auto id : g_->chars_->ids())
+      if (const auto* c = g_->chars_->get(id))
+        for (const auto& gib : c->effects.gibs) {
+          const auto key = std::make_pair(id, gib->id);
+          const auto old = effect_meshes_.find(key);
+          EffectRender render;
+          render.entry = old == effect_meshes_.end() ? GibEntry{next_mesh_++, false, {}} : old->second.entry;
+          render.gib = gib.get();
+          render.palette = u32(palette_id(c->palette));
+          c->effects.write_skin(*gib, render.entry.skin.data());
+          effects[key] = render;
+        }
+  for (const auto& [key, e] : effect_meshes_)
+    if (!effects.contains(key) && e.entry.sent) removed_out_.push_back(e.entry.mesh);
+  effect_meshes_ = std::move(effects);
+  prop_meshes_.clear();
+  if (g_->chars_)
+    for (const auto& [id, p] : g_->chars_->props->all()) {
+      if (p->location == anim::PropLocation::Gone) continue;
+      const auto model = p->damaged_model ? p->damaged_model : p->archetype->model;
+      const auto key = std::make_pair(model.get(), p->geometry_version);
+      auto it = meshes_.find(key);
+      if (it == meshes_.end()) {
+        MeshEntry e;
+        e.model = model;
+        e.id = next_mesh_++;
+        it = meshes_.emplace(key, std::move(e)).first;
+      }
+      it->second.unused = 0;
+      PropRender render;
+      render.mesh = it->second.id;
+      render.palette = u32(palette_id(looks_.front().palette));
+      anim::write_rigid(render.skin.data(), p->pos, p->rotation, {});
+      if (const auto* c = g_->chars_->get(p->character)) render.primary = c->attachments().held() == p;
+      prop_meshes_[id] = render;
+    }
   // (meshes nothing drew for a while go; the mesher's part cache with them - it knows parts by
   // their address, and would keep those of models gone)
   bool dropped = false;
@@ -1019,6 +1067,13 @@ std::vector<CharacterView> Pedestrians::views() const {
     v.flash = c->flash;
     v.health = c->max_health > 0.0 ? std::clamp(c->health / c->max_health, 0.0, 1.0) : 0.0;
     v.skin = c->skin.data();
+    if (auto prop = c->attachments().held()) {
+      const auto it = prop_meshes_.find(prop->id);
+      if (it != prop_meshes_.end()) {
+        v.prop_mesh = it->second.mesh;
+        v.prop = it->second.skin;
+      }
+    }
     out.push_back(v);
   }
   if (gibs_)
@@ -1037,17 +1092,58 @@ std::vector<CharacterView> Pedestrians::views() const {
       v.bones = 1;
       out.push_back(v);
     }
+  for (const auto& [key, e] : effect_meshes_) {
+    CharacterView v;
+    v.id = 0x20000000u | e.entry.mesh;
+    v.mesh = e.entry.mesh;
+    v.palette = e.palette;
+    v.flags = CharacterView::kGib | CharacterView::kPhysical;
+    v.centre = e.gib->pos;
+    v.radius = e.gib->radius;
+    v.skin = e.entry.skin.data();
+    v.bones = 1;
+    out.push_back(v);
+  }
+  if (g_->chars_)
+    for (const auto& [id, item] : g_->chars_->props->all()) {
+      const auto it = prop_meshes_.find(id);
+      if (it == prop_meshes_.end() || it->second.primary) continue;
+      CharacterView v;
+      v.id = 0x40000000u | u32(id);
+      v.mesh = it->second.mesh;
+      v.palette = it->second.palette;
+      v.flags = CharacterView::kGib | 64;
+      v.centre = item->pos;
+      v.radius = 1;
+      v.skin = it->second.skin.data();
+      v.bones = 1;
+      out.push_back(v);
+    }
   return out;
 }
 
 void Pedestrians::blood(std::vector<f32>* drops, std::vector<f32>* stains) const {
   drops->clear();
   stains->clear();
+  if (g_->chars_)
+    for (auto id : g_->chars_->ids())
+      if (const auto* c = g_->chars_->get(id)) {
+        c->effects.for_each_drop([&](const V3& p, f64 size, const anim::Rgb& color) {
+          if (drops->size() < 800 * 7)
+            for (f64 v : {p.x, p.y, p.z, size, f64(color[0]), f64(color[1]), f64(color[2])}) drops->push_back(f32(v));
+        });
+        c->effects.for_each_stain([&](const V3& p, const V3& n, f64 size, f64 age, const anim::Rgb&) {
+          if (stains->size() < 600 * 8)
+            for (f64 v : {p.x, p.y, p.z, n.x, n.y, n.z, size, age}) stains->push_back(f32(v));
+        });
+      }
   if (!gibs_) return;
   gibs_->for_each_drop([&](const V3& p, f64 size, const anim::Rgb& c) {
+    if (drops->size() >= 800 * 7) return;
     for (f64 v : {p.x, p.y, p.z, size, c[0], c[1], c[2]}) drops->push_back(static_cast<f32>(v));
   });
   gibs_->for_each_stain([&](const V3& p, const V3& n, f64 size, f64 age, const anim::Rgb&) {
+    if (stains->size() >= 600 * 8) return;
     for (f64 v : {p.x, p.y, p.z, n.x, n.y, n.z, size, age}) stains->push_back(static_cast<f32>(v));
   });
 }
@@ -1055,6 +1151,17 @@ void Pedestrians::blood(std::vector<f32>* drops, std::vector<f32>* stains) const
 // (meshed when the front end asks: a host that draws nothing pays nothing)
 std::vector<CharacterMeshData> Pedestrians::take_meshes() {
   std::vector<CharacterMeshData> out;
+  for (auto& [key, e] : effect_meshes_) {
+    if (e.entry.sent) continue;
+    e.entry.sent = true;
+    auto mesh = anim::mesh_part(e.gib->part, e.gib->voxel_size, 0);
+    CharacterMeshData d;
+    d.id = e.entry.mesh;
+    d.vertex_count = mesh.vertex_count;
+    d.vertices = std::move(mesh.vertices);
+    d.indices = std::move(mesh.indices);
+    out.push_back(std::move(d));
+  }
   for (auto& [key, e] : meshes_) {
     if (e.sent) continue;
     e.sent = true;
@@ -1109,10 +1216,14 @@ i64 Pedestrians::memory_bytes() const {
 
 void Game::set_pedestrians(const PedestrianConfig& c) {
   if (log_)
-    log_->push({world_.ticks(), Command::Type::Pedestrians,
-                {c.enabled ? 1.0 : 0.0, static_cast<f64>(c.count), c.near_radius, c.radius, static_cast<f64>(c.bodies), static_cast<f64>(c.max_deep)}});
+    log_->push({world_.ticks(),
+                Command::Type::Pedestrians,
+                {c.enabled ? 1.0 : 0.0, static_cast<f64>(c.count), c.near_radius, c.radius, static_cast<f64>(c.bodies), static_cast<f64>(c.max_deep),
+                 c.armed_share, c.carrying_share}});
   peds_ = c;
   peds_.count = std::clamp(peds_.count, 0, 256);
+  peds_.armed_share = std::isfinite(peds_.armed_share) ? std::clamp(peds_.armed_share, 0.0, 1.0) : 0;
+  peds_.carrying_share = std::isfinite(peds_.carrying_share) ? std::clamp(peds_.carrying_share, 0.0, 1.0) : 0;
   if (!std::isfinite(peds_.near_radius)) peds_.near_radius = 30.0;
   if (!std::isfinite(peds_.radius)) peds_.radius = 70.0;
   peds_.radius = std::clamp(peds_.radius, 20.0, 300.0);
@@ -1175,6 +1286,81 @@ bool Game::wound_character(u32 id, const V3& pos, f64 radius, f64 energy) {
   if (log_) log_->push({world_.ticks(), Command::Type::Wound, {static_cast<f64>(id), pos.x, pos.y, pos.z, radius, energy}});
   Pedestrians* p = people();
   return p && p->wound(id, viewer_, pos, radius, energy);
+}
+
+bool Game::damage_character(u32 id, const anim::DamageDescriptor& d) {
+  if (!d.valid() || !chars_) return false;
+  auto* c = chars_->get(id);
+  if (!c) return false;
+  if (log_) {
+    Command command;
+    command.tick = world_.ticks();
+    command.type = Command::Type::Damage;
+    command.a = {f64(id),
+                 f64(d.kind),
+                 d.point.x,
+                 d.point.y,
+                 d.point.z,
+                 d.direction.x,
+                 d.direction.y,
+                 d.direction.z,
+                 d.mass,
+                 d.speed,
+                 d.diameter,
+                 d.area,
+                 d.sharpness,
+                 d.alignment,
+                 d.swept_length,
+                 d.radius,
+                 d.pressure,
+                 f64(d.fragments),
+                 f64(d.bone),
+                 f64(d.construction),
+                 d.edge_a.x,
+                 d.edge_a.y,
+                 d.edge_a.z,
+                 d.edge_b.x,
+                 d.edge_b.y,
+                 d.edge_b.z,
+                 f64(d.attacker),
+                 f64(d.prop),
+                 f64(d.target_prop),
+                 d.blocked ? 1.0 : 0.0,
+                 d.duration,
+                 d.impulse_delivered ? 1.0 : 0.0};
+    command.text = d.feature;
+    log_->push(command);
+  }
+  c->damage(d);
+  if (auto* p = people()) p->noise(d.point, 15, Pedestrians::kImpact, id);
+  return true;
+}
+bool Game::attach_prop(u32 id, std::string_view archetype, anim::AttachPoint point, std::string_view socket, anim::WieldStyle style) {
+  const auto prop = anim::prop_archetype(archetype);
+  auto* c = chars_ ? chars_->get(id) : nullptr;
+  if (!c || !prop || !c->swap(prop, point, socket, style)) return false;
+  if (log_) {
+    Command command;
+    command.tick = world_.ticks();
+    command.type = Command::Type::AttachProp;
+    command.a = {f64(id), f64(point), f64(style)};
+    command.text = std::string(archetype) + "|" + std::string(socket);
+    log_->push(command);
+  }
+  return true;
+}
+bool Game::detach_prop(u32 id, anim::AttachPoint point, anim::ReleaseReason reason) {
+  auto* c = chars_ ? chars_->get(id) : nullptr;
+  if (!c) return false;
+  c->detach(point, reason);
+  if (log_) log_->push({world_.ticks(), Command::Type::DetachProp, {f64(id), f64(point), f64(reason)}});
+  return true;
+}
+void Game::set_loadout_shares(f64 armed, f64 carrying) {
+  if (!std::isfinite(armed) || !std::isfinite(carrying)) return;
+  peds_.armed_share = std::clamp(armed, 0.0, 1.0);
+  peds_.carrying_share = std::clamp(carrying, 0.0, 1.0);
+  if (log_) log_->push({world_.ticks(), Command::Type::Loadouts, {peds_.armed_share, peds_.carrying_share}});
 }
 
 void Game::blood(std::vector<f32>* drops, std::vector<f32>* stains) const {

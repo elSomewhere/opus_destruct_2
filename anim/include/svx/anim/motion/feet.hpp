@@ -69,6 +69,7 @@ struct FeetContext {
   bool airborne = false;
   f64 crouch = 0.0;
   GaitStyle style;
+  std::array<f64, 2> control{1, 1};  // foot clearance falls with motor control
   std::array<V3, 2> hips;  // the hip joints (world) this frame (a foot stays within the leg's reach)
   bool hold = false;       // the balance has the feet: the gait lifts none of them (only forced steps)
   f64 care = 1.0;          // 0..1: how much attention the steps get (clearance over obstacles)

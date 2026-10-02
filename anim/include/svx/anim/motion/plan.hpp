@@ -37,6 +37,8 @@
 #include <vector>
 
 #include "svx/anim/ik.hpp"
+#include "svx/anim/damage/capabilities.hpp"
+#include "svx/anim/characters/attachments.hpp"
 #include "svx/anim/motion/actions.hpp"
 #include "svx/anim/motion/arms.hpp"
 #include "svx/anim/motion/feet.hpp"
@@ -121,6 +123,8 @@ struct AnimEvent {
   std::string name;
   std::string action;
   Limb limb = Limb::None;
+  std::string feature;
+  u64 prop_instance = 0;
   V3 pos;                    // the world position of the limb (fist, foot, blade tip, muzzle) at the event
   std::optional<V3> target;  // the action's target (world), if any
 };
@@ -141,9 +145,15 @@ class MotionPlan {
   WorldPose world;
   WorldPose prev_world;
   MotionInput input;
+  Capabilities capabilities;
   PlanControl control;  // what the behaviours ask for (they fill it before every update)
   const CollisionWorld* collision;
-  PropPtr weapon;
+  Attachments props;
+  HeldPropView weapon{props};
+  f64 load_fraction = 0.0;
+  V3 load_lean;
+  std::string action_refusal;
+  u64 action_serial = 0;
   GaitStyle style;
   std::vector<AnimEvent> events;  // events of the last updates (take them with take_events)
   // the character's root: ground position and facing (radians, 0 = +x, CCW; +y is yaw pi/2)
@@ -160,6 +170,7 @@ class MotionPlan {
   // with a relaxed arm).
   std::array<f64, 4> effort{0.0, 0.0, 0.0, 0.0};
   std::array<bool, 4> striking{false, false, false, false};
+  std::array<f64, 4> strike_weight{};  // contact window; effort can remain high in the windup
   GaitParams gait;
   V3 velocity;  // the smoothed world velocity
   Stance stance = Stance::Stand;  // the settled stance (while a transition runs: the one it comes from)
@@ -180,6 +191,7 @@ class MotionPlan {
   // a stagger, a fall).
   void carry_root(const V3& pos, f64 yaw);
   // Busy with a one-shot action.
+  f64 action_time() const { return act_ ? act_->time : 0; }
   bool busy() const { return act_ && !act_->done(); }
   // The running one-shot action (empty: none).
   std::string_view action_name() const { return act_ && !act_->done() ? std::string_view(act_->def->name) : std::string_view(); }

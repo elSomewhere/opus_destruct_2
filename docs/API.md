@@ -288,7 +288,7 @@ The drive city's people ([`ANIM.md`](ANIM.md)) are voxel characters drawn by rig
   its own. A palette is sent once for the session: keep them across loads.
 - `characters`: after every tick while any exist (and once empty after), a pose message like
   `debris` (`seq`, acknowledged with `frameAck`): 12 doubles each - id, mesh, palette, flags (1
-  alive, 2 deep: its body an articulation of the world, 4 physical, 8 asleep, 16 down, 32 a gib),
+  alive, 2 deep: its body an articulation of the world, 4 physical, 8 asleep, 16 down, 32 a detached piece, 64 a prop),
   bounding sphere centre xyz and radius, hit flash 0..1, its prop's mesh (0: none), health 0..1, 1
   reserved - and its 23 skin matrices (column-major, rest model space to world; a gib's first
   alone counts). A vertex is drawn at skin[its bone] x its position. The root's matrix rides with
@@ -300,11 +300,63 @@ The drive city's people ([`ANIM.md`](ANIM.md)) are voxel characters drawn by rig
 ## Persistence (**ext**)
 
 With `init.config.persist`, the WASM worker saves a binary delta of the world (changed chunks
-only, `SVXD` v1, RLE) to OPFS every 5 s while the world is modified. It restores the delta when
+only, core `SVXD`, RLE; wrapped in `SVXG` version 1 when character props are present) to OPFS every 5 s while the world is modified. It restores the delta when
 the same world is loaded again. Worlds are identified by:
 
 - procedural worlds: kind + seed;
 - WADs: map name + a content fingerprint.
+
+## Physical character commands
+
+The following worker commands and C calls are recorded in command-log version 4.
+Older command logs remain readable. See [PROPS.md](PROPS.md) and
+[WOUNDS.md](WOUNDS.md) for ownership, mechanics and capability semantics.
+
+| Worker command | C API | Payload |
+| --- | --- | --- |
+| `damageCharacter` | `svx_damage_character` | Character id and physical descriptor below |
+| `attachProp` | `svx_attach_character_prop` | id, archetype string, attachment point, socket string, style |
+| `detachProp` | `svx_detach_character_prop` | id, attachment point, release reason |
+| `pedestrianLoadouts` | `svx_set_pedestrian_loadouts` | Armed and civilian carrying shares, each 0..1; both default to zero |
+
+`svx_damage_character(e, id, values, 25)` accepts this array of doubles:
+
+| Indices | Meaning |
+| --- | --- |
+| 0 | Projectile 0, edge 1, point 2, blunt 3, blast 4, crush 5; thermal 6 is reserved |
+| 1–3, 4–6 | World point and direction |
+| 7, 8, 9, 10 | Mass kg, speed m/s, diameter m, contact area m² |
+| 11, 12, 13 | Sharpness, alignment (0..1), swept edge length m |
+| 14, 15, 16 | Blast radius m, pressure Pa, fragment count |
+| 17, 18 | Bone (-1 infers it), construction: FMJ 0, expanding 1, buckshot 2 |
+| 19–21, 22–24 | Edge endpoints in world space |
+
+Invalid descriptors return zero without mutation. `svx_wound_character` remains
+an energy/radius compatibility mapping to an 8 g projectile. New weapon code uses
+a 9 mm pistol round, individual 00 buckshot pellets, and blast pressure plus
+fragments for rockets. A shot ray can hit a worn or held prop before its owner;
+a prop contact reports the owner's character id and bone -1.
+
+Attachment indices are right hand 0, left hand 1, back 2, shoulder 3, hip 4,
+thigh 5, chest 6, head 7, both arms 8. Styles are one hand 0, two hands 1,
+reverse 2, hanging 3, worn 4 and stowed 5. Release reasons are voluntary 0,
+wrenched 1, grip failed 2, knocked out 3, death 4, breaking a fall 5,
+anchor lost 6, strap cut 7 and hand/forearm damaged 8.
+
+The original prop mesh/matrix slot holds the primary item. Additional attached
+and loose props use the existing character mesh stream, with flag 64 and a single
+rigid matrix. Their meshes can change after damage. Blood and stains continue
+through the existing effect buffers.
+
+`svx_character_capabilities(e, id, out19)` returns left then right leg
+support/drive/control (0–5), left then right arm strength/control/grip (6–11),
+trunk support, neck support, consciousness, vigor, pain, speed limit m/s and
+mobility (walk 0, limp 1, hobble 2, kneel 3, crawl 4, immobile 5).
+
+The `SVXG` version 1 game save contains the unchanged core world delta and an
+identified loose-prop record. Older raw core deltas still load. Corpse articulation
+records additionally carry damaged geometry, physiology, blood stains and worn
+attachments; living people are remade by the host.
 
 ## C ABI (inside the worker)
 

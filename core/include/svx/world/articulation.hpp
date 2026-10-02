@@ -93,6 +93,10 @@ struct ArticulationControl {
   // Per point target: a movable attachment point in its link's body frame.
   // Missing or invalid entries leave the point unchanged (heel -> toe in a gait).
   std::vector<V3> target_local;
+  // Optional second link for a point target (a hand gripping a carried object).
+  // -1 or missing: world target. The second link receives the opposite impulse.
+  std::vector<i32> target_reference;
+  std::vector<V3> target_reference_local;
   f64 max_spin = 80.0;               // rad/s: no link spins faster (a limp body's: much less)
   f64 keep_linear = 0.98, keep_angular = 0.9;  // velocity kept per second (air, tissue; a body at rest settles with less)
   bool self_collide = true;          // its links collide with each other as its desc says

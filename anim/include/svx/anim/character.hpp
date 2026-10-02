@@ -5,9 +5,9 @@
 //  - the physical body (body/humanoid.hpp): rigid bodies and muscles that carry the plan out,
 //  - the behaviours (behaviour/controller.hpp): the motor intelligence between them (balance,
 //    stagger, bracing, flinching, holding wounds, falling, getting up, dying),
-//  - the held prop (in the physical hand; dropped on death),
-//  - health, hit zones, wounds (voxels carved out, flesh and bone inside), severed limbs and
-//    heads, and gibbing by blasts (the pieces come back as gib specs for a GibSystem).
+//  - held, worn and carried prop instances, their load, grip and persistent loose state,
+//  - physical damage descriptors, anatomical wounds and physiology, summarized as capabilities.
+//    Detached tissue and blood use the bounded effect pool; coherent bodies remain.
 //
 // The host moves it (set_root, with its own collision) while the body follows its plan; when the
 // body leads (knocked off its feet, staggering, down, getting up) the host follows it instead
@@ -55,7 +55,7 @@ struct GibSpec {
 struct WoundResult {
   bool killed = false;  // the shot killed the character now
   bool headshot = false;
-  f64 damage = 0.0;                   // dealt (after hit-zone multipliers)
+  f64 damage = 0.0;                   // decrease in the derived health summary
   std::vector<RemovedVoxel> removed;  // voxels carved out (blood and flesh bits for the host's effects)
   std::vector<GibSpec> gibs;          // pieces that came off (severed limbs, a head)
   Zone zone = Zone::Chest;            // (melee)
@@ -71,7 +71,10 @@ struct CharacterOptions {
   ModelPtr model;
   Palette palette{};
   const CollisionWorld* collision = nullptr;
-  PropPtr weapon;
+  PropPtr weapon;  // compatibility at construction; mapped to an instance
+  std::vector<LoadoutEntry> loadout;
+  std::shared_ptr<PropRegistry> prop_registry;
+  WieldProfile wield;
   f64 health = 100.0;
   f64 seed = 1.0;
   f64 mass = 0.0;  // total mass (kg); 0: by the rig's height
@@ -95,9 +98,10 @@ class Character {
   Behaviours behaviours;   // how it carries itself (balance, reflexes, injuries, falls, death)
   WorldPose pose;          // the pose shown (the body's, or the plan's while the physics rests) ...
   WorldPose prev_pose;     // ... and the frame before
-  PropPtr weapon;
+  HeldPropView weapon{motion.props};  // read-through compatibility view
   f64 health = 100.0;
   f64 max_health = 100.0;
+  GibSystem effects;
   u32 geometry_version = 0;  // bumped when `model` changes (a copy was made or voxels were carved): re-mesh
   bool owns_model = false;   // true once `model` is this character's own copy
   std::vector<f32> skin;     // skin matrices of the current pose (16 floats per bone)
@@ -108,9 +112,17 @@ class Character {
   V3 weapon_pos;             // the held prop's transform (world)
   Quat weapon_rot;
 
+  Attachments& attachments() { return motion.props; }
+  const Attachments& attachments() const { return motion.props; }
+  bool attach(const PropInstancePtr& instance, AttachPoint point, std::string_view socket = "primary", WieldStyle style = WieldStyle::OneHand);
+  PropInstancePtr detach(AttachPoint point, ReleaseReason reason = ReleaseReason::Voluntary);
+  bool swap(PropPtr archetype, AttachPoint point, std::string_view socket = "primary", WieldStyle style = WieldStyle::OneHand);
+  void wrench(AttachPoint point, const V3& impulse);
+  std::vector<AttachmentEvent> take_attachment_events();
+  const Capabilities& capabilities() const { return behaviours.capabilities(); }
   bool alive() const { return behaviours.alive; }
   bool controlled() const { return behaviours.leading(); }  // the body leads (staggering, falling, down, getting up, dead): the host follows its root
-  bool gun_hand_lost() const { return behaviours.lost[weapon && weapon->kind == PropKind::Knife && motion.weapon_hand == H::handL ? B::handL : B::handR]; }
+  bool gun_hand_lost() const { return behaviours.lost[weapon && weapon->has("short_blade") && motion.weapon_hand == H::handL ? B::handL : B::handR]; }
   bool writhing() const { return behaviours.writhing; }
   bool down() const;    // down on the ground (knocked down or out), or getting up
   bool asleep() const;  // the body rests (a corpse that stopped moving)
@@ -184,6 +196,7 @@ class Character {
   // A bullet (or blade) wound at `hit` travelling along `dir`: carves a hole of `radius`, deals
   // `damage` times the zone multiplier, and may sever limbs or the head. The optional
   // transferred impulse is in N s on both living and dead bodies; negative uses the bullet default.
+  WoundResult damage(const DamageDescriptor& descriptor);
   WoundResult wound(const CharacterHit& hit, const V3& dir, f64 damage, f64 radius = 0.045, f64 impulse_ns = -1.0);
   // A melee blow landing at `point` travelling along `dir`: a fist or a foot (Blunt, force ~1 a
   // punch, ~1.8 a kick) or a blade (a slice of voxels is cut out, it bleeds).
@@ -212,6 +225,13 @@ class Character {
   i64 memory_bytes() const;
 
  private:
+  u64 load_revision_ = 0;
+  f64 bare_total_ = 0;
+  bool owns_registry_ = true;
+  std::array<f64, kBodyCount> bare_mass_{};
+  std::array<V3, kBodyCount> bare_inertia_{};
+  void update_props(f64 dt);
+  void update_load();
   BodyBackend backend_ = BodyBackend::Shallow;
   World* world_ = nullptr;
   CoreBinding binding_;
@@ -221,6 +241,7 @@ class Character {
   f64 pain_ = 0.0;
   f64 firing_ = 0.0;
   f64 last_dt_ = 1.0 / 60.0;
+  f64 crush_cooldown_ = 0;
   f64 calm_for_ = 0.0;
   f64 switch_blend_ = 1.0;  // blend from the last shown pose after a switch between physics and plan (1: done)
   WorldPose switch_from_;

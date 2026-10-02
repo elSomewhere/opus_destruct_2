@@ -532,6 +532,15 @@ export interface WoundCharacterCommand {
   energy: number;
 }
 
+/** Physical character damage. Fields use metres, kilograms and seconds. */
+export interface DamageCharacterCommand {
+  type: 'damageCharacter'; id: number;
+  kind: number; pos: Vec3; direction: Vec3; mass: number; speed: number;
+  diameter?: number; area?: number; construction?: number;
+}
+
+export type PropCommand = {type:'attachProp';id:number;archetype:string;point:number;socket:string;style:number} | {type:'detachProp';id:number;point:number;reason:number} | {type:'pedestrianLoadouts';armed:number;carrying:number};
+
 export type EngineCommand =
   | InitCommand
   | LoadProceduralCommand
@@ -558,6 +567,8 @@ export type EngineCommand =
   | DriveCommand
   | SetTrafficCommand
   | SetPedestriansCommand
+  | PropCommand
+  | DamageCharacterCommand
   | WoundCharacterCommand
   | FrameAckCommand;
 
@@ -1328,6 +1339,10 @@ const ENGINE_COMMAND_TYPES: ReadonlySet<string> = new Set<EngineCommandType>([
   'setTraffic',
   'setPedestrians',
   'woundCharacter',
+  'damageCharacter',
+  'attachProp',
+  'detachProp',
+  'pedestrianLoadouts',
   'frameAck',
 ]);
 

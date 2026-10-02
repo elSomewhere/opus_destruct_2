@@ -33,7 +33,10 @@ std::string base_of(std::string_view name) {
   return s;
 }
 
-bool blade(std::string_view s) { return s == "stab" || s == "slash" || s == "gutStab" || s == "forehandSlash"; }
+bool striking(std::string_view name) {
+  const auto* a = action_def(name);
+  return a && a->targeted;
+}
 
 }  // namespace
 
@@ -57,6 +60,7 @@ V3 Brawler::aim_point(std::string_view strike) const {
 }
 
 void Brawler::update(f64 dt) {
+  dt_ = dt;
   Character& me = self;
   MotionPlan& a = me.motion;
   Character* o = opponent;
@@ -75,8 +79,15 @@ void Brawler::update(f64 dt) {
   // (knocked about, it fights on once its feet are under it again)
   const Behaviours& bh = me.behaviours;
   const std::array<Foot, 2>& feet = a.feet_planner.feet;
-  if (me.controlled() && !(bh.mode == BodyMode::Reacting && bh.balance_error < 0.0 && feet[0].planted && feet[1].planted)) return;
-  const f64 want = o_down ? 1.7 : knife() ? 0.82 : last_strike_ == "frontKick" || last_strike_ == "roundhouse" ? 1.08 : 0.92;
+  if (me.controlled() && !(bh.mode == BodyMode::Reacting && bh.balance_error < .08 && (feet[0].planted || feet[1].planted) &&
+                           std::max(me.capabilities().legs[0].support, me.capabilities().legs[1].support) > .65))
+    return;
+  f64 reach = .85;
+  if (auto p = a.props.held()) {
+    reach = .55;
+    for (const auto& f : p->archetype->features) reach = std::max(reach, .55 + norm(f.b - p->archetype->grip));
+  }
+  const f64 want = o_down ? 1.7 : reach;
   // close or open the distance, circle to the side
   circle_t_ -= dt;
   if (circle_t_ <= 0.0) {
@@ -90,11 +101,11 @@ void Brawler::update(f64 dt) {
   move.y = n.y * radial + n.x * lateral;
   // react to what the opponent throws
   const std::string_view theirs = o->motion.action_name();
-  if (!theirs.empty() && theirs != reacted_ && strike_spec(base_of(theirs)) && !a.busy()) {
+  if (!theirs.empty() && theirs != reacted_ && striking(theirs) && !a.busy()) {
     reacted_ = theirs;
     const f64 r = rng_.next();
     if (r < skill_) {
-      a.play("block");
+      a.play(a.props.held() ? "propBlock" : "block");
     } else if (r < skill_ + 0.2) {
       // step back out of it
       move.x -= n.x * 1.6;
@@ -105,56 +116,58 @@ void Brawler::update(f64 dt) {
   // attack
   cooldown_ -= dt;
   if (!o_down && cooldown_ <= 0.0 && !a.busy() && d < want + 0.3) {
-    static constexpr std::array<std::string_view, 3> kFar = {"frontKick", "roundhouse", "jab"};
-    static constexpr std::array<std::string_view, 6> kNear = {"jab", "jab", "cross", "hook", "uppercut", "frontKick"};
-    static constexpr std::array<std::string_view, 2> kFists = {"jab", "cross"};
-    std::string_view strike;
-    if (knife()) strike = rng_.pick(kKnifeAttacks);
-    else if (last_strike_ == "jab" && rng_.chance(0.55)) strike = "cross";
-    else if (d > 1.05) strike = rng_.pick(kFar);
-    else strike = rng_.pick(kNear);
-    // (not off one leg while still finding its feet)
-    if (me.controlled() && (strike == "frontKick" || strike == "roundhouse")) strike = rng_.pick(kFists);
-    if (me.weapon && me.weapon->kind != PropKind::Knife && me.weapon->kind != PropKind::Pistol) strike = "riflePush";
-    a.play(strike, aim_point(strike));
-    last_strike_ = strike;
-    const f64 combo = strike == "jab" ? 0.15 : 0.0;
-    cooldown_ = combo != 0.0 ? combo : (0.45 + rng_.next() * 1.1) * (1.4 - aggression_);
+    std::vector<const ActionDef*> candidates;
+    const auto held = a.props.held();
+    const auto& cap = me.capabilities();
+    const bool left = cap.arms[0].strength == cap.arms[1].strength ? a.props.wield.left_handed : cap.arms[0].strength > cap.arms[1].strength;
+    for (const auto& action : actions()) {
+      if (!action.targeted || (held && action.left_handed != left)) continue;
+      if (held) {
+        if (action.requires_tags.empty() || !held->archetype->satisfies(action.requires_tags)) continue;
+      } else if (!action.requires_tags.empty())
+        continue;
+      if (action.two_hands && (!held || held->style != WieldStyle::TwoHands)) continue;
+      if (action.reverse_grip && (!held || held->style != WieldStyle::Reverse)) continue;
+      const bool kick = action.drives(Channel::StrikeFootR) || action.drives(Channel::StrikeFootL);
+      if (kick && (d < 1.05 || me.controlled() || std::min(cap.legs[0].support, cap.legs[1].support) < .6)) continue;
+      const size_t arm = action.drives(Channel::StrikeL) ? 0 : 1;
+      if (cap.arms[arm].strength < action.minimum_arm || cap.arms[1 - arm].strength - cap.arms[arm].strength > .2) continue;
+      candidates.push_back(&action);
+    }
+    if (!candidates.empty()) {
+      const auto& action = *candidates[std::min(candidates.size() - 1, size_t(rng_.next() * candidates.size()))];
+      if (a.play(action.name, aim_point(base_of(action.name)))) last_strike_ = action.name;
+      cooldown_ = (.45 + rng_.next() * 1.1) * (1.4 - aggression_) / std::max(.25, cap.vigor);
+    }
   }
+  const f64 speed = hypot2(move.x, move.y);
+  if (speed > me.capabilities().max_speed) move = move * (me.capabilities().max_speed / speed);
+
   if (a.busy() && !a.action_name().empty()) {
     const std::string base = base_of(a.action_name());
-    if (strike_spec(base)) a.aim_action(aim_point(base));
+    if (striking(a.action_name())) a.aim_action(aim_point(base));
   }
 }
 
 std::vector<LandedBlow> Brawler::resolve(const std::vector<AnimEvent>& events) {
+  (void)events;
   std::vector<LandedBlow> out;
-  Character* o = opponent;
-  if (!o) return out;
-  for (const AnimEvent& e : events) {
-    if (e.name != "strike") continue;
-    const std::string base = base_of(e.action);
-    const HitKind kind = blade(base) ? HitKind::Blade : HitKind::Blunt;
-    // where the limb is against the opponent's body
-    const i32 bone = o->nearest_bone(e.pos);
-    const V3 bp = o->pose.p[size_t(bone)];
-    const V3 tail = o->pose.tail(bone);
-    const V3 mid{(bp.x + tail.x) / 2.0, (bp.y + tail.y) / 2.0, (bp.z + tail.z) / 2.0};
-    const f64 reach = e.limb == Limb::FootR || e.limb == Limb::FootL ? 0.38 : 0.3;
-    if (vdist(e.pos, mid) > reach + (bone == H::chest || bone == H::spine ? 0.12 : 0.0)) continue;
-    const V3 dir = vnorm((e.target ? *e.target : mid) - self.pose.p[H::chest]);
-    const bool blocking =
-        o->motion.action_name() == "block" && (bone == H::head || bone == H::neck || bone == H::chest || (bone >= H::upperarmL && bone <= H::handR));
-    const StrikeSpec* s = strike_spec(base);
-    const f64 force = (s ? s->force : 1.0) * (blocking ? 0.3 : 1.0);
+  const auto sweeps = tracker_.sample(self, dt_);
+  if (!opponent) return out;
+  for (const auto& sweep : sweeps) {
+    if (landed_serial_ == sweep.serial) continue;
+    auto descriptor = StrikeTracker::contact(sweep, *opponent);
+    if (!descriptor) continue;
+    landed_serial_ = sweep.serial;
     LandedBlow blow;
-    blow.result = o->melee(e.pos, dir, blocking ? HitKind::Blunt : kind, force);
     blow.attacker = &self;
-    blow.victim = o;
-    blow.point = e.pos;
-    blow.dir = dir;
-    blow.kind = kind;
-    blow.blocked = blocking;
+    blow.victim = opponent;
+    blow.point = descriptor->point;
+    blow.dir = descriptor->direction;
+    blow.kind = descriptor->kind == DamageKind::Edge || descriptor->kind == DamageKind::Point ? HitKind::Blade : HitKind::Blunt;
+    blow.blocked = descriptor->blocked;
+    blow.descriptor = *descriptor;
+    blow.result = opponent->damage(*descriptor);
     out.push_back(std::move(blow));
   }
   return out;

@@ -188,6 +188,17 @@ Gib* GibSystem::spawn(VoxelPart part, f64 voxel_size, const V3& bone_pos, const 
   return gibs.back().get();
 }
 
+void GibSystem::set_mass(const Gib* g, f64 mass, const V3& inertia) {
+  if (mass <= 0) return;
+  for (size_t i = 0; i < gibs.size(); ++i)
+    if (gibs[i].get() == g) {
+      auto& b = bodies_[i];
+      b.mass = mass;
+      b.inv_mass = 1 / mass;
+      b.inv_i = {1 / std::max(1e-6, inertia.x), 1 / std::max(1e-6, inertia.y), 1 / std::max(1e-6, inertia.z)};
+      return;
+    }
+}
 void GibSystem::remove(const Gib* g) {
   for (size_t i = 0; i < gibs.size(); ++i) {
     if (gibs[i].get() != g) continue;
