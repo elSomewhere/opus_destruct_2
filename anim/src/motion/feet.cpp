@@ -32,6 +32,7 @@ f64 FootPlanner::ground(f64 x, f64 y, f64 z_ref, f64 fallback) const {
 }
 
 void FootPlanner::reset(const V3& root_in, f64 yaw, f64 crouch, const GaitStyle& style) {
+  settle_layout_ = false;
   const V3 root = root_in;
   for (Foot& f : feet) {
     f.pos = nominal(f, root, yaw, crouch, style);
@@ -49,6 +50,7 @@ void FootPlanner::reset(const V3& root_in, f64 yaw, f64 crouch, const GaitStyle&
 }
 
 void FootPlanner::place_at(const std::array<V3, 2>& soles, const std::array<f64, 2>& yaws) {
+  settle_layout_ = false;
   for (size_t i = 0; i < 2; ++i) {
     Foot& f = feet[i];
     f.pos = soles[i];
@@ -122,9 +124,12 @@ void FootPlanner::on_tread(const Foot& f, V3& tgt, f64 yaw) const {
     if (std::abs(z - lz) > max_rise) return false;
     // (the toes a little short of the next riser, so they come off it cleanly)
     const f64 tf = dims.ball_fwd * 1.2 + 0.05 * k;
-    const f64 toe = ground(x + fx * tf, y + fy * tf, z, z - 1.0);
-    const f64 heel = ground(x - fx * dims.heel_back, y - fy * dims.heel_back, z, z - 1.0);
-    return std::abs(toe - z) < 0.03 * k && std::abs(heel - z) < 0.03 * k;
+    for (const f64 side : {-0.06 * k, 0.0, 0.06 * k}) {
+      const f64 toe = ground(x + fx * tf - fy * side, y + fy * tf + fx * side, z, z - 1.0);
+      const f64 heel = ground(x - fx * dims.heel_back - fy * side, y - fy * dims.heel_back + fx * side, z, z - 1.0);
+      if (std::abs(toe - z) >= 0.03 * k || std::abs(heel - z) >= 0.03 * k) return false;
+    }
+    return true;
   };
   if (fits(tgt.x, tgt.y, tgt.z)) return;
   // (flat ground never gets here; only a landing across an edge or too far up or down)
@@ -143,11 +148,17 @@ void FootPlanner::on_tread(const Foot& f, V3& tgt, f64 yaw) const {
 f64 FootPlanner::clearance(const V3& a, const V3& b, f64 care) const {
   const f64 top = std::max(a.z, b.z);
   f64 high = top;
+  const f64 length = hypot2(b.x - a.x, b.y - a.y);
+  const V3 side = length > 1e-6 ? V3{-(b.y - a.y) / length, (b.x - a.x) / length, 0} : V3{1, 0, 0};
   for (int s = 1; s <= 4; ++s) {
     const f64 t = s / 5.0;
     const f64 x = a.x + (b.x - a.x) * t, y = a.y + (b.y - a.y) * t;
-    const std::optional<f64> g = collision->ground_height(x, y, top + 0.55 * dims.k, top - 0.3 * dims.k);
-    if (g && *g > high) high = *g;
+    // Check the boot's width too. A narrower step can pass alongside rubble
+    // whose edge catches the boot even though the centre line is clear.
+    for (const f64 offset : {-0.06 * dims.k, 0.0, 0.06 * dims.k}) {
+      const std::optional<f64> g = collision->ground_height(x + side.x * offset, y + side.y * offset, top + 0.55 * dims.k, top - 0.3 * dims.k);
+      if (g && *g > high) high = *g;
+    }
     // (a body, a piece of debris on the path)
     for (const Obstacle& o : obstacles) {
       const f64 dx = x - o.c.x, dy = y - o.c.y;
@@ -191,9 +202,11 @@ f64 FootPlanner::advance_clock(f64 dt, const FeetContext& c, const std::array<f6
   if (forced) {
     // the balance is stepping: the clock waits
     stepping = false;
+    settle_layout_ = false;
     return prev;
   }
   if (c.moving) {
+    settle_layout_ = true;
     if (!stepping) {
       // start with the foot behind
       const f64 sp = c.speed != 0.0 && !std::isnan(c.speed) ? c.speed : 1.0;
@@ -222,12 +235,19 @@ f64 FootPlanner::advance_clock(f64 dt, const FeetContext& c, const std::array<f6
         const V3 nom = nominal(f, c.root, c.body_yaw, c.crouch, st);
         const f64 err = hypot2(nom.x - f.pos.x, nom.y - f.pos.y);
         const f64 yaw_err = std::abs(wrap_angle(c.body_yaw - f.side * st.toe_out - f.yaw));
-        if (err > 0.16 * dims.k || yaw_err > 0.42 || (stepping && err > 0.07 * dims.k)) need = true;
+        // After travel, step back to the relaxed standing layout. Keep the
+        // normal turning dead zone once settled, so a small glance is not a shuffle.
+        const f64 lateral = std::abs((nom.x - f.pos.x) * sin(c.body_yaw) - (nom.y - f.pos.y) * cos(c.body_yaw));
+        const bool layout = settle_layout_ && (lateral > 0.01 * dims.k || yaw_err > 0.025);
+        if (err > 0.16 * dims.k || yaw_err > 0.42 || layout || (stepping && err > 0.07 * dims.k)) need = true;
       }
     }
     // (turning on the spot and settling: unhurried steps)
     if (need) phase = fract(phase + 1.15 * dt);
-    else stepping = false;
+    else {
+      stepping = false;
+      settle_layout_ = false;
+    }
   }
   return prev;
 }

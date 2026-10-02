@@ -131,6 +131,7 @@ class FootPlanner {
   // would be higher or lower). Moves `tgt` back along the path from the lift-off.
   void on_tread(const Foot& f, V3& tgt, f64 yaw) const;
   bool was_airborne_ = false;
+  bool settle_layout_ = false;
 };
 
 }  // namespace svx::anim

@@ -20,6 +20,8 @@ GaitStyle random_style(f64 seed, StyleKind kind) {
     g.posture = n(0.55, 0.2);
     g.width = n(1.15, 0.06);
     g.toe_out = n(0.14, 0.04);
+    g.move_width = 0.9;
+    g.move_toe_out = g.toe_out * 0.4;
     g.heavy = n(0.75, 0.1);
     g.head_still = n(0.8, 0.1);
     g.fidget = n(0.3, 0.15);
@@ -35,6 +37,8 @@ GaitStyle random_style(f64 seed, StyleKind kind) {
     g.posture = n(0.15, 0.3);
     g.width = n(1.22, 0.06);
     g.toe_out = n(0.22, 0.04);
+    g.move_width = 1.0;
+    g.move_toe_out = g.toe_out * 0.75;
     g.heavy = n(0.65, 0.1);
     g.head_still = n(0.35, 0.1);
     g.fidget = n(0.75, 0.1);
@@ -58,6 +62,8 @@ GaitStyle random_style(f64 seed, StyleKind kind) {
   g.posture = n(base.posture, 0.25);
   g.width = n(base.width, 0.06) * (female ? 0.8 : 1.0);
   g.toe_out = n(base.toe_out, 0.04) * (female ? 0.6 : 1.0);
+  g.move_width = base.width > 1.1 ? 0.95 : 0.75;
+  g.move_toe_out = g.toe_out * (base.width > 1.1 ? 0.65 : 0.3);
   g.heavy = n(base.heavy, 0.1);
   g.head_still = n(base.head_still, 0.12);
   g.fidget = n(base.fidget, 0.15);

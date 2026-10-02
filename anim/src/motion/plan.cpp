@@ -88,6 +88,8 @@ void MotionPlan::place(const V3& pos_in, f64 yaw) {
   velocity = V3{};
   feet_planner.collision = collision;
   feet_planner.reset(root_pos, yaw, crouch_s_.x, style);
+  foot_width_ = Spring(8.0, 1.0, style.width);
+  foot_toe_out_ = Spring(8.0, 1.0, style.toe_out);
   pelvis_z_.x = rest_pelvis_z;
   arm_return_ = {};
   placed_ = true;
@@ -426,6 +428,13 @@ void MotionPlan::update(f64 dt_in) {
   fctx.airborne = inp.airborne;
   fctx.crouch = crouch;
   fctx.style = st;
+  // Change landing targets, never the position or yaw of a planted foot. The
+  // normal standing spread is useful at rest and when balance takes over.
+  const f64 travel = moving && !inp.guard ? smoothstep(0.12, 0.65, speed) : 0.0;
+  const f64 move_width = std::isfinite(st.move_width) ? clamp(st.move_width, 0.6, 1.5) : kNeutralStyle.move_width;
+  const f64 move_toe = std::isfinite(st.move_toe_out) ? clamp(st.move_toe_out, 0.0, 20.0 * kDeg) : kNeutralStyle.move_toe_out;
+  fctx.style.width = foot_width_.update(st.width * lerp(1.0, move_width, travel), dt);
+  fctx.style.toe_out = foot_toe_out_.update(lerp(st.toe_out, move_toe, travel), dt);
   fctx.hips = {world.p[H::thighL], world.p[H::thighR]};
   fctx.care = ctl.care;
   fctx.ground_z = root_pos.z;
@@ -485,7 +494,7 @@ void MotionPlan::update(f64 dt_in) {
   if (!moving && on_feet && !inp.airborne && stand_w > 0.99) {
     f64 sx = 0.0, cy = 0.0;
     for (const Foot& f : feet.feet) {
-      const f64 rel = f.yaw + f.side * st.toe_out - root_yaw;
+      const f64 rel = f.yaw + f.side * fctx.style.toe_out - root_yaw;
       sx += sin(rel);
       cy += cos(rel);
     }

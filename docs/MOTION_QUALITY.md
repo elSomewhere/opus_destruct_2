@@ -43,6 +43,26 @@ The approach is informed by the contact continuity and soft extension discussion
 in [Inverse Kinematics and Foot Locking](https://theorangeduck.com/page/inverse-kinematics-foot-locking).
 This implementation uses the existing procedural gait and physical contacts.
 
+### Standing and travelling stance
+
+`GaitStyle::width` and `toe_out` describe standing. The new `move_width` is a
+multiplier of that standing width, clamped to 0.60–1.50; `move_toe_out` is the
+outward angle of each moving foot in radians, clamped to 0–20 degrees. Neutral
+defaults are 0.75 and `2 * kDeg`. On the standard rig this reduces the distance
+between the foot centres from 20 cm standing to 15 cm walking or running.
+A wide swagger can use 1.20 and `12 * kDeg`. Existing seeded civilian, soldier
+and thug styles retain different movement profiles.
+
+The planner blends the travelling layout over 0.12–0.65 m/s and smooths targets
+with critically damped 8 rad/s springs. It changes swing destinations, preserving
+planted positions and headings. Stopping takes corrective steps back to the
+standing layout; it then restores the usual turning dead zone. Placement clears
+the smoothing and settling state. Guarded combat uses the standing spread and
+toe angle; forced balance steps retain the controller's placement rules.
+
+Narrower steps also exposed boot edges landing across rubble. Tread fitting and
+swing clearance now sample the boot's width as well as its centre line.
+
 ## Regression checks
 
 Build `svx_anim_tests` and `svx_core_tests` with `SVX_BUILD_ANIM=ON` and
@@ -59,6 +79,10 @@ contacts are checked at eight speeds from 0.35 to 4 m/s and three height scales
 from 0.8 to 1.15. Physical contact tests exercise both solvers. The articulation
 test moves an attachment, rejects invalid input and restores it through a saved
 session. Existing terrain, combat and recovery tests remain part of the suite.
+
+`tests/anim/test_motion.cpp` also checks travel width and toe angles at five
+speeds and three body scales, live edits without moving planted feet, quiet
+standing after stopping, guarded movement and clearance beside a boot.
 
 The foundry's `npm run engine:measure` records wrist tracking, hand speed, contact
 error, touchdown motion and pelvis height range on both backends. Physical contact

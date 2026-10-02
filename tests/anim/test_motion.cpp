@@ -664,3 +664,95 @@ TEST_CASE("anim motion: a plan is deterministic (the same seed and inputs, the s
   CHECK(same);
   CHECK(differs);  // (another seed: another character)
 }
+
+TEST_CASE("anim motion: travelling stance is narrower and straighter, including at a run") {
+  for (f64 scale : {0.8, 1.0, 1.15}) for (f64 speed : {0.35, 0.7, 1.4, 2.2, 4.0}) {
+    CAPTURE(scale); CAPTURE(speed);
+    MotionPlan a(humanoid_skeleton(HumanoidBuild{scale}), &flat_ground(), 7);
+    a.input.idle = false;
+    a.place(V3{}, kPi / 2);
+    const f64 standing_width = a.foot_state()[1].pos.x - a.foot_state()[0].pos.x;
+    const f64 travel = smoothstep(0.12, 0.65, speed);
+    const f64 width = standing_width * lerp(1.0, a.style.move_width, travel);
+    const f64 toe = lerp(a.style.toe_out, a.style.move_toe_out, travel);
+    for (int tick = 0; tick < 300; ++tick) {
+      a.set_root(V3{0, (tick + 1) * speed * DT, 0}, kPi / 2);
+      a.update(DT);
+      if (tick < 180) continue;
+      for (const auto& foot : a.feet_planner.feet) if (foot.planted) {
+        CHECK(std::abs(foot.pos.x - foot.side * width / 2) < 0.001 * scale);
+        CHECK(std::abs(wrap_angle(foot.yaw - (kPi / 2 - foot.side * toe))) < 0.001);
+      }
+      CHECK(finite_pose(a));
+    }
+  }
+}
+
+TEST_CASE("anim motion: live gait edits keep plants fixed and stopping returns to a quiet standing stance") {
+  for (f64 heading : {0.0, kPi / 2}) {
+    auto a = standing(heading);
+    a->input.idle = false;
+    const V3 forward{anim::cos(heading), anim::sin(heading), 0};
+    f64 distance = 0.0;
+    auto advance = [&](f64 speed) {
+      const auto before = a->foot_state();
+      distance += speed * DT;
+      a->set_root(forward * distance, heading);
+      a->update(DT);
+      const auto after = a->foot_state();
+      for (int side = 0; side < 2; ++side) if (before[side].planted && after[side].planted) {
+        CHECK(norm(before[side].pos - after[side].pos) < 1e-10);
+        CHECK(before[side].yaw == after[side].yaw);
+      }
+      CHECK(finite_pose(*a));
+    };
+    for (int tick = 0; tick < 180; ++tick) advance(1.4);
+    a->style.move_width = 1.2;
+    a->style.move_toe_out = 12 * kDeg;
+    for (int tick = 0; tick < 180; ++tick) advance(1.4);
+    for (const auto& foot : a->feet_planner.feet) if (foot.planted) {
+      const V3 local = rotate(qz(kPi / 2 - heading), foot.pos - a->root_pos);
+      CHECK(std::abs(local.x - foot.side * a->feet_planner.dims.foot_x * 1.2) < 0.001);
+      CHECK(std::abs(wrap_angle(foot.yaw - (heading - foot.side * 12 * kDeg))) < 0.001);
+    }
+    for (int tick = 0; tick < 240; ++tick) advance(0);
+    for (const auto& foot : a->feet_planner.feet) {
+      REQUIRE(foot.planted);
+      const V3 local = rotate(qz(kPi / 2 - heading), foot.pos - a->root_pos);
+      CHECK(std::abs(local.x - foot.side * a->feet_planner.dims.foot_x) < 0.01);
+      CHECK(std::abs(wrap_angle(foot.yaw - (heading - foot.side * a->style.toe_out))) < 0.025);
+    }
+    const f64 settled_phase = a->phase();
+    for (int tick = 0; tick < 120; ++tick) advance(0);
+    CHECK(a->phase() == settled_phase);
+    a->place(V3{}, heading);
+    CHECK(std::abs(norm(a->foot_state()[1].pos - a->foot_state()[0].pos) - 2 * a->feet_planner.dims.foot_x) < 1e-10);
+  }
+}
+
+TEST_CASE("anim motion: fighting guard retains its wider stance while travelling") {
+  auto a = standing();
+  a->input.guard = true;
+  a->input.idle = false;
+  for (int tick = 0; tick < 240; ++tick) {
+    a->set_root(V3{0, (tick + 1) * 1.4 * DT, 0}, kPi / 2);
+    a->update(DT);
+  }
+  for (const auto& foot : a->feet_planner.feet) if (foot.planted) {
+    // The guarded pose also bends its knees, broadening the stance a little.
+    CHECK(std::abs(foot.pos.x) >= a->feet_planner.dims.foot_x * 0.99);
+    CHECK(std::abs(foot.pos.x) < a->feet_planner.dims.foot_x * 1.2);
+    CHECK(std::abs(wrap_angle(foot.yaw - (kPi / 2 - foot.side * a->style.toe_out))) < 0.001);
+  }
+}
+
+TEST_CASE("anim motion: swing clearance includes rubble beside the boot centre line") {
+  // A narrow ridge catches the outer 2 cm of the boot; the centre line is flat.
+  VoxelCollision rubble(0.02, [](i32 i, i32 j, i32 k) {
+    return k < 0 || (i >= 2 && i <= 3 && j >= 15 && j <= 30 && k < 10);
+  });
+  MotionPlan a(humanoid_skeleton(), &rubble, 7);
+  auto& planner = a.feet_planner;
+  CHECK(planner.clearance(V3{0, 0, 0}, V3{0, 1, 0}, 1) > 0.2);
+  CHECK(planner.clearance(V3{-0.2, 0, 0}, V3{-0.2, 1, 0}, 1) == 0);
+}

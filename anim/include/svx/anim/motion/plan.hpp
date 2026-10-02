@@ -296,6 +296,8 @@ class MotionPlan {
   Spring bank_{6.0, 0.8};
   Spring slope_s_{5.0, 1.0};  // the ground's rise ahead along the motion (smoothed, rise over run; stairs up ~0.33)
   Spring swing_amp_{5.0, 1.0};
+  Spring foot_width_{8.0, 1.0, 1.0};
+  Spring foot_toe_out_{8.0, 1.0, 0.12};
   Spring aim_w_{8.0, 1.0};
   Spring mood_w_{6.0, 1.0};
   Spring air_w_{8.0, 1.0};
