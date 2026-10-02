@@ -89,6 +89,7 @@ void MotionPlan::place(const V3& pos_in, f64 yaw) {
   feet_planner.collision = collision;
   feet_planner.reset(root_pos, yaw, crouch_s_.x, style);
   pelvis_z_.x = rest_pelvis_z;
+  arm_return_ = {};
   placed_ = true;
   update(0.0);
   prev_world.copy_from(world);
@@ -506,7 +507,7 @@ void MotionPlan::update(f64 dt_in) {
     const V3 hip_off = rotate(pelvis_rot, skeleton->rest_head[size_t(f.thigh)] - skeleton->rest_head[H::pelvis]);
     const f64 dx = px + hip_off.x - a.x;
     const f64 dy = py + hip_off.y - a.y;
-    const f64 reach = 0.995 * leg_len;
+    const f64 reach = 0.985 * leg_len;
     const f64 reach2 = reach * reach - dx * dx - dy * dy;
     f64 max_z = (reach2 > 0.0 ? std::sqrt(reach2) : 0.0) + a.z - hip_off.z;
     if (!f.planted) max_z = lerp(pz, max_z, smoothstep(0.45, 0.9, f.swing));
@@ -711,7 +712,9 @@ void MotionPlan::update(f64 dt_in) {
       pole = vlerp(pole, V3{0.1 * f.side, 1, 0.4}, fw);
       rot = qnlerp(rot, kick_rot, fw);
     }
-    solve_two_bone(pose, fk, f.thigh, f.shin, f.foot, target, pole, 0.02, &kKneeRest);
+    // Keep a small extension reserve without pulling a planted ankle away from
+    // its contact point. The pelvis solve already reserves 1.5% of leg length.
+    solve_two_bone(pose, fk, f.thigh, f.shin, f.foot, target, pole, 0.005, &kKneeRest);
     set_model_rotation(pose, fk, f.foot, rot);
     pose.r[size_t(f.toe)] = qx(fp.toe);
     if (ctl.relax_legs > 0.0) {
@@ -772,6 +775,36 @@ void MotionPlan::update(f64 dt_in) {
       fk.update_subtree(pose, cv.b);
     }
   }
+  // An outgoing action returns the arm under control. Its short clip fade can
+  // otherwise ask a raised hand to drop in 150 ms and shed its muscle support
+  // halfway down. Preserve local angular velocity into a critically damped
+  // return; incoming actions and strike timing still follow their authored pose.
+  // Behaviour tasks are applied afterwards so a catch or brace has priority.
+  for (size_t i = 0; i < 2; ++i) {
+    ArmReturn& r = arm_return_[i];
+    const f64 w = effort[i];
+    if (w < r.weight - 1e-5) r.releasing = true;
+    if (w > r.weight + 1e-5 || ctl.busy || held_prop || dt <= 0.0) r.releasing = false;
+    f64 error = 0.0;
+    for (size_t j = 0; j < 3; ++j) {
+      const size_t b = size_t(i == 0 ? H::upperarmL : H::upperarmR) + j;
+      const Quat goal = pose.r[b];
+      if (r.initialized && r.releasing) {
+        V3 offset = qerror(r.rotation[j], goal);
+        for (int axis = 0; axis < 3; ++axis) spring_step(offset[axis], r.velocity[j][axis], 0.0, 10.0, 1.0, dt);
+        pose.r[b] = qnormalize(qexp(offset) * goal);
+        error = std::max(error, norm(offset));
+      } else {
+        r.velocity[j] = r.initialized && dt > 0.0 ? qerror(goal, r.rotation[j]) * (1.0 / dt) : V3{};
+      }
+      r.rotation[j] = pose.r[b];
+    }
+    r.initialized = true;
+    r.weight = w;
+    if (w <= 0.0 && error < 0.002) r.releasing = false;
+  }
+  fk.update(pose, H::clavicleL);
+
   // behaviour tasks on top (a hand to a wound, on a wall, out to break a fall); what a behaviour
   // asks of a hand is followed smoothly (its target on a critically damped spring, its turn and
   // its elbow eased), and when it stops asking the hand fades back from where the task had it,

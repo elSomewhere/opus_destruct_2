@@ -458,6 +458,14 @@ void World::Impl::apply_articulation_controls() {
       const u32 tid = a.targets[k];
       const auto it = std::lower_bound(rigid_.targets.begin(), rigid_.targets.end(), tid, [](const Target& t, u32 v) { return t.id < v; });
       if (it == rigid_.targets.end() || it->id != tid) continue;
+      if (it->kind == Target::Kind::Point && k < C.target_local.size() && finite3(C.target_local[k]) && norm(C.target_local[k]) < 8.0) {
+        if (norm2(it->local - C.target_local[k]) > 1e-18) {
+          // Impulses accumulated at the heel must not warm-start the toe.
+          it->imp = it->imp_d = V3{};
+          it->step = 0.0;
+        }
+        it->local = C.target_local[k];
+      }
       TargetDrive d = C.targets[k];
       if (!finite3(d.pos) || !finite3(d.vel) || !finite_q(d.rot) || !finite3(d.up) || !std::isfinite(d.stiffness) || !std::isfinite(d.damping) ||
           !std::isfinite(d.max))
@@ -603,7 +611,13 @@ std::vector<u8> World::Impl::articulation_record(const ArticulationRec& a) const
     const ArticulationTargetDesc& T = a.target_desc[k];
     put32(out, T.link);
     out.push_back(static_cast<u8>(T.kind));
-    put3(out, T.local);
+    V3 local = T.local;
+    if (k < a.targets.size()) {
+      const u32 tid = a.targets[k];
+      const auto it = std::lower_bound(rigid_.targets.begin(), rigid_.targets.end(), tid, [](const Target& t, u32 v) { return t.id < v; });
+      if (it != rigid_.targets.end() && it->id == tid) local = it->local;
+    }
+    put3(out, local);
     put_drive(out, k < C.targets.size() ? C.targets[k] : TargetDrive{});
   }
   put32(out, static_cast<u32>(a.collide.size()));
@@ -699,6 +713,7 @@ bool World::Impl::read_articulation_record(Rd& in, ArticulationSaved* out) const
     if (!in.ok || l >= nl || kind > 1 || !finite3(T.local) || !read_drive(in, &d)) return false;
     s.desc.targets.push_back(T);
     s.control.targets.push_back(d);
+    s.control.target_local.push_back(T.local);
   }
   const u32 nc = in.u32_();
   if (!in.ok || u64(nc) * 8 > in.b.size()) return false;

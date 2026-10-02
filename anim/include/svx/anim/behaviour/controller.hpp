@@ -182,6 +182,7 @@ class Behaviours {
   f64 flinch_side_ = 1.0;
   f64 under_fire_ = 0.0;
   std::array<V3, 2> hand_vel_{};  // the hands' planned velocities (smoothed), for their grips
+  std::array<f64, 2> arm_activation_{};  // muscle recruitment persists while an action decelerates
   // arms out for balance (0..1, smoothed) and what the balance wants of them now
   f64 flail_ = 0.0, flail_want_ = 0.0;
   std::array<f64, 2> blocked_for_{0, 0};  // how long each swinging foot has been caught on something (s)

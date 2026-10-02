@@ -25,13 +25,15 @@ constexpr f64 kMuscle[kBodyCount][2] = {
     {15, 0.95},  // lower back
     {15, 0.95},  // upper back
     {13, 1.0},   // neck
-    // (arms critically damped: they settle, they do not ring with every footfall)
-    {12, 1.0},  // shoulder
-    {13, 1.0},  // elbow
-    {12, 1.3},  // wrist
-    {12, 1.0},
-    {13, 1.0},
-    {12, 1.3},
+    // The shoulder yields to momentum; the distal joints actively carry the hand.
+    // Giving the wrist the shoulder's slow response made it trail every turn and
+    // oscillate through action releases. Tone still controls injury and ragdoll.
+    {16, 1.05},  // shoulder
+    {19, 1.05},  // elbow
+    {28, 1.15},  // wrist
+    {16, 1.05},
+    {19, 1.05},
+    {28, 1.15},
     {17, 0.95},  // hip
     {18, 0.95},  // knee
     {16, 0.95},  // ankle

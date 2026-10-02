@@ -37,6 +37,7 @@ struct Foot {
   // the swing: from `lift`, carried with the body from `lift_root`, to `target` over `swing` 0..1
   V3 lift, lift_root;
   f64 lift_yaw = 0.0;
+  f64 lift_pitch = 0.0;
   f64 swing = 0.0;
   f64 swing_rate = 1.0;
   V3 target;

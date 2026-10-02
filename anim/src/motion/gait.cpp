@@ -7,7 +7,9 @@ namespace svx::anim {
 namespace {
 
 constexpr f64 kSpeeds[] = {0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 4.0, 5.5, 7.5};
-constexpr f64 kCadence[] = {0.75, 0.74, 0.86, 0.95, 1.04, 1.16, 1.28, 1.36, 1.45, 1.55};
+// Cycles/s (two steps per cycle). Brisk walking gains cadence as well as stride
+// length; extending the slow walk's stride made the hips sag at each landing.
+constexpr f64 kCadence[] = {0.75, 0.78, 0.94, 1.08, 1.2, 1.24, 1.28, 1.36, 1.45, 1.55};
 constexpr int kRows = 10;
 
 f64 table(const f64* xs, const f64* ys, f64 x) {

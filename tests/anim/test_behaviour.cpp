@@ -232,11 +232,20 @@ TEST_CASE("behaviour: a foot caught mid-stride pitches the body forward; it catc
       const f64 y0 = c.pose.p[H::pelvis].y;
       c.trip();
       bool reacted = false;
-      h = run(s, c, 0.8, speed, [&](Character& x, f64, Host&) { reacted = reacted || x.controlled(); }, h);
+      f64 furthest = y0;
+      h = run(s, c, 0.8, speed, [&](Character& x, f64, Host&) {
+        reacted = reacted || x.controlled();
+        furthest = std::max(furthest, x.pose.p[H::pelvis].y);
+      }, h);
       CHECK(reacted);
-      CHECK(c.pose.p[H::pelvis].y > y0 + 0.2);
-      run(s, c, 8.0, 0.0, nullptr, h);
+      // It carries forward momentum into the trip, then may step back to brake.
+      // Check the excursion, not its position at one arbitrary recovery frame.
+      CHECK(furthest > y0 + 0.2);
+      h = run(s, c, 8.0, 0.0, nullptr, h);
       CHECK(c.behaviours.mode == BodyMode::Animated);
+      const V3 recovered = c.pose.p[H::pelvis];
+      run(s, c, 1.5, speed, nullptr, h);
+      CHECK(norm(c.pose.p[H::pelvis] - recovered) > 0.5);
     }
   }
 }

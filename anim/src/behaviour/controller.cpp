@@ -7,7 +7,7 @@ namespace svx::anim {
 namespace {
 
 constexpr f64 G = 9.81;
-f64 g_arms_at_ease = 0.62;
+f64 g_arms_at_ease = 0.82;
 constexpr i32 kParentOf[kBodyCount] = {-1, B::pelvis, B::spine, B::chest, B::chest, B::upperarmL, B::forearmL, B::chest, B::upperarmR, B::forearmR, B::pelvis, B::thighL, B::shinL, B::pelvis, B::thighR, B::shinR};
 // How a shove along a round spreads over the body: the trunk and the arms most, the feet least.
 constexpr f64 kShoveUpper[kBodyCount] = {0.9, 1.05, 1.15, 1.2, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 0.8, 0.55, 0.35, 0.8, 0.55, 0.35};
@@ -1206,7 +1206,14 @@ void Behaviours::drive_pre(f64 dt) {
   }
   const f64 dz = (1.0 - 0.85 * daze_) * (1.0 - 0.6 * shock_);
   const f64 tense = 1.0 + 0.35 * tension_;
-  auto arm_base = [&](i32 i) { return lerp(arms, std::max(arms, 1.0), arm_held(i)); };
+  // Recruit quickly for a held pose, an action or a turn, then release gradually.
+  // The hand still needs support while returning to rest after an action ends.
+  const f64 turn = clamp(norm(qerror(prev_t.q[H::chest], target.q[H::chest])) * idt / 4.0, 0.0, 1.0);
+  for (size_t i = 0; i < 2; ++i) {
+    const f64 want = mode == BodyMode::Animated ? std::max({arm_held(i32(i)), plan.effort[i], turn}) : 0.0;
+    arm_activation_[i] += (want - arm_activation_[i]) * (1.0 - exp(-(want > arm_activation_[i] ? 24.0 : 4.0) * dt));
+  }
+  auto arm_base = [&](i32 i) { return lerp(arms, std::max(arms, 1.15), arm_activation_[size_t(i)]); };
   std::array<f64, kRegionCount> region_t{};
   region_t[region_index(Region::Trunk)] = base * trunk * dz * tense * (1.0 - 0.3 * inj.trunk);
   region_t[region_index(Region::Neck)] = base * neck * dz * tense * (1.0 - 0.3 * inj.head);
@@ -1333,10 +1340,21 @@ void Behaviours::drive_pre(f64 dt) {
     if (!on_feet || !(plan.stance == Stance::Stand || plan.stance_target() == Stance::Stand)) continue;
     const V3 a = target.p[foot_bone];
     pin.target = a;
+    pin.local = bd.com_local[size_t(i == 0 ? B::footL : B::footR)] * -1.0;
     turn.target = target.q[foot_bone];
     pin.enabled = turn.enabled = true;
     const f64 fm = bd.parts[i == 0 ? B::footL : B::footR]->mass;
     if (f.planted) {
+      if (!f.held && mode == BodyMode::Animated && plan.feet_planner.stepping) {
+        // Hold the point touching the ground, so the ankle can roll over it.
+        // Pinning a moving ankle with zero target velocity resisted the roll
+        // and let the heel/toe drift, especially during brisk walking. Recovery
+        // keeps the ankle support expected by its centre-of-pressure controller.
+        const FeetDims& d = plan.feet_planner.dims;
+        const V3 pivot{0, f.pitch < 0.0 ? d.ball_fwd : -d.heel_back, -d.ankle_h};
+        pin.local += pivot;
+        pin.target = a + rotate(target.q[foot_bone], pivot);
+      }
       // (stiff, not rigid: a foot that lands a little off its spot is drawn in, not snapped)
       pin.stiffness = fm * 16000.0;
       pin.max_force = m * G * 2.5;
@@ -1388,6 +1406,7 @@ void Behaviours::drive_pre(f64 dt) {
     if (mode == BodyMode::Animated && plan.effort[size_t(i)] > 0.05) grip = std::max(grip, plan.effort[size_t(i)] * (plan.striking[size_t(i)] ? 1.0 : 0.5));
     // (hands held up - on the head, raised, over the face - are held where they are meant)
     grip = std::max(grip, 0.5 * arm_held(i));
+    if (mode == BodyMode::Animated) grip = std::max(grip, 0.4 * arm_activation_[size_t(i)]);
     const V3 w = target.p[hand_bone];
     const V3 wp = prev_t.p[hand_bone];
     // (the hand's planned velocity, smoothed: frame differences are noisy)

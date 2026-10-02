@@ -3,6 +3,7 @@
 // structures and loading them, knocked by pieces and knocking them, stepped finely on their own.
 #include <algorithm>
 #include <cmath>
+#include <limits>
 #include <string>
 #include <vector>
 
@@ -900,4 +901,49 @@ TEST_CASE("articulations: one at rest goes out of range with its region, and com
   ArticulationState s2;
   REQUIRE(b.articulation_state(id, &s2));
   for (size_t i = 0; i < 2; ++i) CHECK(norm(s2.links[i].pos - s0.links[i].pos) < 1e-9);
+}
+
+TEST_CASE("articulations: moving a point attachment changes the contact and survives a saved session") {
+  World w;
+  w.load(ground());
+  ArticulationDesc d;
+  d.links.push_back(ball(V3{0, 0, 1.5}, 0.1, 1.0));
+  ArticulationTargetDesc point;
+  point.kind = Target::Kind::Point;
+  d.targets.push_back(point);
+  ArticulationTargetDesc rotation;
+  rotation.kind = Target::Kind::Rotation;
+  d.targets.push_back(rotation);
+  const auto id = w.add_articulation(d);
+  REQUIRE(id != 0);
+  auto* control = w.articulation_control(id);
+  REQUIRE(control);
+  for (auto& target : control->targets) {
+    target.on = true;
+    target.stiffness = 10000;
+    target.damping = 200;
+  }
+  control->targets[0].pos = V3{0, 0, 1.5};
+  for (int n = 0; n < 60; ++n) w.tick();
+  const V3 offset{0.2, 0, 0};
+  control->target_local = {offset};
+  for (int n = 0; n < 120; ++n) w.tick();
+  ArticulationState state;
+  REQUIRE(w.articulation_state(id, &state));
+  const auto& link = state.links[0];
+  CHECK(norm(link.pos + rotate(link.rot, offset) - control->targets[0].pos) < 0.01);
+  CHECK(link.pos.x < -0.18);
+  // Invalid per-tick input leaves the most recent valid attachment in place.
+  control->target_local[0].x = std::numeric_limits<f64>::quiet_NaN();
+  for (int n = 0; n < 10; ++n) w.tick();
+  World restored;
+  restored.load(ground());
+  REQUIRE(restored.load_delta(w.save_delta()));
+  auto* loaded = restored.articulation_control(id);
+  REQUIRE(loaded);
+  REQUIRE(loaded->target_local.size() == 2);
+  CHECK(norm(loaded->target_local[0] - offset) < 1e-12);
+  for (int n = 0; n < 60; ++n) restored.tick();
+  REQUIRE(restored.articulation_state(id, &state));
+  CHECK(norm(state.links[0].pos + rotate(state.links[0].rot, offset) - loaded->targets[0].pos) < 0.01);
 }

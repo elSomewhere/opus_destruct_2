@@ -251,6 +251,13 @@ class MotionPlan {
     const ActionDef* def;
     std::optional<V3> target;
   };
+  struct ArmReturn {
+    std::array<Quat, 3> rotation{};
+    std::array<V3, 3> velocity{};
+    f64 weight = 0.0;
+    bool releasing = false;
+    bool initialized = false;
+  };
 
   void step_in(const ActionDef& def, const V3& target, f64 rate);
   void set_pose_action(const ActionDef* def);
@@ -324,6 +331,7 @@ class MotionPlan {
   // actions
   std::optional<ActionPlayer> pose_act_;
   std::optional<ActionPlayer> act_;
+  std::array<ArmReturn, 2> arm_return_{};
   ChannelFrame ch_pose_, ch_act_;
   f64 idle_time_ = 0.0;
   f64 next_fidget_ = 6.0;

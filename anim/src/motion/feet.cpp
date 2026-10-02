@@ -72,9 +72,10 @@ void FootPlanner::step(i32 i, const V3& target_in, f64 duration, std::optional<f
     // re-aim a swing under way (the gait's becomes the balance's, from where the foot is)
     if (!f.forced) {
       f.forced = true;
-      f.lift = V3{f.ankle.x, f.ankle.y, f.ankle.z - dims.ankle_h};
+      f.lift = f.ankle - ankle_from_plant(V3{}, f.yaw, f.pitch);
       f.lift_root = f.lift;
       f.lift_yaw = f.yaw;
+      f.lift_pitch = f.pitch;
       f.swing = 0.0;
       f.swing_rate = 1.0 / std::max(0.1, duration);
       f.clear = 0.0;
@@ -91,6 +92,7 @@ void FootPlanner::step(i32 i, const V3& target_in, f64 duration, std::optional<f
   f.lift = f.pos;
   f.lift_root = f.pos;
   f.lift_yaw = f.yaw;
+  f.lift_pitch = f.pitch;
   f.swing = 0.0;
   f.swing_rate = 1.0 / std::max(0.12, duration);
   f.target = target;
@@ -275,6 +277,7 @@ void FootPlanner::update(f64 dt, const FeetContext& c, f64 prev_phase) {
         f.lift = f.pos;
         f.lift_root = c.root;
         f.lift_yaw = f.yaw;
+        f.lift_pitch = f.pitch;
         f.swing = 0.0;
         f.clear = -1.0;
         // land when the gait says this foot lands (phase 1), however it left the ground
@@ -335,7 +338,9 @@ void FootPlanner::update(f64 dt, const FeetContext& c, f64 prev_phase) {
     if (f.planted) {
       const f64 gz = ground(f.pos.x, f.pos.y, f.pos.z + 0.2 * k, f.pos.z);
       if (gz < f.pos.z - 0.01) f.pos.z = std::max(gz, f.pos.z - 3.0 * dt);
-      const f64 u = p1 < D ? p1 / D : 0.3;
+      // Contact starts at the actual touchdown, including a late/early step.
+      // Using the clock here changed the ankle pivot discontinuously at landing.
+      const f64 u = clamp(f.since / stance_t, 0.0, 1.0);
       f64 pitch = 0.0;
       if (c.moving && !forced_any) {
         const f64 hs = lerp(0.28, 0.1, g.run) * move_amt;
@@ -384,17 +389,20 @@ void FootPlanner::update(f64 dt, const FeetContext& c, f64 prev_phase) {
               if (gz && *gz > floor_z) floor_z = *gz;
             }
           }
-          if (floor_z > -std::numeric_limits<f64>::infinity()) hz.z = std::max(hz.z, floor_z + 0.05 * k);
+          if (floor_z > -std::numeric_limits<f64>::infinity())
+            hz.z = std::max(hz.z, floor_z + 0.05 * k * (1.0 - smoothstep(0.65, 1.0, s)));
         }
       }
       const f64 e = s * s * (3.0 - 2.0 * s);
       const f64 yaw = f.lift_yaw + wrap_angle(f.target_yaw - f.lift_yaw) * e;
-      const f64 to = c.moving ? lerp(0.45, 0.65, run) * move_amt : 0.15;
-      const f64 hs = c.moving ? lerp(0.28, 0.1, run) * move_amt : 0.05;
-      f.pitch = lerp(-to, hs, smoothstep(0.15, 0.95, s));
+      const f64 hs = c.moving && !f.forced ? lerp(0.28, 0.1, run) * move_amt : 0.0;
+      f.pitch = lerp(f.lift_pitch, hs, smoothstep(0.12, 0.92, s));
       // (up a step the toes come up at once, clear of its edge)
-      if (rise > 0.04 * k) f.pitch = lerp(f.pitch, 0.15, smoothstep(0.0, 0.25, s));
-      f.ankle = V3{hz.x, hz.y, hz.z + d.ankle_h};
+      if (rise > 0.04 * k) f.pitch = lerp(f.pitch, 0.15, smoothstep(0.0, 0.25, s) * (1.0 - smoothstep(0.65, 1.0, s)));
+      // The same sole -> ankle transform on both sides of contact. Otherwise
+      // heel strike and toe-off teleport the ankle by the foot's roll offset.
+      f.ankle = ankle_from_plant(hz, yaw, f.pitch);
+      const V3 landing_ankle = f.ankle;
       // within the leg's reach of the hip: a foot left behind rises (the heel kicks up)
       const V3& hip = c.hips[fi];
       const f64 reach = 0.97 * d.leg_len;
@@ -407,6 +415,10 @@ void FootPlanner::update(f64 dt, const FeetContext& c, f64 prev_phase) {
         f.ankle.y = hip.y + (dy / hd) * reach * 0.95;
         f.ankle.z = std::max(f.ankle.z, hip.z - reach * 0.31);
       }
+      // Early swing can tuck the foot beneath the hip. Late swing must approach
+      // its ground contact; the pelvis reach solve makes room for that landing.
+      // Keeping the old hip's reach clamp until contact caused a visible snap.
+      f.ankle = vlerp(f.ankle, landing_ankle, smoothstep(0.4, 0.85, s));
       f.yaw = yaw;
     }
   }
