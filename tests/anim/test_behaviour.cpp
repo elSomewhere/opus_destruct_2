@@ -470,6 +470,156 @@ TEST_CASE("behaviour: the plan lies as the body lies (front or back), and a badl
   }
 }
 
+TEST_CASE("behaviour: disabled legs crawl on the usable arms without repeated recovery or wound-care reaches") {
+  for (Path path : kPaths) {
+    for (i32 weak_arm : {-1, 0, 1}) {
+      Scene s(path);
+      Character& c = s.civilian(7);
+      c.motion.input.idle = false;
+      run(s, c, .5);
+      auto cap = c.capabilities();
+      for (auto& leg : cap.legs) leg = {0, 0, 0};
+      for (size_t i = B::thighL; i < kBodyCount; ++i) cap.muscle[i] = 0;
+      if (weak_arm >= 0) {
+        cap.arms[size_t(weak_arm)] = {0, 0, 0};
+        const i32 first = weak_arm == 0 ? B::upperarmL : B::upperarmR;
+        for (i32 i = first; i < first + 3; ++i) cap.muscle[size_t(i)] = 0;
+      }
+      derive_mobility(cap);
+      cap.care = CareTarget{B::thighL, {}, {0, 1, 0}, 2, 100, 1};
+      c.behaviours.damage.override_capabilities(cap);
+      Host h = run(s, c, 9);
+      const V3 start = c.pose.p[H::pelvis], forward = MotionPlan::forward(h.yaw);
+      i32 recoveries = 0, care_reaches = 0, disabled_assists = 0;
+      f64 max_height = 0;
+      BodyMode previous = c.behaviours.mode;
+      run(s, c, 5, .3, [&](Character& x, f64 t, Host&) {
+        if (x.behaviours.mode != previous && x.behaviours.mode != BodyMode::Animated) ++recoveries;
+        previous = x.behaviours.mode;
+        max_height = std::max(max_height, x.pose.p[H::pelvis].z - s.ground);
+        if (t > .3)
+          for (const auto& task : x.motion.control.arms)
+            if (task && task->weight > .5) ++care_reaches;
+        if (weak_arm >= 0 && x.body.hands[size_t(weak_arm)]->enabled) ++disabled_assists;
+      }, h);
+      const f64 progress = dot(c.pose.p[H::pelvis] - start, forward);
+      INFO(std::string(path_name(path)) << " weak arm " << weak_arm << ": progress " << progress << ", pelvis " << max_height
+                          << ", recoveries " << recoveries << ", care reaches " << care_reaches << ", disabled assists " << disabled_assists);
+      MESSAGE(std::string(path_name(path)) << " crawl " << weak_arm << ": " << progress << " m, height " << max_height << ", recoveries " << recoveries);
+      CHECK(c.motion.stance == Stance::Prone);
+      CHECK(c.behaviours.mode == BodyMode::Animated);
+      CHECK(progress > .8);
+      CHECK(max_height < .35);
+      CHECK(recoveries == 0);
+      CHECK(care_reaches == 0);
+      CHECK(disabled_assists == 0);
+    }
+  }
+}
+
+TEST_CASE("behaviour: lost legs crawl even when the host requests standing every tick") {
+  for (Path path : kPaths) {
+    Scene s(path);
+    Character& c = s.civilian(7);
+    c.motion.input.idle = false;
+    run(s, c, .5);
+    c.behaviours.lose_limb(B::shinL);
+    c.behaviours.lose_limb(B::shinR);
+    REQUIRE(c.behaviours.legless);
+    Host h = host_of(c);
+    V3 start;
+    for (i32 i = 0; i < 720; ++i) {
+      s.frame({&c}, [&] {
+        c.motion.input.stance = Stance::Stand;
+        const V3 delta = c.take_root_motion();
+        if (c.controlled()) {
+          h.pos += delta;
+          h.yaw = c.motion.root_yaw;
+        } else {
+          h.pos += MotionPlan::forward(h.yaw) * (.3 * DT);
+        }
+        c.set_root(h.pos, h.yaw);
+      });
+      if (i == 479) start = c.pose.p[H::pelvis];
+    }
+    INFO(std::string(path_name(path)));
+    CHECK(c.behaviours.mode == BodyMode::Animated);
+    CHECK(c.motion.stance == Stance::Prone);
+    CHECK(c.pose.p[H::pelvis].z - s.ground < .35);
+    CHECK(dot(c.pose.p[H::pelvis] - start, MotionPlan::forward(h.yaw)) > .6);
+  }
+}
+
+TEST_CASE("behaviour: crawling turns toward a new host heading before pulling forward") {
+  for (Path path : kPaths) {
+    Scene s(path);
+    Character& c = s.civilian(7);
+    c.motion.input.idle = false;
+    auto cap = c.capabilities();
+    for (auto& leg : cap.legs) leg = {0, 0, 0};
+    for (size_t i = B::thighL; i < kBodyCount; ++i) cap.muscle[i] = 0;
+    derive_mobility(cap);
+    c.behaviours.damage.override_capabilities(cap);
+    run(s, c, 9);
+    REQUIRE(c.behaviours.mode == BodyMode::Animated);
+    const f64 wanted_yaw = c.motion.root_yaw + kPi;
+    const V3 start = c.pose.p[H::pelvis], forward = MotionPlan::forward(wanted_yaw);
+    f64 worst_turn = 0, worst_step = 0;
+    i32 recoveries = 0;
+    for (i32 i = 0; i < 420; ++i) {
+      const f64 old_yaw = c.motion.root_yaw;
+      const WorldPose before = c.motion.world;
+      s.frame({&c}, [&] { c.set_root(c.motion.root_pos + forward * (.3 * DT), wanted_yaw); });
+      worst_turn = std::max(worst_turn, std::abs(wrap_angle(c.motion.root_yaw - old_yaw)));
+      for (size_t b = H::pelvis; b < H::weapon; ++b) worst_step = std::max(worst_step, norm(c.motion.world.p[b] - before.p[b]));
+      if (c.behaviours.mode != BodyMode::Animated) ++recoveries;
+    }
+    const f64 progress = dot(c.pose.p[H::pelvis] - start, forward);
+    INFO(std::string(path_name(path)) << ": turn " << worst_turn << ", joint step " << worst_step << ", progress " << progress);
+    CHECK(worst_turn < .03);
+    CHECK(worst_step < .06);
+    CHECK(progress > .6);
+    CHECK(recoveries == 0);
+  }
+}
+
+TEST_CASE("behaviour: an incapacitated body stays down and can resume crawling when capability returns") {
+  for (Path path : kPaths) {
+    Scene s(path);
+    Character& c = s.civilian(7);
+    c.motion.input.idle = false;
+    run(s, c, .5);
+    auto cap = c.capabilities();
+    for (auto& leg : cap.legs) leg = {0, 0, 0};
+    for (size_t i = B::thighL; i < kBodyCount; ++i) cap.muscle[i] = 0;
+    cap.vigor = .05;
+    derive_mobility(cap);
+    REQUIRE(cap.mobility == Mobility::Immobile);
+    c.behaviours.damage.override_capabilities(cap);
+    Host h = run(s, c, 12, 1, [&](Character& x, f64 t, Host&) {
+      if (t < 5) return;
+      CHECK(x.behaviours.mode == BodyMode::Lying);
+      CHECK_FALSE(x.body.steer->enabled);
+      CHECK(x.pose.p[H::pelvis].z - s.ground < .35);
+    });
+    cap.vigor = 1;
+    derive_mobility(cap);
+    c.behaviours.damage.override_capabilities(cap);
+    run(s, c, 7, .3, nullptr, h);
+    CHECK(c.behaviours.mode == BodyMode::Animated);
+    CHECK(c.motion.stance == Stance::Prone);
+    // Exhaustion can arrive during a crawl, after the transition has finished.
+    cap.vigor = .05;
+    derive_mobility(cap);
+    c.behaviours.damage.override_capabilities(cap);
+    run(s, c, 5, .3, [&](Character& x, f64 t, Host&) {
+      if (t < 2) return;
+      CHECK(x.behaviours.mode == BodyMode::Lying);
+      CHECK_FALSE(x.body.steer->enabled);
+    });
+  }
+}
+
 TEST_CASE("behaviour: dying, the muscles fade, the body goes down within a couple of seconds and comes to rest") {
   for (Path path : kPaths) {
     const std::string pn = path_name(path);

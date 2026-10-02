@@ -340,6 +340,7 @@ class MotionPlan {
   // lying: on the back (else face down), and whether it stays down
   bool down_back_ = true;
   bool lying_ = false;
+  bool prone_roll_ = false;
   StanceSample s_a_, s_b_, s_out_, s_c_;
   f64 crawl_phase_ = 0.0;
   bool get_up_run_ = false;

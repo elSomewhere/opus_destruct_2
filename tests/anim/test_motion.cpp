@@ -322,6 +322,51 @@ TEST_CASE("anim motion: a fall played by the plan goes down, and getting up come
   CHECK(b->stance == Stance::Stand);
 }
 
+TEST_CASE("anim motion: a body with disabled legs rolls from its back into a crawl without kneeling") {
+  auto a = standing();
+  a->capabilities.legs[0] = {0, 0, 0};
+  a->capabilities.legs[1] = {0, 0, 0};
+  a->capabilities.mobility = Mobility::Crawl;
+  a->input.stance = Stance::Prone;
+  a->lie({}, kPi / 2, true);
+  run(*a, .2);
+  a->get_up(.8);
+  f64 highest = 0, jump = 0;
+  auto previous = a->world.p;
+  run(*a, 4, [&](MotionPlan& b) {
+    CHECK(b.stance != Stance::Kneel);
+    CHECK(b.stance_target() != Stance::Kneel);
+    highest = std::max(highest, b.world.p[H::pelvis].z);
+    // Rolling turns the face towards the floor, not the head towards the feet.
+    CHECK(b.world.p[H::head].y - b.world.p[H::pelvis].y < -.2);
+    // The unoccupied compatibility weapon socket is not a body joint.
+    for (size_t i = 1; i < size_t(H::weapon); ++i) jump = std::max(jump, vdist(previous[i], b.world.p[i]));
+    previous = b.world.p;
+  });
+  CAPTURE(highest);
+  CAPTURE(jump);
+  CHECK(highest < .26);
+  CHECK(jump < .08);
+  CHECK(a->stance == Stance::Prone);
+  CHECK_FALSE(a->down());
+  CHECK(rotate(a->world.q[H::pelvis], V3{0, 1, 0}).z < -.8);
+}
+
+TEST_CASE("anim motion: getting onto a knee puts the usable foot forward on either side") {
+  for (int weak : {0, 1}) {
+    auto a = standing();
+    a->capabilities.legs[size_t(weak)] = {0, 0, 0};
+    a->capabilities.mobility = Mobility::Hobble;
+    a->input.stance = Stance::Kneel;
+    run(*a, 2);
+    const V3 good = a->world.p[weak == 0 ? H::footR : H::footL];
+    const V3 bad = a->world.p[weak == 0 ? H::footL : H::footR];
+    CAPTURE(weak);
+    CHECK(good.y - bad.y > .5);
+    CHECK(good.z < .12);
+  }
+}
+
 // ---- 6. weapons --------------------------------------------------------------------------------
 
 namespace {

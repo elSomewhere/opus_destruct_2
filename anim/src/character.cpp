@@ -143,7 +143,17 @@ void Character::place(const V3& pos, f64 yaw) {
 void Character::set_root(const V3& pos, f64 yaw) {
   if (!alive() || controlled()) return;
   const V3 delta = pos - motion.root_pos;
-  const f64 length = hypot2(delta.x, delta.y), limit = capabilities().max_speed * last_dt_ / (1 + .35 * motion.load_fraction);
+  const f64 length = hypot2(delta.x, delta.y);
+  f64 limit = capabilities().max_speed * last_dt_ / (1 + .35 * motion.load_fraction);
+  if (capabilities().mobility == Mobility::Crawl && motion.stance == Stance::Prone) {
+    // The hands turn the trunk before pulling it in a new direction. A host
+    // restoring its heading after a roll must not rotate a prone body at once.
+    const auto& cap = capabilities();
+    const f64 drive = std::max({cap.arms[0].strength, cap.arms[1].strength, cap.legs[0].drive, cap.legs[1].drive});
+    const f64 turn = .9 * std::min(drive, cap.trunk) * cap.consciousness * last_dt_;
+    yaw = motion.root_yaw + clamp(wrap_angle(yaw - motion.root_yaw), -turn, turn);
+    if (length > 0) limit *= clamp(dot(delta, MotionPlan::forward(yaw)) / length, 0.0, 1.0);
+  }
   V3 allowed = pos;
   if (length > limit && length > 0) {
     allowed.x = motion.root_pos.x + delta.x * limit / length;
@@ -226,11 +236,6 @@ void Character::begin_body() {
   health = alive() ? max_health * behaviours.damage.health_fraction() : 0;
   if (capabilities().fatal && alive()) die(nullptr, nullptr, .25);
   if (capabilities().consciousness < .12 && alive() && b.conscious) knock_out(30);
-  if (capabilities().mobility == Mobility::Kneel) motion.input.stance = Stance::Kneel;
-  if (capabilities().mobility == Mobility::Crawl || capabilities().mobility == Mobility::Immobile) {
-    motion.input.stance = Stance::Prone;
-    if ((b.mode == BodyMode::Animated || b.mode == BodyMode::Reacting) && motion.stance != Stance::Prone) b.collapse(2);
-  }
   motion.update(dt);
   for (const auto& p : motion.props.slots)
     if (p) {

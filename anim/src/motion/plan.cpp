@@ -54,6 +54,32 @@ FeetDims feet_dims(const Skeleton& sk, f64 k, f64 leg_len) {
   return d;
 }
 
+void mirror_stance(StanceSample& s) {
+  s.pelvis_pos.x = -s.pelvis_pos.x;
+  for (auto* q : {&s.pelvis_rot, &s.spine, &s.chest, &s.neck, &s.head}) *q = qmirror_x(*q);
+  std::swap(s.feet[0], s.feet[1]);
+  std::swap(s.hands[0], s.hands[1]);
+  std::swap(s.hand_weight[0], s.hand_weight[1]);
+  for (size_t i = 0; i < 2; ++i) {
+    s.feet[i].ankle.x = -s.feet[i].ankle.x;
+    s.feet[i].pole.x = -s.feet[i].pole.x;
+    s.feet[i].rot = qmirror_x(s.feet[i].rot);
+    if (s.hands[i]) s.hands[i]->x = -s.hands[i]->x;
+  }
+}
+
+void turn_stance(StanceSample& s, f64 yaw) {
+  const Quat q = qz(yaw);
+  s.pelvis_pos = rotate(q, s.pelvis_pos);
+  s.pelvis_rot = q * s.pelvis_rot;
+  for (size_t i = 0; i < 2; ++i) {
+    s.feet[i].ankle = rotate(q, s.feet[i].ankle);
+    s.feet[i].pole = rotate(q, s.feet[i].pole);
+    s.feet[i].rot = q * s.feet[i].rot;
+    if (s.hands[i]) s.hands[i] = rotate(q, *s.hands[i]);
+  }
+}
+
 }  // namespace
 
 MotionPlan::MotionPlan(SkeletonPtr skeleton_, const CollisionWorld* collision_, f64 seed)
@@ -281,6 +307,7 @@ void MotionPlan::lie(const V3& root, f64 yaw, bool back) {
   stance_p_ = 1.0;
   lying_ = true;
   get_up_run_ = false;
+  prone_roll_ = false;
   carry_root(root, yaw);
   vel_spring_.reset();
   velocity = V3{};
@@ -293,6 +320,7 @@ void MotionPlan::fall(bool back) {
   down_back_ = back;
   lying_ = true;
   get_up_run_ = false;
+  prone_roll_ = false;
   begin_transition(Stance::Down);
 }
 
@@ -312,12 +340,21 @@ void MotionPlan::begin_transition(Stance to) {
   stance_to_ = to;
   stance_p_ = 0.0;
   stance_dur_ = transition_time(from, to) / (get_up_run_ ? get_up_rate_ : 1.0);
+  prone_roll_ = from == Stance::Down && to == Stance::Prone && down_back_ && capabilities.crawl != CrawlStyle::Scoot;
+  if (prone_roll_) stance_dur_ = 1.6 / (get_up_run_ ? get_up_rate_ : 1.0);
 }
 
 void MotionPlan::update_stance(f64 dt) {
   if (stance_p_ < 1.0) {
     stance_p_ = std::min(1.0, stance_p_ + dt / stance_dur_);
     if (stance_p_ >= 1.0) {
+      if (prone_roll_) {
+        // The endpoints have the same head-to-foot direction. Once face down,
+        // transfer the half-turn to the root without changing the world pose.
+        carry_root(root_pos, root_yaw + kPi);
+        prone_roll_ = false;
+        down_back_ = false;
+      }
       stance = stance_to_;
       if (!stance_queue_.empty()) {
         const Stance next = stance_queue_.front();
@@ -337,7 +374,7 @@ void MotionPlan::update_stance(f64 dt) {
     // up from lying: sit up (on the back) or push up (face down), then kneel
     std::vector<Stance> route;
     if (stance == Stance::Down) {
-      const Stance up = down_back_ ? Stance::Ground : Stance::Prone;
+      const Stance up = want == Stance::Prone ? Stance::Prone : down_back_ ? Stance::Ground : Stance::Prone;
       route.push_back(up);
       for (const Stance s : stance_route(up, want)) route.push_back(s);
     } else {
@@ -364,7 +401,9 @@ StanceSample& MotionPlan::sample_stance(Stance s, StanceSample& out, const Stanc
     case Stance::Stand:
       return blend_samples(standing, standing, 0.0, out);
     case Stance::Kneel:
-      return kneel_sample(d, out);
+      kneel_sample(d, out);
+      if (capabilities.legs[1].support > capabilities.legs[0].support + .15) mirror_stance(out);
+      return out;
     case Stance::Prone: {
       const f64 sp = hypot2(velocity.x, velocity.y);
       const f64 crawl = smoothstep(0.05, 0.3, sp);
@@ -387,6 +426,10 @@ StanceSample& MotionPlan::sample_stance(Stance s, StanceSample& out, const Stanc
         const f64 side = capabilities.arms[0].strength > capabilities.arms[1].strength ? -1 : 1;
         out.chest = out.chest * qz(side * .12 * crawl);
         out.pelvis_pos.x += side * .03 * k * crawl;
+      }
+      if (prone_roll_) {
+        turn_stance(out, kPi);
+        out.turn = 0;
       }
       return out;
     }
@@ -684,6 +727,10 @@ void MotionPlan::update(f64 dt_in) {
       S->chest = qx(-bend * 0.6) * S->chest;
     }
   }
+
+  // A shoulder rolls underneath the chest; give it clearance while keeping
+  // the body low. Disabled legs never pass through a kneeling support pose.
+  if (prone_roll_) S->pelvis_pos.z += .08 * k * sin(kPi * stance_p_);
 
   // ---- pose: pelvis and trunk -----------------------------------------------------------------
   arms.begin_frame();

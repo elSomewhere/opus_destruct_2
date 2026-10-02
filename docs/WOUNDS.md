@@ -107,10 +107,21 @@ immobile. Crawl variants use both arms, one arm or a seated scoot when some leg
 drive remains. No usable limbs or insufficient consciousness makes the body
 immobile. `health` is a derived compatibility summary.
 
-Muscle gains, foot assists, clearance, limp timing, trunk fold, sway, guards and
-action rates read these values. A disabled leg cannot pin itself to the plan with
-an assist. Two disabled legs request prone locomotion without a host stance
-command. Weak arms hang, release loads and stop being selected for strikes.
+Muscle gains, hand and foot assists, clearance, limp timing, trunk fold, sway,
+guards and action rates read these values. Disabled limbs cannot pin themselves
+to the plan with an assist. Two disabled legs request prone locomotion before
+the recovery controller reads the host's stance. This also works when both lower
+legs are severed and the host keeps requesting standing every tick. From the
+back, the body rolls onto its front without passing through kneeling. Kneeling
+uses the stronger leg for its forward foot. Incapacitated bodies stay down until
+capability returns; they do not repeatedly attempt to get up.
+
+During crawling, `Character::set_root` limits heading changes by usable arm/leg
+drive, trunk support and consciousness (at most 0.9 rad/s). Forward translation
+builds as the body turns towards the requested direction. This prevents a host
+from snapping the prone body around after a recovery roll. Wound care reserves
+the hands during recovery and moving crawls, and selects a usable free arm when
+stationary. Weak arms hang, release loads and stop being selected for strikes.
 Actions refuse unusable support legs or insufficient consciousness. Hosts clamp
 their movement requests to the returned speed limit.
 

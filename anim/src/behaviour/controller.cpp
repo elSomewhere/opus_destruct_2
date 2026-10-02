@@ -409,6 +409,13 @@ void Behaviours::prepare(f64 dt, const WorldPose& pose) {
   grip_[0] = grip_[1] = 0.0;
   damage.update(dt, pressed_part);
   plan.capabilities = capabilities();
+  // Resolve the host's requested stance before recovery reads it. Hosts may
+  // keep asking to stand every tick, even after both legs have been lost.
+  if (capabilities().mobility == Mobility::Kneel) plan.input.stance = Stance::Kneel;
+  if (capabilities().mobility == Mobility::Crawl || capabilities().mobility == Mobility::Immobile) {
+    plan.input.stance = Stance::Prone;
+    if ((mode == BodyMode::Animated || mode == BodyMode::Reacting) && plan.stance != Stance::Prone) collapse(2);
+  }
   for (i32 i = 0; i < kBodyCount; ++i) {
     const f64 s = stun_[size_t(i)];
     stun_[size_t(i)] = static_cast<f32>(std::max(0.0, s - dt * (0.9 + 0.8 * s)));
@@ -535,6 +542,12 @@ V3 Behaviours::take_root_motion() {
 
 void Behaviours::modes(f64 dt, const WorldPose& pose) {
   const f64 kk = k();
+  if (alive && capabilities().mobility == Mobility::Immobile &&
+      (mode == BodyMode::Animated || mode == BodyMode::Reacting || mode == BodyMode::Rising)) {
+    // Exhaustion can arrive after a crawl has begun, or halfway through getting
+    // up. Release the locomotion assists in either case and settle where it is.
+    set_mode(BodyMode::Falling);
+  }
   switch (mode) {
     case BodyMode::Animated: {
       if (!physical) {
@@ -617,10 +630,11 @@ void Behaviours::modes(f64 dt, const WorldPose& pose) {
     case BodyMode::Lying: {
       align_lying(pose, true);
       if (!conscious && time_ >= down_until_) conscious = true;
-      // (face down and hurting, a host that wants it away has it crawl off: the struggle of it)
+      // A body with usable arms can turn over and crawl; an incapacitated body
+      // stays down instead of retrying the get-up sequence every few seconds.
       const bool crawl = (writhing || legless || capabilities().mobility == Mobility::Crawl) && plan.input.stance == Stance::Prone && mode_time > 1.5;
-      // (on one leg it does not stand again: it crawls, or lies)
-      if (alive && conscious && mode_time > 0.8 && ((time_ >= down_until_ && !legless) || crawl)) set_mode(BodyMode::Rising);
+      if (alive && conscious && capabilities().mobility != Mobility::Immobile && mode_time > 0.8 &&
+          ((time_ >= down_until_ && !legless) || crawl)) set_mode(BodyMode::Rising);
       break;
     }
     case BodyMode::Rising: {
@@ -1063,6 +1077,10 @@ void Behaviours::hold_wound(f64 /*dt*/, const WorldPose& pose) {
   const CareTarget* inj = capabilities().care ? &*capabilities().care : nullptr;
   PlanControl& ctl = plan.control;
   if (!inj || (!conscious && mode != BodyMode::Dying)) return;
+  // These hands carry the trunk while getting up or pulling it along the
+  // ground. At rest they can press the wound again.
+  const bool on_ground = plan.stance == Stance::Prone || plan.stance_target() == Stance::Prone;
+  if (mode == BodyMode::Rising || (on_ground && (plan.transitioning() || hypot2(plan.velocity.x, plan.velocity.y) > .04))) return;
   const f64 kk = k();
   const f64 tone = mode == BodyMode::Dying ? clamp(1.0 - mode_time / std::max(0.3, dying_for_), 0.0, 1.0) : 1.0;
   if (tone < 0.1 || dying_head_) return;
@@ -1086,7 +1104,14 @@ void Behaviours::hold_wound(f64 /*dt*/, const WorldPose& pose) {
     // the gun hand lets go of nothing: the wounded arm just hangs
     return;
   }
-  if (!plan.props.free_hand(hand == 0)) return;
+  auto can_press = [&](i32 side) {
+    const auto& arm = capabilities().arms[size_t(side)];
+    const i32 first = side == 0 ? B::upperarmL : B::upperarmR;
+    return plan.props.free_hand(side == 0) && arm.strength > .2 && arm.control > .2 &&
+           !(inj->part >= first && inj->part <= first + 2);
+  };
+  if (!can_press(hand)) hand = 1 - hand;
+  if (!can_press(hand)) return;
   if (ctl.arms[size_t(hand)] && ctl.arms[size_t(hand)]->weight > 0.6) return;
   // a moment to react, then the hand presses on it
   const f64 w = smoothstep(0.12, 0.4, inj->age) * (1.0 - smoothstep(inj->hold_until - 0.6, inj->hold_until, inj->age)) * tone;
@@ -1399,7 +1424,9 @@ void Behaviours::drive_pre(f64 dt) {
     att.reference = nullptr;
     att.local = bd.com_local[i == 0 ? B::handL : B::handR] * -1;
     const size_t hand_bone = size_t(i == 0 ? H::handL : H::handR);
-    const f64 tone = region_t[region_index(i == 0 ? Region::ArmL : Region::ArmR)];
+    const auto& arm = capabilities().arms[size_t(i)];
+    const f64 control = clamp(std::min(arm.strength, arm.control) * capabilities().consciousness, 0.0, 1.0);
+    const f64 tone = region_t[region_index(i == 0 ? Region::ArmL : Region::ArmR)] * control;
     const std::optional<ArmTask>& task = plan.control.arms[size_t(i)];
     f64 grip = grip_[size_t(i)];
     // the weapon: the gun hand keeps its aim, the support hand its hold
@@ -1446,9 +1473,9 @@ void Behaviours::drive_pre(f64 dt) {
     att.damping = hm * 60.0 * std::min(1.0, tone);
     att.max_force = 30.0 + 420.0 * grip * std::min(1.0, tone);
     turn.enabled = true;
-    turn.stiffness = 30.0 * grip;
-    turn.max_torque = 12.0 * grip;
-    turn.damping = 1.5 * grip;
+    turn.stiffness = 30.0 * grip * control;
+    turn.max_torque = 12.0 * grip * control;
+    turn.damping = 1.5 * grip * control;
     if (support_grip) {
       att.stiffness *= 24;
       att.damping *= 3;
