@@ -36,6 +36,11 @@ joint cells receive the same material. It can be rerun after editing. Brain,
 spinal cord, heart/great vessels, lungs, liver and major limb vessels are procedural
 rig-space regions scaled with the build.
 
+Edited limbs may sit away from the nominal rig axis. In each enclosed limb
+cross-section the interior pass retains a thin bone core nearest that axis,
+without changing surface colours or adding cells. This avoids boneless calves
+and forearms in offset sculpts. The engine and Foundry use the same rule.
+
 Projectile and point paths use DDA through each posed part's cells. Each visited
 cell consumes energy according to tissue resistance. Projectile diameter and
 construction affect the channel; remaining energy can open an exit. Bone can
@@ -47,6 +52,15 @@ Edges remove a thin plane swept along the edge. Alignment, sharpness, tissue
 resistance and available energy limit the cut. A flat blade contact acts as blunt
 force. Blunt hits bruise and can fracture or shatter bone without removing cells.
 High-energy crushing can remove tissue, within its energy budget.
+
+Every deposited joule is accounted for, including temporary cavities, exit-hole
+enlargement and crushed cells. Edge alignment changes the resistance paid per
+removed cell; it does not discard unreported energy. Blunt pressure spreads inward
+from the contact patch, with less energy farther from the contact. A zero-energy
+command changes neither geometry nor physiology. The impulse delivered to a body
+or attachment is incoming momentum minus the penetrator's remaining momentum,
+including its deflected direction. Host bone hints cannot override the entry part
+found by the actual path.
 
 Blasts apply pressure, fragment channels and a throw. At close range they crush
 the nearest extremities. They do not run the old whole-body gib branch. The body
@@ -70,6 +84,21 @@ the old 12-entry cap. Whole-body state tracks blood volume (initially 5 L), shoc
 consciousness, breathing, adrenaline and cause of death. Bleeding clots over time;
 arterial wounds clot more slowly. A hand actually pressing the selected wound
 reduces that wound's bleeding. Adrenaline temporarily masks pain.
+
+Fractures use energy deposited locally in the affected part, and require bone
+in the contact volume. Penetrators count only energy deposited in bone; blunt
+compression also transmits the local part's absorbed load. The authored fracture
+threshold is 45 J for shins/forearms, 65 J for other extremities and 160 J for
+the core. Shattering thresholds are 220/600 J for extremities/core; another
+fracturing blow to an already fractured part can shatter it. A later weak hit
+never restores a bone. These are gameplay coefficients, not medical thresholds.
+
+Vital injuries likewise use energy deposited inside their own region. Removing
+tissue there has different consequences from closed compression. A high-energy
+source grazing an extremity cannot cause massive core trauma. Wound care compares
+dimensionless urgency: active bleeding takes priority over transient pain, with
+the largest clot-adjusted bleeding rate first. Dying support assists also respect
+the legs' remaining capability.
 
 Capabilities expose support, drive and control for each leg; strength, control
 and grip for each arm; trunk and neck support; consciousness, vigor, pain,

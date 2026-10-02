@@ -89,35 +89,61 @@ void DamageState::update(f64 dt, i32 pressed_part) {
   cap_.care.reset();
   if (const auto* w = injuries_.to_hold()) cap_.care = CareTarget{w->part, w->local, w->normal, w->age, w->hold_until, w->severity};
   if (physical_wounds_)
-    for (const auto& w : state_.wounds)
-      if (!cap_.care || w.bleeding > cap_.care->urgency) cap_.care = CareTarget{w.part, w.rest, w.normal, w.age, 1e9, w.bleeding, true};
+    for (const auto& w : state_.wounds) {
+      const f64 clot = w.arterial ? std::max(.65, exp(-w.age / 600)) : std::max(.08, exp(-w.age / 90));
+      // Care urgency is dimensionless on both paths. Active bleeding outranks a
+      // transient pain reflex, and the worst open vessel gets the available
+      // hand.
+      const f64 urgency = w.bleeding > 0 ? 1 + w.bleeding * clot / .04 : w.pain;
+      if (urgency > 0 && (!cap_.care || urgency > cap_.care->urgency)) cap_.care = CareTarget{w.part, w.rest, w.normal, w.age, 1e9, urgency, true};
+    }
 }
 void DamageState::apply(const VoxelModel& model, const WorldPose& pose, const DamageDescriptor& d, const WoundMechanics& result) {
-  if (result.tissue.empty()) return;
-  physical_wounds_ = true;
-  state_.adrenaline = 1;
   const auto regions = anatomy_regions(*model.skeleton);
-  std::array<f64, 16> energy{}, removed{};
-  std::array<bool, 16> bone{};
+  std::array<f64, 16> energy{}, removed{}, bone_energy{};
   std::array<V3, 16> rest{};
+  std::vector<f64> vital_energy(regions.size()), vital_removed(regions.size());
   for (const auto& t : result.tissue) {
+    if (t.energy <= 0) continue;
     const size_t part = size_t(HumanoidBody::body_of_bone(t.bone));
+    if (energy[part] == 0) rest[part] = t.rest;  // care and bleeding begin at the wound's entry
     energy[part] += t.energy;
     removed[part] += t.removed;
-    bone[part] = bone[part] || t.bone_hit;
-    rest[part] = t.rest;
+    if (t.bone_hit) bone_energy[part] += t.energy;
+    for (size_t i = 0; i < regions.size(); ++i) {
+      const auto& v = regions[i];
+      if (HumanoidBody::body_of_bone(v.bone) != i32(part)) continue;
+      const V3 delta = t.rest - v.centre;
+      const f64 q =
+          delta.x * delta.x / (v.radii.x * v.radii.x) + delta.y * delta.y / (v.radii.y * v.radii.y) + delta.z * delta.z / (v.radii.z * v.radii.z);
+      if (q > 1) continue;
+      vital_energy[i] += t.energy;
+      vital_removed[i] += t.removed;
+    }
   }
+  const bool blunt = d.kind == DamageKind::Blunt || d.kind == DamageKind::Crush || (d.kind == DamageKind::Edge && d.alignment <= .15);
+  auto fatal = [&](DeathCause cause) {
+    if (state_.cause == DeathCause::None) state_.cause = cause;
+  };
   for (size_t i = 0; i < 16; ++i)
     if (energy[i] > 0) {
+      physical_wounds_ = true;
+      state_.adrenaline = 1;
       auto& p = state_.parts[i];
       const bool limb = i >= 4;
-      const f64 severity = clamp(energy[i] / (limb ? 350.0 : 1300.0), .01, 1.0);
+      const f64 severity = clamp(energy[i] / (limb ? 350.0 : 1300.0), 0.0, 1.0);
       p.flesh = clamp(p.flesh - severity * (removed[i] > 0 ? .45 : .18), 0.0, 1.0);
-      p.muscle = clamp(p.muscle - severity * (d.kind == DamageKind::Edge ? .9 : .55), 0.0, 1.0);
+      p.muscle = clamp(p.muscle - severity * (d.kind == DamageKind::Edge && !blunt ? .9 : .55), 0.0, 1.0);
       p.pain = clamp(p.pain + severity, 0.0, 1.0);
-      if (bone[i] && d.energy() > (limb ? 65 : 160)) p.bone = d.energy() > (limb ? 220 : 600) ? BoneState::Shattered : BoneState::Fractured;
-      if ((d.kind == DamageKind::Blunt || d.kind == DamageKind::Crush) && d.energy() > 90 && limb) {
-        p.bone = d.energy() > 250 ? BoneState::Shattered : BoneState::Fractured;
+      // Blunt compression transmits the local part's load to bone. A penetrator
+      // loads only the bone it actually reaches; energy carried onward cannot
+      // fracture it.
+      const f64 skeletal = blunt && bone_energy[i] > 0 ? energy[i] : bone_energy[i];
+      const bool slender_bone = i == B::shinL || i == B::shinR || i == B::forearmL || i == B::forearmR;
+      const f64 fracture = limb ? (slender_bone ? 45 : 65) : 160, shatter = limb ? 220 : 600;
+      if (skeletal > fracture) {
+        const BoneState injury = skeletal > shatter || p.bone != BoneState::Intact ? BoneState::Shattered : BoneState::Fractured;
+        p.bone = std::max(p.bone, injury);
       }
       PersistentWound w;
       w.part = i32(i);
@@ -126,33 +152,32 @@ void DamageState::apply(const VoxelModel& model, const WorldPose& pose, const Da
       w.normal = rotate(conj(pose.q[size_t(w.bone)]), vnorm(-d.direction));
       w.pain = severity;
       w.bleeding = removed[i] > 0 ? .0008 + severity * .006 : 0;
-      for (const auto& t : result.tissue)
-        if (HumanoidBody::body_of_bone(t.bone) == i32(i))
-          for (const auto& v : regions)
-            if (HumanoidBody::body_of_bone(v.bone) == i32(i)) {
-              const V3 delta = t.rest - v.centre;
-              const f64 q =
-                  delta.x * delta.x / (v.radii.x * v.radii.x) + delta.y * delta.y / (v.radii.y * v.radii.y) + delta.z * delta.z / (v.radii.z * v.radii.z);
-              if (q > 1) continue;
-              if (v.kind == VitalKind::Brain && d.energy() > 80 && d.kind != DamageKind::Blunt && d.kind != DamageKind::Crush) state_.cause = DeathCause::Brain;
-              if (v.kind == VitalKind::Heart && d.energy() > 120 && (d.kind != DamageKind::Blunt && d.kind != DamageKind::Crush || d.energy() > 1200))
-                state_.cause = DeathCause::Heart;
-              if (v.kind == VitalKind::Cord) {
-                for (size_t below = (v.bone == H::neck ? 4 : 10); below < 16; ++below) state_.parts[below].nerve = 0;
-                if (v.bone == H::neck) state_.cause = DeathCause::HighSpine;
-              }
-              if (v.kind == VitalKind::Vessel) {
-                w.arterial = true;
-                w.bleeding = std::max(w.bleeding, .035 + .03 * severity);
-                p.vessel = 1;
-              }
-              if (v.kind == VitalKind::Lung) state_.breathing = std::max(.2, state_.breathing - .02);
-              if (v.kind == VitalKind::Liver) w.bleeding = std::max(w.bleeding, .025);
-            }
+      for (size_t r = 0; r < regions.size(); ++r) {
+        const auto& v = regions[r];
+        if (HumanoidBody::body_of_bone(v.bone) != i32(i)) continue;
+        const f64 deposited = vital_energy[r];
+        const bool opened = vital_removed[r] > 0;
+        if (deposited <= 0) continue;
+        if (v.kind == VitalKind::Brain && deposited > (opened ? 15 : 180)) fatal(DeathCause::Brain);
+        if (v.kind == VitalKind::Heart && deposited > (opened ? 25 : 350)) fatal(DeathCause::Heart);
+        if (v.kind == VitalKind::Cord && deposited > (opened ? 8 : 90)) {
+          for (size_t below = (v.bone == H::neck ? 4 : 10); below < 16; ++below) state_.parts[below].nerve = 0;
+          if (v.bone == H::neck) fatal(DeathCause::HighSpine);
+        }
+        if (v.kind == VitalKind::Vessel && deposited > (opened ? 3 : 100)) {
+          w.arterial = true;
+          w.bleeding = std::max(w.bleeding, .035 + .03 * severity);
+          p.vessel = 1;
+        }
+        if (v.kind == VitalKind::Lung) state_.breathing = std::max(.2, state_.breathing - deposited / (opened ? 300 : 600));
+        if (v.kind == VitalKind::Liver && deposited > (opened ? 5 : 100)) w.bleeding = std::max(w.bleeding, .025 * clamp(deposited / 80, 0.0, 1.0));
+      }
       state_.wounds.push_back(w);
       state_.shock = clamp(state_.shock + severity * .07, 0.0, 1.0);
     }
-  if (d.kind == DamageKind::Crush && d.energy() > 1800) state_.cause = DeathCause::MassiveTrauma;
+  // Massive trauma concerns the core of the body, not an energetic source
+  // grazing a finger.
+  if (d.kind == DamageKind::Crush && energy[0] + energy[1] + energy[2] + energy[3] > 1800) fatal(DeathCause::MassiveTrauma);
   update(0);
 }
 void DamageState::physical_capabilities() {

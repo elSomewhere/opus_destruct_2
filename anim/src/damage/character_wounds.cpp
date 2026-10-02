@@ -67,6 +67,7 @@ void retain_hand(PropInstance& item, const GibSpec& hand) {
 WoundResult Character::damage(const DamageDescriptor& source) {
   WoundResult out;
   if (!source.valid() || source.kind == DamageKind::Thermal) return out;
+  if (source.kind != DamageKind::Blast && source.energy() == 0) return out;
   std::array<PropInstancePtr, 2> hands{motion.props.at(AttachPoint::LeftHand), motion.props.at(AttachPoint::RightHand)};
   std::array<bool, 2> strong{hands[0] && hands[0]->strength > .7, hands[1] && hands[1]->strength > .7};
   DamageDescriptor d = source;
@@ -77,7 +78,8 @@ WoundResult Character::damage(const DamageDescriptor& source) {
     const f64 distance = vdist(d.point, bounds_center());
     if (distance > d.radius * 3.5) return out;
     const f64 falloff = std::max(0.0, 1 - distance / (d.radius * 3.5));
-    // The body remains coherent. Nearby fragments can sever a limb through the same anatomy.
+    // The body remains coherent. Nearby fragments can sever a limb through the
+    // same anatomy.
     for (i32 i = 0; i < d.fragments; ++i) {
       const i32 part = i % kBodyCount;
       const V3 at = pose.p[size_t(kBodyBone[size_t(part)])];
@@ -98,7 +100,8 @@ WoundResult Character::damage(const DamageDescriptor& source) {
     }
     if (distance < d.radius * .5) {
       std::array<i32, 4> limbs{H::forearmL, H::forearmR, H::shinL, H::shinR};
-      std::stable_sort(limbs.begin(), limbs.end(), [&](i32 a, i32 b) { return vdist(pose.p[size_t(a)], d.point) < vdist(pose.p[size_t(b)], d.point); });
+      std::stable_sort(limbs.begin(), limbs.end(),
+                       [&](i32 a, i32 b) { return vdist(pose.p[size_t(a)], d.point) < vdist(pose.p[size_t(b)], d.point); });
       const int torn = distance < d.radius * .2 ? 2 : 1;
       for (int i = 0; i < torn; ++i) {
         DamageDescriptor crush = d;
@@ -157,8 +160,9 @@ WoundResult Character::damage(const DamageDescriptor& source) {
     if (!result.changed_bones.empty()) ++p->geometry_version;
     const f64 absorbed = std::max(0.0, d.energy() - result.remaining_energy);
     p->state.condition = clamp(p->state.condition - absorbed / 800, 0.0, 1.0);
-    p->impulse_load += d.momentum() / .08;
-    if (!hand_point(p->point) && d.kind == DamageKind::Edge && vdist(hit->point, p->pos + rotate(p->rotation, p->archetype->socket(p->socket)->point)) < .12)
+    p->impulse_load += norm(result.impulse(pd)) / .08;
+    if (!hand_point(p->point) && d.kind == DamageKind::Edge &&
+        vdist(hit->point, p->pos + rotate(p->rotation, p->archetype->socket(p->socket)->point)) < .12)
       p->state.strap = std::max(0.0, p->state.strap - d.energy() / 250);
     const f64 remaining = d.energy() - absorbed;
     d.speed = std::sqrt(2 * remaining / d.mass);
@@ -171,6 +175,13 @@ WoundResult Character::damage(const DamageDescriptor& source) {
   own_model();
   auto result = wound_mechanics(*model, skin, d);
   if (result.tissue.empty()) return out;
+  const f64 absorbed = std::max(0.0, d.energy() - result.remaining_energy);
+  const V3 impulse = result.impulse(d);
+  const auto entry = d.kind == DamageKind::Projectile || d.kind == DamageKind::Point
+                         ? result.tissue.begin()
+                         : std::min_element(result.tissue.begin(), result.tissue.end(), [&](const auto& a, const auto& b) {
+                             return vdist(pose.point_of(a.bone, a.rest), d.point) < vdist(pose.point_of(b.bone, b.rest), d.point);
+                           });
   behaviours.damage.apply(*model, pose, d, result);
   out.removed = result.removed;
   std::set<i32> cut_bones;
@@ -180,16 +191,21 @@ WoundResult Character::damage(const DamageDescriptor& source) {
   if (!result.changed_bones.empty()) ++geometry_version;
   behaviours.damage.update(0);
   HitInfo hit;
-  hit.point = d.point;
-  hit.dir = d.direction;
-  hit.bone = d.bone >= 0 ? d.bone : nearest_bone(d.point);
-  hit.kind = d.kind == DamageKind::Projectile ? HitKind::Bullet : d.kind == DamageKind::Edge || d.kind == DamageKind::Point ? HitKind::Blade : HitKind::Blunt;
-  hit.force = clamp(std::sqrt(d.energy() / 100), .1, 8.0);
-  hit.impulse_ns = d.impulse_delivered ? 0 : d.momentum();
+  hit.point = pose.point_of(entry->bone, entry->rest);
+  hit.dir = vnorm(impulse, d.direction);
+  hit.bone = entry->bone;
+  hit.kind = d.kind == DamageKind::Projectile                            ? HitKind::Bullet
+             : d.kind == DamageKind::Edge || d.kind == DamageKind::Point ? HitKind::Blade
+                                                                         : HitKind::Blunt;
+  hit.force = clamp(std::sqrt(absorbed / 100), 0.0, 8.0);
+  hit.impulse_ns = d.impulse_delivered ? 0 : norm(impulse);
   out.zone = hit_at(hit);
   out.headshot = hit.bone == H::head || hit.bone == H::neck;
   health = was_alive ? max_health * behaviours.damage.health_fraction() : 0;
-  if ((d.kind == DamageKind::Blunt || d.kind == DamageKind::Crush) && out.headshot && d.energy() > 300 && alive()) knock_out(clamp(d.energy() / 40, 2.0, 12.0));
+  f64 head_energy = 0;
+  for (const auto& tissue : result.tissue)
+    if (HumanoidBody::body_of_bone(tissue.bone) == B::head) head_energy += tissue.energy;
+  if ((d.kind == DamageKind::Blunt || d.kind == DamageKind::Crush) && head_energy > 300 && alive()) knock_out(clamp(head_energy / 40, 2.0, 12.0));
 
   flash = 1;
   out.killed = was_alive && !alive();
@@ -216,7 +232,7 @@ WoundResult Character::damage(const DamageDescriptor& source) {
     if (p && hand_point(p->point)) {
       const i32 arm = p->point == AttachPoint::LeftHand ? B::upperarmL : B::upperarmR;
       if (part >= arm && part <= arm + 2) {
-        p->impulse_load += d.momentum() / .06;
+        p->impulse_load += norm(impulse) / .06;
         if (capabilities().arms[p->point == AttachPoint::LeftHand ? 0 : 1].grip < .2) detach(p->point, ReleaseReason::HandDamaged);
       }
     }

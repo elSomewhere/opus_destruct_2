@@ -123,7 +123,7 @@ TEST_CASE("anim models: the rest pose skins every vertex to its rest position") 
 }
 
 TEST_CASE("anim models: procedural anatomy and exterior geometry match the approved fixtures") {
-  // Interior tissue changed with the shared anatomy pass. Keep exact new hashes;
+  // Interior cores now follow enclosed limb cross-sections after sculpting. Keep exact hashes;
   // counts, exterior topology and palettes retain the original fixtures.
   struct Golden {
     const char* what;
@@ -134,11 +134,11 @@ TEST_CASE("anim models: procedural anatomy and exterior geometry match the appro
     u32 palette;
   };
   const Golden humans[] = {
-      {"soldier 1", 3958, 0xa0505667u, 19864, 0x5240f7fdu, 0xf577584du},
-      {"civilian 2", 2698, 0xe59b6fbdu, 15488, 0x7b09aee5u, 0xc5b6e421u},
-      {"thug 3", 4203, 0x7692a1beu, 21616, 0x18f5f4d5u, 0x072bc63bu},
-      {"civilian 7", 3398, 0x3dc664ffu, 17864, 0xd722c7c5u, 0xd5589324u},
-      {"soldier 6, scheme 3", 4416, 0xe5957bb3u, 21864, 0x1ae3caf5u, 0xfadaa760u},
+      {"soldier 1", 3958, 0x6e7a1e87u, 19864, 0xdb2eb66du, 0xf577584du},
+      {"civilian 2", 2698, 0x90c9aa67u, 15488, 0x7a47fef5u, 0xc5b6e421u},
+      {"thug 3", 4203, 0x30f7b848u, 21616, 0x47c00915u, 0x072bc63bu},
+      {"civilian 7", 3398, 0xa9286c27u, 17864, 0x8e37e72du, 0xd5589324u},
+      {"soldier 6, scheme 3", 4416, 0x5230b39du, 21864, 0xf8685dadu, 0xfadaa760u},
   };
   const HumanVariant made[] = {make_soldier(1), make_civilian(2), make_thug(3), make_civilian(7), make_soldier(6, {.scheme = 3})};
   for (size_t i = 0; i < std::size(humans); ++i) {

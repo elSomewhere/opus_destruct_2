@@ -1,6 +1,7 @@
 #include "svx/anim/damage/anatomy.hpp"
 #include "svx/anim/rig.hpp"
 #include <set>
+#include <map>
 namespace svx::anim {
 f64 segment_distance(const V3& p, const V3& a, const V3& b) {
   const V3 d = b - a;
@@ -45,6 +46,38 @@ void fill_interior(VoxelModel& m) {
           if (p.cells[size_t(p.index(x, y, z))]) occupied.insert({p.origin[0] + x, p.origin[1] + y, p.origin[2] + z});
   const auto& sk = *m.skeleton;
   const f64 k = sk.rest_head[H::pelvis].z / .97, s = m.voxel_size;
+  auto enclosed = [&](const std::array<i32, 3>& at) {
+    for (int axis = 0; axis < 3; ++axis)
+      for (int sign : {-1, 1}) {
+        auto next = at;
+        next[size_t(axis)] += sign;
+        if (!occupied.contains(next)) return false;
+      }
+    return true;
+  };
+  auto limb = [](i32 bone) { return bone >= H::upperarmL && bone <= H::toeR && bone != H::clavicleR; };
+  auto section = [&](i32 bone, const V3& v) {
+    return i32(std::floor(dot(v - sk.rest_head[size_t(bone)], vnorm(sk.rest_tail[size_t(bone)] - sk.rest_head[size_t(bone)])) / s));
+  };
+  // A sculpted limb can be offset from its rig segment. Keep a thin bone core
+  // in each enclosed cross-section instead of silently producing a boneless
+  // limb.
+  std::map<std::pair<i32, i32>, f64> core;
+  for (const auto& p : m.parts)
+    if (limb(p.bone))
+      for (i32 z = 0; z < p.dims[2]; ++z)
+        for (i32 y = 0; y < p.dims[1]; ++y)
+          for (i32 x = 0; x < p.dims[0]; ++x) {
+            if (!p.cells[size_t(p.index(x, y, z))]) continue;
+            const std::array<i32, 3> at{p.origin[0] + x, p.origin[1] + y, p.origin[2] + z};
+            if (!enclosed(at)) continue;
+            const V3 v = m.cell_centre(at[0], at[1], at[2]);
+            const auto key = std::pair{p.bone, section(p.bone, v)};
+            const f64 distance = segment_distance(v, sk.rest_head[size_t(p.bone)], sk.rest_tail[size_t(p.bone)]);
+            const auto found = core.find(key);
+            if (found == core.end()) core.emplace(key, distance);
+            else found->second = std::min(found->second, distance);
+          }
   for (auto& p : m.parts) {
     bool changed = false;
     for (i32 z = 0; z < p.dims[2]; ++z)
@@ -53,17 +86,13 @@ void fill_interior(VoxelModel& m) {
           const size_t n = size_t(p.index(x, y, z));
           if (!p.cells[n]) continue;
           const std::array<i32, 3> at{p.origin[0] + x, p.origin[1] + y, p.origin[2] + z};
-          bool enclosed = true;
-          for (int axis = 0; axis < 3; ++axis)
-            for (int sign : {-1, 1}) {
-              auto next = at;
-              next[size_t(axis)] += sign;
-              enclosed &= occupied.contains(next);
-            }
-          if (!enclosed) continue;
+          if (!enclosed(at)) continue;
           const V3 v = m.cell_centre(at[0], at[1], at[2]);
           bool bone = false;
           for (int b = 0; b < 22; ++b) bone |= segment_distance(v, sk.rest_head[size_t(b)], sk.rest_tail[size_t(b)]) < .025 * k;
+          if (limb(p.bone))
+            bone |=
+                segment_distance(v, sk.rest_head[size_t(p.bone)], sk.rest_tail[size_t(p.bone)]) <= core.at({p.bone, section(p.bone, v)}) + s * .15;
           if (v.z >= sk.rest_head[H::head].z) {
             const V3 d = v - (sk.rest_head[H::head] + V3{0, 0, .09 * k});
             const f64 q = std::sqrt(d.x * d.x / (.083 * .083 * k * k) + d.y * d.y / (.078 * .078 * k * k) + d.z * d.z / (.105 * .105 * k * k));

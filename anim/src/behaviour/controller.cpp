@@ -1294,7 +1294,7 @@ void Behaviours::drive_pre(f64 dt) {
     // (the legs hold at first, then give all at once; a trunk tipping over is not held up by its
     // hips - the body would pivot on them and swing its legs up)
     const f64 up_z = rotate(bd.parts[B::chest]->q, V3{0, 0, 1}).z;
-    const f64 hold = dying_head_ ? 0.0 : (1.0 - u * u) * smoothstep(0.45, 0.85, up_z);
+    const f64 hold = dying_head_ ? 0.0 : legs_s * (1.0 - u * u) * smoothstep(0.45, 0.85, up_z);
     if (hold > 0.02) {
       // the knees buckle: the legs hold less and less, lower and lower
       sup.enabled = true;

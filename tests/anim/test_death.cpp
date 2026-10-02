@@ -225,7 +225,10 @@ TEST_CASE("death: a body that tips over collapses; it never pivots on its hips a
           const std::vector<V3>& P = c.pose.p;
           if (P[H::head].z - s.ground < 0.35 && std::max(P[H::footL].z, P[H::footR].z) - P[H::pelvis].z > 0.25) ++over;
         }
-        if (over > 10) ++flips;
+        if (over > 10) {
+          ++flips;
+          MESSAGE(pn << " seed " << seed << ", direction " << dy << ": feet above pelvis for " << over << " frames");
+        }
       }
     }
     // (the original draws the collapse's length from Math.random: run a few times it swings one
