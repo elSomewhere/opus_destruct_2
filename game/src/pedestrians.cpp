@@ -710,7 +710,9 @@ bool Pedestrians::wound(u32 id, const V3& from, const V3& pos, f64 radius, f64 e
   const bool was = c->alive();
   // (a pistol round's 500 J: 35; a pellet's 150 J: about 10; its hole some 0.3 of the world's, as
   // svx_shoot's radius: a pistol's 0.15 m, the original's 0.045 m)
-  const anim::WoundResult r = c->wound(*hit, dir, 0.07 * energy, std::clamp(0.3 * radius, 0.02, 0.06), std::min(4.0, 1.0 + energy / 400.0));
+  // This hitscan API supplies energy, not projectile mass: use an 8 g reference
+  // round and p = sqrt(2 m E). The animation API accepts explicit N s when known.
+  const anim::WoundResult r = c->wound(*hit, dir, 0.07 * energy, std::clamp(0.3 * radius, 0.02, 0.06), std::sqrt(2.0 * 0.008 * std::min(energy, 20000.0)));
   if (anim::GibSystem* gs = gibs()) anim::wound_gibs(*gs, *c, r, hit->point, dir, palette_id(c->palette));
   noise(pos, 12.0, kImpact);
   const auto it = walkers_.find(id);

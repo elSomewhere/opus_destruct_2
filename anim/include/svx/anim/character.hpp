@@ -110,7 +110,7 @@ class Character {
 
   bool alive() const { return behaviours.alive; }
   bool controlled() const { return behaviours.leading(); }  // the body leads (staggering, falling, down, getting up, dead): the host follows its root
-  bool gun_hand_lost() const { return behaviours.lost[B::handR]; }
+  bool gun_hand_lost() const { return behaviours.lost[weapon && weapon->kind == PropKind::Knife && motion.weapon_hand == H::handL ? B::handL : B::handR]; }
   bool writhing() const { return behaviours.writhing; }
   bool down() const;    // down on the ground (knocked down or out), or getting up
   bool asleep() const;  // the body rests (a corpse that stopped moving)
@@ -182,9 +182,9 @@ class Character {
   f64 bounds_radius() const;
   std::optional<CharacterHit> raycast(const V3& origin, const V3& dir, f64 max_dist) const;
   // A bullet (or blade) wound at `hit` travelling along `dir`: carves a hole of `radius`, deals
-  // `damage` times the zone multiplier, makes the body react (or pushes the dead) with `impulse`
-  // m/s, and may sever limbs or the head.
-  WoundResult wound(const CharacterHit& hit, const V3& dir, f64 damage, f64 radius = 0.045, f64 impulse = 2.5);
+  // `damage` times the zone multiplier, and may sever limbs or the head. The optional
+  // transferred impulse is in N s on both living and dead bodies; negative uses the bullet default.
+  WoundResult wound(const CharacterHit& hit, const V3& dir, f64 damage, f64 radius = 0.045, f64 impulse_ns = -1.0);
   // A melee blow landing at `point` travelling along `dir`: a fist or a foot (Blunt, force ~1 a
   // punch, ~1.8 a kick) or a blade (a slice of voxels is cut out, it bleeds).
   WoundResult melee(const V3& point, const V3& dir, HitKind kind, f64 force = 1.0);

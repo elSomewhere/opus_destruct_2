@@ -88,10 +88,14 @@ TwoBoneResult solve_two_bone(Pose& pose, ModelFK& fk, i32 upper, i32 lower, i32 
   const V3 rest_up = sk.rest_head[size_t(lower)] - sk.rest_head[size_t(upper)];
   const V3 rest_lo = sk.rest_head[size_t(end)] - sk.rest_head[size_t(lower)];
   const V3 ref = rest_pole ? *rest_pole : pole;
-  const Quat qu = frame_rotation(rest_up, rest_pole_for(rest_up, ref), mid - root, w);
+  // Both segments share one bend-plane normal. Projecting the same pole onto
+  // each segment flips the lower frame by 180 degrees when a bent elbow/knee
+  // passes perpendicular to the target direction (common in guards and get-ups).
+  const V3 normal = vnorm(cross(dir, w));
+  const Quat qu = frame_rotation(rest_up, rest_pole_for(rest_up, ref), mid - root, cross(normal, mid - root));
   set_model_rotation(pose, fk, upper, qu);
   fk.update_bone(pose, lower);
-  const Quat ql = frame_rotation(rest_lo, rest_pole_for(rest_lo, ref), endp - mid, w);
+  const Quat ql = frame_rotation(rest_lo, rest_pole_for(rest_lo, ref), endp - mid, cross(normal, endp - mid));
   set_model_rotation(pose, fk, lower, ql);
   fk.update_bone(pose, end);
   res.mid = mid;

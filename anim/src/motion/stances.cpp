@@ -25,14 +25,16 @@ StanceSample& blend_samples(const StanceSample& a, const StanceSample& b, f64 w,
     fo.pole = vlerp(fa.pole, fb.pole, w);
     fo.toe = fa.toe + (fb.toe - fa.toe) * w;
     const std::optional<V3> ha = a.hands[i], hb = b.hands[i];
+    out.hand_weight[i] = lerp(ha ? a.hand_weight[i] : 0.0, hb ? b.hand_weight[i] : 0.0, w);
     if (ha && hb) out.hands[i] = vlerp(*ha, *hb, w);
-    else out.hands[i] = w < 0.5 ? ha : hb;
+    else out.hands[i] = ha ? ha : hb;
   }
   out.turn = a.turn + (b.turn - a.turn) * w;
   return out;
 }
 
 StanceSample& kneel_sample(const Dims& d, StanceSample& out) {
+  out.hand_weight = {1.0, 1.0};
   const f64 k = d.k;
   out.pelvis_pos = V3{0.01 * k, -0.03 * k, 0.56 * k};
   out.pelvis_rot = qeuler(-0.05, 0, -0.12);
@@ -56,6 +58,7 @@ StanceSample& kneel_sample(const Dims& d, StanceSample& out) {
 }
 
 StanceSample& prone_sample(const Dims& d, f64 crawl, f64 phase, StanceSample& out) {
+  out.hand_weight = {1.0, 1.0};
   const f64 k = d.k;
   const f64 s = sin(phase * kPi * 2.0);
   const f64 c = crawl;
@@ -84,6 +87,7 @@ StanceSample& prone_sample(const Dims& d, f64 crawl, f64 phase, StanceSample& ou
 }
 
 StanceSample& sit_sample(const Dims& d, const SeatModel& seat, f64 t, StanceSample& out) {
+  out.hand_weight = {1.0, 1.0};
   const f64 k = d.k;
   const SitVariant v = seat.variant == SitVariant::Desk && !seat.desk ? SitVariant::Upright : seat.variant;
   const f64 hip_z = seat.pos.z + 0.1 * k;
@@ -163,6 +167,7 @@ StanceSample& sit_sample(const Dims& d, const SeatModel& seat, f64 t, StanceSamp
 }
 
 StanceSample& ground_sample(const Dims& d, GroundVariant variant, f64 t, StanceSample& out) {
+  out.hand_weight = {1.0, 1.0};
   const f64 k = d.k;
   const f64 breathe = sin(t * 1.6) * 0.015;
   FootPose& l = out.feet[0];
@@ -220,6 +225,7 @@ StanceSample& ground_sample(const Dims& d, GroundVariant variant, f64 t, StanceS
 }
 
 StanceSample& down_sample(const Dims& d, bool back, f64 t, StanceSample& out) {
+  out.hand_weight = {1.0, 1.0};
   const f64 k = d.k;
   const f64 breathe = sin(t * 2.4) * 0.02;
   FootPose& l = out.feet[0];

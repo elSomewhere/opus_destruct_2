@@ -22,7 +22,15 @@ struct HitInfo {
   f64 force = 1.0;  // ~1 a rifle round or a punch; 0.6 a pistol round; 1.8 a kick; 2.5 a shotgun; blasts up to 6
   HitKind kind = HitKind::Bullet;
   i32 bone = -1;  // the rig bone struck, if known (-1: the nearest to the point)
+  f64 impulse_ns = -1.0; // explicit momentum transfer in N s; negative selects the kind's default
 };
+
+// Default momentum is separate from injury severity. A bullet does not throw
+// the character backwards with an extra, randomly selected whole-body shove.
+inline f64 default_hit_impulse(HitKind kind, f64 force) {
+  const f64 f = std::isfinite(force) ? clamp(force, 0.0, 8.0) : 0.0;
+  return kind == HitKind::Bullet ? 5.0 * std::sqrt(f) : kind == HitKind::Blunt ? 34.0 * f : kind == HitKind::Blade ? 9.0 * f : 55.0 * f;
+}
 
 struct Injury {
   i32 part = 0;  // physical body part and the wound's point on it (body frame, relative to its centre of mass)

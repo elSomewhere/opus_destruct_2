@@ -14,6 +14,25 @@ ArmRig::ArmRig(SkeletonPtr skeleton_, Pose* pose_, ModelFK* fk_) : skeleton(std:
   }
 }
 
+void ArmRig::begin_frame() {
+  for (size_t side = 0; side < 2; ++side) for (size_t j = 0; j < 3; ++j)
+    previous_[side][j] = pose->r[(side == 0 ? H::upperarmL : H::upperarmR) + j];
+}
+
+void ArmRig::finish_frame(f64 dt) {
+  if (dt <= 0.0) return;
+  // Limits the intended pose, never the simulated body's response to a hit.
+  // Elbows may extend faster than shoulders and wrists during a strike.
+  constexpr f64 speed[3] = {30.0, 36.0, 30.0};
+  for (size_t side = 0; side < 2; ++side) for (size_t j = 0; j < 3; ++j) {
+    Quat& goal = pose->r[(side == 0 ? H::upperarmL : H::upperarmR) + j];
+    const Quat before = previous_[side][j];
+    const V3 delta = qerror(goal, before);
+    const f64 angle = norm(delta), limit = speed[j] * dt;
+    if (angle > limit) goal = qnormalize(qexp(delta * (limit / angle)) * before);
+  }
+}
+
 void ArmRig::hand_ik(Side side, const V3& target, const std::optional<Quat>& rot, const V3& pole, f64 w, f64 soft) {
   Pose& p = *pose;
   ModelFK& f = *fk;
@@ -27,9 +46,19 @@ void ArmRig::hand_ik(Side side, const V3& target, const std::optional<Quat>& rot
   solve_two_bone(p, f, ua, fa, hand, target - palm, pole, soft, &kElbowRest);
   if (rot) set_model_rotation(p, f, hand, hand_q);
   if (blend) {
-    p.r[size_t(ua)] = qnlerp(saved[0], p.r[size_t(ua)], w);
-    p.r[size_t(fa)] = qnlerp(saved[1], p.r[size_t(fa)], w);
-    p.r[size_t(hand)] = qnlerp(saved[2], p.r[size_t(hand)], w);
+    for (size_t j = 0; j < 3; ++j) {
+      const Quat a = saved[j], b = p.r[size_t(ua) + j];
+      Quat result = qnlerp(a, b, w);
+      // Near a half-turn, the two interpolation arcs are equally short. Keep
+      // the arc continuous with the preceding frame instead of flipping it.
+      if (std::abs(qdot(a, b)) < 0.3) {
+        const f64 sign = qdot(a, b) < 0.0 ? 1.0 : -1.0;
+        const Quat other = qnormalize(Quat{a.x * (1 - w) + sign * b.x * w, a.y * (1 - w) + sign * b.y * w,
+                                          a.z * (1 - w) + sign * b.z * w, a.w * (1 - w) + sign * b.w * w});
+        if (std::abs(qdot(other, previous_[size_t(side)][j])) > std::abs(qdot(result, previous_[size_t(side)][j]))) result = other;
+      }
+      p.r[size_t(ua) + j] = result;
+    }
   }
   f.update_subtree(p, ua);
 }

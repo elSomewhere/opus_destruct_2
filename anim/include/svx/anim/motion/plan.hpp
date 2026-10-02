@@ -42,6 +42,7 @@
 #include "svx/anim/motion/feet.hpp"
 #include "svx/anim/motion/gait.hpp"
 #include "svx/anim/motion/stances.hpp"
+#include "svx/anim/rig.hpp"
 #include "svx/anim/motion/style.hpp"
 #include "svx/anim/physics/collision.hpp"
 #include "svx/anim/spring.hpp"
@@ -152,7 +153,8 @@ class MotionPlan {
   // the held prop's transform (world) after update, and how it is held
   V3 weapon_pos;
   Quat weapon_rot;
-  bool weapon_in_hand = false;  // the prop is in the right hand only (a knife, a lowered pistol, a long gun let go of)
+  bool weapon_in_hand = false;  // the prop follows one hand (knife, lowered pistol, released long gun)
+  i32 weapon_hand = H::handR;   // mirrored knife actions use H::handL
   // How hard an action drives each limb this frame (0..1; left hand, right hand, left foot, right
   // foot), and whether it strikes with it: the body tenses those muscles (a punch is not thrown
   // with a relaxed arm).
@@ -260,6 +262,7 @@ class MotionPlan {
   };
 
   void step_in(const ActionDef& def, const V3& target, f64 rate);
+  void prepare_support(const ActionDef& def, f64 duration);
   void set_pose_action(const ActionDef* def);
   void begin_transition(Stance to);
   void update_stance(f64 dt);
@@ -333,6 +336,7 @@ class MotionPlan {
   // actions
   std::optional<ActionPlayer> pose_act_;
   std::optional<ActionPlayer> act_;
+  const ActionDef* manual_pose_ = nullptr;
   std::array<ArmReturn, 2> arm_return_{};
   ChannelFrame ch_pose_, ch_act_;
   f64 idle_time_ = 0.0;

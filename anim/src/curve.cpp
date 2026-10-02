@@ -15,8 +15,10 @@ f64 ease(Ease e, f64 u) {
     case Ease::InOut:
       return u * u * (3.0 - 2.0 * u);
     case Ease::Snap: {
-      const f64 a = 1.0 - u;
-      return 1.0 - a * a * a * a;
+      // A quick early stroke with zero velocity at both ends. The old quartic
+      // ease-out started at 4x average speed in a single frame at every key.
+      const f64 v = 1.0 - u;
+      return 1.0 - v * v * v * v * v * v * v * (1.0 + 7.0 * u);
     }
     case Ease::Hold:
       return u >= 1.0 ? 1.0 : 0.0;

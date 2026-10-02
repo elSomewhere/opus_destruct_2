@@ -36,6 +36,8 @@ class ArmRig {
   // Puts a hand's palm at `target` (model space), oriented `rot` (model, the canonical fist
   // frame) or left as it is, the elbow towards `pole`, blending the arm by w.
   void hand_ik(Side side, const V3& target, const std::optional<Quat>& rot, const V3& pole, f64 w, f64 soft = 0.03);
+  void begin_frame();  // retain the previous arm pose for continuous quaternion blending
+  void finish_frame(f64 dt); // bound requested joint speed across IK/behaviour handoffs
   // Grip frames: the hand's rotation relative to the prop.
   Quat grip_r(bool pistol) const;
   Quat grip_l(bool pistol) const;
@@ -43,6 +45,7 @@ class ArmRig {
  private:
   std::array<Quat, 2> canon_;
   std::array<V3, 2> palm_;
+  std::array<std::array<Quat, 3>, 2> previous_{};
 };
 
 // What the weapon hold needs to know each frame.

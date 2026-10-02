@@ -310,12 +310,24 @@ TEST_CASE("character: its damage record makes it again with its wounds, without 
     Scene s(path);
     Character& c = soldier4(s);
     CHECK(c.damage_record().empty());
-    // the gun arm shot off from the side (facing +y: the right is +x), then a round in the chest
+    // Damage persistence should not depend on which other limb moves behind a
+    // bullet hole during a hit reaction. Target remaining gun-arm voxels, then
+    // raycast the chest separately below.
     for (i32 k = 0; k < 16 && !c.gun_hand_lost(); ++k) {
-      const V3 p = c.pose.point_of(H::forearmR, c.model->skeleton->rest_head[H::forearmR] + V3{0, 0, -0.1});
+      const i32 pi = c.model->part_of_bone[H::forearmR];
+      const VoxelPart& part = c.model->parts[size_t(pi)];
+      CharacterHit hit;hit.part=pi;hit.bone=H::forearmR;
+      f64 nearest=kInf;
+      const V3 aim=c.model->skeleton->rest_head[H::forearmR]+V3{0,0,-0.1};
+      for(i32 z=0;z<part.dims[2];++z)for(i32 y=0;y<part.dims[1];++y)for(i32 x=0;x<part.dims[0];++x){
+        if(!part.cells[size_t(part.index(x,y,z))])continue;
+        const V3 rest=V3{part.origin[0]+x+.5,part.origin[1]+y+.5,part.origin[2]+z+.5}*c.model->voxel_size;
+        if(norm(rest-aim)<nearest){nearest=norm(rest-aim);hit.rest_point=rest;}
+      }
+      REQUIRE(std::isfinite(nearest));
+      hit.point=c.pose.point_of(hit.bone,hit.rest_point);
       const V3 dir{-1, 0, 0};
-      const f64 dz = (k % 3 - 1) * 0.02;
-      if (const std::optional<CharacterHit> hit = c.raycast(V3{p.x + 3.0, p.y, p.z + dz}, dir, 10.0)) c.wound(*hit, dir, 10.0, 0.05);
+      c.wound(hit, dir, 10.0, 0.05);
       s.frame({&c});
     }
     REQUIRE(c.gun_hand_lost());

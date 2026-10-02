@@ -292,13 +292,14 @@ void Character::place_weapon() {
   }
   // the plan's prop relative to the plan's hand, carried by the body's hand
   const WorldPose& ph = motion.world;
-  const Quat hq = ph.q[H::handR];
-  const V3 hp = ph.p[H::handR];
+  const i32 hand = weapon->kind == PropKind::Knife ? motion.weapon_hand : H::handR;
+  const Quat hq = ph.q[hand];
+  const V3 hp = ph.p[hand];
   const Quat inv = conj(hq);
   const V3 rel_p = rotate(inv, motion.weapon_pos - hp);
   const Quat rel_q = inv * motion.weapon_rot;
-  const Quat q = pose.q[H::handR];
-  weapon_pos = pose.p[H::handR] + rotate(q, rel_p);
+  const Quat q = pose.q[hand];
+  weapon_pos = pose.p[hand] + rotate(q, rel_p);
   weapon_rot = q * rel_q;
 }
 
@@ -428,7 +429,7 @@ void Character::own_model() {
   ++geometry_version;
 }
 
-WoundResult Character::wound(const CharacterHit& hit, const V3& dir, f64 damage, f64 radius, f64 impulse_speed) {
+WoundResult Character::wound(const CharacterHit& hit, const V3& dir, f64 damage, f64 radius, f64 impulse_ns) {
   WoundResult res;
   own_model();
   carve_model(*model, hit.rest_point, radius, nullptr, &res.removed);
@@ -450,6 +451,7 @@ WoundResult Character::wound(const CharacterHit& hit, const V3& dir, f64 damage,
     info.dir = dir;
     info.force = damage / 30.0;
     info.kind = HitKind::Bullet;
+    info.impulse_ns = impulse_ns;
     info.bone = hit.bone;
     res.zone = hit_at(info);
     bool head_off = false;
@@ -463,7 +465,9 @@ WoundResult Character::wound(const CharacterHit& hit, const V3& dir, f64 damage,
       if (random() < 0.75) behaviours.collapse(5.0 + random() * 9.0);
     }
   } else {
-    impulse(hit.point, vnorm(dir) * (impulse_speed * 1.4));
+    HitInfo info;info.point = hit.point;info.dir = dir;info.force = damage / 30.0;
+    info.kind = HitKind::Bullet;info.bone = hit.bone;info.impulse_ns = impulse_ns;
+    res.zone = hit_at(info);
   }
   return res;
 }
@@ -471,7 +475,8 @@ WoundResult Character::wound(const CharacterHit& hit, const V3& dir, f64 damage,
 WoundResult Character::melee(const V3& point, const V3& dir, HitKind kind, f64 force) {
   WoundResult res;
   if (!alive()) {
-    impulse(point, vnorm(dir) * (2.0 * force));
+    HitInfo info;info.point=point;info.dir=dir;info.kind=kind;info.force=kind==HitKind::Blade?force*0.8:force;
+    res.zone=hit_at(info);
     return res;
   }
   const i32 bone = nearest_bone(point);
@@ -569,7 +574,7 @@ std::vector<GibSpec> Character::sever_after_damage(i32 bone, const V3& dir) {
       const i32 full = pi >= 0 && size_t(pi) < part_full_.size() ? part_full_[size_t(pi)] : 0;
       if (pi < 0 || full == 0 || m.parts[size_t(pi)].count > 0.4 * full) continue;
       behaviours.lose_limb(i);
-      if (i >= B::upperarmR && i <= B::handR && weapon) {
+      if (weapon && gun_hand_lost()) {
         if (std::optional<GibSpec> w = drop_weapon()) out.push_back(std::move(*w));
       }
     }

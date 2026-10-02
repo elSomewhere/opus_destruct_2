@@ -9,8 +9,6 @@ namespace {
 constexpr f64 G = 9.81;
 f64 g_arms_at_ease = 0.82;
 constexpr i32 kParentOf[kBodyCount] = {-1, B::pelvis, B::spine, B::chest, B::chest, B::upperarmL, B::forearmL, B::chest, B::upperarmR, B::forearmR, B::pelvis, B::thighL, B::shinL, B::pelvis, B::thighR, B::shinR};
-// How a shove along a round spreads over the body: the trunk and the arms most, the feet least.
-constexpr f64 kShoveUpper[kBodyCount] = {0.9, 1.05, 1.15, 1.2, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 0.8, 0.55, 0.35, 0.8, 0.55, 0.35};
 
 f64 wrap_pi(f64 a) {
   f64 x = std::fmod(a, kPi * 2.0);
@@ -81,14 +79,14 @@ void Behaviours::set_mode(BodyMode m) {
 // ---- events ------------------------------------------------------------------------------------
 
 Zone Behaviours::hit(const HitInfo& info, i32 part, const WorldPose& pose) {
+  if (part < 0 || part >= kBodyCount) return Zone::Chest;
   const Zone zone = zone_of_part(part);
+  if (!std::isfinite(info.force) || info.force <= 0.0 || !std::isfinite(norm(info.point)) ||
+      !std::isfinite(norm(info.dir)) || norm(info.dir) < 1e-9 || !std::isfinite(info.impulse_ns)) return zone;
   const f64 f = clamp(info.force, 0.0, 8.0);
   const V3 d = vnorm(info.dir);
-  // how hard it shoves (N s): a round mostly stings, a kick or a blast moves the body
-  f64 J = info.kind == HitKind::Bullet ? 14.0 + 12.0 * std::min(f, 2.5) : info.kind == HitKind::Blunt ? 34.0 * f : info.kind == HitKind::Blade ? 9.0 * f : 55.0 * f;
-  // (a fist on the jaw snaps the head round on the neck: the head moves away from it, it does not
-  // carry the body with it as a blow to the trunk does)
-  if (part == B::head && info.kind == HitKind::Blunt) J = std::min(J, (2.2 + 1.1 * f) * body.parts[B::head]->mass);
+  const f64 J = info.impulse_ns >= 0.0 ? clamp(info.impulse_ns, 0.0, 500.0) : default_hit_impulse(info.kind, f);
+  body.system.wake();
   // a light part cannot take it all: what it cannot passes up the limb to its parent
   const f64 dv_max = info.kind == HitKind::Blunt ? 7.0 : info.kind == HitKind::Blast ? 10.0 : 4.0;
   f64 left = J;
@@ -97,61 +95,25 @@ Zone Behaviours::hit(const HitInfo& info, i32 part, const WorldPose& pose) {
     RigidBody& pb = *body.parts[size_t(p)];
     const f64 take = std::min(left, dv_max * pb.mass * (hop == 0 ? 1.0 : 1.5));
     const V3 r = hop == 0 ? info.point - pb.x : V3{};
-    pb.apply_impulse(V3{d.x * take, d.y * take, d.z * take * 0.3}, r);
+    pb.update_inertia();
+    pb.apply_impulse(d * take, r);
     left -= take;
     p = p == B::pelvis ? -1 : kParentOf[p];
   }
-  // the struck part spins about the blow's lever arm (a shoulder hit turns the chest, a round high
-  // in the chest rocks it back, a jaw hit snaps the head round), its parent with it: what a hit
-  // looks like, more than its momentum alone would give
-  {
-    const RigidBody& hb = *body.parts[size_t(part)];
-    // (about the joint it turns on: a round in the chest rocks it about the waist)
-    const Joint* jt = part > 0 ? body.joints[size_t(part)] : nullptr;
-    const V3 pivot = jt ? hb.point(jt->anchor_b) : hb.x;
-    const V3 r = info.point - pivot;
-    const V3 ax = cross(r, d);
-    const f64 al = norm(ax);
-    if (al > 1e-4) {
-      const bool trunk_hit = part == B::pelvis || part == B::spine || part == B::chest;
-      // (a heavy blow rocks the trunk, it does not fold it in two)
-      const f64 rate = std::min(trunk_hit ? 4.2 : 9.0, (trunk_hit ? 3.2 : part == B::head ? 3.6 : 4.0) * std::min(f, 2.5) *
-                                                           (info.kind == HitKind::Blade ? 0.4 : 1.0) * clamp(al / 0.12, 0.3, 1.2));
-      i32 q = part;
-      for (i32 hop = 0; hop < 2 && q >= 0; ++hop, q = kParentOf[q]) {
-        V3& w = body.parts[size_t(q)]->w;
-        const f64 k2 = (hop == 0 ? 1.0 : part == B::head ? 0.2 : 0.55) * rate / al;
-        w.x += ax.x * k2;
-        w.y += ax.y * k2;
-        w.z += ax.z * k2;
-      }
-    }
+  // Preserve the requested total momentum. Any impulse a light limb cannot
+  // absorb is shared by the connected body; no extra linear or angular kick.
+  if (left > 0.0) body.shove(d * (left / body.total_mass));
+  if (!alive) return zone;
+  if (part <= B::head) {
+    const V3 local_dir = rotate(conj(plan.root_rot()), d);
+    const V3 local_point = rotate(conj(plan.root_rot()), info.point - pose.p[H::spine]);
+    const f64 response = std::min(1.0, J / 5.0) * std::min(1.5, f);
+    impact_reflex_.kick(V3{-local_dir.y, local_dir.x, clamp(local_point.x * local_dir.y * 3.0, -0.5, 0.5)} * (7.0 * response));
+    const f64 speed = norm(impact_reflex_.v);
+    if (speed > 12.0) impact_reflex_.v = impact_reflex_.v * (12.0 / speed);
   }
-  // the rest of the body takes a share (it is connected)
-  const f64 share = info.kind == HitKind::Bullet ? 0.15 : info.kind == HitKind::Blast ? 0.6 : 0.3;
-  const f64 dv = (J * share + std::max(0.0, left)) / body.total_mass;
-  body.shove(V3{d.x * dv, d.y * dv, 0.0});
-  // no two rounds land alike: most are taken where the body stands, some knock it a step or two
-  // back along the round, now and then one drives it back hard (more often in the trunk, and the
-  // worse it is already hurt)
-  i32 hard = 0;
-  if (info.kind == HitKind::Bullet && alive) {
-    const bool trunk_zone = zone == Zone::Chest || zone == Zone::Gut || zone == Zone::Pelvis;
-    const f64 r = rng_.next() - 0.25 * injuries.pain;
-    hard = trunk_zone ? (r < 0.12 ? 2 : r < 0.38 ? 1 : 0) : zone == Zone::LegL || zone == Zone::LegR ? (r < 0.3 ? 1 : 0) : 0;
-    if (hard > 0) {
-      const f64 h = hard == 2 ? 1.25 + 0.4 * rng_.next() : 0.6 + 0.3 * rng_.next();
-      f64 hl = hypot2(d.x, d.y);
-      if (hl == 0.0) hl = 1.0;
-      if (trunk_zone) {
-        body.shove(V3{(d.x / hl) * h, (d.y / hl) * h, 0.0}, kShoveUpper);
-      } else {
-        // a leg hit: the knee gives under it
-        const i32 leg[2] = {zone == Zone::LegL ? B::thighL : B::thighR, zone == Zone::LegL ? B::shinL : B::shinR};
-        for (i32 b : leg) stun_[size_t(b)] = std::max(stun_[size_t(b)], 0.9f);
-      }
-    }
-  }
+  if ((zone == Zone::LegL || zone == Zone::LegR) && info.kind == HitKind::Bullet && f > 0.7)
+    stun_part(part, clamp(0.6 + 0.15 * f, 0.0, 0.95));
   // the struck part and its neighbours go slack for a moment (the trunk less: it carries the body)
   const bool trunk_part = part == B::pelvis || part == B::spine || part == B::chest;
   const f64 s = clamp(0.35 + 0.3 * f, 0.0, trunk_part ? 0.65 : 0.95);
@@ -194,8 +156,8 @@ Zone Behaviours::hit(const HitInfo& info, i32 part, const WorldPose& pose) {
   upset_ = 0.4;
   // knocked off the plan: a blow that moves the whole body (a blow to the head mostly snaps the
   // head), a leg that gives, a daze
-  const f64 body_dv = (J * (zone == Zone::Head ? 0.35 : 1.0) * (1.0 + share)) / body.total_mass;
-  if (hard > 0 || body_dv > 0.55 || ((zone == Zone::LegL || zone == Zone::LegR) && f > 0.7 && info.kind != HitKind::Blunt) || daze_ > 0.4) force_react_ = true;
+  const f64 body_dv = J / body.total_mass;
+  if (body_dv > 0.55 || ((zone == Zone::LegL || zone == Zone::LegR) && f > 0.7 && info.kind != HitKind::Blunt) || daze_ > 0.4) force_react_ = true;
   return zone;
 }
 
@@ -437,6 +399,12 @@ void Behaviours::prepare(f64 dt, const WorldPose& pose) {
   const f64 kk = k();
   PlanControl& ctl = plan.control;
   ctl.reset();
+  impact_reflex_.update(V3{}, dt);
+  if ((alive && conscious && (mode == BodyMode::Animated || mode == BodyMode::Reacting)) ||
+      (mode == BodyMode::Dying && !dying_head_)) {
+    ctl.spine += impact_reflex_.x * 0.35;
+    ctl.chest += impact_reflex_.x * 0.65;
+  }
   grip_[0] = grip_[1] = 0.0;
   injuries.update(dt);
   for (i32 i = 0; i < kBodyCount; ++i) {
@@ -489,7 +457,7 @@ void Behaviours::prepare(f64 dt, const WorldPose& pose) {
   ctl.limp[0] = clamp(inj.legL * 1.1, 0.0, 1.0);
   ctl.limp[1] = clamp(inj.legR * 1.1, 0.0, 1.0);
   ctl.pain = inj.pain;
-  ctl.fold += inj.trunk * 0.22 + (mode == BodyMode::Dying ? 0.25 : 0.0);
+  ctl.fold += inj.trunk * 0.22 * smoothstep(0.12, 0.4, time_ - hit_at_) + (mode == BodyMode::Dying ? 0.25 : 0.0);
   ctl.crouch += nerves * 0.25;
   ctl.care = clamp(1.0 - 0.6 * smoothstep(2.2, 5.0, hypot2(plan.velocity.x, plan.velocity.y)) - 0.4 * (plan.input.mood == Mood::Panic ? 1.0 : 0.0) - 0.3 * inj.pain, 0.1, 1.0);
   if (mode != BodyMode::Animated) ctl.busy = true;
@@ -1195,8 +1163,7 @@ void Behaviours::drive_pre(f64 dt) {
       base = dying_head_ ? 0.02 : 0.9 * pow(1.0 - u, 0.8) + 0.02;
       // (and a body tipping over goes limp in the legs: it collapses, it does not fall like a plank
       // and swing its legs up over itself)
-      const f64 up_z = rotate(bd.parts[B::chest]->q, V3{0, 0, 1}).z;
-      legs = pow(1.0 - u, 1.2) * 0.75 * smoothstep(0.35, 0.8, up_z);
+      legs = 0.0;
       arms = pow(1.0 - u, 0.7) * 0.8;
       break;
     }
@@ -1344,7 +1311,7 @@ void Behaviours::drive_pre(f64 dt) {
     turn.target = target.q[foot_bone];
     pin.enabled = turn.enabled = true;
     const f64 fm = bd.parts[i == 0 ? B::footL : B::footR]->mass;
-    if (f.planted) {
+    if (f.planted && !f.held) {
       if (!f.held && mode == BodyMode::Animated && plan.feet_planner.stepping) {
         // Hold the point touching the ground, so the ankle can roll over it.
         // Pinning a moving ankle with zero target velocity resisted the roll
@@ -1367,13 +1334,13 @@ void Behaviours::drive_pre(f64 dt) {
       // a kick: the foot is driven to where the action puts it
       const f64 e = plan.effort[size_t(2 + i)];
       pin.stiffness = fm * 3000.0 * e;
-      pin.max_force = 60.0 + 400.0 * e * (plan.striking[size_t(2 + i)] ? 1.0 : 0.4);
+      pin.max_force = 80.0 + 600.0 * e * (plan.striking[size_t(2 + i)] ? 1.0 : 0.6);
       pin.damping = fm * 60.0;
       const V3 pa = prev_t.p[foot_bone];
       pin.target_vel = (a - pa) * idt;
       turn.stiffness = 200.0;
       turn.max_torque = 60.0;
-      turn.damping = 6.0;
+      turn.damping = 12.0;
     } else {
       // (the leg's muscles swing it; this only guides the foot to its spot, gently, so the whole
       // body is not dragged by it and an obstacle can stop it; up a stair the knee is lifted with a

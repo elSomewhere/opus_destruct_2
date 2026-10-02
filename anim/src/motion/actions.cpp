@@ -41,6 +41,8 @@ Channel mirror_channel(Channel c) {
     case C::FootL: return C::FootR;
     case C::FootRw: return C::FootLw;
     case C::FootLw: return C::FootRw;
+    case C::FootRpole: return C::FootLpole;
+    case C::FootLpole: return C::FootRpole;
     case C::StrikeFootR: return C::StrikeFootL;
     case C::StrikeFootL: return C::StrikeFootR;
     case C::ClavR: return C::ClavL;
@@ -50,7 +52,7 @@ Channel mirror_channel(Channel c) {
 }
 
 bool is_position(Channel c) {
-  return c == C::HandR || c == C::HandL || c == C::ElbowR || c == C::ElbowL || c == C::FootR || c == C::FootL || c == C::Pelvis || c == C::WeaponPos;
+  return c == C::HandR || c == C::HandL || c == C::ElbowR || c == C::ElbowL || c == C::FootR || c == C::FootL || c == C::Pelvis || c == C::WeaponPos || c == C::FootRpole || c == C::FootLpole;
 }
 
 bool is_euler(Channel c) {
@@ -84,6 +86,10 @@ ActionDef mirror_action(const ActionDef& def, std::string name) {
   out.reach = def.reach;
   out.kick_pitch = def.kick_pitch;
   out.prop = def.prop;
+  out.target_height = def.target_height;
+  out.lead_side = -def.lead_side;
+  out.support_turn = def.support_turn;
+  out.left_handed = !def.left_handed;
   for (int i = 0; i < kChannelCount; ++i) {
     const Channel c = Channel(i);
     if (!def.drives(c)) continue;
@@ -108,26 +114,30 @@ ActionDef mirror_action(const ActionDef& def, std::string name) {
 // ---- players --------------------------------------------------------------------------------
 
 bool ActionPlayer::done() const {
-  if (stop_at_ >= 0.0) return time - stop_at_ >= def->fade_out;
+  if (stopping_) return time - stop_at_ >= def->fade_out;
   return !def->loop && time >= def->duration;
 }
 
 f64 ActionPlayer::weight() const {
   const f64 fi = def->fade_in;
   const f64 fo = def->fade_out;
-  f64 w = fi > 0.0 ? std::min(1.0, time / fi) : 1.0;
-  if (stop_at_ >= 0.0) w *= std::max(0.0, 1.0 - (time - stop_at_) / fo);
-  else if (!def->loop && fo > 0.0) w *= std::min(1.0, std::max(0.0, (def->duration - time) / fo));
+  if (stopping_) {
+    const f64 out = fo > 0.0 ? clamp(1.0 - (time - stop_at_) / fo, 0.0, 1.0) : 0.0;
+    return stop_weight_ * out * out * (3.0 - 2.0 * out);
+  }
+  f64 w = preparation > 0.0 ? clamp((time + preparation) / preparation, 0.0, 1.0) : fi > 0.0 ? clamp(time / fi, 0.0, 1.0) : 1.0;
+  if (!def->loop && fo > 0.0) w *= std::min(1.0, std::max(0.0, (def->duration - time) / fo));
   return w * w * (3.0 - 2.0 * w);
 }
 
 void ActionPlayer::stop() {
-  if (stop_at_ < 0.0) stop_at_ = time;
+  if (!stopping_) { stop_weight_ = weight(); stop_at_ = time; stopping_ = true; }
 }
 
 void ActionPlayer::advance(f64 dt, std::vector<const ActionEvent*>* crossed) {
   const f64 before = time;
   time += dt * rate;
+  if (stopping_) return; // a cancelled strike cannot land during its fade-out
   const std::vector<ActionEvent>& evs = def->events;
   if (evs.empty()) return;
   const f64 d = def->duration;
@@ -202,6 +212,7 @@ std::vector<ActionDef> build() {
   // ---- fighting
   {
     ActionDef& a = def("guard", 1.2, 0.2, 0.25);
+    a.lead_side = -1;
     a.layer = ActionLayer::Pose;
     a.loop = true;
     guard_hands(a, 0, 1.2);
@@ -214,6 +225,8 @@ std::vector<ActionDef> build() {
   {
     // a knife fighter's guard: the blade low and forward, the free hand up in front
     ActionDef& a = def("knifeGuard", 1.4, 0.2, 0.25);
+    a.lead_side = -1;
+    a.prop = PropKind::Knife;
     a.layer = ActionLayer::Pose;
     a.loop = true;
     a.set(C::HandR, {k(0, {0.17, 0.28, 0.02}), k(0.7, {0.19, 0.3, 0.05}), k(1.4, {0.17, 0.28, 0.02})});
@@ -231,13 +244,14 @@ std::vector<ActionDef> build() {
     // lead-hand jab: fast out, fast back
     ActionDef& a = def("jab", 0.42, 0.04, 0.12);
     a.targeted = true;
+    a.lead_side = -1;
     a.reach = 0.7;
     guard_hands(a, 0, 0.42);
-    a.set(C::StrikeL, {k(0, 0), k(0.11, 1, snap), k(0.16, 1), k(0.38, 0, out)});
-    a.set(C::HandLrot, {k(0, kFistUpL), k(0.1, {0, 0, 0}, snap), k(0.17, {0, 0, 0}), k(0.38, kFistUpL, out)});
+    a.set(C::StrikeL, {k(0, 0), k(0.11, 1, inout), k(0.16, 1), k(0.38, 0, out)});
+    a.set(C::HandLrot, {k(0, kFistUpL), k(0.1, {0, 0, 0}, inout), k(0.17, {0, 0, 0}), k(0.38, kFistUpL, out)});
     a.set(C::ElbowL, {k(0, kPoleL), k(0.1, {-0.8, -0.2, -0.6}), k(0.38, kPoleL)});
-    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.1, {-4, 0, -16}, snap), k(0.4, {0, 0, 0}, out)});
-    a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.11, {0, 0.06, -0.01}, snap), k(0.4, {0, 0, 0}, out)});
+    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.1, {-4, 0, -16}, inout), k(0.4, {0, 0, 0}, out)});
+    a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.11, {0, 0.06, -0.01}, inout), k(0.4, {0, 0, 0}, out)});
     a.set(C::Head, {k(0, {0, 0, 0}), k(0.1, {-4, 0, 8}), k(0.4, {0, 0, 0})});
     a.events = {{0.11, "strike", Limb::HandL}};
   }
@@ -245,14 +259,15 @@ std::vector<ActionDef> build() {
     // rear-hand cross: the hip turns it over
     ActionDef& a = def("cross", 0.55, 0.05, 0.15);
     a.targeted = true;
+    a.lead_side = -1;
     a.reach = 0.68;
     guard_hands(a, 0, 0.55);
-    a.set(C::StrikeR, {k(0, 0), k(0.06, -0.1), k(0.17, 1, snap), k(0.22, 1), k(0.5, 0, out)});
-    a.set(C::HandRrot, {k(0, kFistUpR), k(0.16, {0, 0, 0}, snap), k(0.23, {0, 0, 0}), k(0.5, kFistUpR, out)});
+    a.set(C::StrikeR, {k(0, 0), k(0.06, -0.1), k(0.17, 1, inout), k(0.22, 1), k(0.5, 0, out)});
+    a.set(C::HandRrot, {k(0, kFistUpR), k(0.16, {0, 0, 0}, inout), k(0.23, {0, 0, 0}), k(0.5, kFistUpR, out)});
     a.set(C::ElbowR, {k(0, kPoleR), k(0.16, {0.8, -0.2, -0.5}), k(0.5, kPoleR)});
-    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.06, {0, 0, -6}), k(0.17, {0, 0, 24}, snap), k(0.52, {0, 0, 0}, out)});
-    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.06, {0, 0, -6}), k(0.17, {-8, 0, 28}, snap), k(0.52, {0, 0, 0}, out)});
-    a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.17, {0.02, 0.1, -0.03}, snap), k(0.52, {0, 0, 0}, out)});
+    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.06, {0, 0, -6}), k(0.17, {0, 0, 24}, inout), k(0.52, {0, 0, 0}, out)});
+    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.06, {0, 0, -6}), k(0.17, {-8, 0, 28}, inout), k(0.52, {0, 0, 0}, out)});
+    a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.17, {0.02, 0.1, -0.03}, inout), k(0.52, {0, 0, 0}, out)});
     a.set(C::Head, {k(0, {0, 0, 0}), k(0.17, {-6, 0, -18}), k(0.52, {0, 0, 0})});
     a.events = {{0.17, "strike", Limb::HandR}};
   }
@@ -260,14 +275,15 @@ std::vector<ActionDef> build() {
     // lead hook: elbow up, fist sweeps round from the side
     ActionDef& a = def("hook", 0.6, 0.05, 0.15);
     a.targeted = true;
+    a.lead_side = -1;
     a.reach = 0.58;
     guard_hands(a, 0, 0.6);
     a.set(C::HandL, {k(0, kGuardL), k(0.1, {-0.4, 0.18, 0.3}), k(0.2, {-0.25, 0.42, 0.34}), k(0.55, kGuardL, out)});
-    a.set(C::StrikeL, {k(0, 0), k(0.1, 0.1), k(0.21, 0.95, snap), k(0.27, 0.9), k(0.55, 0, out)});
+    a.set(C::StrikeL, {k(0, 0), k(0.1, 0.1), k(0.21, 0.95, inout), k(0.27, 0.9), k(0.55, 0, out)});
     a.set(C::HandLrot, {k(0, kFistUpL), k(0.12, {0, -90, -40}), k(0.21, {0, -90, -70}), k(0.55, kFistUpL, out)});
     a.set(C::ElbowL, {k(0, kPoleL), k(0.12, {-1, -0.1, 0.4}), k(0.21, {-0.6, 0.4, 0.6}), k(0.55, kPoleL)});
-    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.1, {0, 0, 10}), k(0.21, {0, 0, -26}, snap), k(0.58, {0, 0, 0}, out)});
-    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.1, {0, -4, 12}), k(0.21, {-6, 6, -34}, snap), k(0.58, {0, 0, 0}, out)});
+    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.1, {0, 0, 10}), k(0.21, {0, 0, -26}, inout), k(0.58, {0, 0, 0}, out)});
+    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.1, {0, -4, 12}), k(0.21, {-6, 6, -34}, inout), k(0.58, {0, 0, 0}, out)});
     a.set(C::Head, {k(0, {0, 0, 0}), k(0.21, {0, 0, 16}), k(0.58, {0, 0, 0})});
     a.events = {{0.21, "strike", Limb::HandL}};
   }
@@ -275,28 +291,32 @@ std::vector<ActionDef> build() {
     // rear uppercut: dip, then drive up through the target
     ActionDef& a = def("uppercut", 0.65, 0.05, 0.15);
     a.targeted = true;
+    a.lead_side = -1;
     a.reach = 0.58;
     guard_hands(a, 0, 0.65);
     a.set(C::HandR, {k(0, kGuardR), k(0.12, {0.12, 0.2, 0.02}), k(0.24, {0.05, 0.36, 0.3}), k(0.6, kGuardR, out)});
-    a.set(C::StrikeR, {k(0, 0), k(0.12, 0), k(0.24, 1, snap), k(0.3, 0.9), k(0.6, 0, out)});
+    a.set(C::StrikeR, {k(0, 0), k(0.12, 0), k(0.24, 1, inout), k(0.3, 0.9), k(0.6, 0, out)});
     a.set(C::HandRrot, {k(0, kFistUpR), k(0.12, {40, 90, 0}), k(0.24, {80, 90, 0}), k(0.6, kFistUpR)});
     a.set(C::ElbowR, {k(0, kPoleR), k(0.12, {0.3, -0.6, -0.8}), k(0.24, {0.3, 0.2, -1}), k(0.6, kPoleR)});
-    a.set(C::Crouch, {k(0, 0), k(0.12, 0.25, out), k(0.24, -0.05, snap), k(0.62, 0, out)});
-    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.12, {0, 0, -8}), k(0.24, {0, 0, 22}, snap), k(0.62, {0, 0, 0})});
-    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.12, {-14, 6, -10}), k(0.24, {6, 0, 24}, snap), k(0.62, {0, 0, 0}, out)});
+    a.set(C::Crouch, {k(0, 0), k(0.12, 0.25, out), k(0.24, -0.05, inout), k(0.62, 0, out)});
+    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.12, {0, 0, -8}), k(0.24, {0, 0, 22}, inout), k(0.62, {0, 0, 0})});
+    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.12, {-14, 6, -10}), k(0.24, {6, 0, 24}, inout), k(0.62, {0, 0, 0}, out)});
     a.events = {{0.24, "strike", Limb::HandR}};
   }
   {
     // rear-leg front (push) kick: chamber, extend, retract, plant
     ActionDef& a = def("frontKick", 0.85, 0.08, 0.15);
     a.targeted = true;
+    a.lead_side = -1;
     a.reach = 0.8;
     a.kick_pitch = 0.35;
+    a.target_height = 1.05;
+    a.support_turn = 0.25;
     guard_hands(a, 0, 0.85);
     a.set(C::FootRw, {k(0, 0), k(0.08, 1), k(0.72, 1), k(0.85, 0)});
     a.set(C::FootR, {k(0, {0.12, -0.05, 0.09}), k(0.22, {0.1, 0.28, 0.5}, out), k(0.5, {0.1, 0.3, 0.52}), k(0.8, {0.12, 0.02, 0.09}, inout)});
-    a.set(C::StrikeFootR, {k(0, 0), k(0.22, 0), k(0.33, 1, snap), k(0.4, 1), k(0.52, 0, out)});
-    a.set(C::Spine, {k(0, {0, 0, 0}), k(0.33, {18, 0, 0}, snap), k(0.8, {0, 0, 0})});
+    a.set(C::StrikeFootR, {k(0, 0), k(0.22, 0), k(0.33, 1, inout), k(0.4, 1), k(0.52, 0, out)});
+    a.set(C::Spine, {k(0, {0, 0, 0}), k(0.33, {18, 0, 0}, inout), k(0.8, {0, 0, 0})});
     a.set(C::Chest, {k(0, {0, 0, 0}), k(0.33, {10, 0, 0}), k(0.8, {0, 0, 0})});
     a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.2, {-0.03, -0.02, 0.03}), k(0.33, {-0.04, -0.06, 0.04}), k(0.8, {0, 0, 0})});
     a.set(C::HandR, {k(0, kGuardR), k(0.33, {0.24, 0.05, 0.1}), k(0.7, kGuardR)});
@@ -306,34 +326,42 @@ std::vector<ActionDef> build() {
     // rear-leg roundhouse: the hip turns over, the shin sweeps round
     ActionDef& a = def("roundhouse", 0.95, 0.08, 0.15);
     a.targeted = true;
+    a.lead_side = -1;
     a.reach = 0.78;
-    a.kick_pitch = -0.9;
+    a.kick_pitch = -0.65;
+    a.target_height = 1.1;
+    a.support_turn = 0.8;
+    a.set(C::FootRpole, {k(0, {0.4, 1, 0.8}), k(0.22, {1, 0.15, 0.4}), k(0.45, {1, 0.1, 0.25}), k(0.9, {0.4, 1, 0.8})});
     guard_hands(a, 0, 0.95);
     a.set(C::FootRw, {k(0, 0), k(0.08, 1), k(0.8, 1), k(0.95, 0)});
     a.set(C::FootR, {k(0, {0.12, -0.05, 0.09}), k(0.22, {0.42, 0.05, 0.55}, out), k(0.38, {0.2, 0.5, 0.8}), k(0.6, {0.3, 0.1, 0.45}), k(0.9, {0.12, 0.02, 0.09}, inout)});
-    a.set(C::StrikeFootR, {k(0, 0), k(0.25, 0.1), k(0.38, 0.95, snap), k(0.45, 0.8), k(0.6, 0, out)});
-    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.25, {0, -20, 35}), k(0.38, {0, -28, 60}, snap), k(0.9, {0, 0, 0}, inout)});
-    a.set(C::Spine, {k(0, {0, 0, 0}), k(0.38, {6, -18, -20}), k(0.9, {0, 0, 0})});
-    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.38, {0, -10, -30}), k(0.9, {0, 0, 0})});
-    a.set(C::Head, {k(0, {0, 0, 0}), k(0.38, {0, 10, -10}), k(0.9, {0, 0, 0})});
-    a.set(C::HandR, {k(0, kGuardR), k(0.38, {0.3, -0.25, 0.05}), k(0.8, kGuardR)});
+    a.set(C::StrikeFootR, {k(0, 0), k(0.25, 0.1), k(0.38, 0.95, inout), k(0.45, 0.8), k(0.6, 0, out)});
+    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.25, {0, -10, 35}), k(0.38, {0, -15, 60}, inout), k(0.9, {0, 0, 0}, inout)});
+    a.set(C::Spine, {k(0, {0, 0, 0}), k(0.38, {4, -8, -20}), k(0.9, {0, 0, 0})});
+    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.38, {0, -3, -30}), k(0.9, {0, 0, 0})});
+    a.set(C::Head, {k(0, {0, 0, 0}), k(0.38, {0, 5, -10}), k(0.9, {0, 0, 0})});
+    // Counterbalance around the outside of the shoulder. A straight path from
+    // the chin to behind the body passed through the shoulder's IK singularity.
+    a.set(C::HandR, {k(0, kGuardR), k(0.16, {0.42, 0.22, 0.12}), k(0.38, {0.46, -0.12, -0.12}), k(0.64, {0.42, 0.22, 0.12}), k(0.85, kGuardR)});
     a.events = {{0.38, "strike", Limb::FootR}};
   }
   {
     // knife thrust
     ActionDef& a = def("stab", 0.62, 0.06, 0.15);
     a.targeted = true;
+    a.lead_side = -1;
     a.reach = 0.66;
     a.prop = PropKind::Knife;
-    a.set(C::HandR, {k(0, {0.2, 0.2, 0.0}), k(0.16, {0.22, -0.05, 0.02}, out), k(0.6, {0.2, 0.2, 0.0})});
+    a.target_height = 1.2;
+    a.set(C::HandR, {k(0, {0.2, 0.2, 0.0}), k(0.16, {0.38, 0.12, -0.08}, inout), k(0.6, {0.2, 0.2, 0.0})});
     a.set(C::HandRrot, {k(0, {0, 90, 0}), k(0.6, {0, 90, 0})});
-    a.set(C::StrikeR, {k(0, 0), k(0.16, 0), k(0.28, 1, snap), k(0.34, 1), k(0.58, 0, out)});
+    a.set(C::StrikeR, {k(0, 0), k(0.16, 0), k(0.28, 1, inout), k(0.34, 1), k(0.58, 0, out)});
     a.set(C::ElbowR, {k(0, {0.6, -0.4, -0.8}), k(0.6, {0.6, -0.4, -0.8})});
     a.set(C::HandL, {k(0, {-0.18, 0.28, 0.12}), k(0.28, {-0.25, 0.1, 0.05}), k(0.6, {-0.18, 0.28, 0.12})});
     a.set(C::HandLw, {k(0, 0.7), k(0.6, 0.7)});
-    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.16, {0, 0, -10}), k(0.28, {0, 0, 18}, snap), k(0.6, {0, 0, 0})});
-    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.16, {2, 0, -12}), k(0.28, {-12, 0, 22}, snap), k(0.6, {0, 0, 0}, out)});
-    a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.28, {0, 0.12, -0.04}, snap), k(0.6, {0, 0, 0}, out)});
+    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.16, {0, 0, -10}), k(0.28, {0, 0, 18}, inout), k(0.6, {0, 0, 0})});
+    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.16, {2, 0, -12}), k(0.28, {-12, 0, 22}, inout), k(0.6, {0, 0, 0}, out)});
+    a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.28, {0, 0.12, -0.04}, inout), k(0.6, {0, 0, 0}, out)});
     a.set(C::Crouch, {k(0, 0.1), k(0.28, 0.2), k(0.6, 0.1)});
     a.events = {{0.28, "strike", Limb::Blade}};
   }
@@ -341,14 +369,16 @@ std::vector<ActionDef> build() {
     // knife slash: a backhand arc across the target
     ActionDef& a = def("slash", 0.62, 0.06, 0.15);
     a.targeted = true;
+    a.lead_side = -1;
     a.reach = 0.62;
     a.prop = PropKind::Knife;
-    a.set(C::HandR, {k(0, {0.2, 0.2, 0.0}), k(0.14, {0.4, 0.1, 0.32}, out), k(0.3, {-0.22, 0.4, 0.05}, snap), k(0.6, {0.2, 0.2, 0.0}, inout)});
-    a.set(C::StrikeR, {k(0, 0), k(0.14, 0), k(0.22, 0.75, snap), k(0.3, 0.3), k(0.6, 0)});
-    a.set(C::HandRrot, {k(0, {0, 90, 0}), k(0.14, {30, 170, 40}), k(0.3, {0, 170, -60}, snap), k(0.6, {0, 90, 0})});
-    a.set(C::ElbowR, {k(0, {0.6, -0.4, -0.8}), k(0.14, {1, -0.3, 0.4}), k(0.3, {0.2, 0.4, -1}), k(0.6, {0.6, -0.4, -0.8})});
-    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.14, {0, 6, -26}), k(0.3, {-6, -6, 30}, snap), k(0.6, {0, 0, 0})});
-    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.14, {0, 0, -12}), k(0.3, {0, 0, 16}, snap), k(0.6, {0, 0, 0})});
+    a.target_height = 1.2;
+    a.set(C::HandR, {k(0, {0.2, 0.2, 0.0}), k(0.14, {0.46, 0.3, 0.22}, inout), k(0.3, {-0.12, 0.46, 0.05}, inout), k(0.6, {0.2, 0.2, 0.0}, inout)});
+    a.set(C::StrikeR, {k(0, 0), k(0.14, 0), k(0.22, 0.75, inout), k(0.3, 0.3), k(0.6, 0)});
+    a.set(C::HandRrot, {k(0, {0, 90, 0}), k(0.14, {15, 100, 25}), k(0.3, {0, 100, -35}, inout), k(0.6, {0, 90, 0})});
+    a.set(C::ElbowR, {k(0, {0.8, -0.4, -0.5}), k(0.16, {1, -0.2, 0.1}), k(0.36, {0.8, -0.2, -0.4}), k(0.6, {0.8, -0.4, -0.5})});
+    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.14, {0, 6, -26}), k(0.3, {-6, -6, 30}, inout), k(0.6, {0, 0, 0})});
+    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.14, {0, 0, -12}), k(0.3, {0, 0, 16}, inout), k(0.6, {0, 0, 0})});
     a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.22, {0, 0.08, -0.02}), k(0.6, {0, 0, 0})});
     a.events = {{0.22, "strike", Limb::Blade}};
   }
@@ -356,32 +386,36 @@ std::vector<ActionDef> build() {
     // underhand thrust into the gut: low from the hip, driving up, the free hand pulling
     ActionDef& a = def("gutStab", 0.72, 0.06, 0.15);
     a.targeted = true;
+    a.lead_side = -1;
     a.reach = 0.62;
     a.prop = PropKind::Knife;
+    a.target_height = 1.0;
     a.set(C::HandR, {k(0, {0.18, 0.12, -0.12}), k(0.2, {0.2, -0.02, -0.2}, out), k(0.7, {0.18, 0.12, -0.12})});
     a.set(C::HandRrot, {k(0, {-40, 90, 0}), k(0.7, {-40, 90, 0})});
-    a.set(C::StrikeR, {k(0, 0), k(0.2, 0), k(0.32, 1, snap), k(0.4, 1), k(0.66, 0, out)});
+    a.set(C::StrikeR, {k(0, 0), k(0.2, 0), k(0.32, 1, inout), k(0.4, 1), k(0.66, 0, out)});
     a.set(C::ElbowR, {k(0, {0.7, -0.5, -0.6}), k(0.7, {0.7, -0.5, -0.6})});
     a.set(C::HandL, {k(0, {-0.16, 0.3, 0.16}), k(0.32, {-0.12, 0.44, 0.1}), k(0.7, {-0.16, 0.3, 0.16})});
     a.set(C::HandLw, {k(0, 0.7), k(0.7, 0.7)});
-    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.2, {0, 0, -8}), k(0.32, {0, 0, 14}, snap), k(0.7, {0, 0, 0})});
-    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.2, {6, 0, -8}), k(0.32, {-16, 0, 16}, snap), k(0.7, {0, 0, 0}, out)});
-    a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.32, {0, 0.14, -0.06}, snap), k(0.7, {0, 0, 0}, out)});
+    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.2, {0, 0, -8}), k(0.32, {0, 0, 14}, inout), k(0.7, {0, 0, 0})});
+    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.2, {6, 0, -8}), k(0.32, {-16, 0, 16}, inout), k(0.7, {0, 0, 0}, out)});
+    a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.32, {0, 0.14, -0.06}, inout), k(0.7, {0, 0, 0}, out)});
     a.set(C::Crouch, {k(0, 0.15), k(0.32, 0.32), k(0.7, 0.15)});
-    a.events = {{0.32, "strike", Limb::Blade}};
+    a.events = {{0.36, "strike", Limb::Blade}};
   }
   {
     // forehand slash: from high on the left across and down
     ActionDef& a = def("forehandSlash", 0.66, 0.06, 0.15);
     a.targeted = true;
+    a.lead_side = -1;
     a.reach = 0.62;
     a.prop = PropKind::Knife;
-    a.set(C::HandR, {k(0, {0.2, 0.2, 0.0}), k(0.16, {-0.08, 0.2, 0.34}, out), k(0.25, {0.12, 0.42, 0.14}, snap), k(0.34, {0.36, 0.3, -0.08}), k(0.64, {0.2, 0.2, 0.0}, inout)});
-    a.set(C::StrikeR, {k(0, 0), k(0.16, 0), k(0.25, 0.9, snap), k(0.32, 0.3), k(0.64, 0)});
-    a.set(C::HandRrot, {k(0, {0, 90, 0}), k(0.16, {40, 60, 60}), k(0.25, {0, 90, 42}, snap), k(0.34, {-20, 120, -40}), k(0.64, {0, 90, 0})});
-    a.set(C::ElbowR, {k(0, {0.6, -0.4, -0.8}), k(0.16, {0.3, 0.2, 1}), k(0.32, {1, -0.2, -0.6}), k(0.64, {0.6, -0.4, -0.8})});
-    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.16, {0, -6, 24}), k(0.32, {-8, 6, -28}, snap), k(0.64, {0, 0, 0})});
-    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.16, {0, 0, 12}), k(0.32, {0, 0, -16}, snap), k(0.64, {0, 0, 0})});
+    a.target_height = 1.2;
+    a.set(C::HandR, {k(0, {0.2, 0.2, 0.0}), k(0.16, {-0.08, 0.4, 0.28}, inout), k(0.25, {0.12, 0.48, 0.14}, inout), k(0.34, {0.4, 0.36, -0.08}), k(0.64, {0.2, 0.2, 0.0}, inout)});
+    a.set(C::StrikeR, {k(0, 0), k(0.16, 0), k(0.25, 0.9, inout), k(0.32, 0.3), k(0.64, 0)});
+    a.set(C::HandRrot, {k(0, {0, 90, 0}), k(0.16, {40, 60, 60}), k(0.25, {0, 90, 42}, inout), k(0.34, {-20, 120, -40}), k(0.64, {0, 90, 0})});
+    a.set(C::ElbowR, {k(0, {0.8, -0.4, -0.5}), k(0.16, {1, -0.2, 0.1}), k(0.36, {0.8, -0.2, -0.4}), k(0.6, {0.8, -0.4, -0.5})});
+    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.16, {0, -6, 24}), k(0.32, {-8, 6, -28}, inout), k(0.64, {0, 0, 0})});
+    a.set(C::PelvisRot, {k(0, {0, 0, 0}), k(0.16, {0, 0, 12}), k(0.32, {0, 0, -16}, inout), k(0.64, {0, 0, 0})});
     a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.25, {0, 0.08, -0.02}), k(0.64, {0, 0, 0})});
     a.events = {{0.25, "strike", Limb::Blade}};
   }
@@ -389,11 +423,12 @@ std::vector<ActionDef> build() {
     // shove / rifle jab: both hands (or the weapon) driven forward
     ActionDef& a = def("riflePush", 0.55, 0.05, 0.15);
     a.targeted = true;
+    a.lead_side = -1;
     a.reach = 0.7;
-    a.set(C::WeaponPos, {k(0, {0, 0, 0}), k(0.1, {0, -0.08, 0}), k(0.2, {0, 0.32, 0.02}, snap), k(0.26, {0, 0.3, 0.02}), k(0.52, {0, 0, 0}, out)});
+    a.set(C::WeaponPos, {k(0, {0, 0, 0}), k(0.1, {0, -0.08, 0}), k(0.2, {0, 0.32, 0.02}, inout), k(0.26, {0, 0.3, 0.02}), k(0.52, {0, 0, 0}, out)});
     a.set(C::WeaponRot, {k(0, {0, 0, 0}), k(0.2, {-8, 0, 0}), k(0.52, {0, 0, 0})});
-    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.1, {4, 0, -8}), k(0.2, {-10, 0, 6}, snap), k(0.52, {0, 0, 0})});
-    a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.2, {0, 0.12, -0.02}, snap), k(0.52, {0, 0, 0}, out)});
+    a.set(C::Chest, {k(0, {0, 0, 0}), k(0.1, {4, 0, -8}), k(0.2, {-10, 0, 6}, inout), k(0.52, {0, 0, 0})});
+    a.set(C::Pelvis, {k(0, {0, 0, 0}), k(0.2, {0, 0.12, -0.02}, inout), k(0.52, {0, 0, 0}, out)});
     a.events = {{0.2, "strike", Limb::Muzzle}};
   }
   {

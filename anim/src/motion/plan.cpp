@@ -120,16 +120,38 @@ void MotionPlan::carry_root(const V3& pos_in, f64 yaw) {
 
 bool MotionPlan::play(std::string_view name, std::optional<V3> target, f64 rate) {
   const ActionDef* def = action_def(name);
-  if (!def) return false;
+  if (!def || !std::isfinite(rate) || rate <= 0.0) return false;
+  if (target && !std::isfinite(norm(*target))) return false;
+  if (def->prop && (!weapon || weapon->kind != *def->prop)) return false;
   if (stance == Stance::Down || lying_ || stance_p_ < 1.0) return false;
+  if (def->prop == PropKind::Knife) weapon_hand = def->left_handed ? H::handL : H::handR;
   if (def->layer == ActionLayer::Pose) {
+    manual_pose_ = def;
     set_pose_action(def);
     return true;
   }
   if (act_) act_->stop();
+  const bool untargeted = def->targeted && !target;
+  if (untargeted) target = root_pos + rotate(root_rot(), V3{0, def->reach * k, def->target_height * k});
   act_.emplace(def, target, rate);
+  if (untargeted && !input.guard) {
+    act_->preparation = 0.18;
+    act_->time = -act_->preparation;
+  }
+  prepare_support(*def, act_->preparation > 0.0 ? act_->preparation / rate : 0.14);
   if (target && def->reach != 0.0) step_in(*def, *target, rate);
   return true;
+}
+
+void MotionPlan::prepare_support(const ActionDef& def, f64 duration) {
+  if (!def.lead_side || control.busy || stance != Stance::Stand || hypot2(velocity.x, velocity.y) > 0.3) return;
+  const size_t side = def.lead_side < 0 ? 0 : 1;
+  auto& foot = feet_planner.feet[side];
+  if (feet_planner.feet[1 - side].forced || foot.held) return;
+  const V3 target = root_pos + rotate(root_rot(), V3{def.lead_side * dims_.foot_x * style.width, 0.12 * k, 0});
+  const f64 yaw = root_yaw - def.lead_side * def.support_turn;
+  if (norm(target - foot.pos) > 0.035 * k || std::abs(wrap_angle(yaw - foot.yaw)) > 0.08)
+    feet_planner.step(i32(side), target, std::max(0.12, duration), yaw);
 }
 
 // A punch at a target out of reach steps into it: the lead foot goes forward with the lunge (the
@@ -156,6 +178,7 @@ void MotionPlan::step_in(const ActionDef& def, const V3& target, f64 rate) {
 }
 
 void MotionPlan::interrupt(bool hard) {
+  manual_pose_ = nullptr;
   if (hard && act_ && !act_->def->name.starts_with("block")) act_->stop();
   if (pose_act_ && pose_act_->def->name != "guard" && pose_act_->def->name != "knifeGuard") pose_act_->stop();
   idle_time_ = 0.0;
@@ -169,7 +192,10 @@ void MotionPlan::aim_action(const V3& target) {
 void MotionPlan::set_pose_action(const ActionDef* def) {
   if (pose_act_ && def && pose_act_->def == def && !pose_act_->done()) return;
   if (pose_act_) pose_act_->stop();
-  if (def) pose_act_.emplace(def);
+  if (def) {
+    pose_act_.emplace(def);
+    prepare_support(*def, 0.22);
+  }
 }
 
 std::vector<AnimEvent> MotionPlan::take_events() {
@@ -190,6 +216,7 @@ void MotionPlan::fire(f64 strength) {
 }
 
 void MotionPlan::lie(const V3& root, f64 yaw, bool back) {
+  manual_pose_ = nullptr;
   stance_queue_.clear();
   if (act_) act_->stop();
   if (pose_act_) pose_act_->stop();
@@ -205,6 +232,7 @@ void MotionPlan::lie(const V3& root, f64 yaw, bool back) {
 }
 
 void MotionPlan::fall(bool back) {
+  manual_pose_ = nullptr;
   stance_queue_.clear();
   if (act_) act_->stop();
   down_back_ = back;
@@ -552,6 +580,7 @@ void MotionPlan::update(f64 dt_in) {
     fp.toe = f.planted && f.pitch < 0.0 ? -f.pitch * 0.9 : air_w_.x * 0.2;
   }
   s0.hands = {std::nullopt, std::nullopt};
+  s0.hand_weight = {0.0, 0.0};
   s0.turn = 1.0;
 
   // ---- blend with the other stance ------------------------------------------------------------
@@ -578,6 +607,7 @@ void MotionPlan::update(f64 dt_in) {
   }
 
   // ---- pose: pelvis and trunk -----------------------------------------------------------------
+  arms.begin_frame();
   pose.reset();
   const f64 impact_z = impact_.x;
   // a strike at a target out of reach steps into it: the pelvis drives forward with the blow
@@ -656,7 +686,7 @@ void MotionPlan::update(f64 dt_in) {
   f64 look_w = 1.0;
   if (ch_a && ch_a->has(Channel::Look)) look_w = lerp(1.0, ch_a->at(Channel::Look), w_a);
   else if (ch_p && ch_p->has(Channel::Look)) look_w = lerp(1.0, ch_p->at(Channel::Look), w_p);
-  look_w = clamp(look_w, 0.0, 1.0);
+  look_w = clamp(look_w, 0.0, 1.0) * S->turn;
   f64 look_yaw = 0.0;
   f64 look_pitch = -0.06 - lean * 0.3;
   if (tgt) {
@@ -718,7 +748,8 @@ void MotionPlan::update(f64 dt_in) {
         a = vlerp(a, to_model(*act_->target) - toe_off, clamp(s, 0.0, 1.2));
       }
       target = vlerp(target, a, fw);
-      pole = vlerp(pole, V3{0.1 * f.side, 1, 0.4}, fw);
+      const f64* kp = ch_a->get(i == 0 ? Channel::FootLpole : Channel::FootRpole);
+      pole = vlerp(pole, kp ? V3{kp[0], kp[1], kp[2]} : V3{0.15 * f.side, 1, 0.8}, fw);
       rot = qnlerp(rot, kick_rot, fw);
     }
     // Keep a small extension reserve without pulling a planted ankle away from
@@ -743,7 +774,7 @@ void MotionPlan::update(f64 dt_in) {
   arm_swing(dt, g, moving, speed, breathe, idle);
   fk.update(pose, H::clavicleL);
   // stance hands (seated on the thighs, prone on the elbows...)
-  rest_hands(*S, 1.0 - stand_w);
+  rest_hands(*S, 1.0);
   // the support hand lets go of the weapon when a behaviour needs it
   task_w_[0].update(ctl.arms[0] ? clamp(ctl.arms[0]->weight, 0.0, 1.0) : 0.0, dt);
   task_w_[1].update(ctl.arms[1] ? clamp(ctl.arms[1]->weight, 0.0, 1.0) : 0.0, dt);
@@ -857,12 +888,15 @@ void MotionPlan::update(f64 dt_in) {
   }
   fk.update(pose, H::clavicleL);
 
+  arms.finish_frame(dt);
+  fk.update(pose, H::clavicleL);
+
   // ---- props, world, events -------------------------------------------------------------------
   world.compute(pose, origin, root_q);
   weapon_in_hand = false;
   if (weapon) {
     if (weapon->kind == PropKind::Knife || !held_prop || task_w_[1].x > 0.5) {
-      prop_in_hand(H::handR);
+      prop_in_hand(weapon->kind == PropKind::Knife ? weapon_hand : H::handR);
       weapon_in_hand = true;
     } else {
       weapon_pos = world.p[H::weapon];
@@ -883,8 +917,10 @@ void MotionPlan::update_actions(f64 dt) {
   armed_idle_ = armed && free && speed < 0.15 && inp.carry != Carry::Aim && inp.carry != Carry::Hip ? armed_idle_ + dt : 0.0;
   // the posture layer: guard, talk, idle poses
   std::string_view want;
-  if (inp.guard && free) {
-    want = weapon && weapon->kind == PropKind::Knife ? "knifeGuard" : "guard";
+  if (manual_pose_ && free) {
+    want = manual_pose_->name;
+  } else if (inp.guard && free) {
+    want = weapon && weapon->kind == PropKind::Knife ? (weapon_hand == H::handL ? "knifeGuard.m" : "knifeGuard") : "guard";
   } else if (inp.talk == Talk::Speak && free && !armed) {
     want = "talk";
   } else if (inp.talk == Talk::Listen && free && !armed) {
@@ -1031,7 +1067,7 @@ void MotionPlan::rest_hands(const StanceSample& s, f64 w) {
     if (!s.hands[i]) continue;
     const V3 h = *s.hands[i];
     const V3 pole = rotate(fk.q[H::chest], vnorm(V3{i == 0 ? -0.8 : 0.8, -0.5, -0.5}));
-    arms.hand_ik(i == 0 ? Side::L : Side::R, h, std::nullopt, pole, w);
+    arms.hand_ik(i == 0 ? Side::L : Side::R, h, std::nullopt, pole, w * s.hand_weight[i]);
   }
 }
 

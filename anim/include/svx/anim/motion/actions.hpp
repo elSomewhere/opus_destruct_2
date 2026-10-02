@@ -57,8 +57,10 @@ enum class Channel : u8 {
   WeaponPos,
   WeaponRot,
   Look,
+  FootRpole,
+  FootLpole,
 };
-constexpr int kChannelCount = 29;
+constexpr int kChannelCount = 31;
 
 // (None: no limb - the chest)
 enum class Limb : u8 { None, HandR, HandL, FootR, FootL, Blade, Muzzle };
@@ -88,6 +90,10 @@ struct ActionDef {
   std::optional<f64> kick_pitch;
   // Needs a prop in the right hand (a knife).
   std::optional<PropKind> prop;
+  f64 target_height = 1.5;  // untargeted strikes aim here, metres at height scale 1
+  i32 lead_side = 0;       // combat support step: -1 left lead, +1 right lead; 0 no step
+  f64 support_turn = 0.12; // outward angle of the lead foot (rad)
+  bool left_handed = false; // mirrored prop actions carry the knife in the left hand
 
   // Sets a channel's keys (and builds its track); later keys replace earlier ones. At most 3
   // values per key are kept.
@@ -129,6 +135,7 @@ class ActionPlayer {
   f64 time = 0.0;
   f64 rate = 1.0;
   std::optional<V3> target;  // the world target point (strikes)
+  f64 preparation = 0.0;    // optional lead-in at the first pose before clip time zero
   bool done() const;
   // The blend weight now (fade in, fade out at the end or after stop()).
   f64 weight() const;
@@ -140,6 +147,8 @@ class ActionPlayer {
 
  private:
   f64 stop_at_ = -1.0;  // stopping: fading out from here
+  bool stopping_ = false;
+  f64 stop_weight_ = 0.0;
   i32 fired_to_ = -1;
 };
 

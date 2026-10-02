@@ -158,6 +158,7 @@ class Behaviours {
   f64 down_until_ = 0.0;
   std::optional<V3> hit_from_;  // where the last blow came from, and when (the head turns to look for it)
   f64 hit_at_ = -99.0;
+  Spring3 impact_reflex_{10.0, 1.0}; // bounded muscle response, separate from impact momentum
   f64 lost_for_ = 0.0;  // how long the body has been beyond saving (reacting)
   f64 dying_for_ = 0.6;
   bool dying_head_ = false;

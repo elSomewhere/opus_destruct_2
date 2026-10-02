@@ -33,6 +33,7 @@ struct StanceSample {
   Quat pelvis_rot, spine, chest, neck, head;
   std::array<FootPose, 2> feet;               // left, right
   std::array<std::optional<V3>, 2> hands;     // where free hands rest (model-space palm targets); none: they hang free
+  std::array<f64, 2> hand_weight{1.0, 1.0};  // fades a resting hand in/out when only one stance has a target
   f64 turn = 1.0;                             // how much the trunk may turn to aim / look (1 standing)
 };
 
