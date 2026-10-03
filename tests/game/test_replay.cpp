@@ -189,3 +189,16 @@ TEST_CASE("replay: every environment command and setting replays bit for bit") {
   REQUIRE(CommandLog::parse(log.serialize(), &back));
   CHECK(run(nullptr, &back) == a);
 }
+
+TEST_CASE("replay: version 4 damage logs retain the physical-only recoil default") {
+  CommandLog log;Command shot;shot.type=Command::Type::Damage;shot.a[32]=30;shot.text="old projectile";log.push(shot);
+  auto bytes=log.serialize();
+  // Version 4 had 32 doubles before the string; version 5 adds impact scale.
+  bytes[4]=4;
+  const size_t extra=16+8+1+32*8;
+  bytes.erase(bytes.begin()+extra,bytes.begin()+extra+8);
+  CommandLog decoded;REQUIRE(CommandLog::parse(bytes,&decoded));
+  REQUIRE(decoded.commands().size()==1);
+  CHECK(decoded.commands()[0].a[32]==0);
+  CHECK(decoded.commands()[0].text==shot.text);
+}

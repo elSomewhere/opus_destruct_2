@@ -423,6 +423,8 @@ TEST_CASE("pedestrians: loadouts, runtime attachments and physical damage replay
   CommandLog decoded;
   REQUIRE(CommandLog::parse(log.serialize(), &decoded));
   CHECK(first == run(nullptr, &decoded));
+  for (const auto& command : decoded.commands())
+    if (command.type == Command::Type::Damage) CHECK(command.a[32] == 30);
   for (auto type : {Command::Type::AttachProp, Command::Type::DetachProp, Command::Type::Damage, Command::Type::Loadouts})
     CHECK(std::any_of(log.commands().begin(), log.commands().end(), [&](const auto& command) { return command.type == type; }));
 }

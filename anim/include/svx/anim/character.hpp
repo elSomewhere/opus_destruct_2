@@ -60,6 +60,7 @@ struct WoundResult {
   std::vector<GibSpec> gibs;          // pieces that came off (severed limbs, a head)
   Zone zone = Zone::Chest;            // (melee)
   V3 impulse;                        // contact momentum absorbed by body and attachments; excludes the blast throw
+  V3 recoil_impulse;                 // additional authored projectile response, separate from penetration
   f64 absorbed_energy = 0;
   bool blocked = false;
 };
@@ -244,7 +245,8 @@ class Character {
   World* world_ = nullptr;
   CoreBinding binding_;
   u32 group_ = 0, tag_ = 0;
-  std::vector<i32> part_full_;  // each model part's voxel count when whole (a limb mostly shot away is lost)
+  std::vector<i32> part_full_;  // each model part's voxel count when whole
+  std::array<std::vector<i32>, 23> joint_support_;  // parent cells supporting each child's joint in the authored model
   ModelPtr whole_;              // the model it was made with (shared: its damage is told against it)
   f64 pain_ = 0.0;
   f64 firing_ = 0.0;

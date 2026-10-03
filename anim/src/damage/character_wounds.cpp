@@ -226,6 +226,13 @@ WoundResult Character::damage(const DamageDescriptor& source) {
   hit.kind = d.kind == DamageKind::Projectile ? HitKind::Bullet : blunt ? HitKind::Blunt : HitKind::Blade;
   hit.force = clamp(std::sqrt(absorbed / 100), 0.0, 8.0);
   hit.impulse_ns = d.impulse_delivered ? 0 : norm(impulse);
+  if (d.kind == DamageKind::Projectile && !d.impulse_delivered) {
+    // The wound spends only the projectile's real energy. Hosts can author a
+    // stronger visible recoil without changing the channel or its physiology.
+    const f64 response = std::min(500.0, hit.impulse_ns * d.impact_scale);
+    out.recoil_impulse += hit.dir * std::max(0.0, response - hit.impulse_ns);
+    hit.impulse_ns = response;
+  }
   out.zone = hit_at(hit);
   out.headshot = hit.bone == H::head || hit.bone == H::neck;
   health = was_alive ? max_health * behaviours.damage.health_fraction() : 0;

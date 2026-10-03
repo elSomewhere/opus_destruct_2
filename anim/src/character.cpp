@@ -5,25 +5,6 @@
 
 namespace svx::anim {
 
-namespace {
-
-bool near_tail(const VoxelPart& p, const V3& tail, f64 s) {
-  const i32 nx = p.dims[0], ny = p.dims[1], nz = p.dims[2];
-  const f64 r2 = (2.5 * s) * (2.5 * s);
-  for (i32 z = 0; z < nz; ++z)
-    for (i32 y = 0; y < ny; ++y)
-      for (i32 x = 0; x < nx; ++x) {
-        if (p.cells[size_t(x + nx * (y + ny * z))] == 0) continue;
-        const f64 cx = (p.origin[0] + x + 0.5) * s - tail.x;
-        const f64 cy = (p.origin[1] + y + 0.5) * s - tail.y;
-        const f64 cz = (p.origin[2] + z + 0.5) * s - tail.z;
-        if (cx * cx + cy * cy + cz * cz < r2) return true;
-      }
-  return false;
-}
-
-}  // namespace
-
 Character::Character(const CharacterOptions& o)
     : model(o.model),
       palette(o.palette),
@@ -53,6 +34,29 @@ Character::Character(const CharacterOptions& o)
   update_load();
   skin.assign(size_t(model->skeleton->count) * 16, 0.0f);
   for (const VoxelPart& p : model->parts) part_full_.push_back(p.count);
+  // Author the joint support from this model, including limbs offset from the
+  // nominal rig axis. Later cuts test surviving anchored tissue at that joint,
+  // rather than requiring a detached fragment to happen to include its tail.
+  const auto& sk = *model->skeleton;
+  for (i32 child = 1; child < sk.count; ++child) {
+    const i32 parent = sk.parents[size_t(child)];
+    const i32 pi = parent >= 0 ? model->part_of_bone[size_t(parent)] : -1;
+    if (pi < 0) continue;
+    const auto& p = model->parts[size_t(pi)];
+    f64 nearest = kInf;
+    auto distance = [&](i32 index) {
+      const V3 at{(p.origin[0] + index % p.dims[0] + .5) * model->voxel_size,
+                  (p.origin[1] + (index / p.dims[0]) % p.dims[1] + .5) * model->voxel_size,
+                  (p.origin[2] + index / (p.dims[0] * p.dims[1]) + .5) * model->voxel_size};
+      return norm(at - sk.rest_head[size_t(child)]);
+    };
+    for (i32 i = 0; size_t(i) < p.cells.size(); ++i)
+      if (p.cells[size_t(i)]) nearest = std::min(nearest, distance(i));
+    const f64 reach = std::max(.045 * motion.k, nearest + model->voxel_size);
+    for (i32 i = 0; size_t(i) < p.cells.size(); ++i)
+      if (p.cells[size_t(i)] && distance(i) <= reach) joint_support_[size_t(child)].push_back(i);
+  }
+
   whole_ = model;
   backend_ = o.backend == BodyBackend::Deep && o.world ? BodyBackend::Deep : BodyBackend::Shallow;
   world_ = o.world;
@@ -559,30 +563,26 @@ std::vector<GibSpec> Character::sever_after_damage(i32 bone, const V3& dir) {
     const i32 pi = m.part_of_bone[size_t(b)];
     if (pi < 0) continue;
     const VoxelPart& part = m.parts[size_t(pi)];
-    if (part.count == 0) continue;
-    std::vector<VoxelPart> pieces;
-    {
-      pieces = sever_disconnected(m, pi, 0.045 * (sk.rest_head[H::pelvis].z / 0.97));
-      const V3 tail = sk.rest_tail[size_t(b)];
-      bool near = false;
-      for (const VoxelPart& p : pieces) near = near || near_tail(p, tail, m.voxel_size);
-      if (near)
-        for (i32 c : sk.children[size_t(b)])
-          for (VoxelPart& p : detach_subtree(m, c, true)) pieces.push_back(std::move(p));
+    std::vector<VoxelPart> pieces = sever_disconnected(m, pi, 0.045 * (sk.rest_head[H::pelvis].z / 0.97));
+    for (i32 child : sk.children[size_t(b)]) {
+      const auto& support = joint_support_[size_t(child)];
+      const bool connected = part.count > 0 && (support.empty() || std::any_of(support.begin(), support.end(), [&](i32 cell) {
+        return part.cells[size_t(cell)] != 0;
+      }));
+      if (!connected)
+        for (auto& p : detach_subtree(m, child, true)) pieces.push_back(std::move(p));
     }
     for (VoxelPart& p : pieces) out.push_back(gib_spec(std::move(p), dir, 2.5));
   }
-  if (!out.empty()) {
-    ++geometry_version;
-    // a limb that came off (most of it gone): the body has no use of it, or of what hung on it; a
-    // gun hand gone lets go of the gun
-    for (i32 i : {B::upperarmL, B::forearmL, B::handL, B::upperarmR, B::forearmR, B::handR, B::thighL, B::shinL, B::footL, B::thighR, B::shinR, B::footR}) {
-      if (behaviours.lost[size_t(i)]) continue;
-      const i32 pi = m.part_of_bone[size_t(kBodyBone[size_t(i)])];
-      const i32 full = pi >= 0 && size_t(pi) < part_full_.size() ? part_full_[size_t(pi)] : 0;
-      if (pi < 0 || full == 0 || m.parts[size_t(pi)].count > 0) continue;
-      behaviours.lose_limb(i);
-    }
+  if (!out.empty()) ++geometry_version;
+  // An emptied part is lost even when every cell was consumed by the wound
+  // and there was no fragment left to emit.
+  for (i32 i : {B::upperarmL, B::forearmL, B::handL, B::upperarmR, B::forearmR, B::handR, B::thighL, B::shinL, B::footL, B::thighR, B::shinR, B::footR}) {
+    if (behaviours.lost[size_t(i)]) continue;
+    const i32 pi = m.part_of_bone[size_t(kBodyBone[size_t(i)])];
+    const i32 full = pi >= 0 && size_t(pi) < part_full_.size() ? part_full_[size_t(pi)] : 0;
+    if (pi < 0 || full == 0 || m.parts[size_t(pi)].count > 0) continue;
+    behaviours.lose_limb(i);
   }
   return out;
 }
@@ -705,6 +705,7 @@ i32 Character::nearest_bone(const V3& p) const {
 
 i64 Character::memory_bytes() const {
   i64 n = static_cast<i64>(sizeof(*this)) + body.memory_bytes() - static_cast<i64>(sizeof(HumanoidBody));
+  for (const auto& cells : joint_support_) n += static_cast<i64>(cells.capacity() * sizeof(i32));
   n += static_cast<i64>(skin.capacity() * sizeof(f32) + part_full_.capacity() * sizeof(i32));
   n += static_cast<i64>(3 * pose.p.capacity() * (sizeof(V3) + sizeof(Quat)));
   if (owns_model)

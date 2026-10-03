@@ -135,6 +135,7 @@ TEST_CASE(
     const auto d0 = damage_scenario(c, "thighShot");
     REQUIRE_FALSE(d0.empty());
     auto d = d0.front();
+    d.impact_scale = 1;  // Isolate transferred momentum from the preset's authored recoil.
     d.bone = H::head;  // Host hints must not turn a thigh hit into a headshot.
     auto model = c.model->clone();
     const auto expected = wound_mechanics(*model, c.skin, d);
@@ -693,5 +694,56 @@ TEST_CASE("props: one-hand strikes refuse a two-hand wield and report the mismat
     CHECK(c.motion.action_refusal=="action requires a one-handed grip");
     REQUIRE(c.swap(prop_archetype("sword"),AttachPoint::RightHand,"primary",WieldStyle::OneHand));
     CHECK(c.motion.play("bladeThrust"));
+  }
+}
+
+TEST_CASE("wounds: an erased joint releases its descendants even without a severed fragment") {
+  for (Path path : {Path::Shallow, Path::Deep}) for (bool empty : {false, true}) {
+    Scene s(path);auto look=make_soldier(4);look.model=look.model->clone();
+    auto& c=s.add(look,7,kPi/2,{0,0,s.ground},make_pistol());
+    s.frame({&c});
+    auto& part=c.model->parts[size_t(c.model->part_of_bone[H::forearmR])];
+    const auto& sk=*c.model->skeleton;
+    const V3 head=sk.rest_head[H::forearmR];
+    const f64 pitch=c.model->voxel_size;
+    V3 survivor;bool kept=false;
+    // Reproduce the end state of repeated channels: the distal joint is gone,
+    // but there is no disconnected distal chunk for the old tail test to find.
+    for(int z=0;z<part.dims[2];++z)for(int y=0;y<part.dims[1];++y)for(int x=0;x<part.dims[0];++x){
+      const size_t i=size_t(part.index(x,y,z));if(!part.cells[i])continue;
+      const V3 cell{(part.origin[0]+x+.5)*pitch,(part.origin[1]+y+.5)*pitch,(part.origin[2]+z+.5)*pitch};
+      const bool proximal=norm(cell-head)<.04;
+      if(proximal&&(!empty||!kept)){survivor=cell;kept=true;continue;}
+      part.cells[i]=0;--part.count;
+    }
+    REQUIRE(kept);++part.version;
+    DamageDescriptor d;d.kind=DamageKind::Projectile;d.mass=.008;d.speed=350;
+    d.direction=rotate(c.pose.q[H::forearmR],V3{0,1,0});
+    d.point=c.pose.point_of(H::forearmR,survivor)-d.direction*.02;
+    const auto result=c.damage(d);
+    INFO(path_name(path)," empty parent ",empty);
+    REQUIRE_FALSE(result.removed.empty());
+    CHECK(c.model->parts[size_t(c.model->part_of_bone[H::handR])].count==0);
+    CHECK(c.behaviours.lost[B::handR]);
+    CHECK_FALSE(c.attachments().held());
+    CHECK(std::any_of(result.gibs.begin(),result.gibs.end(),[](const GibSpec& p){return p.part.bone==H::handR;}));
+    if(empty){CHECK(c.model->parts[size_t(c.model->part_of_bone[H::forearmR])].count==0);CHECK(c.behaviours.lost[B::forearmR]);}
+    for(int i=0;i<60;++i)s.frame({&c});
+  }
+}
+
+TEST_CASE("wounds: authored projectile recoil changes momentum without changing the wound") {
+  for(Path path:{Path::Shallow,Path::Deep}) {
+    V3 impulses[2];u32 counts[2]{};
+    for(int i=0;i<2;++i){
+      Scene s(path);auto& c=s.civilian();s.frame({&c});
+      auto d=damage_scenario(c,"thighShot").front();d.impact_scale=i?30:1;
+      auto momentum=[&]{V3 v;for(const auto* p:c.body.parts)v+=p->v*p->mass;return v;};
+      const V3 before=momentum();const auto result=c.damage(d);
+      impulses[i]=momentum()-before;counts[i]=c.model->voxel_count();
+      CHECK(norm(impulses[i]-result.impulse-result.recoil_impulse)<1e-8);
+      CHECK(norm(result.recoil_impulse)==doctest::Approx(norm(result.impulse)*(d.impact_scale-1)));
+    }
+    CHECK(counts[0]==counts[1]);CHECK(norm(impulses[1]-impulses[0]*30)<1e-8);
   }
 }

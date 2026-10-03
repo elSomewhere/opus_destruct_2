@@ -10,7 +10,7 @@ namespace svx {
 namespace {
 
 constexpr u32 kMagic = 0x4C585653;  // "SVXL"
-constexpr u32 kVersion = 4;         // (3: a tunable by its id, not its index)
+constexpr u32 kVersion = 5;         // projectile gameplay recoil; v4 had 32 numeric fields
 constexpr u8 kMaxType = static_cast<u8>(Command::Type::Loadouts);
 
 template <typename T>
@@ -32,7 +32,7 @@ bool get(const std::vector<u8>& in, size_t& at, T* v) {
 
 std::vector<u8> CommandLog::serialize() const {
   std::vector<u8> out;
-  out.reserve(16 + cmds_.size() * 57);
+  out.reserve(16 + cmds_.size() * (8 + 1 + 33 * 8 + 4));
   put(out, kMagic);
   put(out, kVersion);
   put(out, static_cast<u64>(cmds_.size()));
@@ -61,7 +61,7 @@ bool CommandLog::parse(const std::vector<u8>& bytes, CommandLog* out) {
     if (!get(bytes, at, &c.tick) || !get(bytes, at, &type)) return false;
     if (type < 1 || type > (version == 1 ? 5 : version < 4 ? 18 : kMaxType) || c.tick < last) return false;  // unknown type or out of order
     c.type = static_cast<Command::Type>(type);
-    for (size_t i = 0; i < (version >= 4 ? 32 : 6); ++i)
+    for (size_t i = 0; i < (version >= 5 ? 33 : version >= 4 ? 32 : 6); ++i)
       if (!get(bytes, at, &c.a[i]) || !std::isfinite(c.a[i])) return false;
     if (version >= 4) {
       u32 length = 0;
@@ -203,6 +203,7 @@ void apply_command(Game& e, const Command& c) {
       d.target_prop = u64(a[28]);
       d.blocked = a[29] != 0;
       d.impulse_delivered = a[31] != 0;
+      d.impact_scale = a[32] == 0 ? 1 : a[32];
       d.duration = a[30] > 0 ? a[30] : 1.0 / 60;
       d.feature = c.text;
       e.damage_character(u32(a[0]), d);

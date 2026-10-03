@@ -942,7 +942,7 @@ int svx_character_capabilities(svx_engine* e, unsigned id, double* out) {
   return 1;
 }
 int svx_damage_character(svx_engine* e, unsigned id, const double* v, int count) {
-  if (!e || !v || count != 25) return 0;
+  if (!e || !v || (count != 25 && count != 26)) return 0;
   for (int i = 0; i < count; ++i)
     if (!std::isfinite(v[i])) return 0;
   if (v[0] < 0 || v[0] > 6 || v[0] != std::floor(v[0]) || v[16] < 0 || v[16] > 512 || v[16] != std::floor(v[16]) || v[17] < -1 || v[17] > 22 ||
@@ -966,6 +966,7 @@ int svx_damage_character(svx_engine* e, unsigned id, const double* v, int count)
   d.construction = anim::ProjectileConstruction(int(v[18]));
   d.edge_a = {v[19], v[20], v[21]};
   d.edge_b = {v[22], v[23], v[24]};
+  d.impact_scale = count == 26 ? v[25] : 1;
   return e->eng.damage_character(id, d) ? 1 : 0;
 }
 int svx_attach_character_prop(svx_engine* e, unsigned id, const char* archetype, int point, const char* socket, int style) {

@@ -214,8 +214,8 @@ export class EngineClient {
   detachProp(id:number,point=0,reason=0):void {this.send({type:'detachProp',id,point,reason});}
   pedestrianLoadouts(armed:number,carrying:number):void {this.send({type:'pedestrianLoadouts',armed,carrying});}
 
-  damageCharacter(id: number, pos: Vec3, direction: Vec3, mass: number, speed: number, diameter: number, construction = 0): void {
-    this.send({type: 'damageCharacter', id, kind: 0, pos, direction, mass, speed, diameter, construction});
+  damageCharacter(id: number, pos: Vec3, direction: Vec3, mass: number, speed: number, diameter: number, construction = 0, impactScale = construction === 2 ? 1 : 30): void {
+    this.send({type: 'damageCharacter', id, kind: 0, pos, direction, mass, speed, diameter, construction, impactScale});
   }
 
   /** The last pose message handled (once per frame). */

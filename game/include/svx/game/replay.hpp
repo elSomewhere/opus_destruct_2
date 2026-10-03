@@ -56,7 +56,7 @@ struct Command {
   // Traffic: enabled, cars, parked, near radius, radius, speed scale. Pedestrians: enabled, count,
   // near radius, radius, bodies (0 deep, 1 shallow, 2 hybrid), max deep. Wound: character id,
   // pos xyz, radius, energy.
-  std::array<f64, 32> a{};
+  std::array<f64, 33> a{};
   std::string text;
 };
 
@@ -65,9 +65,10 @@ class CommandLog {
   void clear() { cmds_.clear(); }
   void push(const Command& c) { cmds_.push_back(c); }
   const std::vector<Command>& commands() const { return cmds_; }
-  // Binary format "SVXL" v3: magic, version, count, then per command tick (i64), type (u8)
-  // and 6 f64 (little-endian, bit-exact). (v1 logs - types 1..5 - and v2 logs read the same;
-  // their tunables are indices, taken as this build's.)
+  // Binary format "SVXL" v5: magic, version, count, then per command tick (i64), type (u8),
+  // 33 f64, string length (u32) and string bytes (little-endian, bit-exact).
+  // v4 has 32 values; v1..3 have 6 and no string. v1..2 tunables are indices,
+  // taken as this build's. Damage's final value stores projectile gameplay recoil.
   std::vector<u8> serialize() const;
   static bool parse(const std::vector<u8>& bytes, CommandLog* out);
 

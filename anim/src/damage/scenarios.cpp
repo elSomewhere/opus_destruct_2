@@ -20,6 +20,7 @@ std::vector<DamageDescriptor> damage_scenario(const Character& c, std::string_vi
   d.mass = .008;
   d.speed = 350;
   d.diameter = .009;
+  d.impact_scale = 30;
   d.bone = H::thighL;
   d.direction = rotate(c.pose.q[H::pelvis], V3{0, -1, 0});
   V3 target = on_bone(H::thighL, .6) + rotate(c.pose.q[H::thighL], V3{-.05, 0, 0});
@@ -64,6 +65,7 @@ std::vector<DamageDescriptor> damage_scenario(const Character& c, std::string_vi
       d.speed = 410;
       d.diameter = .0084;
       d.construction = ProjectileConstruction::Buckshot;
+      d.impact_scale = 1;
       target = on_bone(d.bone, .07 + .2 * (i % 4));
       entry(d, target);
       out.push_back(d);

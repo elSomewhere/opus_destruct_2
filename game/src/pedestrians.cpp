@@ -1337,7 +1337,8 @@ bool Game::damage_character(u32 id, const anim::DamageDescriptor& d) {
                  f64(d.target_prop),
                  d.blocked ? 1.0 : 0.0,
                  d.duration,
-                 d.impulse_delivered ? 1.0 : 0.0};
+                 d.impulse_delivered ? 1.0 : 0.0,
+                 d.impact_scale};
     command.text = d.feature;
     log_->push(command);
   }

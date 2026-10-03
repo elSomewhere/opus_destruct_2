@@ -293,7 +293,10 @@ int svx_raycast_shot(svx_engine* e, double ox, double oy, double oz, double dx, 
  * blast=4, crush=5), point xyz, direction xyz, mass kg, speed m/s, diameter m,
  * contact area m2, sharpness, alignment, swept edge length m, blast radius m,
  * pressure Pa, fragment count, bone (-1: infer), construction (FMJ=0, expanding=1,
- * buckshot=2), edge start xyz, edge end xyz. Invalid commands have no effect.
+ * buckshot=2), edge start xyz, edge end xyz. An optional 26th value is the
+ * projectile gameplay recoil multiplier (1..50; 25 values imply 1). It scales
+ * the body response to absorbed momentum without changing wound energy.
+ * Invalid commands have no effect.
  * All three commands below are logged for replay/lockstep. */
 // Returns 19 values: 6 leg, 6 arm, trunk, neck, consciousness, vigor, pain, speed limit, mobility.
 int svx_character_capabilities(svx_engine* e, unsigned id, double* out19);

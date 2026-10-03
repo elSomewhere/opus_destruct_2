@@ -149,6 +149,20 @@ TEST_CASE("C API: the people as the web worker polls them - shot, blasted, left 
   };
   tick(60 * 8);
   REQUIRE(wk.people.size() >= 8);
+  // Both damage layouts remain usable by hosts. Zero speed leaves this scene
+  // untouched while exercising descriptor validation and command logging.
+  std::array<double, 26> damage{};
+  damage[5] = -1;
+  damage[7] = .008;
+  damage[9] = .009;
+  damage[10] = .001;
+  damage[14] = 1;
+  damage[17] = -1;
+  damage[25] = 30;
+  CHECK(svx_damage_character(e, wk.people[0].id, damage.data(), 25) == 1);
+  CHECK(svx_damage_character(e, wk.people[0].id, damage.data(), 26) == 1);
+  damage[25] = 51;
+  CHECK(svx_damage_character(e, wk.people[0].id, damage.data(), 26) == 0);
   // the nearest one alive; the viewer 5 m from it
   const Person* target = nullptr;
   double best = 1e9;

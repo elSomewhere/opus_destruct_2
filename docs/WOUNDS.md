@@ -162,7 +162,7 @@ are remade by the host. Loose items are stored separately in the game `SVXG`
 version 1 envelope; the contained core delta remains backward compatible. Articulation records are
 version 2 for relative grip anchors; version 1 records remain readable.
 
-Game command logs are version 4, with 32 numeric fields and an optional string.
+Game command logs are version 5, with 33 numeric fields and an optional string.
 Attach, detach, damage and population loadout commands are logged. Versions 1–3
 remain readable. Geometry traversal, region ordering, instance IDs and fragment
 allocation are deterministic. Replay tolerance for an unchanged Foundry build is
@@ -187,3 +187,31 @@ available to native tests and other hosts.
 ### Projectile momentum and tissue displacement
 
 A projectile spends energy on tissue removal and on quadratic drag integrated over each crossed cell's actual chord. The latter uses `E_out / E_in = exp(-rho Cd A length / mass)` before the removal and cavity budgets are combined. Expanding rounds have a larger effective area. These are calibrated game parameters, not a ballistics certification. The remaining energy determines exit momentum; the incoming-minus-exit impulse is applied once at the impact. Increasing speed therefore increases absorbed momentum instead of reducing it for an otherwise fixed channel. Root steering yields briefly to that impulse. Native and Foundry bridge regressions check speed response, finite energy and momentum accounting on both backends.
+
+
+### Authored projectile recoil
+
+`DamageDescriptor::impact_scale` controls additional gameplay recoil. A value of
+1 uses deposited momentum alone. Higher values apply a stronger impulse at the
+same hit point through the existing physical body and reflex paths, on either
+backend. The total response is capped at 500 N·s. This is an authored animation
+response; it adds no penetration energy or tissue damage. `WoundResult::impulse`
+continues to report transferred physical momentum; `recoil_impulse` separately
+reports the added impulse. Misses produce neither, and contacts whose impulse
+was already delivered do not apply it twice.
+
+The game web client, Foundry projectile controls, and thigh/femoral presets use
+30× for a visible reaction comparable to Foundry's 60 N·s push. Individual
+buckshot pellets and shotgun volleys keep 1×. Native descriptors, the legacy
+`wound` wrapper, old API calls and old replay commands retain 1×. Foundry exposes
+the multiplier as a slider and records it in sessions.
+
+### Consumed joints and severing
+
+Severing first removes tissue disconnected from the proximal joint, then tests
+whether the remaining anchored tissue still supports each child joint. Support
+cells come from the original model's geometry, including limbs offset from the
+rig axis. If every supporting cell is consumed, the distal subtree detaches even
+when no fragment remains at the wound. Empty parts also lose their physical limb
+capability when the wound emitted no debris. This keeps repeated bullet channels
+from leaving a hand or foot floating beyond a destroyed connection.

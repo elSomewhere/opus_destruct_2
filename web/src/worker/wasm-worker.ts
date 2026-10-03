@@ -1145,9 +1145,9 @@ async function handle(cmd: EngineCommand): Promise<void> {
       break;
     case 'damageCharacter': {
       if (!mod || !loaded) break;
-      const values = [cmd.kind, ...cmd.pos, ...cmd.direction, cmd.mass, cmd.speed, cmd.diameter ?? .009, cmd.area ?? .001, 1, 1, .1, 1, 100000, 24, -1, cmd.construction ?? 0, ...cmd.pos, ...cmd.pos];
-      const p = mod._malloc(200);
-      try { mod.HEAPF64.set(values, p >>> 3); mod._svx_damage_character(eng, cmd.id >>> 0, p, 25); } finally { mod._free(p); }
+      const values = [cmd.kind, ...cmd.pos, ...cmd.direction, cmd.mass, cmd.speed, cmd.diameter ?? .009, cmd.area ?? .001, 1, 1, .1, 1, 100000, 24, -1, cmd.construction ?? 0, ...cmd.pos, ...cmd.pos, cmd.impactScale ?? 1];
+      const p = mod._malloc(values.length * 8);
+      try { mod.HEAPF64.set(values, p >>> 3); mod._svx_damage_character(eng, cmd.id >>> 0, p, values.length); } finally { mod._free(p); }
       break;
     }
     case 'woundCharacter':

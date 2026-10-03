@@ -308,7 +308,7 @@ the same world is loaded again. Worlds are identified by:
 
 ## Physical character commands
 
-The following worker commands and C calls are recorded in command-log version 4.
+The following worker commands and C calls are recorded in command-log version 5.
 Older command logs remain readable. See [PROPS.md](PROPS.md) and
 [WOUNDS.md](WOUNDS.md) for ownership, mechanics and capability semantics.
 
@@ -319,7 +319,7 @@ Older command logs remain readable. See [PROPS.md](PROPS.md) and
 | `detachProp` | `svx_detach_character_prop` | id, attachment point, release reason |
 | `pedestrianLoadouts` | `svx_set_pedestrian_loadouts` | Armed and civilian carrying shares, each 0..1; both default to zero |
 
-`svx_damage_character(e, id, values, 25)` accepts this array of doubles:
+`svx_damage_character(e, id, values, count)` accepts 25 or 26 doubles:
 
 | Indices | Meaning |
 | --- | --- |
@@ -330,6 +330,13 @@ Older command logs remain readable. See [PROPS.md](PROPS.md) and
 | 14, 15, 16 | Blast radius m, pressure Pa, fragment count |
 | 17, 18 | Bone (-1 infers it), construction: FMJ 0, expanding 1, buckshot 2 |
 | 19–21, 22–24 | Edge endpoints in world space |
+| 25 (optional) | Projectile gameplay recoil multiplier, 1..50; omitted means 1 |
+
+The recoil multiplier scales the body response to deposited projectile momentum;
+it leaves penetration, tissue damage and the physical momentum report unchanged.
+The web client defaults to 30 for pistol/rifle rounds and 1 for buckshot. Native
+descriptors and legacy 25-value calls default to 1. Logs through version 4 also
+retain their original 1× response.
 
 Invalid descriptors return zero without mutation. `svx_wound_character` remains
 an energy/radius compatibility mapping to an 8 g projectile. New weapon code uses

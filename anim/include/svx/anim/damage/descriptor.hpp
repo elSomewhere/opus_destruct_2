@@ -14,6 +14,7 @@ struct DamageDescriptor {
   f64 mass = .008, speed = 350, diameter = .009, area = .003;
   f64 sharpness = 1, alignment = 1, swept_length = .15, duration = 1.0 / 60;
   f64 radius = 3, pressure = 100000;
+  f64 impact_scale = 1;  // projectile gameplay recoil; 1 preserves transferred momentum alone
   i32 fragments = 24;
   ProjectileConstruction construction = ProjectileConstruction::FullMetalJacket;
   i32 bone = -1;

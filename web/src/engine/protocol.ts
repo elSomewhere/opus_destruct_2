@@ -536,7 +536,7 @@ export interface WoundCharacterCommand {
 export interface DamageCharacterCommand {
   type: 'damageCharacter'; id: number;
   kind: number; pos: Vec3; direction: Vec3; mass: number; speed: number;
-  diameter?: number; area?: number; construction?: number;
+  diameter?: number; area?: number; construction?: number; impactScale?: number;
 }
 
 export type PropCommand = {type:'attachProp';id:number;archetype:string;point:number;socket:string;style:number} | {type:'detachProp';id:number;point:number;reason:number} | {type:'pedestrianLoadouts';armed:number;carrying:number};
