@@ -192,17 +192,11 @@ bool MotionPlan::play(std::string_view name, std::optional<V3> target, f64 rate)
   if (auto item = props.held(); item && !def->requires_tags.empty()) {
     const auto point = def->left_handed ? AttachPoint::LeftHand : AttachPoint::RightHand;
     if (point != item->point) {
-      if (props.at(point)) {
-        action_refusal = "striking hand is occupied";
+      if (!props.regrip(item->point, point, item->socket, item->style)) {
+        action_refusal = props.refusal;
         return false;
       }
-      props.events.push_back({item->id, item->point, false, ReleaseReason::Voluntary});
-      props.slots[size_t(item->point)].reset();
-      item->point = point;
-      props.events.push_back({item->id, point, true, ReleaseReason::Voluntary});
-      props.slots[size_t(point)] = item;
       weapon_hand = attachment_bone(point);
-      ++props.revision;
     }
   }
   if (def->layer == ActionLayer::Pose) {
@@ -920,7 +914,37 @@ void MotionPlan::update(f64 dt_in) {
           offset = {(left ? -1 : 1) * .23 * k, .12 * k, .12 * k};
           palm = qx(2.2);
         }
-        const V3 target = fk.p[H::chest] + rotate(fk.q[H::chest], offset);
+        V3 target = fk.p[H::chest] + rotate(fk.q[H::chest], offset);
+        if (!palm && stance == Stance::Stand && item->style != WieldStyle::Hanging) {
+          // A long item needs clearance even in a relaxed carry. Measure
+          // from the active grip, including after a handoff to the support grip.
+          const auto& prop = *item->archetype;
+          const auto* socket = prop.socket(item->socket);
+          V3 reach;
+          for (const auto& feature : prop.features)
+            for (const V3& point : {feature.a, feature.b})
+              if (norm2(point - socket->point) > norm2(reach)) reach = point - socket->point;
+          const Quat hand = fk.q[size_t(attachment_bone(item->point))] * conj(arms.canonical(side));
+          const V3 tip = rotate(hand * prop.hanging_rotation * conj(socket->rotation), reach);
+          const f64 length = norm(reach);
+          f64 down = std::max(0.0, target.z - .15 * k);
+          if (length > down && tip.z < -down) {
+            const f64 lift = std::min(.16 * k, (length - down) * .5);
+            target.y += lift;
+            target.z += lift;
+            down += lift;
+            const V3 clear{0, std::sqrt(length * length - down * down), -down};
+            palm = qfrom_to(vnorm(tip), vnorm(clear)) * hand;
+          }
+        }
+        if (palm && dt > 0) {
+          // Settle the carry with the arm; an abrupt wrist target can wrench
+          // a heavy prop out of a sound hand during a handoff.
+          const Quat previous = conj(root_q) * world.q[size_t(attachment_bone(item->point))] * conj(arms.canonical(side));
+          const f64 angle = norm(qerror(*palm, previous));
+          const f64 limit = 5 * dt / std::sqrt(1 + item->archetype->mass);
+          if (angle > limit) palm = qslerp(previous, *palm, limit / angle);
+        }
         arms.hand_ik(side, target, palm, V3{left ? -1.0 : 1.0, 0, -1}, 1, .02);
       }
     }
@@ -1336,6 +1360,16 @@ void MotionPlan::mood_arms(f64 w, f64 phase) {
 }
 
 // ---- props ----------------------------------------------------------------------------------
+
+void MotionPlan::refresh_prop() {
+  if (const auto p = props.held()) {
+    weapon_hand = attachment_bone(p->point);
+    prop_in_hand(weapon_hand);
+    weapon_in_hand = true;
+  } else {
+    weapon_in_hand = false;
+  }
+}
 
 // A prop held in the hand (a knife, a lowered pistol): along the knuckles, the grip in the palm.
 void MotionPlan::prop_in_hand(i32 b) {

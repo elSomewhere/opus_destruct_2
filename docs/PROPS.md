@@ -29,9 +29,20 @@ character.swap(prop_archetype("backpack"), AttachPoint::Back, "strap", WieldStyl
 ```
 
 Attach, detach and swap work between ticks on shallow, deep and plan-only
-characters. A failed swap preserves the old attachment. `Attachments::refusal`
+characters. Placement and anchor mass update immediately without advancing the
+body or controller. Each hand's socket meets its physical palm; attaching a worn
+item leaves the primary hand unchanged. `set_wield(profile)` changes preference
+and refreshes the primary compatibility transform without stepping the body.
+A failed swap preserves the old attachment. `Attachments::refusal`
 explains refusal. `take_attachment_events()` reports the instance, point and
 release reason. The future pickup controller can call this same `attach` API.
+
+An instance must belong to the character's registry. A shared registry lets a
+released item move between characters while retaining its identity and state.
+An instance from a different registry is refused, including when its numeric ID
+collides with a local item. `Attachments::accepts` validates a proposed layout
+without creating an instance; `regrip` validates and transfers an existing
+attachment atomically, emitting detach and attach events without a loose frame.
 
 ## Anchors and load
 
@@ -59,7 +70,14 @@ bone.
 Retention is in newtons. Gravity, filtered acceleration, torque and contact
 impulses contribute to the attachment load. Grip uses arm capability, muscle
 tone, consciousness and vigor; straps use integrity. A two-handed grip can fall
-back to a sound hand when the archetype permits it. The release reasons are:
+back to a sound hand when the archetype permits it. Each hand contributes its own
+capability, region tone and socket retention. If the primary hand fails, the
+supporting hand keeps its secondary socket; mass moves to that hand in the same
+frame. If the support hand fails, the primary hand keeps its original socket.
+Long relaxed carries bend the elbow and turn the wrist forward to clear the
+floor, using contact reach from the active socket and planned hand height.
+Wrist targets settle more slowly with added mass.
+The release reasons are:
 voluntary, wrenched, grip failed, knocked out, death, breaking a fall, anchor lost,
 strap cut, and hand or forearm damaged.
 
@@ -68,6 +86,13 @@ grip lets the hand and item fall separately. Loose items use a dedicated physica
 debris pool without eviction or a kill plane. `nearby(point, radius)` returns
 instances whose archetypes expose grasp sockets. Resetting a scene is explicit;
 there is no pickup behavior or pathfinding.
+
+`PropInstance::pos` is the model origin, `velocity` is centre-of-mass velocity,
+and `angular` is world angular velocity. Release includes the anchor's angular
+contribution at that centre, including in plan-only mode. Loose physics uses an
+authored centre when present and rebases collision samples without moving the
+mesh. Edited or merged geometry uses its voxel centre; an unedited model clone
+keeps the authored centre.
 
 ## Actions and contacts
 

@@ -31,7 +31,7 @@ struct PropInstance {
   AttachPoint point = AttachPoint::RightHand;
   std::string socket = "primary";
   WieldStyle style = WieldStyle::OneHand;
-  V3 pos, velocity, angular;
+  V3 pos, velocity, angular;  // model origin; centre-of-mass velocity; world angular velocity
   Quat rotation;
   V3 swing, swing_velocity, previous_velocity, previous_angular, filtered_acceleration, filtered_angular;
   f64 strength = 1, load = 0, impulse_load = 0;
@@ -41,6 +41,7 @@ struct PropInstance {
   f64 retained_mass = 0;  // a severed hand that still grips this item
   Gib* loose_body = nullptr;
   const VoxelModel& model() const { return *(damaged_model ? damaged_model : archetype->model); }
+  V3 centre_of_mass() const;
 };
 using PropInstancePtr = std::shared_ptr<PropInstance>;
 struct AttachmentEvent {
@@ -86,7 +87,10 @@ class Attachments {
   std::vector<AttachmentEvent> events;
   std::string refusal;
   Attachments();
+  // Layout validation does not allocate an instance or change its ownership.
+  bool accepts(const Prop& archetype, AttachPoint point, std::string_view socket, WieldStyle style);
   bool attach(const PropInstancePtr& item, AttachPoint point, std::string_view socket, WieldStyle style);
+  bool regrip(AttachPoint from, AttachPoint to, std::string_view socket, WieldStyle style, ReleaseReason reason = ReleaseReason::Voluntary);
   PropInstancePtr detach(AttachPoint point, ReleaseReason reason);
   PropInstancePtr at(AttachPoint point) const;
   PropInstancePtr held() const;

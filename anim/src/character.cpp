@@ -138,6 +138,9 @@ void Character::place(const V3& pos, f64 yaw) {
     // (bound: the links go where the bodies went, at the next push)
   }
   pose.write_skin(skin.data());
+  place_weapon();
+  for (const auto& p : motion.props.slots)
+    if (p) place_prop(*p);
 }
 
 void Character::set_root(const V3& pos, f64 yaw) {
@@ -349,7 +352,7 @@ void Character::rest() {
   switch_blend_ = 0.0;
 }
 
-// The prop in the (physical) right hand, held as the plan holds it.
+// The primary prop in its physical hand, held as the plan holds it.
 void Character::place_weapon() {
   if (!weapon) return;
   if (!behaviours.physical) {

@@ -188,7 +188,7 @@ Gib* GibSystem::spawn(VoxelPart part, f64 voxel_size, const V3& bone_pos, const 
   return gibs.back().get();
 }
 
-void GibSystem::set_mass(const Gib* g, f64 mass, const V3& inertia) {
+void GibSystem::set_mass(const Gib* g, f64 mass, const V3& inertia, const V3* centre) {
   if (mass <= 0) return;
   for (size_t i = 0; i < gibs.size(); ++i)
     if (gibs[i].get() == g) {
@@ -196,6 +196,16 @@ void GibSystem::set_mass(const Gib* g, f64 mass, const V3& inertia) {
       b.mass = mass;
       b.inv_mass = 1 / mass;
       b.inv_i = {1 / std::max(1e-6, inertia.x), 1 / std::max(1e-6, inertia.y), 1 / std::max(1e-6, inertia.z)};
+      if (centre) {
+        auto& placed = *gibs[i];
+        const V3 delta = *centre - placed.pivot, world_delta = rotate(placed.rot, delta);
+        placed.pos += world_delta;
+        placed.vel += cross(placed.ang, world_delta);
+        placed.pivot = *centre;
+        placed.radius += norm(delta);  // conservative broad-phase bound after rebasing
+        for (auto& sample : b.samples) sample -= delta;
+        b.calm_v = norm(placed.vel);
+      }
       return;
     }
 }

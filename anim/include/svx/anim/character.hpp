@@ -117,12 +117,13 @@ class Character {
   bool attach(const PropInstancePtr& instance, AttachPoint point, std::string_view socket = "primary", WieldStyle style = WieldStyle::OneHand);
   PropInstancePtr detach(AttachPoint point, ReleaseReason reason = ReleaseReason::Voluntary);
   bool swap(PropPtr archetype, AttachPoint point, std::string_view socket = "primary", WieldStyle style = WieldStyle::OneHand);
+  void set_wield(WieldProfile profile);
   void wrench(AttachPoint point, const V3& impulse);
   std::vector<AttachmentEvent> take_attachment_events();
   const Capabilities& capabilities() const { return behaviours.capabilities(); }
   bool alive() const { return behaviours.alive; }
   bool controlled() const { return behaviours.leading(); }  // the body leads (staggering, falling, down, getting up, dead): the host follows its root
-  bool gun_hand_lost() const { return behaviours.lost[weapon && weapon->has("short_blade") && motion.weapon_hand == H::handL ? B::handL : B::handR]; }
+  bool gun_hand_lost() const { return behaviours.lost[motion.weapon_hand == H::handL ? B::handL : B::handR]; }
   bool writhing() const { return behaviours.writhing; }
   bool down() const;    // down on the ground (knocked down or out), or getting up
   bool asleep() const;  // the body rests (a corpse that stopped moving)
@@ -231,6 +232,8 @@ class Character {
   std::array<f64, kBodyCount> bare_mass_{};
   std::array<V3, kBodyCount> bare_inertia_{};
   void update_props(f64 dt);
+  void place_prop(PropInstance& item);
+  void refresh_held_prop();
   void update_load();
   BodyBackend backend_ = BodyBackend::Shallow;
   World* world_ = nullptr;

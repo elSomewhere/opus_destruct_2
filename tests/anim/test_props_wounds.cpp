@@ -226,8 +226,205 @@ TEST_CASE("props: every catalog definition attaches, carries mass and releases w
         CHECK_FALSE(released->loose_body);
         c.detach(point);
       }
+      REQUIRE(c.swap(prop_archetype("knife"), AttachPoint::RightHand));
+      REQUIRE(c.swap(prop_archetype("phone"), AttachPoint::LeftHand));
+      const auto phone = c.attachments().at(AttachPoint::LeftHand);
+      const V3 palm = c.pose.p[H::handL] + rotate(c.pose.q[H::handL], c.motion.arms.palm_offset(Side::L));
+      CHECK(norm(phone->pos + rotate(phone->rotation, phone->archetype->grip) - palm) < 1e-8);
+      const auto pose = c.pose.p;
+      c.set_wield({true, false});
+      CHECK(c.attachments().held() == phone);
+      CHECK(norm(c.weapon_pos - phone->pos) < 1e-8);
+      CHECK(c.motion.weapon_hand == H::handL);
+      for (size_t b = 0; b < pose.size(); ++b) CHECK(norm(c.pose.p[b] - pose[b]) < 1e-8);
     }
 }
+
+TEST_CASE("props: release preserves rotational velocity at the item's centre of mass") {
+  for (Path path : {Path::Shallow, Path::Deep})
+    for (bool physical : {false, true}) {
+      Scene s(path);
+      auto& c = s.civilian(7, .8, {2, 3, 0});
+      c.physics = physical;
+      run(s, c, 1);
+      auto definition = std::make_shared<Prop>(*prop_archetype("bat"));
+      definition->centre += V3{.03, .08, .01};  // an authored centre, away from the voxel mean
+      REQUIRE(c.swap(definition, AttachPoint::LeftHand));
+      const auto item = c.attachments().held();
+      REQUIRE(item);
+      // Restoring an undamaged record may allocate a model without editing it.
+      item->damaged_model = definition->model->clone();
+      const V3 position = item->pos;
+      const V3 centre = position + rotate(item->rotation, definition->centre);
+      V3 expected, angular;
+      if (physical) {
+        auto& hand = *c.body.parts[B::handL];
+        hand.v = {.4, .3, .2};
+        hand.w = angular = {.2, .5, 2};
+        expected = hand.v + cross(angular, centre - hand.x);
+      } else {
+        const V3 velocity{.4, .3, .2};
+        c.prev_pose.p[H::handL] = c.pose.p[H::handL] - velocity * DT;
+        c.prev_pose.q[H::handL] = qz(-.1) * c.pose.q[H::handL];
+        angular = {0, 0, .1 / DT};
+        expected = velocity + cross(angular, centre - c.pose.p[H::handL]);
+      }
+      REQUIRE(c.detach(AttachPoint::LeftHand) == item);
+      CHECK(norm(item->velocity - expected) < 1e-8);
+      CHECK(norm(item->angular - angular) < 1e-8);
+      c.attachments().registry->update(0);
+      REQUIRE(item->loose_body);
+      CHECK(norm(item->loose_body->pivot - definition->centre) < 1e-8);
+      CHECK(norm(item->loose_body->pos - centre) < 1e-8);
+      CHECK(norm(item->pos - position) < 1e-8);
+      CHECK(norm(item->velocity - expected) < 1e-8);
+    }
+}
+TEST_CASE("props: runtime attachments meet the physical palm before another tick") {
+  for (Path path : {Path::Shallow, Path::Deep})
+    for (bool physical : {false, true}) {
+      Scene s(path);
+      auto& c = s.civilian(7, .7, {2, 3, 0});
+      c.physics = physical;
+      run(s, c, 1);
+      for (bool left : {false, true}) {
+        const auto point = left ? AttachPoint::LeftHand : AttachPoint::RightHand;
+        const Side side = left ? Side::L : Side::R;
+        const size_t bone = left ? H::handL : H::handR;
+        for (const auto name : {"knife", "machete", "phone"}) {
+          REQUIRE(c.swap(prop_archetype(name), point));
+          const auto item = c.attachments().at(point);
+          const V3 palm = c.pose.p[bone] + rotate(c.pose.q[bone], c.motion.arms.palm_offset(side));
+          const V3 grip = item->pos + rotate(item->rotation, item->archetype->socket(item->socket)->point);
+          INFO(std::string(path_name(path)) << " physics " << physical << " left " << left << " prop " << name);
+          CHECK(norm(palm - grip) < 1e-8);
+        }
+        const auto primary = c.attachments().held();
+        const V3 before = primary->pos;
+        REQUIRE(c.swap(prop_archetype("backpack"), AttachPoint::Back, "strap", WieldStyle::Worn));
+        CHECK(c.motion.weapon_hand == attachment_bone(primary->point));
+        CHECK(norm(primary->pos - before) < 1e-8);
+        c.detach(AttachPoint::Back);
+        c.detach(point);
+      }
+    }
+}
+
+TEST_CASE("props: attachment ownership rejects a foreign registry without taking its loose body") {
+  Scene s(Path::Shallow);
+  auto& c = s.civilian();
+  auto local = c.attachments().registry->create(prop_archetype("knife"));
+  PropRegistry other(s.col.get());
+  auto foreign = other.create(prop_archetype("bottle"));
+  REQUIRE(local->id == foreign->id);
+  other.update(DT);
+  const auto body = foreign->loose_body;
+  REQUIRE(body);
+  CHECK_FALSE(c.attach(foreign, AttachPoint::RightHand));
+  CHECK(foreign->location == PropLocation::Loose);
+  CHECK(foreign->loose_body == body);
+  CHECK_FALSE(c.attachments().held());
+  CHECK(c.attachments().registry->get(local->id) == local);
+  CHECK(other.get(foreign->id) == foreign);
+  CHECK_FALSE(c.attach(std::make_shared<PropInstance>(), AttachPoint::RightHand));
+  CHECK_FALSE(c.attach(local, AttachPoint::RightHand, "primary", WieldStyle(255)));
+  CHECK(c.attachments().events.empty());
+  CHECK(local->location == PropLocation::Loose);
+}
+
+TEST_CASE("props: a shared registry transfers a loose instance between characters without changing its identity") {
+  for (Path path : {Path::Shallow, Path::Deep}) {
+    Scene s(path);
+    auto registry = std::make_shared<PropRegistry>(s.col.get());
+    CharacterOptions o;
+    o.model = make_civilian(7).model;
+    o.prop_registry = registry;
+    o.collision = s.col.get();
+    o.world = s.world.get();
+    o.backend = path == Path::Deep ? BodyBackend::Deep : BodyBackend::Shallow;
+    o.tag = 11;
+    Character first(o);
+    o.tag = 12;
+    Character second(o);
+    first.place({0, 0, s.ground}, kPi / 2);
+    second.place({2, 2, s.ground}, kPi / 2);
+    auto item = registry->create(prop_archetype("knife"));
+    const auto id = item->id;
+    item->state.condition = .6;
+    REQUIRE(first.attach(item, AttachPoint::LeftHand, "primary", WieldStyle::Reverse));
+    CHECK_FALSE(second.attach(item, AttachPoint::RightHand));
+    REQUIRE(first.detach(AttachPoint::LeftHand) == item);
+    registry->update(DT);
+    REQUIRE(item->loose_body);
+    REQUIRE(second.attach(item, AttachPoint::RightHand));
+    CHECK_FALSE(item->loose_body);
+    CHECK(item->id == id);
+    CHECK(item->character == 12);
+    CHECK(item->state.condition == .6);
+    CHECK(registry->all().size() == 1);
+    CHECK(registry->nearby(item->pos, 1).empty());
+    REQUIRE(second.detach(AttachPoint::RightHand) == item);
+    registry->update(DT);
+    CHECK(registry->nearby(item->pos, 1).size() == 1);
+  }
+}
+
+TEST_CASE("props: a knockout releases two-handed loads for unconsciousness before the fall reflex") {
+  for (Path path : {Path::Shallow, Path::Deep}) {
+    Scene s(path);
+    auto& c = s.civilian();
+    REQUIRE(c.swap(prop_archetype("rifle"), AttachPoint::RightHand, "primary", WieldStyle::TwoHands));
+    run(s, c, 1);
+    const auto item = c.attachments().held();
+    REQUIRE(item);
+    c.take_attachment_events();
+    c.knock_out(3);
+    s.frame({&c});
+    CHECK(item->location == PropLocation::Loose);
+    CHECK(item->last_release == ReleaseReason::KnockedOut);
+    const auto events = c.take_attachment_events();
+    REQUIRE(events.size() == 1);
+    CHECK(events[0].reason == ReleaseReason::KnockedOut);
+    CHECK_FALSE(events[0].attached);
+  }
+}
+
+TEST_CASE("props: an impaired primary grip hands its load to the usable hand in the same frame") {
+  for (Path path : {Path::Shallow, Path::Deep})
+    for (bool left : {false, true}) {
+      Scene s(path);
+      auto& c = s.civilian();
+      const auto point = left ? AttachPoint::LeftHand : AttachPoint::RightHand;
+      const size_t primary = left ? B::handL : B::handR, other = left ? B::handR : B::handL;
+      const f64 primary_mass = c.body.parts[primary]->mass, other_mass = c.body.parts[other]->mass;
+      REQUIRE(c.swap(prop_archetype("sword"), point, "primary", WieldStyle::TwoHands));
+      run(s, c, 1);
+      const auto item = c.attachments().held();
+      REQUIRE(item);
+      auto cap = c.capabilities();
+      cap.arms[left ? 0 : 1] = {0, 0, 0};
+      c.behaviours.damage.override_capabilities(cap);
+      s.frame({&c});
+      INFO(std::string(path_name(path)) << " left " << left);
+      REQUIRE(item->location == PropLocation::Attached);
+      CHECK(item->style == WieldStyle::OneHand);
+      CHECK(item->point == (left ? AttachPoint::RightHand : AttachPoint::LeftHand));
+      CHECK(c.body.parts[primary]->mass == doctest::Approx(primary_mass));
+      CHECK(c.body.parts[other]->mass == doctest::Approx(other_mass + item->archetype->mass));
+      const size_t bone = left ? H::handR : H::handL;
+      const Side side = left ? Side::R : Side::L;
+      const V3 grip = item->pos + rotate(item->rotation, item->archetype->socket(item->socket)->point);
+      const V3 palm = c.pose.p[bone] + rotate(c.pose.q[bone], c.motion.arms.palm_offset(side));
+      CHECK(norm(grip - palm) < .001);
+      run(s, c, 2);
+      INFO(std::string(release_name(item->last_release)) << " load " << item->load << " strength " << item->strength << " mode " << int(c.behaviours.mode));
+      REQUIRE(item->location == PropLocation::Attached);
+      for (const auto& feature : item->archetype->features)
+        for (const V3& point : {feature.a, feature.b})
+          CHECK((item->pos + rotate(item->rotation, point)).z - feature.radius > s.ground + .02);
+    }
+}
+
 TEST_CASE("props: invalid swaps preserve occupancy and overloaded or disabled hands release") {
   for (Path path : {Path::Shallow, Path::Deep}) {
     Scene s(path);

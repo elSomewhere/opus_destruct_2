@@ -131,8 +131,10 @@ bool Character::restore_damage(std::span<const u8> data) {
       return false;
     p->damaged_model = p->archetype->model->clone();
     if (!read_model(r, *p->damaged_model)) return false;
-    if (!trial.attach(p, AttachPoint(point), p->socket, WieldStyle(style))) return false;
-    p->location = PropLocation::Loose;
+    if (!trial.accepts(*p->archetype, AttachPoint(point), p->socket, WieldStyle(style))) return false;
+    p->point = AttachPoint(point);
+    p->style = WieldStyle(style);
+    trial.slots[size_t(point)] = p;
     props.push_back(p);
   }
   if (!r.done()) return false;

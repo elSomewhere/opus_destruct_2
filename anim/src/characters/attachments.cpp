@@ -16,6 +16,22 @@ i32 attachment_bone(AttachPoint p) {
   constexpr i32 bones[] = {H::handR, H::handL, H::chest, H::chest, H::pelvis, H::thighR, H::chest, H::head, H::chest};
   return size_t(p) < size_t(AttachPoint::Count) ? bones[size_t(p)] : H::chest;
 }
+V3 PropInstance::centre_of_mass() const {
+  if (!damaged_model || geometry_version == 0) return archetype->centre;
+  // Damaged and merged geometry uses the same voxel centre as loose debris.
+  V3 sum;
+  size_t count = 0;
+  const auto& m = *damaged_model;
+  for (const auto& p : m.parts)
+    for (i32 z = 0; z < p.dims[2]; ++z)
+      for (i32 y = 0; y < p.dims[1]; ++y)
+        for (i32 x = 0; x < p.dims[0]; ++x)
+          if (p.cells[size_t(p.index(x, y, z))]) {
+            sum += V3{x + p.origin[0] + .5, y + p.origin[1] + .5, z + p.origin[2] + .5} * m.voxel_size;
+            ++count;
+          }
+  return count ? sum * (1.0 / count) : archetype->centre;
+}
 PropRegistry::PropRegistry(const CollisionWorld* c) : loose_(c) {
   // Persistent items are never subject to the bounded blood/debris eviction policy.
   loose_.max_gibs = std::numeric_limits<i32>::max();
@@ -66,7 +82,13 @@ void PropRegistry::update(f64 dt) {
   for (auto& [id, p] : items_)
     if (p->location == PropLocation::Loose && !p->loose_body && !p->model().parts.empty()) {
       p->loose_body = loose_.spawn(p->model().parts[0], p->model().voxel_size, p->pos, p->rotation, {}, p->velocity, p->angular, p->id);
-      if (p->loose_body) loose_.set_mass(p->loose_body, p->archetype->mass + p->retained_mass, p->archetype->inertia);
+      if (p->loose_body) {
+        const V3 centre = p->centre_of_mass();
+        // spawn uses the voxel pivot; set_mass can replace it with an authored
+        // centre while preserving every point's position and velocity.
+        p->loose_body->vel -= cross(p->angular, rotate(p->rotation, centre - p->loose_body->pivot));
+        loose_.set_mass(p->loose_body, p->archetype->mass + p->retained_mass, p->archetype->inertia, &centre);
+      }
     }
   loose_.update(dt);
   for (auto& [id, p] : items_)
@@ -93,34 +115,30 @@ bool Attachments::occupied(AttachPoint p) const {
   return false;
 }
 bool Attachments::free_hand(bool left) const { return !occupied(left ? AttachPoint::LeftHand : AttachPoint::RightHand); }
-bool Attachments::attach(const PropInstancePtr& p, AttachPoint point, std::string_view socket, WieldStyle style) {
+bool Attachments::accepts(const Prop& archetype, AttachPoint point, std::string_view socket, WieldStyle style) {
   refusal.clear();
-  if (!p || size_t(point) >= slots.size()) {
-    refusal = "invalid instance or attachment";
-    return false;
-  }
-  if (p->location == PropLocation::Gone || p->location == PropLocation::Attached) {
-    refusal = "instance is unavailable";
+  if (!archetype.model || size_t(point) >= slots.size() || size_t(style) > size_t(WieldStyle::Stowed)) {
+    refusal = "invalid archetype, attachment or wield style";
     return false;
   }
   if (occupied(point)) {
     refusal = "attachment is occupied";
     return false;
   }
-  if (std::find(p->archetype->attachments.begin(), p->archetype->attachments.end(), attachment_name(point)) == p->archetype->attachments.end()) {
+  if (std::find(archetype.attachments.begin(), archetype.attachments.end(), attachment_name(point)) == archetype.attachments.end()) {
     refusal = "archetype does not allow this attachment";
     return false;
   }
-  if (!p->archetype->socket(socket)) {
+  if (!archetype.socket(socket)) {
     refusal = "unknown socket";
     return false;
   }
   if (style == WieldStyle::TwoHands &&
-      (!hand_point(point) || !p->archetype->socket("secondary") || !p->archetype->has("two_handed") || !free_hand(point == AttachPoint::RightHand))) {
+      (!hand_point(point) || !archetype.socket("secondary") || !archetype.has("two_handed") || !free_hand(point == AttachPoint::RightHand))) {
     refusal = "two free hands and a secondary grip are required";
     return false;
   }
-  if (hand_point(point) && style != WieldStyle::TwoHands && !p->archetype->has("one_handed")) {
+  if (hand_point(point) && style != WieldStyle::TwoHands && !archetype.has("one_handed")) {
     refusal = "archetype requires two hands";
     return false;
   }
@@ -132,10 +150,23 @@ bool Attachments::attach(const PropInstancePtr& p, AttachPoint point, std::strin
     refusal = "body anchors require a worn or stowed attachment";
     return false;
   }
-  if (style == WieldStyle::Reverse && !p->archetype->socket("reverse")) {
+  if (style == WieldStyle::Reverse && !archetype.socket("reverse")) {
     refusal = "no reverse grip";
     return false;
   }
+  return true;
+}
+bool Attachments::attach(const PropInstancePtr& p, AttachPoint point, std::string_view socket, WieldStyle style) {
+  refusal.clear();
+  if (!p || !p->archetype || !registry || !p->id || registry->get(p->id) != p) {
+    refusal = "instance does not belong to this registry";
+    return false;
+  }
+  if (p->location != PropLocation::Loose) {
+    refusal = "instance is unavailable";
+    return false;
+  }
+  if (!accepts(*p->archetype, point, socket, style)) return false;
   registry->reclaim(p);
   p->point = point;
   p->socket = style == WieldStyle::Reverse ? "reverse" : std::string(socket);
@@ -145,6 +176,29 @@ bool Attachments::attach(const PropInstancePtr& p, AttachPoint point, std::strin
   slots[size_t(point)] = p;
   ++revision;
   events.push_back({p->id, point, true, ReleaseReason::Voluntary});
+  return true;
+}
+bool Attachments::regrip(AttachPoint from, AttachPoint to, std::string_view socket, WieldStyle style, ReleaseReason reason) {
+  refusal.clear();
+  const auto p = at(from);
+  if (!p || !registry || registry->get(p->id) != p || p->location != PropLocation::Attached || p->character != owner) {
+    refusal = "attachment has no owned instance";
+    return false;
+  }
+  auto trial = *this;
+  trial.slots[size_t(from)].reset();
+  if (!trial.accepts(*p->archetype, to, socket, style)) {
+    refusal = trial.refusal;
+    return false;
+  }
+  slots[size_t(from)].reset();
+  p->point = to;
+  p->socket = style == WieldStyle::Reverse ? "reverse" : std::string(socket);
+  p->style = style;
+  slots[size_t(to)] = p;
+  ++revision;
+  events.push_back({p->id, from, false, reason});
+  events.push_back({p->id, to, true, reason});
   return true;
 }
 PropInstancePtr Attachments::detach(AttachPoint point, ReleaseReason reason) {

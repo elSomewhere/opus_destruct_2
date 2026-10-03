@@ -217,6 +217,8 @@ class MotionPlan {
   void take_events(std::vector<AnimEvent>& out);
   // The recoil of one shot.
   void fire(f64 strength = 1.0);
+  // Rebind the held prop to the current planned hand without advancing motion.
+  void refresh_prop();
   // Lies on the ground where the body lies (root on the ground under the pelvis, `yaw` the way the
   // feet point from the head for a body on its back, the head's way face down): the plan holds
   // the lying pose until get_up.

@@ -1,9 +1,15 @@
 #include "svx/anim/character.hpp"
 namespace svx::anim {
 bool Character::attach(const PropInstancePtr& p, AttachPoint point, std::string_view socket, WieldStyle style) {
+  const auto previous = motion.props.held();
   if (!motion.props.attach(p, point, socket, style)) return false;
-  motion.weapon_hand = attachment_bone(point);
-  update_props(0);
+  if (motion.props.held() != previous) refresh_held_prop();
+  place_prop(*p);
+  const auto& anchor = *body.parts[size_t(HumanoidBody::body_of_bone(attachment_bone(point)))];
+  p->previous_velocity = anchor.v;
+  p->previous_angular = anchor.w;
+  p->filtered_acceleration = p->filtered_angular = p->swing = p->swing_velocity = V3{};
+  p->load = p->impulse_load = 0;
   update_load();
   return true;
 }
@@ -12,10 +18,18 @@ PropInstancePtr Character::detach(AttachPoint point, ReleaseReason reason) {
   if (!p) return {};
   const i32 bone = attachment_bone(point), part = HumanoidBody::body_of_bone(bone);
   const auto& anchor = *body.parts[size_t(part)];
-  p->velocity =
-      behaviours.physical ? anchor.v + cross(anchor.w, p->pos - anchor.x) : (pose.p[size_t(bone)] - prev_pose.p[size_t(bone)]) * (1 / std::max(last_dt_, 1e-6));
-  p->angular = behaviours.physical ? anchor.w : V3{};
+  const V3 centre = p->pos + rotate(p->rotation, p->centre_of_mass());
+  if (behaviours.physical) {
+    p->angular = anchor.w;
+    p->velocity = anchor.v + cross(anchor.w, centre - anchor.x);
+  } else {
+    const f64 idt = 1 / std::max(last_dt_, 1e-6);
+    p->angular = qerror(pose.q[size_t(bone)], prev_pose.q[size_t(bone)]) * idt;
+    p->velocity = (pose.p[size_t(bone)] - prev_pose.p[size_t(bone)]) * idt + cross(p->angular, centre - pose.p[size_t(bone)]);
+  }
+  const auto previous = motion.props.held();
   auto out = motion.props.detach(point, reason);
+  if (motion.props.held() != previous) refresh_held_prop();
   update_load();
   return out;
 }
@@ -32,9 +46,7 @@ bool Character::swap(PropPtr a, AttachPoint point, std::string_view socket, Wiel
   Attachments trial;
   trial.slots = motion.props.slots;
   trial.slots[size_t(point)].reset();
-  auto candidate = std::make_shared<PropInstance>();
-  candidate->archetype = a;
-  if (!trial.attach(candidate, point, socket, style)) {
+  if (!trial.accepts(*a, point, socket, style)) {
     motion.props.refusal = trial.refusal;
     return false;
   }
@@ -47,6 +59,11 @@ void Character::wrench(AttachPoint point, const V3& impulse) {
     pushed_at(HumanoidBody::body_of_bone(attachment_bone(point)), impulse, p->pos);
     if (p->impulse_load > p->archetype->socket(p->socket)->retention * p->strength) detach(point, ReleaseReason::Wrenched);
   }
+}
+void Character::set_wield(WieldProfile profile) {
+  const auto previous = motion.props.held();
+  motion.props.wield = profile;
+  if (motion.props.held() != previous) refresh_held_prop();
 }
 std::vector<AttachmentEvent> Character::take_attachment_events() {
   std::vector<AttachmentEvent> out;
@@ -90,41 +107,97 @@ void Character::update_load() {
   motion.load_fraction = clamp(total / 20, 0.0, 1.0);
   motion.load_lean = {clamp(moment.y * .025, -.22, .22), clamp(-moment.x * .025, -.22, .22), 0};
 }
+void Character::refresh_held_prop() {
+  motion.refresh_prop();
+  place_weapon();
+  if (const auto p = motion.props.held()) {
+    place_prop(*p);
+    weapon_pos = p->pos;
+    weapon_rot = p->rotation;
+  }
+}
+void Character::place_prop(PropInstance& p) {
+  const i32 bone = attachment_bone(p.point);
+  const auto& a = *p.archetype;
+  const auto* socket = a.socket(p.socket);
+  const bool held = hand_point(p.point);
+  if (held && &p == motion.props.held().get()) {
+    p.pos = weapon_pos;
+    p.rotation = weapon_rot;
+  } else {
+    V3 offset;
+    if (p.point == AttachPoint::Back)
+      offset = V3{0, -.19, .05} * motion.k;
+    else if (p.point == AttachPoint::Shoulder)
+      offset = V3{-.25, -.05, -.15} * motion.k;
+    else if (p.point == AttachPoint::Hip)
+      offset = V3{.19, -.04, 0} * motion.k;
+    else if (p.point == AttachPoint::Thigh)
+      offset = V3{.12, 0, -.12} * motion.k;
+    else if (p.point == AttachPoint::Chest || p.point == AttachPoint::Arms)
+      offset = V3{0, .2, 0} * motion.k;
+    else if (held)
+      offset = motion.arms.palm_offset(p.point == AttachPoint::LeftHand ? Side::L : Side::R);
+    p.rotation = pose.q[size_t(bone)];
+    if (held) p.rotation = p.rotation * conj(motion.arms.canonical(p.point == AttachPoint::LeftHand ? Side::L : Side::R)) * a.hanging_rotation;
+    p.rotation = p.rotation * (socket ? conj(socket->rotation) : Quat{});
+    p.pos = pose.p[size_t(bone)] + rotate(pose.q[size_t(bone)], offset) - rotate(p.rotation, socket ? socket->point : V3{});
+  }
+  if (p.style == WieldStyle::Hanging) {
+    // A handle transmits force while letting the load hang under gravity.
+    const V3 pivot = p.pos + rotate(p.rotation, socket->point);
+    p.rotation = qz(motion.root_yaw - kPi / 2);
+    p.pos = pivot - rotate(p.rotation, socket->point);
+  }
+}
 void Character::update_props(f64 dt) {
-  for (size_t i = 0; i < motion.props.slots.size(); ++i) {
-    const auto p = motion.props.slots[i];
-    if (!p) continue;
+  // A handoff must not update an item twice when its new slot comes later.
+  const auto items = motion.props.slots;
+  for (const auto& p : items) {
+    if (!p || p->location != PropLocation::Attached) continue;
+    place_prop(*p);
+    const bool held = hand_point(p->point);
+    if (behaviours.lost[size_t(HumanoidBody::body_of_bone(attachment_bone(p->point)))]) {
+      detach(p->point, ReleaseReason::AnchorLost);
+      continue;
+    }
+    if (!held && p->state.strap <= .05) {
+      detach(p->point, ReleaseReason::StrapCut);
+      continue;
+    }
+    if (held && (!alive() || !behaviours.conscious)) {
+      detach(p->point, alive() ? ReleaseReason::KnockedOut : ReleaseReason::Death);
+      continue;
+    }
+    const auto& a = *p->archetype;
+    auto capacity = [&](size_t side) {
+      const auto& arm = capabilities().arms[side];
+      return std::min({arm.grip, arm.strength, arm.control});
+    };
+    if (held && p->style == WieldStyle::TwoHands && std::min(capacity(0), capacity(1)) < .25) {
+      if (!a.has("one_handed") || std::max(capacity(0), capacity(1)) < .25) {
+        detach(p->point, ReleaseReason::GripFailed);
+        continue;
+      }
+      const auto from = p->point;
+      const size_t primary = from == AttachPoint::LeftHand ? 0 : 1;
+      const auto to = capacity(primary) >= .25 ? from : primary == 0 ? AttachPoint::RightHand : AttachPoint::LeftHand;
+      // The supporting hand keeps its own socket when the primary arm fails.
+      const std::string socket = to == from ? p->socket : "secondary";
+      if (!motion.props.regrip(from, to, socket, WieldStyle::OneHand, ReleaseReason::HandDamaged)) {
+        detach(from, ReleaseReason::GripFailed);
+        continue;
+      }
+      refresh_held_prop();
+      const auto& anchor = *body.parts[size_t(HumanoidBody::body_of_bone(attachment_bone(to)))];
+      p->previous_velocity = anchor.v;
+      p->previous_angular = anchor.w;
+      p->filtered_acceleration = p->filtered_angular = V3{};
+    }
     const i32 bone = attachment_bone(p->point), part = HumanoidBody::body_of_bone(bone);
     const auto& anchor = *body.parts[size_t(part)];
-    const auto& a = *p->archetype;
     const auto* socket = a.socket(p->socket);
-    const bool held = hand_point(p->point), soft = p->style == WieldStyle::Hanging || p->point == AttachPoint::Back || p->point == AttachPoint::Shoulder;
-    if (held && p == motion.props.held()) {
-      p->pos = weapon_pos;
-      p->rotation = weapon_rot;
-    } else {
-      V3 offset;
-      if (p->point == AttachPoint::Back)
-        offset = {0, -.19, .05};
-      else if (p->point == AttachPoint::Shoulder)
-        offset = {-.25, -.05, -.15};
-      else if (p->point == AttachPoint::Hip)
-        offset = {.19, -.04, 0};
-      else if (p->point == AttachPoint::Thigh)
-        offset = {.12, 0, -.12};
-      else if (p->point == AttachPoint::Chest || p->point == AttachPoint::Arms)
-        offset = {0, .2, 0};
-      p->rotation = pose.q[size_t(bone)];
-      if (held) p->rotation = p->rotation * conj(motion.arms.canonical(p->point == AttachPoint::LeftHand ? Side::L : Side::R)) * a.hanging_rotation;
-      p->rotation = p->rotation * (socket ? conj(socket->rotation) : Quat{});
-      p->pos = pose.p[size_t(bone)] + rotate(pose.q[size_t(bone)], offset * motion.k) - rotate(p->rotation, socket ? socket->point : V3{});
-    }
-    if (p->style == WieldStyle::Hanging) {
-      // A handle transmits force while letting the load hang under gravity.
-      const V3 pivot = p->pos + rotate(p->rotation, socket->point);
-      p->rotation = qz(motion.root_yaw - kPi / 2);
-      p->pos = pivot - rotate(p->rotation, socket->point);
-    }
+    const bool soft = p->style == WieldStyle::Hanging || p->point == AttachPoint::Back || p->point == AttachPoint::Shoulder;
     if (dt > 0) {
       const V3 acceleration = (anchor.v - p->previous_velocity) * (1 / dt);
       p->previous_velocity = anchor.v;
@@ -148,56 +221,30 @@ void Character::update_props(f64 dt) {
       p->load = a.mass * (9.81 + .15 * accel) + .25 * std::min(100.0, torque) / .05 + p->impulse_load;
       p->impulse_load *= exp(-dt * 12);
     }
-    p->strength = held ? (alive() && behaviours.conscious ? capabilities().arms[p->point == AttachPoint::LeftHand ? 0 : 1].grip * capabilities().vigor : 0.0)
-                       : p->state.strap;
-    if (held && p->style == WieldStyle::TwoHands) p->strength += capabilities().arms[p->point == AttachPoint::LeftHand ? 1 : 0].grip * capabilities().vigor;
-    if (held && behaviours.physical) {
-      const size_t region = p->point == AttachPoint::LeftHand ? size_t(Region::ArmL) : size_t(Region::ArmR);
-      p->strength *= clamp(behaviours.region_tone[region] / .45, 0.0, 1.0);
-    }
-    if (held && p->style == WieldStyle::TwoHands && std::min(capabilities().arms[0].grip, capabilities().arms[1].grip) < .25) {
-      if (!a.has("one_handed")) {
-        detach(p->point, ReleaseReason::GripFailed);
-        continue;
-      }
-      p->style = WieldStyle::OneHand;
-      const size_t primary = p->point == AttachPoint::LeftHand ? 0 : 1;
-      if (capabilities().arms[primary].grip < .25 && capabilities().arms[1 - primary].grip >= .25) {
-        const auto from = p->point, to = primary == 0 ? AttachPoint::RightHand : AttachPoint::LeftHand;
-        motion.props.events.push_back({p->id, from, false, ReleaseReason::HandDamaged});
-        motion.props.slots[size_t(from)].reset();
-        p->point = to;
-        motion.props.slots[size_t(to)] = p;
-        motion.props.events.push_back({p->id, to, true, ReleaseReason::HandDamaged});
-        motion.weapon_hand = attachment_bone(to);
-        ++motion.props.revision;
-        continue;
-      }
-    }
-    if (behaviours.lost[size_t(part)]) {
-      detach(p->point, ReleaseReason::AnchorLost);
-      continue;
-    }
-    if (!held && p->state.strap <= .05) {
-      detach(p->point, ReleaseReason::StrapCut);
-      continue;
+    auto strength = [&](size_t side) {
+      const size_t region = side == 0 ? size_t(Region::ArmL) : size_t(Region::ArmR);
+      const f64 tone = behaviours.physical ? clamp(behaviours.region_tone[region] / .45, 0.0, 1.0) : 1;
+      return capacity(side) * capabilities().vigor * tone;
+    };
+    const size_t primary = p->point == AttachPoint::LeftHand ? 0 : 1;
+    p->strength = held ? strength(primary) : p->state.strap;
+    if (held && p->style == WieldStyle::TwoHands) {
+      const auto* secondary = a.socket("secondary");
+      p->strength += strength(1 - primary) * secondary->retention / std::max(1e-6, socket->retention);
     }
     if (held && behaviours.mode == BodyMode::Falling && motion.control.arms[p->point == AttachPoint::LeftHand ? 0 : 1]) {
       detach(p->point, ReleaseReason::BreakingFall);
-      continue;
-    }
-    if (held && !alive()) {
-      detach(p->point, ReleaseReason::Death);
-      continue;
-    }
-    if (held && !behaviours.conscious) {
-      detach(p->point, ReleaseReason::KnockedOut);
       continue;
     }
     if (p->load > (socket ? socket->retention : 350) * p->strength) {
       detach(p->point, ReleaseReason::GripFailed);
       continue;
     }
+  }
+  if (load_revision_ != motion.props.revision) update_load();
+  if (const auto p = motion.props.held()) {
+    weapon_pos = p->pos;
+    weapon_rot = p->rotation;
   }
 }
 }  // namespace svx::anim

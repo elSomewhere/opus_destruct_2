@@ -5,6 +5,7 @@ namespace {
 // A retained hand becomes part of the persistent loose body's geometry. It cannot be
 // evicted by the bounded flesh-debris pool while the item still exists.
 void retain_hand(PropInstance& item, const GibSpec& hand) {
+  const V3 previous_centre = item.centre_of_mass();
   if (!item.damaged_model) item.damaged_model = item.archetype->model->clone();
   auto& model = *item.damaged_model;
   const f64 pitch = model.voxel_size;
@@ -61,6 +62,7 @@ void retain_hand(PropInstance& item, const GibSpec& hand) {
   model.parts[0] = std::move(merged);
   item.retained_mass = .45;
   ++item.geometry_version;
+  item.velocity += cross(item.angular, rotate(item.rotation, item.centre_of_mass() - previous_centre));
 }
 }  // namespace
 

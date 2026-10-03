@@ -91,7 +91,8 @@ class GibSystem {
   // already, the oldest sleeping gib goes first, else the oldest.
   Gib* spawn(VoxelPart part, f64 voxel_size, const V3& bone_pos, const Quat& bone_rot, const V3& bone_rest_head, const V3& vel,
              const V3& ang, u64 user = 0);
-  void set_mass(const Gib* g, f64 mass, const V3& inertia);
+  // An authored rest-space centre keeps the shape and point velocities in place.
+  void set_mass(const Gib* g, f64 mass, const V3& inertia, const V3* centre = nullptr);
   void remove(const Gib* g);  // (the host let go of it)
   V3 world_point(const Gib& g, const V3& rest) const;  // the world position of a rest-space point of the gib
   // The skin matrix (16 floats, column-major) of the gib's part mesh, built in rest space.
