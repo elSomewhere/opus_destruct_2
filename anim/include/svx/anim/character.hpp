@@ -59,6 +59,9 @@ struct WoundResult {
   std::vector<RemovedVoxel> removed;  // voxels carved out (blood and flesh bits for the host's effects)
   std::vector<GibSpec> gibs;          // pieces that came off (severed limbs, a head)
   Zone zone = Zone::Chest;            // (melee)
+  V3 impulse;                        // contact momentum absorbed by body and attachments; excludes the blast throw
+  f64 absorbed_energy = 0;
+  bool blocked = false;
 };
 
 struct BlastResult {
@@ -118,7 +121,8 @@ class Character {
   PropInstancePtr detach(AttachPoint point, ReleaseReason reason = ReleaseReason::Voluntary);
   bool swap(PropPtr archetype, AttachPoint point, std::string_view socket = "primary", WieldStyle style = WieldStyle::OneHand);
   void set_wield(WieldProfile profile);
-  void wrench(AttachPoint point, const V3& impulse);
+  void wrench(AttachPoint point, const V3& impulse, std::optional<V3> at = std::nullopt);
+  V3 velocity_at(i32 part, const V3& point) const;
   std::vector<AttachmentEvent> take_attachment_events();
   const Capabilities& capabilities() const { return behaviours.capabilities(); }
   bool alive() const { return behaviours.alive; }
@@ -232,6 +236,7 @@ class Character {
   std::array<f64, kBodyCount> bare_mass_{};
   std::array<V3, kBodyCount> bare_inertia_{};
   void update_props(f64 dt);
+  f64 attachment_strength(const PropInstance& item) const;
   void place_prop(PropInstance& item);
   void refresh_held_prop();
   void update_load();

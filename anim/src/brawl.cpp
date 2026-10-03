@@ -158,7 +158,6 @@ std::vector<LandedBlow> Brawler::resolve(const std::vector<AnimEvent>& events) {
     if (landed_serial_ == sweep.serial) continue;
     auto descriptor = StrikeTracker::contact(sweep, *opponent);
     if (!descriptor) continue;
-    landed_serial_ = sweep.serial;
     LandedBlow blow;
     blow.attacker = &self;
     blow.victim = opponent;
@@ -168,6 +167,23 @@ std::vector<LandedBlow> Brawler::resolve(const std::vector<AnimEvent>& events) {
     blow.blocked = descriptor->blocked;
     blow.descriptor = *descriptor;
     blow.result = opponent->damage(*descriptor);
+    if (blow.result.absorbed_energy <= 0) continue;
+    landed_serial_ = sweep.serial;
+    blow.blocked = blow.blocked || blow.result.blocked;
+    // The same absorbed momentum loads the striking grip in the opposite
+    // direction. A successful block can wrench the attacker's prop loose.
+    if (const auto item = self.attachments().held(); item && item->id == descriptor->prop) {
+      self.wrench(item->point, -blow.result.impulse, descriptor->point);
+    } else if (!descriptor->prop) {
+      const auto* action = action_def(self.motion.action_name());
+      if (action) {
+        const auto event = std::find_if(action->events.begin(), action->events.end(), [](const auto& e) { return e.name == "strike"; });
+        if (event != action->events.end()) {
+          const i32 part = event->limb == Limb::FootL ? B::footL : event->limb == Limb::FootR ? B::footR : event->limb == Limb::HandL ? B::handL : B::handR;
+          self.pushed_at(part, -blow.result.impulse, descriptor->point);
+        }
+      }
+    }
     out.push_back(std::move(blow));
   }
   return out;

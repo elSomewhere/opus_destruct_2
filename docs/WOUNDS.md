@@ -76,6 +76,14 @@ resistance consumes energy and their instance geometry records holes or cuts.
 Hits also load grips; an edge crossing an anchor can cut its strap. Breaking a
 prop into separate objects is reserved.
 
+A stopped projectile or strike transfers its absorbed momentum to the prop's
+physical anchor at the contact point. Retention sees that load immediately,
+including between simulation ticks. A melee block also reacts on the attacking
+limb or grip. Damage results report absorbed contact energy and momentum even
+when the prop stops the entire strike and the body loses no health. Blast results
+sum their fragment and crush contacts; the separate whole-body throw is excluded
+from that contact-impulse field.
+
 ## Physiology and capability
 
 Per-part state contains flesh integrity, muscle function, intact/fractured/shattered

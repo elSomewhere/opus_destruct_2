@@ -418,6 +418,18 @@ void Character::set_obstacles(const std::vector<Obstacle>& list) {
   motion.feet_planner.obstacles = std::span<const Obstacle>(body.system.obstacles.data(), body.system.obstacles.size());
 }
 
+V3 Character::velocity_at(i32 part, const V3& point) const {
+  if (part < 0 || part >= kBodyCount) return {};
+  if (behaviours.physical) {
+    const auto& b = *body.parts[size_t(part)];
+    return b.v + cross(b.w, point - b.x);
+  }
+  const size_t bone = size_t(kBodyBone[size_t(part)]);
+  const f64 idt = 1 / std::max(last_dt_, 1e-6);
+  const V3 angular = qerror(pose.q[bone], prev_pose.q[bone]) * idt;
+  return (pose.p[bone] - prev_pose.p[bone]) * idt + cross(angular, point - pose.p[bone]);
+}
+
 void Character::pushed_at(i32 part, const V3& j, const V3& at) {
   // (a body at rest on its plan wakes where it is: the push goes to the bodies there)
   if (!behaviours.physical) wake();

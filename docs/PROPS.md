@@ -108,9 +108,26 @@ the character's capabilities.
 
 Strike events name a contact feature. `StrikeTracker` samples its endpoints in
 the physical pose, then traces the swept surface during the contact window.
+Endpoint velocities are interpolated at the point that contacts the target. A
+turning blade still sweeps when its midpoint stays still. A prop swap or release
+starts a fresh feature path; a missing feature cannot become an unarmed strike.
 Descriptors contain source identity, feature, impact class, point, direction,
 relative speed, effective mass, energy, alignment and blocking state. A hit on
 another prop consumes energy and loads its grip or strap before the body.
+
+Contact ordering uses the fraction of the tick at impact, rather than distance
+travelled by different points along the feature. Target velocity includes its
+anchor's angular contribution at the hit, on both solvers and in plan-only mode.
+Co-moving or separating surfaces do not create a minimum-energy hit. An edge's
+authored `normal` points out of the blade's flat side. Cutting alignment compares
+the relative motion with that plane as well as the edge direction; a flat strike
+uses blunt wound mechanics and the projected face area.
+
+Absorbed contact momentum reaches the defender at the hit point. `Brawler` applies
+the opposite impulse to the attacking limb or grip. Either grip can release in
+a hard block, and `WoundResult` reports the absorbed energy and contact impulse.
+The existing endpoint speed ceilings remain 22 m/s for props, 16 m/s for feet
+and 12 m/s for hands; relative velocity also includes the target's motion.
 
 ## Hosts and persistence
 

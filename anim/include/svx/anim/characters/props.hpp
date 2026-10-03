@@ -23,6 +23,7 @@ struct ContactFeature {
   ImpactClass impact = ImpactClass::Blunt;
   V3 a, b;
   f64 radius = 0.02, sharpness = 0.0;
+  V3 normal{1, 0, 0};  // flat-side normal for an edge; ignored for points and blunt features
 };
 struct PropMaterial {
   f64 density = 700.0, penetration = 2e6, fracture = 150.0;

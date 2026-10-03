@@ -10,6 +10,7 @@ bool Character::attach(const PropInstancePtr& p, AttachPoint point, std::string_
   p->previous_angular = anchor.w;
   p->filtered_acceleration = p->filtered_angular = p->swing = p->swing_velocity = V3{};
   p->load = p->impulse_load = 0;
+  p->strength = attachment_strength(*p);
   update_load();
   return true;
 }
@@ -53,12 +54,33 @@ bool Character::swap(PropPtr a, AttachPoint point, std::string_view socket, Wiel
   detach(point);
   return attach(motion.props.registry->create(a), point, socket, style);
 }
-void Character::wrench(AttachPoint point, const V3& impulse) {
+void Character::wrench(AttachPoint point, const V3& impulse, std::optional<V3> at) {
+  if (!(norm2(impulse) > 0)) return;
   if (auto p = motion.props.at(point)) {
-    p->impulse_load += norm(impulse) / .08;
-    pushed_at(HumanoidBody::body_of_bone(attachment_bone(point)), impulse, p->pos);
-    if (p->impulse_load > p->archetype->socket(p->socket)->retention * p->strength) detach(point, ReleaseReason::Wrenched);
+    p->strength = attachment_strength(*p);
+    const f64 force = norm(impulse) / .08;
+    p->impulse_load += force;
+    p->load += force;
+    pushed_at(HumanoidBody::body_of_bone(attachment_bone(point)), impulse, at.value_or(p->pos));
+    if (p->load > p->archetype->socket(p->socket)->retention * p->strength) detach(point, ReleaseReason::Wrenched);
   }
+}
+f64 Character::attachment_strength(const PropInstance& p) const {
+  if (!hand_point(p.point)) return p.state.strap;
+  if (!alive() || !behaviours.conscious) return 0;
+  auto strength = [&](size_t side) {
+    const auto& arm = capabilities().arms[side];
+    const size_t region = side == 0 ? size_t(Region::ArmL) : size_t(Region::ArmR);
+    const f64 tone = behaviours.physical ? clamp(behaviours.region_tone[region] / .45, 0.0, 1.0) : 1;
+    return std::min({arm.grip, arm.strength, arm.control}) * capabilities().vigor * tone;
+  };
+  const size_t primary = p.point == AttachPoint::LeftHand ? 0 : 1;
+  f64 total = strength(primary);
+  if (p.style == WieldStyle::TwoHands) {
+    const auto* socket = p.archetype->socket(p.socket);
+    total += strength(1 - primary) * p.archetype->socket("secondary")->retention / std::max(1e-6, socket->retention);
+  }
+  return total;
 }
 void Character::set_wield(WieldProfile profile) {
   const auto previous = motion.props.held();
@@ -221,17 +243,7 @@ void Character::update_props(f64 dt) {
       p->load = a.mass * (9.81 + .15 * accel) + .25 * std::min(100.0, torque) / .05 + p->impulse_load;
       p->impulse_load *= exp(-dt * 12);
     }
-    auto strength = [&](size_t side) {
-      const size_t region = side == 0 ? size_t(Region::ArmL) : size_t(Region::ArmR);
-      const f64 tone = behaviours.physical ? clamp(behaviours.region_tone[region] / .45, 0.0, 1.0) : 1;
-      return capacity(side) * capabilities().vigor * tone;
-    };
-    const size_t primary = p->point == AttachPoint::LeftHand ? 0 : 1;
-    p->strength = held ? strength(primary) : p->state.strap;
-    if (held && p->style == WieldStyle::TwoHands) {
-      const auto* secondary = a.socket("secondary");
-      p->strength += strength(1 - primary) * secondary->retention / std::max(1e-6, socket->retention);
-    }
+    p->strength = attachment_strength(*p);
     if (held && behaviours.mode == BodyMode::Falling && motion.control.arms[p->point == AttachPoint::LeftHand ? 0 : 1]) {
       detach(p->point, ReleaseReason::BreakingFall);
       continue;
