@@ -19,7 +19,7 @@ void ArmRig::begin_frame() {
     previous_[side][j] = pose->r[(side == 0 ? H::upperarmL : H::upperarmR) + j];
 }
 
-void ArmRig::finish_frame(f64 dt) {
+void ArmRig::finish_frame(f64 dt, f64 max_rate) {
   if (dt <= 0.0) return;
   // Limits the intended pose, never the simulated body's response to a hit.
   // Elbows may extend faster than shoulders and wrists during a strike.
@@ -28,7 +28,7 @@ void ArmRig::finish_frame(f64 dt) {
     Quat& goal = pose->r[(side == 0 ? H::upperarmL : H::upperarmR) + j];
     const Quat before = previous_[side][j];
     const V3 delta = qerror(goal, before);
-    const f64 angle = norm(delta), limit = speed[j] * dt;
+    const f64 angle = norm(delta), limit = std::min(speed[j], max_rate) * dt;
     if (angle > limit) goal = qnormalize(qexp(delta * (limit / angle)) * before);
   }
 }

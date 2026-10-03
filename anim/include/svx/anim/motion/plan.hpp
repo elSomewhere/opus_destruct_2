@@ -29,6 +29,7 @@
 // A plan works on its own pose (the arm rig holds pointers to it): it is neither copied nor
 // moved.
 #pragma once
+#include "svx/anim/motion/crawl.hpp"
 
 #include <array>
 #include <optional>
@@ -147,6 +148,7 @@ class MotionPlan {
   MotionInput input;
   Capabilities capabilities;
   PlanControl control;  // what the behaviours ask for (they fill it before every update)
+  CrawlHands crawl_hands;
   const CollisionWorld* collision;
   Attachments props;
   HeldPropView weapon{props};

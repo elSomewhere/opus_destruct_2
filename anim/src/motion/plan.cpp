@@ -118,6 +118,7 @@ void MotionPlan::place(const V3& pos_in, f64 yaw) {
   foot_toe_out_ = Spring(8.0, 1.0, style.toe_out);
   pelvis_z_.x = rest_pelvis_z;
   arm_return_ = {};
+  crawl_hands.reset();
   placed_ = true;
   update(0.0);
   prev_world.copy_from(world);
@@ -752,6 +753,23 @@ void MotionPlan::update(f64 dt_in) {
   if (prone_roll_) S->pelvis_pos.z += .08 * k * sin(kPi * stance_p_);
 
   // ---- pose: pelvis and trunk -----------------------------------------------------------------
+  if (stance == Stance::Prone && stance_p_ >= 1 && !ctl.busy && capabilities.crawl != CrawlStyle::Scoot) {
+    std::array<bool, 2> usable{};
+    std::array<V3, 2> initial{};
+    V3 support_root = root_pos;
+    if (ctl.pelvis_pos) {
+      support_root.x = ctl.pelvis_pos->x;
+      support_root.y = ctl.pelvis_pos->y;
+    }
+    for (size_t side = 0; side < 2; ++side) {
+      usable[side] = S->hands[side].has_value() && capabilities.arms[side].strength > .2 && capabilities.arms[side].control > .2 &&
+          props.free_hand(side == 0) && (!ctl.arms[side] || ctl.arms[side]->weight < .35);
+      if (S->hands[side]) initial[side] = origin_ + rotate(root_q, *S->hands[side]);
+    }
+    crawl_hands.update(dt, support_root, root_yaw, k, velocity, usable, initial, *collision);
+    for (size_t side = 0; side < 2; ++side)
+      if (crawl_hands.hands[side].active) S->hands[side] = to_model(crawl_hands.hands[side].pos);
+  } else crawl_hands.reset();
   arms.begin_frame();
   pose.reset();
   const f64 impact_z = impact_.x;
@@ -1113,7 +1131,7 @@ void MotionPlan::update(f64 dt_in) {
         pose.r[b] = qnlerp(pose.r[b], Quat{}, 1 - strength / .4);
       }
   }
-  arms.finish_frame(dt);
+  arms.finish_frame(dt, stance == Stance::Prone || stance_to_ == Stance::Prone ? 4.0 : 36.0);
   fk.update(pose, H::clavicleL);
 
   // ---- props, world, events -------------------------------------------------------------------
@@ -1309,7 +1327,8 @@ void MotionPlan::rest_hands(const StanceSample& s, f64 w) {
     if (!s.hands[i]) continue;
     const V3 h = *s.hands[i];
     const V3 pole = rotate(fk.q[H::chest], vnorm(V3{i == 0 ? -0.8 : 0.8, -0.5, -0.5}));
-    arms.hand_ik(i == 0 ? Side::L : Side::R, h, std::nullopt, pole, w * s.hand_weight[i]);
+    const std::optional<Quat> palm = crawl_hands.hands[i].active ? std::optional<Quat>(Quat{}) : std::nullopt;
+    arms.hand_ik(i == 0 ? Side::L : Side::R, h, palm, pole, w * s.hand_weight[i]);
   }
 }
 

@@ -63,7 +63,9 @@ StanceSample& prone_sample(const Dims& d, f64 crawl, f64 phase, StanceSample& ou
   const f64 s = sin(phase * kPi * 2.0);
   const f64 c = crawl;
   out.pelvis_pos = V3{0, 0, 0.13 * k};
-  out.pelvis_rot = qz(0.14 * s * c) * qx(-kPi / 2.0 + 0.04);
+  // Transfer weight across the shoulders without yawing the whole body across
+  // the floor on every pull. This roll is about the prone body's long axis.
+  out.pelvis_rot = qx(-kPi / 2.0 + 0.04) * qz(0.05 * s * c);
   out.spine = qeuler(0.1, 0, -0.1 * s * c);
   out.chest = qeuler(0.28, 0, -0.08 * s * c);
   out.neck = qx(0.38);

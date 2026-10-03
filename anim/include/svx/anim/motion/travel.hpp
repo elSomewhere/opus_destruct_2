@@ -20,6 +20,15 @@ struct TravelState {
         std::min(wanted_speed, c.capabilities().max_speed) / (1 + .35 * c.motion.load_fraction);
     const f64 k = c.motion.k;
     const V3 forward{cos(yaw), sin(yaw), 0};
+    if (low && c.behaviours.physical && c.capabilities().crawl != CrawlStyle::Scoot) {
+      // The shoulders have to turn before they can pull in the requested
+      // direction. Do not advance a ground target past a body still rolling.
+      const V3 head = c.pose.p[H::chest] - c.pose.p[H::pelvis];
+      const f64 facing = dot(vnorm(V3{head.x, head.y, 0}, forward), forward);
+      target *= smoothstep(.35, .9, facing);
+      const V3 lag = root - c.pose.p[H::pelvis];
+      target *= 1 - smoothstep(.18 * k, .36 * k, std::max(0.0, dot(lag, forward)));
+    }
     const f64 probe = .28 * k + std::max(speed, target) * .25;
     const V3 ahead = root + forward * probe;
     const auto ground = world.ground_height(ahead.x, ahead.y, root.z + .32 * k, root.z - .65 * k);

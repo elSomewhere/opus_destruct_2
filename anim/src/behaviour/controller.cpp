@@ -486,6 +486,11 @@ void Behaviours::prepare(f64 dt, const WorldPose& pose) {
     carry_root();
   }
   if (mode == BodyMode::Lying || mode == BodyMode::Rising) ctl.hold_feet = true;
+  if (physical && mode == BodyMode::Animated && plan.stance == Stance::Prone) {
+    // Let the hands choose reachable support from the physical trunk. The
+    // pelvis weight stays zero: its motor still pulls towards the travel goal.
+    ctl.pelvis_pos = pose.p[H::pelvis];
+  }
   if (mode == BodyMode::Falling) {
     // the legs carry nothing now: loose, bent; the trunk curls a little
     ctl.relax_legs = smoothstep(0.05, 0.35, mode_time);
@@ -565,7 +570,8 @@ void Behaviours::modes(f64 dt, const WorldPose& pose) {
       const f64 dev = hypot2(ex, ey);
       // (a host that moves its character faster than a body can follow: the body is carried after
       // the plan rather than left behind)
-      if (upset_ <= 0.0 && !force_react_ && dev > 0.3 * kk) carry_body(ex, ey, pp.z - bp.z, dev - 0.3 * kk);
+      const bool ground_travel = plan.stance == Stance::Prone || plan.stance == Stance::Down;
+      if (!ground_travel && upset_ <= 0.0 && !force_react_ && dev > 0.3 * kk) carry_body(ex, ey, pp.z - bp.z, dev - 0.3 * kk);
       // (lagging behind a hurried start is not a fall; being pushed sideways is)
       const f64 vs = hypot2(plan.velocity.x, plan.velocity.y);
       const f64 lateral = vs > 0.3 ? std::abs(ex * plan.velocity.y - ey * plan.velocity.x) / vs : dev;
@@ -643,12 +649,20 @@ void Behaviours::modes(f64 dt, const WorldPose& pose) {
     }
     case BodyMode::Rising: {
       writhing = false;
+      // The landing can still turn the trunk during the gathering pause. Pick
+      // the roll from the body now, not from the side it first landed on.
+      if (physical && plan.down()) align_lying(pose, true);
       // gather for a moment, then get up through the stances: briskly unhurt, slowly hurt
       const f64 hurt =
           clamp(capabilities().pain + 0.6 * std::max((1 - capabilities().legs[0].control), (1 - capabilities().legs[1].control)) + 0.5 * daze_, 0.0, 1.0);
       if (mode_time > 0.3 + 0.5 * hurt && plan.down() && plan.stance == Stance::Down && plan.stance_progress() >= 1.0) plan.get_up(lerp(1.45, 0.7, hurt));
       // (up to the host's stance: standing, or prone to crawl away)
-      if (mode_time > 0.6 && !plan.down() && plan.stance != Stance::Down && plan.stance == plan.stance_target() && plan.stance_progress() >= 1.0) set_mode(BodyMode::Animated);
+      // The plan can finish its roll while the physical trunk is still on its
+      // side. Keep the root with the body until it has turned over; letting the
+      // host steer now drags a supine body sideways through its crawl targets.
+      const bool turned = !physical || plan.stance != Stance::Prone || capabilities().crawl == CrawlStyle::Scoot ||
+          (rotate(pose.q[H::pelvis], V3{0, 1, 0}).z < -.65 && rotate(pose.q[H::chest], V3{0, 1, 0}).z < -.45);
+      if (mode_time > 0.6 && turned && !plan.down() && plan.stance != Stance::Down && plan.stance == plan.stance_target() && plan.stance_progress() >= 1.0) set_mode(BodyMode::Animated);
       break;
     }
     case BodyMode::Dying: {
@@ -1085,7 +1099,7 @@ void Behaviours::hold_wound(f64 /*dt*/, const WorldPose& pose) {
   // These hands carry the trunk while getting up or pulling it along the
   // ground. At rest they can press the wound again.
   const bool on_ground = plan.stance == Stance::Prone || plan.stance_target() == Stance::Prone;
-  if (mode == BodyMode::Rising || (on_ground && (plan.transitioning() || hypot2(plan.velocity.x, plan.velocity.y) > .04))) return;
+  if (mode == BodyMode::Rising || (on_ground && (mode_time < .5 || plan.transitioning() || hypot2(plan.velocity.x, plan.velocity.y) > .04))) return;
   const f64 kk = k();
   const f64 tone = mode == BodyMode::Dying ? clamp(1.0 - mode_time / std::max(0.3, dying_for_), 0.0, 1.0) : 1.0;
   if (tone < 0.1 || dying_head_) return;
@@ -1333,7 +1347,27 @@ void Behaviours::drive_pre(f64 dt) {
     up.max_torque = (standing ? 380.0 : ground_motion ? 160.0 : 900.0) * rise;
     if (ground_motion) {
       up.stiffness *= .25;up.damping *= .5;
-      steer.max_force = std::min(steer.max_force, m * G * .45 * rise);
+      const f64 pulling = plan.stance == Stance::Prone && mode == BodyMode::Animated ?
+          .6 * std::max(capabilities().arms[0].strength, capabilities().arms[1].strength) : .45;
+      steer.max_force = std::min(steer.max_force, m * G * pulling * rise);
+      // A support can lift the hips but must not press them through a trapped
+      // arm or a higher contact. That downward motor force multiplies floor
+      // friction and can lock a one-arm crawl in place. Let gravity lower it.
+      if (sup.target.z < bd.parts[B::pelvis]->point(sup.local).z) sup.enabled = false;
+    }
+    if (mode == BodyMode::Rising && plan.stance_target() == Stance::Prone &&
+        capabilities().crawl != CrawlStyle::Scoot &&
+        std::any_of(bd.parts.begin(), bd.parts.end(), [](const RigidBody* b) { return !b->gone && b->contact && b->contact_normal.z > .45; })) {
+      // Turning over starts at the shoulder. Asking only the pelvis to roll a
+      // loaded trunk leaves it balanced on its side with an arm trapped below.
+      const f64 strength = std::max(capabilities().arms[0].strength, capabilities().arms[1].strength) * capabilities().trunk;
+      auto& chest = *bd.chest_turn;
+      chest.enabled = true;
+      chest.tilt_only = false;
+      chest.target = target.q[H::chest];
+      chest.stiffness = 900 * strength;
+      chest.damping = 90 * strength;
+      chest.max_torque = 120 * strength;
     }
   } else if (mode == BodyMode::Reacting) {
     // the legs hold the body up (as strong as they are) but no longer steer it
@@ -1520,6 +1554,19 @@ void Behaviours::drive_pre(f64 dt) {
       turn.stiffness *= 2;
       turn.max_torque *= 2;
       turn.damping *= 2;
+    }
+    const auto& crawl_hand = plan.crawl_hands.hands[size_t(i)];
+    if (mode == BodyMode::Animated && crawl_hand.active && !on_weapon) {
+      // A planted palm holds its surface while the shoulder passes over it.
+      // The next reach is led gently; it never pins a hand moving through air.
+      att.local += plan.arms.palm_offset(i == 0 ? Side::L : Side::R);
+      att.target = crawl_hand.pos;
+      if (crawl_hand.planted) {
+        att.target_vel = {};
+        att.stiffness = hm * 12000 * control;
+        att.damping = hm * 140 * control;
+        att.max_force = 350 * control;
+      }
     }
   }
 
