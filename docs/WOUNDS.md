@@ -183,3 +183,7 @@ for each backend. Character Foundry provides before/after gait, COM sway, falls,
 crawl speed and grip-release measurements, plus frame sequences of actions and
 damage scenarios. Its nine presets call `damage/scenarios.hpp`, the same descriptors
 available to native tests and other hosts.
+
+### Projectile momentum and tissue displacement
+
+A projectile spends energy on tissue removal and on quadratic drag integrated over each crossed cell's actual chord. The latter uses `E_out / E_in = exp(-rho Cd A length / mass)` before the removal and cavity budgets are combined. Expanding rounds have a larger effective area. These are calibrated game parameters, not a ballistics certification. The remaining energy determines exit momentum; the incoming-minus-exit impulse is applied once at the impact. Increasing speed therefore increases absorbed momentum instead of reducing it for an otherwise fixed channel. Root steering yields briefly to that impulse. Native and Foundry bridge regressions check speed response, finite energy and momentum accounting on both backends.

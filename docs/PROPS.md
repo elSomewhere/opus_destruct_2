@@ -146,3 +146,9 @@ for damage.
 The secondary grip is a point constraint between the two physical hands, with equal
 and opposite impulses. Its orienter controls wrist alignment. Both solvers use the
 same attachment path; core articulation records are version 2 and still read version 1.
+
+### Support in dynamic scenes
+
+The second hand targets the physical secondary socket, including firearm carries. Actions that explicitly move that hand can release it; actions requiring two hands keep it constrained. If an engaged secondary grip stays more than 18 cm (scaled by build) from its socket for 0.2 seconds, it gives way: a one-handed-capable item stays in the primary hand, otherwise it is released as wrenched. The timer is runtime solver state, reset on attachment. The Foundry interpolates attachment transforms and body poses at the same render time.
+
+Single-hand blade and club strikes now declare `one_hand` in the action definition. The motion plan refuses them with a clear reason while the instance uses two hands; `Brawler` applies the same filter. This prevents a free-hand guard in a single-hand clip fighting the physical secondary grip.

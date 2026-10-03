@@ -80,6 +80,7 @@ class Pedestrians {
   i32 walkers() const { return static_cast<i32>(walkers_.size()); }
 
  private:
+  friend class Game;
   Game* g_;
   std::map<u32, Walker> walkers_;  // by character
   std::vector<Noise> noises_, heard_;

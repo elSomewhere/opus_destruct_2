@@ -187,3 +187,7 @@ knocks them down; a rocket wounds and throws people while retaining coherent bod
   body): the hybrid policy makes bodies near awake pieces deep for that.
 - What the host does not know how to make again (a `restore` that returns nothing: a look it
   no longer has) stays in the world as a stranger's body (an articulation no one draws).
+
+## Game-world character domains
+
+The Foundry now hosts a full `Game` and `CharacterSystem` and draws through the game WebGPU renderer. `Game::ensure_characters()` also supports roadless test worlds. Seeded stairs, rough ground, obstacles, native movers and falling objects are defined in the game library. `TravelState` handles collision-aware host root requests; foot placement and muscle response remain in `svx_anim`. See [DOMAINS.md](DOMAINS.md) for setup, backend differences and regression coverage.

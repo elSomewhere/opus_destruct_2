@@ -16,4 +16,13 @@ f64 WorldCollision::raycast(const V3& o, const V3& d, f64 max_dist) const {
   return h.hit ? h.distance : -1.0;
 }
 
+std::optional<f64> WorldCollision::ground_height(f64 x, f64 y, f64 top, f64 bottom) const {
+  if (top < bottom) return std::nullopt;
+  const auto hit = world_->raycast({x, y, top}, {0, 0, -1}, top - bottom);
+  // The world's query includes rigid pieces and oriented grids, but not the
+  // character's links. Feet can stand on rubble without standing on themselves.
+  if (hit.hit && hit.normal.z > .45) return hit.pos.z;
+  return VoxelCollision::ground_height(x, y, top, bottom);
+}
+
 }  // namespace svx::anim

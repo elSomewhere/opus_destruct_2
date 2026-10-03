@@ -14,6 +14,7 @@ class WorldCollision final : public VoxelCollision {
   const World& world() const { return *world_; }
   void rebind(const World& w) { world_ = &w; }  // (the world moved)
   f64 raycast(const V3& o, const V3& d, f64 max_dist) const override;
+  std::optional<f64> ground_height(f64 x, f64 y, f64 top, f64 bottom) const override;
 
  private:
   const World* world_;

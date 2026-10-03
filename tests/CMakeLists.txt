@@ -74,6 +74,7 @@ add_executable(svx_game_tests
   game/test_doom.cpp
   game/test_doom_textures.cpp
   game/test_game.cpp
+  game/test_domain.cpp
   game/test_movers.cpp
   game/test_replay.cpp
   game/test_vehicles.cpp

@@ -127,6 +127,7 @@ void Brawler::update(f64 dt) {
       } else if (!action.requires_tags.empty())
         continue;
       if (action.two_hands && (!held || held->style != WieldStyle::TwoHands)) continue;
+      if (action.one_hand && held && held->style == WieldStyle::TwoHands) continue;
       if (action.reverse_grip && (!held || held->style != WieldStyle::Reverse)) continue;
       const bool kick = action.drives(Channel::StrikeFootR) || action.drives(Channel::StrikeFootL);
       if (kick && (d < 1.05 || me.controlled() || std::min(cap.legs[0].support, cap.legs[1].support) < .6)) continue;

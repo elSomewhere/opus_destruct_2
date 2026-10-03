@@ -14,6 +14,7 @@ import type { GridFrames } from '../engine/gridframes.ts';
 import type { Atmosphere, TextureInfo, Vec3 } from '../engine/protocol.ts';
 import { APPEARANCE_FLOATS, DebugView, FAR_WATER_SLOT, Material, Paint, PAINT_SLOT_BASE, VERTEX_STRIDE } from '../engine/protocol.ts';
 import { GpuAtlas } from './atlas.ts';
+import { DebugRenderer } from './debug.ts';
 import { CharacterRenderer, type CharacterDraw } from './characters.ts';
 import { ChunkStore } from './chunks.ts';
 import { FIELD_UNIFORM_FLOATS, FieldStore, MAX_FIELDS } from './fields.ts';
@@ -52,6 +53,8 @@ const MAX_WHEELS = 512;
 const MAX_VIEW_DISTANCE = 600;
 
 export interface Camera {
+  /** Editor orthographic views use the same world and character pipelines. */
+  orthographicHeight?: number;
   eye: Vec3;
   /** Unit view direction. */
   forward: Vec3;
@@ -61,6 +64,8 @@ export interface Camera {
 }
 
 export interface FrameInputs {
+  debugLines?: Float32Array;
+  debugDepthLines?: Float32Array;
   camera: Camera;
   timeS: number;
   debugView: DebugView;
@@ -239,6 +244,7 @@ export function lightOf(a: Atmosphere | null | undefined): Light {
 }
 
 export class Renderer {
+  private debug!: DebugRenderer;
   readonly gpu: GpuContext;
   readonly chunks: ChunkStore;
   /** Water surface meshes (the engine's water), drawn translucent after the opaque world. */
@@ -505,6 +511,7 @@ export class Renderer {
     this.ropes = new RopeRenderer(device);
     this.wheels = new WheelRenderer(device, 1 + MAX_ISLANDS + MAX_GRIDS, MAX_WHEELS);
     this.skids = new SkidMarks(device);
+    this.debug = new DebugRenderer(device, this.frameLayout, frameWgsl, format, SAMPLES, DEPTH_FORMAT);
     this.characters = new CharacterRenderer(device, this.frameLayout, module('characters', characterWgsl), format, SAMPLES, DEPTH_FORMAT);
     this.particles = new ParticleSystem(device);
   }
@@ -543,6 +550,11 @@ export class Renderer {
 
   get textureBytes(): number {
     return this.atlas.bytes;
+  }
+
+  dispose(): void {
+    this.clearWorld();this.debug.dispose();this.colorTarget?.destroy();this.depthTarget?.destroy();
+    this.gpu.context.unconfigure();this.device.destroy();
   }
 
   /** Drops all world geometry (before loading another world). */
@@ -614,6 +626,11 @@ export class Renderer {
     const up: Vec3 = [0, 0, 1];
     mat4LookDir(this.view, cam.eye, cam.forward, up);
     mat4PerspectiveReversedInfinite(this.proj, cam.fovY, aspect, cam.near);
+    if (cam.orthographicHeight) {
+      const far=1000;this.proj.fill(0);
+      this.proj[0]=2/(cam.orthographicHeight*aspect);this.proj[5]=2/cam.orthographicHeight;
+      this.proj[10]=1/(far-cam.near);this.proj[14]=far/(far-cam.near);this.proj[15]=1;
+    }
     mat4Multiply(this.viewProj, this.proj, this.view);
     frustumPlanes(this.viewProj, this.planes);
 
@@ -673,6 +690,7 @@ export class Renderer {
     this.characters.prepare(input.characters ?? [], this.planes, cam.eye, MAX_VIEW_DISTANCE);
 
     const particleCount = this.particles.upload();
+    this.debug.upload(input.debugLines, input.debugDepthLines);
     if (this.fields.version !== this.boundFieldsVersion) this.rebuildFrameBindGroup();
     this.device.queue.writeBuffer(this.fieldBuffer, 0, this.fields.uniform);
 
@@ -730,6 +748,7 @@ export class Renderer {
       pass.setVertexBuffer(0, this.particles.buffer);
       pass.draw(6, particleCount);
     }
+    this.debug.draw(pass);
     pass.end();
     this.device.queue.submit([encoder.finish()]);
 

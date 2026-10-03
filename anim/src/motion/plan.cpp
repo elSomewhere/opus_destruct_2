@@ -179,6 +179,10 @@ bool MotionPlan::play(std::string_view name, std::optional<V3> target, f64 rate)
     action_refusal = "action requires free hands";
     return false;
   }
+  if (def->one_hand && props.held() && props.held()->style == WieldStyle::TwoHands) {
+    action_refusal = "action requires a one-handed grip";
+    return false;
+  }
   if (def->two_hands && (!props.held() || props.held()->style != WieldStyle::TwoHands)) {
     action_refusal = "action requires a two-handed grip";
     return false;
@@ -540,6 +544,10 @@ void MotionPlan::update(f64 dt_in) {
   // ---- gait ---------------------------------------------------------------------------------
   const f64 aim_move = aim_w_.x;
   GaitParams g = gait_for(speed, crouch, k);
+  const f64 stairs = smoothstep(.08, .35, std::abs(climb));
+  g.freq *= 1 + .35 * stairs;
+  g.lift += .035 * k * stairs;
+  g.duty = lerp(g.duty, .68, stairs);
   // personal style, the tactical walk while aiming, a limp, pain
   const f64 tactical = clamp(aim_move, 0.0, 1.0) * (1.0 - g.run);
   const f64 limp_l = ctl.limp[0], limp_r = ctl.limp[1];

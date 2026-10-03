@@ -372,7 +372,7 @@ V3 HumanoidBody::body_at(const WorldPose& world, i32 i) const {
   return rotate(world.q[size_t(bone)], com_local[size_t(i)]) + world.p[size_t(bone)];
 }
 
-void HumanoidBody::track(const WorldPose& target, const Pose& local, const WorldPose* prev, f64 dt) {
+void HumanoidBody::track(const WorldPose& target, const Pose& local, const WorldPose* prev, f64 dt, f64 max_rate) {
   const std::vector<Quat>& q = target.q;
   for (i32 i = 1; i < kBodyCount; ++i) {
     Joint& j = *joints[size_t(i)];
@@ -381,8 +381,12 @@ void HumanoidBody::track(const WorldPose& target, const Pose& local, const World
     const Quat& ch = q[cb];
     if (prev && dt > 0.0) {
       // the relative rotation's rate, in the parent's frame
-      const Quat prev_rel = conj(prev->q[pb]) * prev->q[cb];
+      const Quat prev_rel = max_rate < 30 ? j.target : conj(prev->q[pb]) * prev->q[cb];
       j.target = conj(pa) * ch;
+      if (max_rate < 30) {
+        const f64 angle = norm(qerror(j.target, prev_rel));
+        if (angle > max_rate * dt) j.target = qslerp(prev_rel, j.target, max_rate * dt / angle);
+      }
       // R = qA^-1 qB turns at w (in A's frame) when R(t + dt) = exp(w dt) R(t)
       const V3 d = qerror(j.target, prev_rel);
       const f64 vx = clamp_v(d.x / dt, 30.0), vy = clamp_v(d.y / dt, 30.0), vz = clamp_v(d.z / dt, 30.0);

@@ -73,7 +73,9 @@ StanceSample& prone_sample(const Dims& d, f64 crawl, f64 phase, StanceSample& ou
   const f64 draw_l = std::max(0.0, s) * c, draw_r = std::max(0.0, -s) * c;
   l.ankle = V3{(-0.15 - 0.14 * draw_l) * k, (-0.86 + 0.3 * draw_l) * k, 0.09 * k};
   r.ankle = V3{(0.15 + 0.14 * draw_r) * k, (-0.86 + 0.3 * draw_r) * k, 0.09 * k};
-  const Quat toes_down = qx(-kPi / 2.0 - 0.35);
+  // The instep rests along the floor behind the shin. A vertical foot here
+  // drove its toes through the ground while the ankle tried to hold its height.
+  const Quat toes_down = qx(-kPi + .25);
   l.rot = qz(0.3 * draw_l) * toes_down;
   r.rot = qz(-0.3 * draw_r) * toes_down;
   l.pole = V3{-0.8 * draw_l, 0.1, -1};

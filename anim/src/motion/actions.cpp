@@ -89,6 +89,7 @@ ActionDef mirror_action(const ActionDef& def, std::string name) {
   out.requires_tags = def.requires_tags;
   out.free_hands = def.free_hands;
   out.two_hands = def.two_hands;
+  out.one_hand = def.one_hand;
   out.reverse_grip = def.reverse_grip;
   out.minimum_leg = def.minimum_leg;
   out.minimum_arm = def.minimum_arm;
@@ -777,6 +778,7 @@ std::vector<ActionDef> build() {
     ActionDef& a = def(s.name, s.duration, .14, .25);
     a.requires_tags = {s.tag};
     a.two_hands = s.two;
+    a.one_hand = !s.two;
     a.reverse_grip = s.reverse;
     a.targeted = true;
     a.reach = s.reverse ? .3 : std::string_view(s.feature) == "pommel" ? (s.two ? .4 : .5) : .9;

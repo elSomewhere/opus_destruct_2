@@ -30,6 +30,7 @@ struct Person {
 struct Worker {
   svx_engine* e = nullptr;
   std::set<unsigned> meshes, palettes;
+  std::map<unsigned, svx::V3> head_centres;
   std::vector<Person> people;
   double checksum = 0.0;  // (the reads are used)
   int blood = 0, stains = 0;
@@ -57,6 +58,15 @@ struct Worker {
         const unsigned bone = v[k * 20 + 16];
         REQUIRE(bone < 23);
       }
+      // Aim through this mesh's head, including its build scale. Applying an
+      // unscaled rest-rig brain point can miss a small, turned head entirely.
+      svx::V3 lo{1e30,1e30,1e30}, hi{-1e30,-1e30,-1e30};
+      bool head_found=false;
+      for(size_t k=0;k<vc;++k)if(v[k*20+16]==svx::anim::H::head){
+        float at[3];std::memcpy(at,v.data()+k*20,12);head_found=true;
+        for(int a=0;a<3;++a){lo[a]=std::min(lo[a],double(at[a]));hi[a]=std::max(hi[a],double(at[a]));}
+      }
+      if(head_found)head_centres[id]=(lo+hi)*.5;
       meshes.insert(id);
     }
     for (int i = 0; i < nr; ++i) meshes.erase(svx_character_mesh_removed(e, i));
@@ -84,7 +94,8 @@ struct Worker {
         p.palette = static_cast<unsigned>(r[2]);
         p.flags = static_cast<unsigned>(r[3]);
         for (int a = 0; a < 3; ++a) p.c[a] = r[4 + a];
-        const auto brain = svx::anim::humanoid_skeleton()->rest_head[svx::anim::H::head] + svx::V3{0, 0, .1};
+        const auto found = head_centres.find(p.mesh);
+        const auto brain = found == head_centres.end() ? svx::anim::humanoid_skeleton()->rest_head[svx::anim::H::head] + svx::V3{0,0,.1} : found->second;
         const float* head = &skin[(static_cast<size_t>(k) * 23 + svx::anim::H::head) * 16];
         for (int a = 0; a < 3; ++a) p.head[a] = head[a] * brain.x + head[4 + a] * brain.y + head[8 + a] * brain.z + head[12 + a];
         p.radius = r[7];

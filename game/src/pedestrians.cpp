@@ -1255,6 +1255,16 @@ void Game::pedestrians_after_tick() {
   if (Pedestrians* p = people()) p->after_tick();
 }
 
+anim::CharacterSystem& Game::ensure_characters() {
+  if (!people_) people_ = std::make_unique<Pedestrians>(*this);
+  people_->make_looks();
+  if (!chars_) {
+    chars_ = std::make_shared<anim::CharacterSystem>();
+    world_.add_system(chars_);
+  }
+  return *chars_;
+}
+
 Game::ShotHit Game::raycast_shot(const V3& origin, const V3& dir, f64 max_dist) const {
   ShotHit out;
   if (!world_.in_range(origin) || !(max_dist > 0.0)) return out;

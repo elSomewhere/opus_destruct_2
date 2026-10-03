@@ -9,7 +9,7 @@ bool Character::attach(const PropInstancePtr& p, AttachPoint point, std::string_
   p->previous_velocity = anchor.v;
   p->previous_angular = anchor.w;
   p->filtered_acceleration = p->filtered_angular = p->swing = p->swing_velocity = V3{};
-  p->load = p->impulse_load = 0;
+  p->load = p->impulse_load = p->support_gap_time = 0;
   p->strength = attachment_strength(*p);
   update_load();
   return true;
@@ -215,6 +215,22 @@ void Character::update_props(f64 dt) {
       p->previous_velocity = anchor.v;
       p->previous_angular = anchor.w;
       p->filtered_acceleration = p->filtered_angular = V3{};
+    }
+    if (held && p->style == WieldStyle::TwoHands && behaviours.physical) {
+      const size_t side = p->point == AttachPoint::RightHand ? 0 : 1;
+      const size_t bone = side == 0 ? H::handL : H::handR;
+      const V3 palm = pose.p[bone] + rotate(pose.q[bone], motion.arms.palm_offset(side == 0 ? Side::L : Side::R));
+      const auto* support = a.socket("secondary");
+      const bool pulling = body.hands[side]->enabled && body.hands[side]->reference;
+      const f64 gap = support ? norm(palm - p->pos - rotate(p->rotation, support->point)) : 0;
+      p->support_gap_time = pulling && gap > .18 * motion.k ? p->support_gap_time + dt : 0;
+      // A grip can catch up briefly after a shove; it cannot remain stretched
+      // across open space. Keep the primary hand when the archetype allows it.
+      if (p->support_gap_time > .2) {
+        if (a.has("one_handed") && motion.props.regrip(p->point,p->point,p->socket,WieldStyle::OneHand,ReleaseReason::Wrenched)) {
+          p->support_gap_time = 0;refresh_held_prop();
+        } else { detach(p->point,ReleaseReason::Wrenched);continue; }
+      }
     }
     const i32 bone = attachment_bone(p->point), part = HumanoidBody::body_of_bone(bone);
     const auto& anchor = *body.parts[size_t(part)];

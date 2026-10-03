@@ -86,12 +86,18 @@ void RigidBody::apply_pos(const V3& p, const V3& r) {
   x.x += p.x * inv_mass;
   x.y += p.y * inv_mass;
   x.z += p.z * inv_mass;
-  rotate(inv_inertia_mul(V3{r.y * p.z - r.z * p.y, r.z * p.x - r.x * p.z, r.x * p.y - r.y * p.x}));
+  V3 turn = inv_inertia_mul(V3{r.y * p.z - r.z * p.y, r.z * p.x - r.x * p.z, r.x * p.y - r.y * p.x});
+  // A deeply trapped distal link is recovered over several solves. Rotating it
+  // all the way out in one anchor correction caused visible 90-degree snaps.
+  clamp_length(turn, .15);
+  rotate(turn);
 }
 
 void RigidBody::apply_rot(const V3& l) {
   if (inv_mass == 0.0) return;
-  rotate(inv_inertia_mul(l));
+  V3 turn = inv_inertia_mul(l);
+  clamp_length(turn, .15);
+  rotate(turn);
 }
 
 void RigidBody::rotate(const V3& a) {
@@ -393,6 +399,14 @@ void RigidSystem::substep_once(f64 h) {
   for (auto& bp : bodies) {
     RigidBody& b = *bp;
     if (b.inv_mass == 0.0) continue;
+    // The pose must obey the same angular travel bound as its velocity.
+    // Capping only reconstructed w left a light wrist teleporting through a
+    // large projection and reporting a perfectly modest spin afterwards.
+    const f64 angle = norm(qerror(b.q, b.pq));
+    if (angle > spin_cap * h) {
+      b.q = qslerp(b.pq, b.q, spin_cap * h / angle);
+      b.update_inertia();
+    }
     b.v = (b.x - b.px) * ih;
     // dq = q pq^-1
     const Quat& q = b.q;
@@ -417,6 +431,9 @@ void RigidSystem::substep_once(f64 h) {
   for (auto& o : orienters)
     if (o->enabled && o->damping > 0.0) damp_orienter(*o, h);
   for (size_t i = 0; i < contact_count_; ++i) contact_velocity(contacts_[i], h);
+  // Damping and friction also apply impulses. The next substep must begin
+  // within the same spin bound as the position solve, including a tiny wrist.
+  for (auto& b : bodies) clamp_length(b->w, spin_cap);
 }
 
 // ---- joints ----------------------------------------------------------------------------------
@@ -603,7 +620,9 @@ void RigidSystem::damp_joint(Joint& j, f64 h) {
   if (w <= 0.0) return;
   // the share of the relative spin a damper c takes out of the limb in a substep
   const f64 frac = j.eff_inertia > 0.0 ? std::min(1.0, (j.damping * h) / j.eff_inertia) : std::min(1.0, j.damping * h * w);
-  const f64 l = (r * frac) / w;
+  // A driven damper is a muscle too. Without this bound a changed target rate
+  // could inject an unlimited angular impulse into a light wrist in one step.
+  const f64 l = std::min((r * frac) / w, j.max_torque * h);
   A->w = A->w + A->inv_inertia_mul(u * l);
   B->w = B->w - B->inv_inertia_mul(u * l);
 }

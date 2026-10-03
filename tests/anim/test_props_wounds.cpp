@@ -85,7 +85,9 @@ TEST_CASE(
     d.direction = {0, 1, 0};
     d.mass = kind == DamageKind::Projectile ? .008 : 3;
     d.speed = kind == DamageKind::Projectile ? 850 : 40;
-    d.diameter = .025;
+    // The projectile is a 9 mm round. An 8 g, 25 mm disk now correctly spends
+    // its energy displacing tissue and need not exit this slab.
+    d.diameter = kind == DamageKind::Projectile ? .009 : .025;
     d.alignment = .6;
     auto zero = d;
     zero.speed = 0;
@@ -679,5 +681,17 @@ TEST_CASE("props: physiological releases and strong severed grips keep their ide
     other.knock_out(3);
     s.frame({&other});
     CHECK(phone->last_release == ReleaseReason::KnockedOut);
+  }
+}
+
+TEST_CASE("props: one-hand strikes refuse a two-hand wield and report the mismatch") {
+  for(Path path:{Path::Shallow,Path::Deep}) {
+    Scene s(path);auto& c=s.civilian();
+    REQUIRE(c.swap(prop_archetype("sword"),AttachPoint::RightHand,"primary",WieldStyle::TwoHands));
+    run(s,c,1);
+    CHECK_FALSE(c.motion.play("bladeThrust"));
+    CHECK(c.motion.action_refusal=="action requires a one-handed grip");
+    REQUIRE(c.swap(prop_archetype("sword"),AttachPoint::RightHand,"primary",WieldStyle::OneHand));
+    CHECK(c.motion.play("bladeThrust"));
   }
 }

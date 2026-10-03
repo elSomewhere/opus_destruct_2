@@ -54,7 +54,8 @@ std::vector<Cell> path(const VoxelModel& model, std::span<const f32> skin, const
     f64 t = begin;
     for (int n = 0; n < 2048 && t <= end; ++n) {
       const size_t index = size_t(p.index(at[0], at[1], at[2]));
-      if (p.cells[index]) hits.push_back({pi, index, model.cell_centre(at[0] + p.origin[0], at[1] + p.origin[1], at[2] + p.origin[2]), t});
+      if (p.cells[index]) hits.push_back({pi, index, model.cell_centre(at[0] + p.origin[0], at[1] + p.origin[1], at[2] + p.origin[2]), t,
+                                        std::max(0.0, std::min({next.x, next.y, next.z, end}) - t)});
       const int a = next.x <= next.y && next.x <= next.z ? 0 : next.y <= next.z ? 1 : 2;
       t = next[a];
       next[a] += delta[a];
@@ -97,13 +98,23 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
       if (!p.cells[c.index]) continue;
       const u8 slot = u8(p.cells[c.index] - 1);
       const f64 cost = (material ? material->penetration : tissue_resistance(slot)) * volume;
-      const f64 take = std::min(energy, cost);
+      // A fast projectile also displaces tissue. Paying only for deleted cells
+      // made a faster round transfer *less* momentum, regardless of its drag.
+      // Integrate quadratic drag over the DDA chord: E_out/E_in = exp(-rho Cd A l/m).
+      // This spends the projectile's budget; the lost momentum is applied once.
+      f64 drag = 0;
+      if (!material && d.kind == DamageKind::Projectile && d.mass > 0) {
+        const f64 expansion = d.construction == ProjectileConstruction::Expanding ? 1.8 : 1.0;
+        const f64 area = kPi * d.diameter * d.diameter * .25 * expansion;
+        drag = 1 - exp(-1060 * .6 * area * c.weight / d.mass);
+      }
+      const f64 take = std::min(energy, cost + energy * drag);
       out.tissue.push_back({p.bone, c.rest, take, energy >= cost ? 1.0 : 0.0, slot == Slot::Bone});
       if (energy < cost) {
         energy = 0;
         break;
       }
-      energy -= cost;
+      energy -= take;
       remove(c);
       ++crossed;
       last = world(skin.data() + p.bone * 16, c.rest);

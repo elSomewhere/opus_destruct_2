@@ -35,6 +35,7 @@ struct PropInstance {
   Quat rotation;
   V3 swing, swing_velocity, previous_velocity, previous_angular, filtered_acceleration, filtered_angular;
   f64 strength = 1, load = 0, impulse_load = 0;
+  f64 support_gap_time = 0;  // a second hand trying, but unable, to retain its grip
   ReleaseReason last_release = ReleaseReason::Voluntary;
   ModelPtr damaged_model;
   u32 geometry_version = 0;

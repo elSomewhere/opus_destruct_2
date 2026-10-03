@@ -321,6 +321,8 @@ class Game {
   const PedestrianConfig& pedestrians() const { return peds_; }
   // The characters (null until people come: a world with walkways, pedestrians enabled).
   anim::CharacterSystem* characters() { return chars_.get(); }
+  // Tools and authored levels may spawn characters without a road population.
+  anim::CharacterSystem& ensure_characters();
   const anim::CharacterSystem* characters() const { return chars_.get(); }
   std::vector<CharacterView> character_views() const;
   // A shot's line against the world and the characters: the nearest hit (character: whose body,

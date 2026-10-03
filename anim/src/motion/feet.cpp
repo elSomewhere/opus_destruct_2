@@ -144,6 +144,9 @@ void FootPlanner::on_tread(const Foot& f, V3& tgt, f64 yaw) const {
     tgt.z = z;
     return;
   }
+  // There is no whole tread within reach. Keep this step on its current tread;
+  // an unchecked target could otherwise jump two risers at touchdown.
+  tgt = f.lift;
 }
 
 f64 FootPlanner::clearance(const V3& a, const V3& b, f64 care) const {
@@ -349,7 +352,10 @@ void FootPlanner::update(f64 dt, const FeetContext& c, f64 prev_phase) {
         tgt.y += hy;
         tgt.z = ground(tgt.x, tgt.y, c.ground_z, c.ground_z);
         on_tread(f, tgt, c.body_yaw);
-        f.target = tgt;
+        // Once descending onto a tread, keep that tread. Re-predicting after
+        // the root crosses a riser made the landing height jump in late swing.
+        const bool terrain_step = std::abs(f.target.z - f.lift.z) > .04 * k || std::abs(tgt.z - f.lift.z) > .04 * k;
+        if (!terrain_step || f.swing < .55 || f.clear < 0) f.target = tgt;
         // turning on the spot: a step opens the foot at most ~43 degrees past the other one
         f64 heading = c.body_yaw;
         if (!c.moving) {

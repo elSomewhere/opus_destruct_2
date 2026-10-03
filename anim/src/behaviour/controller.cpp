@@ -106,6 +106,7 @@ Zone Behaviours::hit(const HitInfo& info, i32 part, const WorldPose& pose) {
   // Preserve the requested total momentum. Any impulse a light limb cannot
   // absorb is shared by the connected body; no extra linear or angular kick.
   if (left > 0.0) body.shove(d * (left / body.total_mass));
+  if (J > .05) impact_yield_ = std::max(impact_yield_, .12 + .08 * clamp(J / 10, 0.0, 1.0));
   if (!alive) return zone;
   if (part <= B::head) {
     const V3 local_dir = rotate(conj(plan.root_rot()), d);
@@ -424,6 +425,7 @@ void Behaviours::prepare(f64 dt, const WorldPose& pose) {
   }
   daze_ = std::max(0.0, daze_ - dt * (conscious ? 0.9 : 0.0));
   shock_ = std::max(0.0, shock_ - dt * 2.2);
+  impact_yield_ = std::max(0.0, impact_yield_ - dt);
   nerves = std::max(0.0, nerves - dt * 0.05);
   upset_ = std::max(0.0, upset_ - dt);
   step_cooldown_ = std::max(0.0, step_cooldown_ - dt);
@@ -1163,7 +1165,25 @@ void Behaviours::drive_pre(f64 dt) {
   const f64 m = bd.total_mass;
   const WorldPose& target = plan.world;
   const WorldPose& prev_t = plan.prev_world;
-  bd.track(target, plan.pose, &prev_t, dt);
+  const bool ground_motion = mode == BodyMode::Falling || mode == BodyMode::Lying || mode == BodyMode::Rising ||
+      plan.stance == Stance::Prone || plan.stance == Stance::Down;
+  // Ground recovery must keep the same dissipative body as the landing. Raising
+  // the spin allowance from 14 to 80 on entering Lying let a trapped wrist whirl.
+  if (mode == BodyMode::Lying && mode_time > .3) bd.system.spin_cap = 4;
+  else if (ground_motion || mode == BodyMode::Dead || mode == BodyMode::Dying) bd.system.spin_cap = 14;
+  else if (mode == BodyMode::Reacting) bd.system.spin_cap = 24;
+  else bd.system.spin_cap = plan.busy() ? 60 : 36;
+  if (alive) bd.system.angular_drag = ground_motion && (bd.parts[B::pelvis]->contact || bd.parts[B::chest]->contact) ? .08 : .9;
+  // A broad trunk contact resists spinning about the floor normal. The sphere
+  // contacts supply sliding friction but have no contact-patch torsion of their own.
+  if (ground_motion) for (i32 part : {B::pelvis, B::spine, B::chest}) {
+    auto& b = *bd.parts[size_t(part)];
+    if (!b.contact || b.contact_normal.z < .45) continue;
+    const V3 n = b.contact_normal;
+    const f64 inverse = dot(n, b.inv_inertia_mul(n));
+    if (inverse > 0) b.torque -= n * clamp(dot(b.w, n) * 18 / inverse, -b.mass * G * .12, b.mass * G * .12);
+  }
+  bd.track(target, plan.pose, &prev_t, dt, ground_motion ? 7.0 : 30.0);
   const f64 idt = dt > 0.0 ? 1.0 / dt : 0.0;
 
   // ---- tone ----
@@ -1281,12 +1301,14 @@ void Behaviours::drive_pre(f64 dt) {
   bd.chest_turn->enabled = false;
   sup.target.z = pel.z;
   sup.target_vel.z = (pel.z - prev_t.p[H::pelvis].z) * idt;
+  if (ground_motion) sup.target_vel.z = clamp(sup.target_vel.z, -1.2, 1.2);
   steer.target.x = pel.x;
   steer.target.y = pel.y;
   // (the pelvis target's own velocity: the plan's smoothed velocity lags a hurried start)
   const V3 pel_prev = prev_t.p[H::pelvis];
   steer.target_vel.x = (pel.x - pel_prev.x) * idt;
   steer.target_vel.y = (pel.y - pel_prev.y) * idt;
+  if (ground_motion && norm(steer.target_vel) > 1.5) steer.target_vel = vnorm(steer.target_vel) * 1.5;
   up.target = target.q[H::pelvis];
   up.tilt_only = false;
   const f64 rise = mode == BodyMode::Rising ? smoothstep(0.15, 1.0, mode_time) : 1.0;
@@ -1301,10 +1323,18 @@ void Behaviours::drive_pre(f64 dt) {
     // (legs push harder on the move: starts, stops, turns)
     const f64 sp = hypot2(vel_t.x, vel_t.y);
     steer.max_force = m * G * (standing ? 0.8 + 0.7 * std::min(1.0, sp / 3.0) : 1.2) * rise;
+    const f64 yield = 1 - .95 * smoothstep(0.0, .06, impact_yield_);
+    steer.stiffness *= yield;
+    steer.damping *= yield;
+    steer.max_force *= yield;
     up.enabled = true;
     up.stiffness = 5000.0 * rise;
     up.damping = 450.0 * rise;
-    up.max_torque = (standing ? 380.0 : 900.0) * rise;
+    up.max_torque = (standing ? 380.0 : ground_motion ? 160.0 : 900.0) * rise;
+    if (ground_motion) {
+      up.stiffness *= .25;up.damping *= .5;
+      steer.max_force = std::min(steer.max_force, m * G * .45 * rise);
+    }
   } else if (mode == BodyMode::Reacting) {
     // the legs hold the body up (as strong as they are) but no longer steer it
     sup.enabled = true;
@@ -1450,14 +1480,17 @@ void Behaviours::drive_pre(f64 dt) {
     hv.x += ((w.x - wp.x) * idt - hv.x) * fv;
     hv.y += ((w.y - wp.y) * idt - hv.y) * fv;
     hv.z += ((w.z - wp.z) * idt - hv.z) * fv;
+    const f64 hand_speed = ground_motion ? 2.0 : 12.0;
+    if (norm(hv) > hand_speed) hv = vnorm(hv) * hand_speed;
     if (grip <= 0.01 || tone < 0.05 || lost[i == 0 ? B::handL : B::handR]) continue;
     att.target = w;
     att.target_vel = hv;
     turn.target = target.q[hand_bone];
     // The support hand follows the physical grip, including the primary arm's
     // lag under load. Following only the plan would let it slip off a heavy bat.
-    const bool support_grip =
-        on_weapon && held->style == WieldStyle::TwoHands && attachment_bone(held->point) != i32(hand_bone) && !held->archetype->has("firearm");
+    const auto* action = action_def(plan.action_name());
+    const bool hand_task = action && !action->two_hands && action->drives(i == 0 ? Channel::HandL : Channel::HandR);
+    const bool support_grip = on_weapon && held->style == WieldStyle::TwoHands && attachment_bone(held->point) != i32(hand_bone) && !hand_task;
     if (support_grip) {
       if (const auto* socket = held->archetype->socket("secondary")) {
         const Side side = i == 0 ? Side::L : Side::R;
@@ -1516,7 +1549,6 @@ void Behaviours::drive_post(f64 dt, WorldPose& out) {
   }
   detect_trips(out, dt);
   // (a body gone limp is heavy: no part of it whirls about on an impact)
-  bd.system.spin_cap = mode == BodyMode::Dead || mode == BodyMode::Dying || mode == BodyMode::Falling ? 14.0 : 80.0;
   // Soft tissue dissipates a trunk landing; inert limbs should not spring the body upright.
   if ((mode == BodyMode::Dying || mode == BodyMode::Dead) && (bd.parts[B::pelvis]->contact || bd.parts[B::chest]->contact)) {
     bd.system.linear_drag = .002;

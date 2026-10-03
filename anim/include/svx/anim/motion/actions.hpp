@@ -92,7 +92,7 @@ struct ActionDef {
   std::optional<f64> kick_pitch;
   // Needs a prop in the right hand (a knife).
   std::vector<std::string> requires_tags;
-  bool free_hands = false, two_hands = false, reverse_grip = false;
+  bool free_hands = false, one_hand = false, two_hands = false, reverse_grip = false;
   f64 minimum_leg = .25, minimum_arm = .2;
   f64 target_height = 1.5;  // untargeted strikes aim here, metres at height scale 1
   i32 lead_side = 0;       // combat support step: -1 left lead, +1 right lead; 0 no step

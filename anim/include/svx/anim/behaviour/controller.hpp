@@ -156,6 +156,7 @@ class Behaviours {
   std::array<f32, kBodyCount> stun_{};  // per-body stun (0..1: tone lost), recovering
   f64 daze_ = 0.0;   // whole-body daze (0..1)
   f64 shock_ = 0.0;  // the shock of a hit (0..1): the whole body slack for a moment
+  f64 impact_yield_ = 0.0;  // seconds before root steering can resist a fresh impact
   f64 down_until_ = 0.0;
   std::optional<V3> hit_from_;  // where the last blow came from, and when (the head turns to look for it)
   f64 hit_at_ = -99.0;
