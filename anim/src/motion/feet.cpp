@@ -41,6 +41,7 @@ void FootPlanner::reset(const V3& root_in, f64 yaw, f64 crouch, const GaitStyle&
     f.planted = true;
     f.held = false;
     f.forced = false;
+    f.unloaded = false;
     f.swing = 0.0;
     f.pitch = 0.0;
     f.clear = 0.0;
@@ -68,7 +69,7 @@ void FootPlanner::place_at(const std::array<V3, 2>& soles, const std::array<f64,
 
 void FootPlanner::step(i32 i, const V3& target_in, f64 duration, std::optional<f64> yaw) {
   Foot& f = feet[size_t(i)];
-  if (f.held) return;
+  if (f.held || f.unloaded) return;
   const V3 target = target_in;
   if (!f.planted) {
     // re-aim a swing under way (the gait's becomes the balance's, from where the foot is)
@@ -198,6 +199,15 @@ f64 FootPlanner::advance_clock(f64 dt, const FeetContext& c, const std::array<f6
   const GaitParams& g = c.gait;
   const GaitStyle& st = c.style;
   f64 prev = phase;
+  for (size_t i = 0; i < 2; ++i) {
+    const bool was_unloaded = feet[i].unloaded;
+    feet[i].unloaded = c.support[i] < .12 && c.support[1 - i] > .4;
+    if (feet[i].unloaded) feet[i].forced = false;
+    else if (was_unloaded) {
+      feet[i].planted = true;
+      step(i32(i), nominal(feet[i], c.root, c.body_yaw, c.crouch, st), .25, c.body_yaw);
+    }
+  }
   const bool forced = feet[0].forced || feet[1].forced;
   if (forced) {
     // the balance is stepping: the clock waits
@@ -213,8 +223,8 @@ f64 FootPlanner::advance_clock(f64 dt, const FeetContext& c, const std::array<f6
       const V3 dir{c.vel.x / sp, c.vel.y / sp, 0};
       const f64 d0 = (feet[0].pos.x - c.root.x) * dir.x + (feet[0].pos.y - c.root.y) * dir.y;
       const f64 d1 = (feet[1].pos.x - c.root.x) * dir.x + (feet[1].pos.y - c.root.y) * dir.y;
-      const Foot& lead = d0 <= d1 ? feet[0] : feet[1];
-      if (feet[0].planted && feet[1].planted) {
+      const Foot& lead = feet[0].unloaded ? feet[1] : feet[1].unloaded ? feet[0] : d0 <= d1 ? feet[0] : feet[1];
+      if ((feet[0].planted || feet[0].unloaded) && (feet[1].planted || feet[1].unloaded)) {
         phase = fract(g.duty - 0.02 - lead.offset);
         prev = phase;
       }
@@ -223,12 +233,13 @@ f64 FootPlanner::advance_clock(f64 dt, const FeetContext& c, const std::array<f6
     // a limp hurries the step off the wounded leg
     const bool in_stance_l = fract(phase) < g.duty;
     const bool in_stance_r = fract(phase + 0.5) < g.duty;
-    const f64 hurry = 1.0 + 0.9 * (in_stance_l ? limp[0] : 0.0) + 0.9 * (in_stance_r ? limp[1] : 0.0);
+    const f64 hurry = 1.0 + 0.9 * (in_stance_l && !feet[0].unloaded ? limp[0] : 0.0) +
+                      0.9 * (in_stance_r && !feet[1].unloaded ? limp[1] : 0.0);
     phase = fract(phase + g.freq * hurry * dt);
   } else if (!c.airborne) {
     bool need = false;
     for (const Foot& f : feet) {
-      if (f.held) continue;
+      if (f.held || f.unloaded) continue;
       if (!f.planted) {
         need = true;
       } else {
@@ -277,6 +288,22 @@ void FootPlanner::update(f64 dt, const FeetContext& c, f64 prev_phase) {
   for (size_t fi = 0; fi < 2; ++fi) {
     Foot& f = feet[fi];
     f.since += dt;
+    f.unloaded = c.support[fi] < .12 && c.support[1 - fi] > .4;
+    if (f.unloaded && !c.airborne) {
+      // A controlled leg can be tucked behind the good one. With little motor
+      // control it drags close to the floor, without becoming a support contact.
+      V3 sole = nominal(f, c.root, c.body_yaw, c.crouch, st);
+      sole -= V3{cos(c.body_yaw), sin(c.body_yaw), 0} * (.12 * k);
+      sole.z = ground(sole.x, sole.y, c.ground_z, c.ground_z) + lerp(.015, .16, c.control[fi]) * k;
+      f.pitch = -.2 * (1 - c.control[fi]);
+      f.yaw += wrap_angle(c.body_yaw - f.yaw) * (1 - exp(-dt * 10));
+      f.ankle = vlerp(f.ankle, ankle_from_plant(sole, f.yaw, f.pitch), 1 - exp(-dt * 10));
+      f.pos = f.ankle - ankle_from_plant({}, f.yaw, f.pitch);
+      f.target = f.pos;
+      f.planted = f.forced = false;
+      f.swing = 0;
+      continue;
+    }
     if (f.held) continue;
     const f64 p0 = fract(prev_phase + f.offset);
     const f64 p1 = fract(phase + f.offset);

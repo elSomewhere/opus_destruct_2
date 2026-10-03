@@ -31,6 +31,7 @@ struct Foot {
   bool planted = true;
   bool held = false;    // taken over by an action (a kick): the planter leaves it alone
   bool forced = false;  // a step the body's balance asked for (not the gait's)
+  bool unloaded = false;  // this leg cannot bear weight; it cannot catch a balance step
   // where the foot rests (sole, world) and its heading
   V3 pos;
   f64 yaw = 0.0;
@@ -70,6 +71,7 @@ struct FeetContext {
   f64 crouch = 0.0;
   GaitStyle style;
   std::array<f64, 2> control{1, 1};  // foot clearance falls with motor control
+  std::array<f64, 2> support{1, 1};
   std::array<V3, 2> hips;  // the hip joints (world) this frame (a foot stays within the leg's reach)
   bool hold = false;       // the balance has the feet: the gait lifts none of them (only forced steps)
   f64 care = 1.0;          // 0..1: how much attention the steps get (clearance over obstacles)

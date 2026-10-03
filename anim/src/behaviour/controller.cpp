@@ -330,7 +330,7 @@ void Behaviours::sense(const WorldPose& pose) {
   const auto& feet = plan.feet_planner.feet;
   for (i32 fi = 0; fi < 2; ++fi) {
     const auto& f = feet[size_t(fi)];
-    if (!f.planted || time_ < snag_until_[size_t(fi)]) continue;
+    if (!f.planted || capabilities().legs[size_t(fi)].support < .12 || time_ < snag_until_[size_t(fi)]) continue;
     const f64 c = cos(f.yaw), s = sin(f.yaw);
     const f64 corners[4][2] = {{-0.07, -0.045}, {-0.07, 0.045}, {0.18, -0.04}, {0.18, 0.04}};
     for (const auto& ab : corners) {
@@ -358,7 +358,9 @@ void Behaviours::sense(const WorldPose& pose) {
   // (both feet off the ground: a running stride, a jump; judged by where the feet will land)
   airborne = support.empty();
   if (airborne) {
-    for (const auto& f : feet) {
+    for (size_t i = 0; i < 2; ++i) {
+      if (capabilities().legs[i].support < .12) continue;
+      const auto& f = feet[i];
       pts.push_back(f.target.x);
       pts.push_back(f.target.y);
     }
@@ -722,7 +724,8 @@ void Behaviours::balance(f64 /*dt*/) {
   const f64 legs = leg_strength();
   const f64 max_step = 1.1 * plan.leg_len * clamp(legs, 0.45, 1.0);
   // (a stride the gait had begun becomes the balance's step)
-  const i32 swinging = !feet[0].planted && !feet[0].held ? 0 : !feet[1].planted && !feet[1].held ? 1 : -1;
+  const i32 swinging = !feet[0].planted && !feet[0].held && capabilities().legs[0].support >= .12 ? 0
+                       : !feet[1].planted && !feet[1].held && capabilities().legs[1].support >= .12 ? 1 : -1;
   // (just outside, a weight shift does it: no step)
   const f64 margin = 0.05 * kk;
   const V3 right{sin(plan.root_yaw), -cos(plan.root_yaw), 0.0};
@@ -773,7 +776,7 @@ void Behaviours::balance(f64 /*dt*/) {
     f64 score = -kInf;
     for (i32 i = 0; i < 2; ++i) {
       const auto& f = feet[size_t(i)];
-      if (!f.planted || f.held || time_ < snag_until_[size_t(i)]) continue;
+      if (!f.planted || f.held || capabilities().legs[size_t(i)].support < .12 || time_ < snag_until_[size_t(i)]) continue;
       const f64 behind = -((f.pos.x - com.x) * dir.x + (f.pos.y - com.y) * dir.y);
       const f64 side_fit = static_cast<f64>(f.side) * dot(dir, right);
       const f64 sc = behind + 0.12 * side_fit - (f.since < 0.12 ? 1.0 : 0.0);
@@ -1410,8 +1413,9 @@ void Behaviours::drive_pre(f64 dt) {
   // A broken or paralysed leg cannot pin itself to the plan with a foot assist.
   for (size_t side = 0; side < 2; ++side) {
     const f64 control = capabilities().legs[side].control;
-    bd.feet[side]->max_force *= control;
-    bd.feet[side]->stiffness *= control;
+    const f64 support = feet[side].planted ? capabilities().legs[side].support : 1;
+    bd.feet[side]->max_force *= control * support;
+    bd.feet[side]->stiffness *= control * support;
     bd.feet_turn[side]->max_torque *= control;
     bd.feet_turn[side]->stiffness *= control;
   }

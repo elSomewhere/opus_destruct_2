@@ -133,6 +133,15 @@ stationary. Weak arms hang, release loads and stop being selected for strikes.
 Actions refuse unusable support legs or insufficient consciousness. Hosts clamp
 their movement requests to the returned speed limit.
 
+With one leg below 0.12 support and the other above 0.4, the foot planner uses a
+single support cycle. The sound foot loads, pushes off and lands again; the
+disabled foot stays out of the support polygon and balance-step selection.
+Remaining control determines whether that leg tucks behind the body or drags.
+The pelvis shifts over the supporting foot and follows one loading/flight cycle.
+Foot pins are limited by both control and weight-bearing capability. Restoring
+support through a tooling override places the foot before returning to walking.
+Healthy two-leg gait uses the unchanged planning path.
+
 These are tunable game mechanics expressed in physical units. Material and
 physiology coefficients are authored approximations; the same descriptor need
 not produce identical contact geometry in two differently posed bodies.

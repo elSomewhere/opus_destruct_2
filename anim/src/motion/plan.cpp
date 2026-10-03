@@ -544,6 +544,19 @@ void MotionPlan::update(f64 dt_in) {
   const f64 tactical = clamp(aim_move, 0.0, 1.0) * (1.0 - g.run);
   const f64 limp_l = ctl.limp[0], limp_r = ctl.limp[1];
   const f64 pain = ctl.pain;
+  const size_t support_side = capabilities.legs[0].support > capabilities.legs[1].support ? 0 : 1;
+  const bool one_leg = capabilities.legs[1 - support_side].support < .12 && capabilities.legs[support_side].support > .4;
+  if (one_leg) {
+    // One foot loads, pushes off and lands again. The other never supplies the
+    // second beat of an ordinary walking cycle.
+    g.freq = 1.35 * std::sqrt(std::max(.16, capabilities.legs[support_side].drive));
+    g.duty = .72;
+    g.lift = .055 * k;
+    g.run = 0;
+    g.sway *= .25;
+    g.hip_yaw *= .25;
+    g.hip_roll *= .25;
+  }
   g.freq *= 1.0 - 0.06 * load_fraction;
   g.bob *= 1.0 + 0.15 * load_fraction;
   g.freq = g.freq / pow(st.stride * (1.0 - 0.15 * tactical), 0.7);
@@ -581,6 +594,7 @@ void MotionPlan::update(f64 dt_in) {
   fctx.hips = {world.p[H::thighL], world.p[H::thighR]};
   fctx.care = ctl.care;
   fctx.control = {capabilities.legs[0].control, capabilities.legs[1].control};
+  fctx.support = {capabilities.legs[0].support, capabilities.legs[1].support};
   fctx.ground_z = root_pos.z;
   fctx.hold = ctl.hold_feet;
   if (stand_w < 0.999) {
@@ -611,7 +625,10 @@ void MotionPlan::update(f64 dt_in) {
   const f64 run = g.run;
   const f64 move_amt = smoothstep(0.1, 0.9, speed);
   const f64 idle = 1.0 - move_amt;
-  const f64 walk_bob = moving ? g.bob * (1.0 - 2.0 * run) * cos(kTau * 2.0 * (ph - D / 2.0)) : 0.0;
+  const f64 support_phase = fract(ph + feet.feet[support_side].offset);
+  const f64 hop_bob = support_phase < D ? -.025 * k * sin(kPi * support_phase / D)
+                                      : .045 * k * sin(kPi * (support_phase - D) / (1 - D));
+  const f64 walk_bob = moving ? one_leg ? hop_bob : g.bob * (1.0 - 2.0 * run) * cos(kTau * 2.0 * (ph - D / 2.0)) : 0.0;
   const f64 sway_x = moving ? -g.sway * cos(kTau * (ph - D / 2.0)) : 0.0;
   const f64 hip_yaw_osc = moving ? -g.hip_yaw * cos(kTau * ph) : 0.0;
   f64 hip_roll = moving ? -g.hip_roll * cos(kTau * (ph - (1.0 + D) / 2.0)) : 0.0;
@@ -629,7 +646,7 @@ void MotionPlan::update(f64 dt_in) {
   hip_roll += shift_.x * 0.07 * idle;
   const f64 crouch_drop = crouch * 0.4 * k;
   // limp: the pelvis dips over the wounded leg while it bears weight
-  const f64 limp_dip = moving ? (fract(ph) < D ? limp_l : 0.0) * 0.05 * k + (fract(ph + 0.5) < D ? limp_r : 0.0) * 0.05 * k : 0.0;
+  const f64 limp_dip = moving && !one_leg ? (fract(ph) < D ? limp_l : 0.0) * 0.05 * k + (fract(ph + 0.5) < D ? limp_r : 0.0) * 0.05 * k : 0.0;
   f64 pz = rest_pelvis_z - g.sink - crouch_drop + walk_bob - 0.012 * k * idle - limp_dip;
   // the hips: standing, they stay with the planted feet (the trunk and the head turn first, the
   // feet follow with steps); walking, they turn towards the motion
@@ -652,7 +669,7 @@ void MotionPlan::update(f64 dt_in) {
   trunk_lean_.omega = lerp(7.5, 5.0, st.heavy);
   trunk_lean_.update(clamp(a_local.y * (0.03 + 0.02 * st.heavy), -0.2, 0.24), dt);
   const Quat pelvis_rot = qz(pelvis_yaw) * qeuler(-(0.1 * crouch + 0.05 * g.lean), hip_roll + bank_.x * 0.6, 0.0);
-  const f64 px = sway_x + shift_x;
+  const f64 px = one_leg ? to_model(feet.feet[support_side].ankle).x : sway_x + shift_x;
   const f64 py = -0.07 * crouch * k;
   const f64 lowest = rest_pelvis_z - 0.2 * k - crouch_drop;
   for (const Foot& f : feet.feet) {
