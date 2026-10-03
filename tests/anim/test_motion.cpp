@@ -68,41 +68,54 @@ PropPtr make_prop(PropKind kind) {
             : kind == PropKind::Pistol ? std::vector<std::string>{"firearm", "handgun", "one_handed", "two_handed"}
                                        : std::vector<std::string>{"firearm", "long_firearm", "two_handed"};
   p->hanging_rotation = kind == PropKind::Knife ? Quat{} : qx(kind == PropKind::Pistol ? -0.3 : -0.9);
+  // (how the plan holds it: authored, as a host's archetype has it)
+  if (kind == PropKind::Knife) {
+    p->hold.in_hand = true;
+    p->hold.guard = "knifeGuard";
+  } else if (kind == PropKind::Pistol) {
+    p->hold.style = HoldStyle::Aimed;
+    p->hold.recoil = .15;
+    p->hold.kick_back = .8;
+    p->hold.kick_pitch = 12;
+    p->hold.shot_impulse = 1.2;
+  } else {
+    p->hold.style = HoldStyle::Shouldered;
+  }
   if (kind == PropKind::Lmg) {
     p->ready_pitch = -0.32;
     p->ready_roll = 0.45;
-    p->ready_stock_offset = {.01, -.12, -.1};
+    p->ready_butt_offset = {.01, -.12, -.1};
   }
   switch (kind) {
     case PropKind::Rifle:
       p->support = V3{0, 0.3 * 0.8, 0.03};
-      p->stock = V3{0, -0.43 * 0.8, 0.05};
-      p->muzzle = V3{0, 0.68 * 0.8, 0.068};
-      p->magazine = V3{0, 0.12 * 0.8, -0.06};
+      p->butt = V3{0, -0.43 * 0.8, 0.05};
+      p->tip = V3{0, 0.68 * 0.8, 0.068};
+      p->reload_point = V3{0, 0.12 * 0.8, -0.06};
       break;
     case PropKind::Lmg:
       p->support = V3{0, 0.25, 0.03};
-      p->stock = V3{0, -0.39, 0.05};
-      p->muzzle = V3{0, 0.65, 0.07};
-      p->magazine = V3{0.03, 0.1, -0.05};
+      p->butt = V3{0, -0.39, 0.05};
+      p->tip = V3{0, 0.65, 0.07};
+      p->reload_point = V3{0.03, 0.1, -0.05};
       break;
     case PropKind::Pistol:
       p->support = V3{-0.018, -0.01, -0.035};
-      p->stock = V3{0, -0.03, 0.02};
-      p->muzzle = V3{0, 0.18, 0.045};
-      p->magazine = V3{0, -0.01, -0.08};
+      p->butt = V3{0, -0.03, 0.02};
+      p->tip = V3{0, 0.18, 0.045};
+      p->reload_point = V3{0, -0.01, -0.08};
       p->one_handed = true;
       break;
     case PropKind::Knife:
-      p->stock = V3{0, -0.07, 0};
-      p->muzzle = V3{0, 0.22, 0.004};
+      p->butt = V3{0, -0.07, 0};
+      p->tip = V3{0, 0.22, 0.004};
       p->one_handed = true;
       break;
     default:
       break;
   }
   p->id = "fixture";
-  p->model = make_knife()->model;
+  p->model = prop_archetype("knife")->model;
   p->attachments = {"rightHand", "leftHand"};
   p->sockets = {{"primary", p->grip}, {"secondary", p->support}};
   return p;
@@ -373,10 +386,10 @@ namespace {
 
 const V3 kFar{1.5, 10, 1.4};
 
-// The cosine between the held prop's barrel (+y) and the direction from its muzzle to t.
+// The cosine between the held prop's barrel (+y) and the direction from its tip to t.
 f64 barrel_cos(const MotionPlan& a, const V3& t) {
   const V3 ax = rotate(a.weapon_rot, V3{0, 1, 0});
-  const V3 m = a.prop_point(a.weapon->muzzle);
+  const V3 m = a.prop_point(a.weapon->tip);
   const V3 d = t - m;
   return dot(ax, d) / hypot3(d.x, d.y, d.z);
 }
@@ -394,7 +407,7 @@ std::unique_ptr<MotionPlan> armed(PropKind kind, Carry carry) {
 
 TEST_CASE("anim motion: every prop has voxels (small ones on a finer lattice) and drops as a persistent instance") {
   const HumanVariant civilian = make_civilian(1);
-  for (const PropPtr& prop : {make_rifle(), make_smg(), make_lmg(), make_pistol(), make_knife()}) {
+  for (const PropPtr& prop : {prop_archetype("rifle"), prop_archetype("smg"), prop_archetype("lmg"), prop_archetype("pistol"), prop_archetype("knife")}) {
     CAPTURE(prop->id);
     const VoxelPart* part = prop->model->parts.empty() ? nullptr : &prop->model->parts[0];
     CHECK_MESSAGE((part && part->count >= 40), (part ? part->count : 0) << " voxels");

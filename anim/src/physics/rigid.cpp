@@ -89,14 +89,14 @@ void RigidBody::apply_pos(const V3& p, const V3& r) {
   V3 turn = inv_inertia_mul(V3{r.y * p.z - r.z * p.y, r.z * p.x - r.x * p.z, r.x * p.y - r.y * p.x});
   // A deeply trapped distal link is recovered over several solves. Rotating it
   // all the way out in one anchor correction caused visible 90-degree snaps.
-  clamp_length(turn, .15);
+  if (max_turn > 0.0) clamp_length(turn, max_turn);
   rotate(turn);
 }
 
 void RigidBody::apply_rot(const V3& l) {
   if (inv_mass == 0.0) return;
   V3 turn = inv_inertia_mul(l);
-  clamp_length(turn, .15);
+  if (max_turn > 0.0) clamp_length(turn, max_turn);
   rotate(turn);
 }
 
@@ -402,7 +402,7 @@ void RigidSystem::substep_once(f64 h) {
     // The pose must obey the same angular travel bound as its velocity.
     // Capping only reconstructed w left a light wrist teleporting through a
     // large projection and reporting a perfectly modest spin afterwards.
-    const f64 angle = norm(qerror(b.q, b.pq));
+    const f64 angle = clamps ? norm(qerror(b.q, b.pq)) : 0.0;
     if (angle > spin_cap * h) {
       b.q = qslerp(b.pq, b.q, spin_cap * h / angle);
       b.update_inertia();
@@ -433,7 +433,8 @@ void RigidSystem::substep_once(f64 h) {
   for (size_t i = 0; i < contact_count_; ++i) contact_velocity(contacts_[i], h);
   // Damping and friction also apply impulses. The next substep must begin
   // within the same spin bound as the position solve, including a tiny wrist.
-  for (auto& b : bodies) clamp_length(b->w, spin_cap);
+  if (clamps)
+    for (auto& b : bodies) clamp_length(b->w, spin_cap);
 }
 
 // ---- joints ----------------------------------------------------------------------------------
@@ -622,7 +623,7 @@ void RigidSystem::damp_joint(Joint& j, f64 h) {
   const f64 frac = j.eff_inertia > 0.0 ? std::min(1.0, (j.damping * h) / j.eff_inertia) : std::min(1.0, j.damping * h * w);
   // A driven damper is a muscle too. Without this bound a changed target rate
   // could inject an unlimited angular impulse into a light wrist in one step.
-  const f64 l = std::min((r * frac) / w, j.max_torque * h);
+  const f64 l = clamps ? std::min((r * frac) / w, j.max_torque * h) : (r * frac) / w;
   A->w = A->w + A->inv_inertia_mul(u * l);
   B->w = B->w - B->inv_inertia_mul(u * l);
 }

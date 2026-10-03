@@ -335,4 +335,12 @@ f64 pow(f64 x, f64 y) {
   return exp(y * log(x));
 }
 
+f64 cbrt(f64 x) {
+  if (x == 0.0 || !std::isfinite(x)) return x;
+  const f64 a = std::fabs(x);
+  f64 r = pow(a, 1.0 / 3.0);
+  r -= (r * r * r - a) / (3.0 * r * r);
+  return x < 0.0 ? -r : r;
+}
+
 }  // namespace svx::dm

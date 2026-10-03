@@ -26,13 +26,13 @@ Plants register_plants(World& w) {
   Material leaves;
   leaves.name = "leaves";
   leaves.rho = 80.0;
-  leaves.decorative = true;
+  leaves.non_structural = true;
   leaves.passable = true;
   REQUIRE(w.register_material(leaves, &p.leaves));
   Material hedge;
   hedge.name = "hedge";
   hedge.rho = 300.0;
-  hedge.decorative = true;
+  hedge.non_structural = true;
   REQUIRE(w.register_material(hedge, &p.hedge));
   return p;
 }

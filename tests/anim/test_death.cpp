@@ -34,7 +34,7 @@ struct DeathTrace {
 // A soldier standing (or running) who dies from a shot (or a blast); per-frame traces.
 DeathTrace death(Path path, const DeathOpts& o) {
   Scene s(path);
-  Character& c = s.add(make_soldier(static_cast<i32>(o.seed)), 1.0, kPi / 2.0, V3{0, 0, s.ground}, make_rifle());
+  Character& c = s.add(make_soldier(static_cast<i32>(o.seed)), 1.0, kPi / 2.0, V3{0, 0, s.ground}, prop_archetype("rifle"));
   f64 y = 0.0;
   for (i32 i = 0; i < 90; ++i) {
     y += o.speed * DT;
@@ -243,7 +243,7 @@ TEST_CASE("death: a body that tips over collapses; it never pivots on its hips a
 namespace {
 
 Character& soldier4(Scene& s) {
-  Character& c = s.add(make_soldier(4), 1.0, kPi / 2.0, V3{0, 0, s.ground}, make_rifle());  // (facing +y)
+  Character& c = s.add(make_soldier(4), 1.0, kPi / 2.0, V3{0, 0, s.ground}, prop_archetype("rifle"));  // (facing +y)
   for (i32 i = 0; i < 30; ++i) s.frame({&c});
   return c;
 }
@@ -323,7 +323,7 @@ TEST_CASE("character: its damage record makes it again with its wounds, without 
     REQUIRE(!rec.empty());
     MESSAGE(pn << ": record " << rec.size() << " bytes, " << c.model->voxel_count() << " voxels left");
 
-    Character& d = s.add(make_soldier(4), 2.0, kPi / 2.0, V3{3, 0, s.ground}, make_rifle());
+    Character& d = s.add(make_soldier(4), 2.0, kPi / 2.0, V3{3, 0, s.ground}, prop_archetype("rifle"));
     REQUIRE(d.restore_damage(rec));
     CHECK(d.owns_model);
     CHECK(d.model->voxel_count() == c.model->voxel_count());

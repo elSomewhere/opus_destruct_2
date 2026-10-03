@@ -39,7 +39,40 @@ Zone zone_of_part(i32 part) {
   }
 }
 
-void Injuries::add(const Injury& i) { list.push_back(i); }
+namespace {
+f64 hurt(const Injury& i) {
+  const f64 settle = exp(-i.age / 20.0);
+  return (i.lasting + (i.severity - i.lasting) * settle) * std::min(1.0, i.age / 0.35);
+}
+}  // namespace
+
+// Past `cap` the oldest injury of a zone that has two joins the next one there: their hurt and
+// lasting share combine as `update` sums them, so the zone's summary stays what it was.
+void Injuries::add(const Injury& i) {
+  list.push_back(i);
+  while (list.size() > cap) {
+    size_t from = list.size(), into = list.size();
+    for (size_t a = 0; a < list.size() && from == list.size(); ++a)
+      for (size_t b = a + 1; b < list.size(); ++b)
+        if (list[b].zone == list[a].zone) {
+          from = a;
+          into = b;
+          break;
+        }
+    if (from == list.size()) {
+      list.pop_front();
+      continue;
+    }
+    const Injury& a = list[from];
+    Injury& b = list[into];
+    const f64 now = 1 - (1 - hurt(a)) * (1 - hurt(b));
+    b.lasting = 1 - (1 - a.lasting) * (1 - b.lasting);
+    const f64 ramp = std::max(1e-3, std::min(1.0, b.age / 0.35));
+    b.severity = clamp(b.lasting + (now / ramp - b.lasting) / exp(-b.age / 20.0), b.lasting, 1.0);
+    b.hold_until = std::max(b.hold_until, b.age + std::max(0.0, a.hold_until - a.age));
+    list.erase(list.begin() + std::ptrdiff_t(from));
+  }
+}
 
 void Injuries::update(f64 dt) {
   legL = legR = armL = armR = trunk = head = 0.0;

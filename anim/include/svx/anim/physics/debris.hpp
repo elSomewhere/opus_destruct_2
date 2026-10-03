@@ -154,7 +154,7 @@ class Character;
 // a piece of a body a blast tore apart (a dropped weapon: none).
 constexpr f64 kSeveredBleed = 30.0, kBlastBleed = 40.0;
 
-// A piece that came off a character (Character::wound, melee, blast, drop_weapon) as a gib: its
+// A piece that came off a character (Character::wound, melee, blast) as a gib: its
 // part where its bone had it, moving and spinning as it came off, shedding `bleed` drops a second.
 Gib* spawn_gib(GibSystem& gibs, const GibSpec& spec, f64 bleed, u64 user = 0);
 // A round's wound (Character::wound, the hit at `point` along `dir`): blood sprays along the shot
@@ -167,8 +167,6 @@ std::vector<Gib*> wound_gibs(GibSystem& gibs, const Character& c, const WoundRes
 // in the order of r.gibs. (Once every character had its blast, the original pushed what it
 // reached: gibs.impulse(center, 4 radius, 11 strength).)
 std::vector<Gib*> blast_gibs(GibSystem& gibs, const Character& c, const BlastResult& r, const V3& center, u64 user = 0);
-// The held prop the dead let go of (Character::drop_weapon) as a gib, thrown 1.5 m/s further along
-// `dir` (the killing blow's). Null without one.
-Gib* drop_weapon_gib(GibSystem& gibs, Character& c, const V3& dir, u64 user = 0);
+// (A prop a character lets go of is not a gib: it stays an instance of its PropRegistry, loose.)
 
 }  // namespace svx::anim

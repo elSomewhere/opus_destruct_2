@@ -39,7 +39,7 @@ void register_city_materials() {
       m.grip = c.grip;
       // (plants: never structure, burn, shed with what they grow on; leaves and grass let
       // everything through)
-      m.decorative = m.passable = c.id == Foliage;
+      m.non_structural = m.passable = c.id == Foliage;
       t.set(static_cast<MaterialId>(c.id), m);
     }
   });

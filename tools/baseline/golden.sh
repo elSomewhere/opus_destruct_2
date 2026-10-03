@@ -58,7 +58,7 @@ while IFS= read -r line || [ -n "$line" ]; do
   [ "$mode" = parity ] && extra=("${PARITY[@]}")
   t0=$(date +%s.%N)
   # shellcheck disable=SC2086
-  res=$("$DIR/svx_$tool" $args "${extra[@]}" --threads "$THREADS" 2>&1)
+  res=$("$DIR/svx_$tool" $args ${extra[@]+"${extra[@]}"} --threads "$THREADS" 2>&1)
   secs=$(echo "$(date +%s.%N) - $t0" | bc)
   got=$(world_hash "$res")
   if [ "$got" = "$want" ]; then

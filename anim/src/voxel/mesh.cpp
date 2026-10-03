@@ -73,6 +73,7 @@ u64 fingerprint(const VoxelPart& p) {
   mix(static_cast<u32>(p.count));
   for (const u8 c : p.cells) mix(c);
   for (const u8 c : p.shade) mix(c);
+  for (const u8 c : p.stain) mix(c);
   return h;
 }
 
@@ -93,9 +94,9 @@ CharacterMesh mesh_part(const VoxelPart& part, f64 voxel_size, i32 bone) {
   for (i32 z = 0; z < nz; ++z)
     for (i32 y = 0; y < ny; ++y)
       for (i32 x = 0; x < nx; ++x) {
-        const u8 c = cells[size_t(x + nx * (y + ny * z))];
-        if (c == 0) continue;
-        const u32 packed = pack_vertex_word(bone, c - 1, part.shade[size_t(part.index(x, y, z))]);
+        const size_t n = size_t(x + nx * (y + ny * z));
+        if (cells[n] == 0) continue;
+        const u32 packed = pack_vertex_word(bone, part.shown_cell(n) - 1, part.shown_shade(n));
         for (const Face& f : kFaces) {
           const i32 lx = x + f.n[0], ly = y + f.n[1], lz = z + f.n[2];
           if (solid(lx, ly, lz)) continue;

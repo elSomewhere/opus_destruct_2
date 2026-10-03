@@ -62,7 +62,8 @@ void Character::wrench(AttachPoint point, const V3& impulse, std::optional<V3> a
     p->impulse_load += force;
     p->load += force;
     pushed_at(HumanoidBody::body_of_bone(attachment_bone(point)), impulse, at.value_or(p->pos));
-    if (p->load > p->archetype->socket(p->socket)->retention * p->strength) detach(point, ReleaseReason::Wrenched);
+    const auto* socket = p->archetype->socket(p->socket);
+    if (p->load > (socket ? socket->retention : 350.0) * p->strength) detach(point, ReleaseReason::Wrenched);
   }
 }
 f64 Character::attachment_strength(const PropInstance& p) const {
@@ -78,7 +79,8 @@ f64 Character::attachment_strength(const PropInstance& p) const {
   f64 total = strength(primary);
   if (p.style == WieldStyle::TwoHands) {
     const auto* socket = p.archetype->socket(p.socket);
-    total += strength(1 - primary) * p.archetype->socket("secondary")->retention / std::max(1e-6, socket->retention);
+    const auto* secondary = p.archetype->socket("secondary");
+    if (socket && secondary) total += strength(1 - primary) * secondary->retention / std::max(1e-6, socket->retention);
   }
   return total;
 }
@@ -103,17 +105,17 @@ void Character::update_load() {
       const auto& a = *p->archetype;
       const size_t part = size_t(HumanoidBody::body_of_bone(attachment_bone(p->point)));
       const auto* socket = a.socket(p->socket);
-      const V3 offset = a.centre - (socket ? socket->point : V3{});
-      masses[part] += a.mass;
-      inertias[part] +=
-          a.inertia +
-          V3{offset.y * offset.y + offset.z * offset.z, offset.x * offset.x + offset.z * offset.z, offset.x * offset.x + offset.y * offset.y} * a.mass;
-      total += a.mass;
+      const V3 offset = p->centre_of_mass() - (socket ? socket->point : V3{});
+      const f64 mass = p->mass();
+      masses[part] += mass;
+      inertias[part] += a.inertia * (mass / a.mass) +
+                        V3{offset.y * offset.y + offset.z * offset.z, offset.x * offset.x + offset.z * offset.z, offset.x * offset.x + offset.y * offset.y} * mass;
+      total += mass;
       const V3 local = p->point == AttachPoint::Back       ? V3{0, -.22, 0}
                        : p->point == AttachPoint::Shoulder ? V3{-.25, -.08, 0}
                        : hand_point(p->point)              ? V3{p->point == AttachPoint::LeftHand ? -.4 : .4, .05, 0}
                                                            : V3{};
-      moment += (local + rotate(a.hanging_rotation, offset)) * a.mass;
+      moment += (local + rotate(a.hanging_rotation, offset)) * mass;
     }
   for (size_t i = 0; i < kBodyCount; ++i) {
     auto& b = *body.parts[i];
@@ -167,9 +169,10 @@ void Character::place_prop(PropInstance& p) {
   }
   if (p.style == WieldStyle::Hanging) {
     // A handle transmits force while letting the load hang under gravity.
-    const V3 pivot = p.pos + rotate(p.rotation, socket->point);
+    const V3 handle = socket ? socket->point : V3{};
+    const V3 pivot = p.pos + rotate(p.rotation, handle);
     p.rotation = qz(motion.root_yaw - kPi / 2);
-    p.pos = pivot - rotate(p.rotation, socket->point);
+    p.pos = pivot - rotate(p.rotation, handle);
   }
 }
 void Character::update_props(f64 dt) {
@@ -253,10 +256,11 @@ void Character::update_props(f64 dt) {
       p->previous_angular = anchor.w;
       p->filtered_angular = vlerp(p->filtered_angular, alpha, 1 - exp(-dt * 12));
       const V3 angular = p->filtered_angular;
-      const V3 lever = rotate(p->rotation, a.centre - socket->point);
-      const f64 torque = norm(cross(lever, V3{0, 0, -9.81 * a.mass})) +
-                         norm(V3{angular.x * a.inertia.x, angular.y * a.inertia.y, angular.z * a.inertia.z}) * (soft ? .1 : 1.0);
-      p->load = a.mass * (9.81 + .15 * accel) + .25 * std::min(100.0, torque) / .05 + p->impulse_load;
+      const f64 mass = p->mass();
+      const V3 lever = rotate(p->rotation, p->centre_of_mass() - (socket ? socket->point : V3{}));
+      const f64 torque = norm(cross(lever, V3{0, 0, -9.81 * mass})) +
+                         norm(V3{angular.x * a.inertia.x, angular.y * a.inertia.y, angular.z * a.inertia.z}) * (mass / a.mass) * (soft ? .1 : 1.0);
+      p->load = mass * (9.81 + .15 * accel) + .25 * std::min(100.0, torque) / .05 + p->impulse_load;
       p->impulse_load *= exp(-dt * 12);
     }
     p->strength = attachment_strength(*p);

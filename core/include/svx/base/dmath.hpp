@@ -21,6 +21,8 @@ f64 exp(f64 x);
 f64 log(f64 x);
 // x >= 0 (negative x: NaN unless y is an integer)
 f64 pow(f64 x, f64 y);
+// pow(|x|, 1/3) refined by a Newton step, with x's sign (cbrt(0) = 0)
+f64 cbrt(f64 x);
 // integer powers by repeated multiplication (exact order: deterministic)
 inline f64 ipow(f64 x, int n) {
   f64 r = 1.0;

@@ -5,7 +5,6 @@
 #include <cstring>
 
 #include "svx/base/parallel.hpp"
-#include "svx/phys/rigid.hpp"
 
 namespace svx::anim {
 
@@ -13,6 +12,10 @@ namespace {
 
 // (the articulations of characters, to their system: its host data's group)
 constexpr u32 kCharacterGroup = 0x52414843;  // "CHAR"
+// (the world's host records of the loose props out of range: World::archive_host_record)
+constexpr u32 kPropRecords = 0x504f5250;  // "PROP"
+// (a corpse's record is written when its damage changes, and at least this often: its wounds age)
+constexpr i64 kRecordRefreshTicks = 600;
 
 f64 ms_since(std::chrono::steady_clock::time_point t) { return std::chrono::duration<f64, std::milli>(std::chrono::steady_clock::now() - t).count(); }
 
@@ -84,6 +87,7 @@ std::vector<CharacterId> CharacterSystem::ids() const {
 CharacterId CharacterSystem::spawn(const CharacterDesc& d) {
   if (!world_ || !d.model || !world_->in_range(d.pos)) return 0;
   CharacterOptions o;
+  o.profile = d.profile;
   o.model = d.model;
   o.palette = d.palette;
   o.collision = collision_.get();
@@ -94,6 +98,7 @@ CharacterId CharacterSystem::spawn(const CharacterDesc& d) {
   o.health = d.health;
   o.seed = d.seed;
   o.mass = d.mass;
+  o.girth = d.girth;
   o.world = world_;
   o.backend = config.policy == BodyPolicy::Shallow ? BodyBackend::Shallow : BodyBackend::Deep;
   o.group = kCharacterGroup;
@@ -164,12 +169,20 @@ void CharacterSystem::record(World& w) {
     const Character& c = *e.c;
     if (!c.bound()) continue;
     const ArticulationId id = c.articulation();
-    // (the dead with their wounds: a corpse shot again is recorded again)
-    if (id == e.recorded && c.alive() == e.recorded_alive && c.alive()) continue;
+    // (the dead with their wounds: a corpse shot again is recorded again - when its damage, its
+    // geometry or what it holds changed, and now and then for the age of its wounds)
+    const bool same = id == e.recorded && c.alive() == e.recorded_alive;
+    if (same && c.alive()) continue;
+    if (same && e.recorded_geometry == c.geometry_version && e.recorded_damage == c.behaviours.damage.revision() &&
+        e.recorded_props == c.attachments().revision && w.ticks() - e.recorded_tick < kRecordRefreshTicks)
+      continue;
     w.set_articulation_data(id, encode_record(e.kind, c.alive(), c.health, e.data, c.alive() ? std::vector<u8>{} : c.damage_record()));
     e.recorded = id;
     e.recorded_alive = c.alive();
     e.recorded_geometry = c.geometry_version;
+    e.recorded_damage = c.behaviours.damage.revision();
+    e.recorded_props = c.attachments().revision;
+    e.recorded_tick = w.ticks();
   }
 }
 
@@ -208,9 +221,11 @@ void CharacterSystem::take_back(World& w) {
       continue;
     }
     CharacterOptions o;
+    o.profile = d.profile;
     o.model = d.model;
     o.palette = d.palette;
     o.collision = collision_.get();
+    o.girth = d.girth;
     o.weapon = d.weapon;
     o.loadout = d.loadout;
     o.wield = d.wield;
@@ -233,7 +248,13 @@ void CharacterSystem::take_back(World& w) {
     }
     e.c->die(nullptr, nullptr, 0.0);
     e.c->health = 0.0;
-    e.c->restore_damage(damage);
+    if (!e.c->restore_damage(damage)) {
+      // (a record that does not fit what the host made: the body stays as it lies, not whole)
+      e.c->release_articulation();
+      strangers.push_back(id);
+      ++restore_failures_;
+      continue;
+    }
     e.recorded = id;
     e.recorded_alive = false;
     e.recorded_geometry = e.c->geometry_version;
@@ -252,9 +273,30 @@ bool CharacterSystem::despawn(CharacterId id) {
 
 void CharacterSystem::on_evicted(World& w, const std::vector<u64>& chunks) {
   rebind(w);
-  if (chars_.empty() || chunks.empty()) return;
-  // (a character whose ground went out of range goes with it: nothing holds it up there)
+  if (chunks.empty()) return;
   const f64 h = w.voxel_size();
+  auto chunk_at = [&](const V3& p) {
+    return IVec3{static_cast<i32>(std::floor(p.x / h + 0.5)) >> kChunkBits, static_cast<i32>(std::floor(p.y / h + 0.5)) >> kChunkBits,
+                 static_cast<i32>(std::floor(p.z / h + 0.5)) >> kChunkBits};
+  };
+  // (a loose prop whose place went out of range goes into the world's archive with its region -
+  // and comes back with it, as the world's own pieces do)
+  std::vector<PropInstancePtr> leaving;
+  for (const auto& [pid, p] : props->all()) {
+    if (p->location != PropLocation::Loose) continue;
+    const IVec3 cc = chunk_at(p->pos);
+    for (i32 dz = -1; dz <= 0; ++dz)
+      if (std::binary_search(chunks.begin(), chunks.end(), key3(cc[0], cc[1], cc[2] + dz))) {
+        leaving.push_back(p);
+        break;
+      }
+  }
+  for (const auto& p : leaving) {
+    w.archive_host_record(kPropRecords, p->id, p->pos, props->record_item(*p));
+    props->retire(p);
+  }
+  if (chars_.empty()) return;
+  // (a character whose ground went out of range goes with it: nothing holds it up there)
   std::vector<CharacterId> gone;
   for (const Entry& e : chars_) {
     const V3 p = e.c->pose.p[H::pelvis];
@@ -274,6 +316,7 @@ void CharacterSystem::on_evicted(World& w, const std::vector<u64>& chunks) {
 void CharacterSystem::pre_step(World& w, f64 dt) {
   const auto t0 = std::chrono::steady_clock::now();
   rebind(w);
+  for (const HostRecord& r : w.take_host_records(kPropRecords)) props->restore_item(r.data);
   if (w.ticks() - scan_tick_ >= 30) {
     scan_tick_ = w.ticks();
     take_back(w);
@@ -314,11 +357,7 @@ void CharacterSystem::level_of_detail(World& w) {
   };
   std::vector<Near> awake;
   if (config.piece_radius > 0.0)
-    for (const auto& bp : w.rigid().bodies) {
-      const Body& b = *bp;
-      if (b.link || b.asleep) continue;
-      awake.push_back(Near{b.box_lo, b.box_hi});
-    }
+    for (const PieceBox& b : w.awake_pieces()) awake.push_back(Near{b.lo, b.hi});
   const f64 hy = config.hysteresis;
   struct Want {
     f64 d = 0.0;
@@ -395,6 +434,7 @@ void CharacterSystem::step(World& w, f64 /*dt*/) {
   // stats
   CharacterStats s;
   s.pre_ms = stats_.pre_ms;
+  s.restore_failures = restore_failures_;
   for (const Entry& e : chars_) {
     const Character& c = *e.c;
     ++s.characters;
@@ -408,8 +448,9 @@ void CharacterSystem::step(World& w, f64 /*dt*/) {
 }
 
 i64 CharacterSystem::memory_bytes() const {
-  i64 n = static_cast<i64>(sizeof(*this)) + static_cast<i64>(chars_.capacity() * sizeof(Entry));
-  for (const Entry& e : chars_) n += e.c->memory_bytes();
+  i64 n = static_cast<i64>(sizeof(*this)) + static_cast<i64>(chars_.capacity() * sizeof(Entry)) + static_cast<i64>(strangers_.capacity() * sizeof(ArticulationId));
+  for (const Entry& e : chars_) n += e.c->memory_bytes() + static_cast<i64>(e.data.capacity());
+  if (props) n += props->memory_bytes();
   return n;
 }
 
@@ -426,7 +467,7 @@ u64 CharacterSystem::state_hash() const {
       h = mix64(h, bits(p.z));
     }
     h = mix64(h, bits(c.health));
-    for (u8 byte : c.damage_record()) h = mix64(h, byte);
+    h = mix64(h, c.damage_hash());
   }
   for (const auto& [id, p] : props->all()) {
     h = mix64(h, id);
@@ -438,8 +479,10 @@ u64 CharacterSystem::state_hash() const {
     for (f64 v : {p->pos.x, p->pos.y, p->pos.z, p->rotation.x, p->rotation.y, p->rotation.z, p->rotation.w, p->velocity.x, p->velocity.y, p->velocity.z,
                   p->state.condition, p->state.strap})
       h = mix64(h, bits(v));
-    for (const auto& part : p->model().parts)
-      for (u8 cell : part.cells) h = mix64(h, cell);
+    h = mix64(h, p->geometry_version);
+    if (p->damaged_model)
+      for (const auto& part : p->model().parts)
+        for (u8 cell : part.cells) h = mix64(h, cell);
   }
   return h;
 }

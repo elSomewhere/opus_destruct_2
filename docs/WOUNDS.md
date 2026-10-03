@@ -23,7 +23,41 @@ sources include endpoints, swept length, sharpness and alignment. Blunt sources
 include contact area. Blasts include pressure, radius and fragment count.
 
 `Character::damage()` is the entry point. `wound`, `melee` and `blast` remain
-compatibility wrappers that construct descriptors. World collision impulses
+compatibility wrappers that construct descriptors. A descriptor with `pellets > 1` is a
+volley: that many rounds of its mass and speed, their directions on a golden-angle spiral
+`spread` rad wide about `direction` and turned by `seed` - the same volley for the same seed -
+each damaging the body in turn, their results summed. A descriptor of no energy does nothing.
+
+### Blasts as a source
+
+A blast is its source's budget, not a script. Its `fragments` (of the descriptor's mass and
+speed) are shared out by the solid angle the body subtends at the source - inside the blast's
+radius as at the radius - nearest parts first, each slowed with distance and damaging as a small
+steel sphere; past 64 hits the hits share the remaining fragments' mass. Its `pressure` is the
+peak absolute pressure at `radius`: the excess over the ambient (101,325 Pa) loads the body,
+level inside the radius and falling as the inverse square of the distance beyond it, out to 3.5
+radii, for a positive phase of 2 ms per metre of radius. It crushes the chest and each limb by the
+impulse on their areas and throws the body by the pressure reflected off it; within half the
+radius its wind tears off the nearest forearm or shin (two within a fifth), 6 kJ at the source for
+an impulse at the radius of 114 kPa m (a rocket's, a grenade's), proportionally less or more for
+others. Ambient air, no fragments or fragments without speed do nothing, and a stronger source
+does more.
+
+`Character::blast(centre, radius, strength)` (the game's, strength ~ the source's energy in MJ) is
+114 kPa over the ambient at a metre for strength 1 - as much over a larger radius' longer phase -
+and as many gram fragments at 350 m/s as put 24 into a body at the radius (slower from sources
+under 20 kJ). The `blast3m` scenario is a hand grenade: 38 kPa over the ambient at its 3 m radius
+and 3,900 fragments. Both wound as the scripted blast did, a little less at range (its fragments
+thin with distance: the scripted blast aimed 24 at the body wherever it stood).
+`CharacterProfile::blast_from_source = false` restores the scripted crush and gibbing.
+
+### Blunt blows through props, and severed pieces
+
+A held prop on the line of a blunt blow takes what deforming it takes (`PropMaterial::fracture`,
+J) and the rest of the blow goes on to the body behind it; a phone does not stop a bat
+(`blunt_passes_props`). A severed piece leaves with its part's velocity at the cut plus the
+wound's impulse, the change capped by kind (7 m/s blunt, 4 m/s otherwise), instead of a fixed
+2.5 m/s throw (`gibs_carry_momentum`). A head that comes off is death. World collision impulses
 produce crush descriptors with `impulse_delivered`, so the already-resolved
 physical impulse is not applied twice. Melee contacts use the feature sweep in
 [PROPS.md](PROPS.md).
@@ -149,15 +183,26 @@ not produce identical contact geometry in two differently posed bodies.
 ## Visuals, records and determinism
 
 Changed parts increment their geometry version. Exposed interiors keep Flesh
-and Bone slots; rims and soaking surface clothing use Blood and darker shades.
+and Bone slots; rims and soaking surface clothing are stained (a per-cell stain over the
+colour): a cell's tissue, and so its resistance, never changes with its look.
+
+What a character keeps is bounded by its profile: persistent wounds join the nearest on their
+part past `max_wounds` (48) - or within `wound_merge_distance`, none by default - their bleeding
+flows added (each wound drips at least once a second, so merging sooner would thin the drops);
+past `max_injuries` (12) a reaction injury joins another of its zone, their hurt combined as the
+zone sums it; staining visits at most `stain_work` cells a
+frame, round robin over the bleeding wounds. Blunt mechanics scan only the cells within reach of
+the contact.
 The existing bounded drop/stain system supplies entry/exit spray, arterial pulses,
 drips, trails and pools under resting bodies. Persistent loose props have a
 separate pool and do not compete with visual debris.
 
-Character damage records use the `SVXD` marker and version 2. They contain cells
-and shades, the 16-bit lost-part mask, fractures and physiology, blood/stains and
-attached prop state. Version 1 and the older removal-only character records still
-load. Parsing validates the complete record before mutation. Living populations
+Character damage records use the `SVXD` marker and version 3. They contain cells,
+shades, stains and per-cell tissues, the 16-bit lost-part mask, fractures and physiology,
+blood/stains and attached prop state (with each prop's remaining mass). Versions 2 and 1 and
+the older removal-only character records still load; a prop's archetype is resolved through its
+registry, so a host's own archetype comes back as itself, and a record that does not resolve is
+refused. Parsing validates the complete record before mutation. Living populations
 are remade by the host. Loose items are stored separately in the game `SVXG`
 version 1 envelope; the contained core delta remains backward compatible. Articulation records are
 version 2 for relative grip anchors; version 1 records remain readable.
@@ -165,9 +210,10 @@ version 2 for relative grip anchors; version 1 records remain readable.
 Game command logs are version 5, with 33 numeric fields and an optional string.
 Attach, detach, damage and population loadout commands are logged. Versions 1–3
 remain readable. Geometry traversal, region ordering, instance IDs and fragment
-allocation are deterministic. Replay tolerance for an unchanged Foundry build is
-`1e-8`; the replay also checks item, capability and physiology state, wound geometry,
-severed-part transforms, blood drops and stains.
+allocation are deterministic. The bundled maths makes it bit-identical natively and in WASM (`tests/anim/test_audit.cpp`
+pins a blunt transcript's hash); an unchanged Foundry build replays a session exactly, item,
+capability and physiology state, wound geometry, severed-part transforms, blood drops and stains
+included.
 
 ## Checks and measurements
 

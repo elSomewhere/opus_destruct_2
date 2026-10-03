@@ -41,10 +41,7 @@ VoxelPart piece_of(const VoxelPart& src, const std::vector<i32>& list) {
   full.cells.assign(n, 0);
   full.shade.assign(n, 0);
   full.count = full.initial_count = static_cast<i32>(list.size());
-  for (const i32 idx : list) {
-    full.cells[size_t(idx)] = src.cells[size_t(idx)];
-    full.shade[size_t(idx)] = src.shade[size_t(idx)];
-  }
+  for (const i32 idx : list) full.copy_cell(size_t(idx), src, size_t(idx));
   VoxelPart out = shrink_part(full);
   out.initial_count = out.count;
   out.version = 0;
@@ -229,12 +226,13 @@ void carve_model(VoxelModel& model, const V3& c, f64 radius, const std::vector<i
           const size_t idx = size_t(i - ox + nx * (j - oy + ny * (k - oz)));
           const u8 cell = p.cells[idx];
           if (cell == 0) continue;
-          p.cells[idx] = 0;
+          const u8 shade = p.shade.empty() ? u8(128) : p.shade[idx];
+          p.clear_cell(idx);
           ++removed;
           // the lattice key (exact for |i|, |j|, |k| < 2^15)
           const u64 key = (u64(i + 32768) * 65536u + u64(j + 32768)) * 65536u + u64(k + 32768);
           if (seen.insert(key).second && out)
-            out->push_back(RemovedVoxel{p.bone, V3{(i + 0.5) * s, (j + 0.5) * s, (k + 0.5) * s}, static_cast<u8>(cell - 1), p.shade[idx]});
+            out->push_back(RemovedVoxel{p.bone, V3{(i + 0.5) * s, (j + 0.5) * s, (k + 0.5) * s}, static_cast<u8>(cell - 1), shade});
         }
       }
     }
@@ -325,10 +323,7 @@ std::vector<VoxelPart> sever_disconnected(VoxelModel& model, i32 part, f64 ancho
   for (const std::vector<i32>& cells : pieces) out.push_back(piece_of(p, cells));
   i32 removed = 0;
   for (const std::vector<i32>& cells : pieces) {
-    for (const i32 idx : cells) {
-      p.cells[size_t(idx)] = 0;
-      p.shade[size_t(idx)] = 0;
-    }
+    for (const i32 idx : cells) p.clear_cell(size_t(idx));
     removed += static_cast<i32>(cells.size());
   }
   p.count -= removed;
@@ -349,8 +344,7 @@ std::vector<VoxelPart> detach_subtree(VoxelModel& model, i32 bone, bool include_
     for (i32 idx = 0; idx < static_cast<i32>(p.cells.size()); ++idx)
       if (p.cells[size_t(idx)] != 0) all.push_back(idx);
     out.push_back(piece_of(p, all));
-    std::fill(p.cells.begin(), p.cells.end(), u8(0));
-    std::fill(p.shade.begin(), p.shade.end(), u8(0));
+    for (const i32 idx : all) p.clear_cell(size_t(idx));
     p.count = 0;
     ++p.version;
   }
@@ -483,8 +477,7 @@ bool apply_damage(VoxelModel& model, std::span<const u8> record) {
     VoxelPart& p = model.parts[run.part];
     for (u64 i = run.start; i < run.start + run.length; ++i) {
       if (p.cells[size_t(i)] == 0) continue;
-      p.cells[size_t(i)] = 0;
-      p.shade[size_t(i)] = 0;
+      p.clear_cell(size_t(i));
       --p.count;
       touched[run.part] = 1;
     }

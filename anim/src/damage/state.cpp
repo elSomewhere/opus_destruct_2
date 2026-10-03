@@ -1,6 +1,43 @@
 #include "svx/anim/damage/state.hpp"
 #include "svx/anim/body/humanoid.hpp"
 namespace svx::anim {
+namespace {
+f64 clot_of(const PersistentWound& w) { return w.arterial ? std::max(.65, exp(-w.age / 600)) : std::max(.08, exp(-w.age / 90)); }
+}  // namespace
+void DamageState::configure(const CharacterProfile& p) {
+  injuries_.cap = std::max(1, p.max_injuries);
+  max_wounds_ = std::max(1, p.max_wounds);
+  merge_distance_ = p.wound_merge_distance;
+  stain_work_ = std::max<i64>(1, p.stain_work);
+  fracture_limb_ = p.fracture_limb;
+  fracture_slender_ = p.fracture_slender;
+  fracture_trunk_ = p.fracture_trunk;
+  shatter_limb_ = p.shatter_limb;
+  shatter_trunk_ = p.shatter_trunk;
+}
+void DamageState::add_wound(const PersistentWound& w) {
+  // A wound beside one already there on the same part, or one too many, joins it: the flow they
+  // have now is kept (clotting is memoryless while it runs), the worse pain and opened vessel too.
+  const bool full = i32(state_.wounds.size()) >= max_wounds_;
+  PersistentWound* near = nullptr;
+  f64 best = kInf;
+  for (auto& o : state_.wounds)
+    if (o.part == w.part && (o.arterial == w.arterial || full)) {
+      const f64 d = vdist(o.rest, w.rest);
+      if (d < best) {
+        best = d;
+        near = &o;
+      }
+    }
+  if (near && (best < merge_distance_ || full)) {
+    near->bleeding = near->bleeding * clot_of(*near) + w.bleeding;
+    near->age = 0;
+    near->arterial = near->arterial || w.arterial;
+    near->pain = std::max(near->pain, w.pain);
+    return;
+  }
+  state_.wounds.push_back(w);
+}
 const char* mobility_name(Mobility m) {
   constexpr const char* names[] = {"walk", "limp", "hobble", "kneel", "crawl", "immobile"};
   return size_t(m) < 6 ? names[size_t(m)] : "immobile";
@@ -20,8 +57,18 @@ void derive_mobility(Capabilities& c) {
   const f64 crawl_drive = c.crawl == CrawlStyle::Scoot ? best * .6 : std::max(left, right);
   c.max_speed = speed[size_t(c.mobility)] * c.vigor * (c.mobility == Mobility::Crawl ? crawl_drive : 1);
 }
+void derive_muscles(Capabilities& c) {
+  for (i32 part = 0; part < kBodyCount; ++part)
+    c.muscle[size_t(part)] = part >= B::thighR      ? c.legs[1].support
+                             : part >= B::thighL    ? c.legs[0].support
+                             : part >= B::upperarmR ? c.arms[1].strength
+                             : part >= B::upperarmL ? c.arms[0].strength
+                             : part == B::head      ? c.neck
+                                                    : c.trunk;
+}
 void DamageState::reaction(i32 part, const V3& local, const V3& normal, HitKind kind, f64 force) {
   if (part < 0 || part >= 16 || force <= 0) return;
+  ++revision_;
   Injury i;
   i.part = part;
   i.local = local;
@@ -34,6 +81,7 @@ void DamageState::reaction(i32 part, const V3& local, const V3& normal, HitKind 
   injuries_.add(i);
 }
 void DamageState::old_wound(i32 part, f64 severity) {
+  ++revision_;
   Injury i;
   i.part = part;
   i.zone = zone_of_part(part);
@@ -69,8 +117,7 @@ void DamageState::update(f64 dt, i32 pressed_part) {
     f64 bleed = 0;
     for (auto& w : state_.wounds) {
       w.age += dt;
-      const f64 clot = w.arterial ? std::max(.65, exp(-w.age / 600)) : std::max(.08, exp(-w.age / 90));
-      const f64 rate = w.bleeding * clot * (w.part == pressed_part ? .45 : 1);
+      const f64 rate = w.bleeding * clot_of(w) * (w.part == pressed_part ? .45 : 1);
       bleed += rate;
       state_.parts[size_t(w.part)].bleeding += rate;
     }
@@ -90,7 +137,7 @@ void DamageState::update(f64 dt, i32 pressed_part) {
   if (const auto* w = injuries_.to_hold()) cap_.care = CareTarget{w->part, w->local, w->normal, w->age, w->hold_until, w->severity};
   if (physical_wounds_)
     for (const auto& w : state_.wounds) {
-      const f64 clot = w.arterial ? std::max(.65, exp(-w.age / 600)) : std::max(.08, exp(-w.age / 90));
+      const f64 clot = clot_of(w);
       // Care urgency is dimensionless on both paths. Active bleeding outranks a
       // transient pain reflex, and the worst open vessel gets the available
       // hand.
@@ -99,6 +146,7 @@ void DamageState::update(f64 dt, i32 pressed_part) {
     }
 }
 void DamageState::apply(const VoxelModel& model, const WorldPose& pose, const DamageDescriptor& d, const WoundMechanics& result) {
+  ++revision_;
   const auto regions = anatomy_regions(*model.skeleton);
   std::array<f64, 16> energy{}, removed{}, bone_energy{};
   std::array<V3, 16> rest{};
@@ -140,7 +188,7 @@ void DamageState::apply(const VoxelModel& model, const WorldPose& pose, const Da
       // fracture it.
       const f64 skeletal = blunt && bone_energy[i] > 0 ? energy[i] : bone_energy[i];
       const bool slender_bone = i == B::shinL || i == B::shinR || i == B::forearmL || i == B::forearmR;
-      const f64 fracture = limb ? (slender_bone ? 45 : 65) : 160, shatter = limb ? 220 : 600;
+      const f64 fracture = limb ? (slender_bone ? fracture_slender_ : fracture_limb_) : fracture_trunk_, shatter = limb ? shatter_limb_ : shatter_trunk_;
       if (skeletal > fracture) {
         const BoneState injury = skeletal > shatter || p.bone != BoneState::Intact ? BoneState::Shattered : BoneState::Fractured;
         p.bone = std::max(p.bone, injury);
@@ -172,7 +220,7 @@ void DamageState::apply(const VoxelModel& model, const WorldPose& pose, const Da
         if (v.kind == VitalKind::Lung) state_.breathing = std::max(.2, state_.breathing - deposited / (opened ? 300 : 600));
         if (v.kind == VitalKind::Liver && deposited > (opened ? 5 : 100)) w.bleeding = std::max(w.bleeding, .025 * clamp(deposited / 80, 0.0, 1.0));
       }
-      state_.wounds.push_back(w);
+      add_wound(w);
       state_.shock = clamp(state_.shock + severity * .07, 0.0, 1.0);
     }
   // Massive trauma concerns the core of the body, not an energetic source
@@ -206,57 +254,77 @@ void DamageState::physical_capabilities() {
 void DamageState::bleed(f64 dt, f64 time, const WorldPose& pose, GibSystem& effects) const {
   if (state_.blood <= 0) return;
   for (const auto& w : state_.wounds) {
-    const f64 clot = w.arterial ? std::max(.65, exp(-w.age / 600)) : std::max(.08, exp(-w.age / 90));
-    const f64 rate = w.bleeding * clot;
+    const f64 rate = w.bleeding * clot_of(w);
     if (rate <= 0) continue;
     const f64 frequency = clamp(rate * 600, 1.0, 25.0);
-    const f64 pulse = std::pow(std::max(0.0, std::sin(time * 2 * kPi * 1.3)), 4);
+    const f64 beat = std::max(0.0, sin(time * 2 * kPi * 1.3)), pulse = beat * beat * beat * beat;
     if (i64(time * frequency) != i64((time + dt) * frequency))
       effects.spray(pose.p[size_t(w.bone)] + rotate(pose.q[size_t(w.bone)], w.rest), rotate(pose.q[size_t(w.bone)], w.normal), 1,
                     w.arterial ? .25 + 2 * pulse : .15, w.arterial ? .15 : .5);
   }
 }
-bool DamageState::stain(VoxelModel& model, const WorldPose& pose, f64 dt, f64 time) const {
-  // Clothing soaks slowly. Only surface cells change; the cut's flesh and bone remain readable.
-  if (state_.blood <= 0 || i64(time * 2) == i64((time + dt) * 2)) return false;
-  bool any = false;
-  for (auto& p : model.parts) {
-    bool changed = false;
-    for (const auto& w : state_.wounds)
-      if (w.bone == p.bone && w.bleeding > 0) {
-        const V3 origin = model.skeleton->rest_head[size_t(w.bone)] + w.rest;
-        const f64 radius = std::min(.14, .025 + std::sqrt(w.bleeding * w.age) * .22), down = std::min(.4, w.age * w.bleeding * 1.5);
-        const V3 gravity = rotate(conj(pose.q[size_t(w.bone)]), V3{0, 0, -1});
-        for (i32 z = 0; z < p.dims[2]; ++z)
-          for (i32 y = 0; y < p.dims[1]; ++y)
-            for (i32 x = 0; x < p.dims[0]; ++x) {
-              const auto n = size_t(p.index(x, y, z));
-              const u8 cell = p.cells[n];
-              if (!cell || cell == Slot::Flesh + 1 || cell == Slot::Bone + 1) continue;
-              const V3 at = model.cell_centre(x + p.origin[0], y + p.origin[1], z + p.origin[2]), d = at - origin;
-              if (norm(d - gravity * clamp(dot(d, gravity), 0.0, down)) > radius) continue;
-              bool surface = false;
-              for (int axis = 0; axis < 3; ++axis)
-                for (int sign : {-1, 1}) {
-                  std::array<i32, 3> a{x, y, z};
-                  a[size_t(axis)] += sign;
-                  if (a[size_t(axis)] < 0 || a[size_t(axis)] >= p.dims[size_t(axis)] || !p.cells[size_t(p.index(a[0], a[1], a[2]))]) surface = true;
-                }
-              if (!surface) continue;
-              if (p.shade.empty()) p.shade.resize(p.cells.size(), 128);
-              const u8 shade = u8(std::max(55.0, 100 - std::min(45.0, w.age * 2)));
-              if (cell != Slot::Blood + 1 || p.shade[n] > shade) {
-                p.cells[n] = Slot::Blood + 1;
-                p.shade[n] = shade;
-                changed = true;
-              }
-            }
+bool DamageState::stain(VoxelModel& model, const WorldPose& pose, f64 dt, f64 time) {
+  // Clothing soaks slowly. Only surface cells take blood (VoxelPart::stain: what they are made of
+  // stays); the cut's flesh and bone remain readable. Each wound looks only at the cells its stain
+  // can reach, and a frame visits at most stain_work cells: the wounds take turns.
+  if (state_.blood <= 0 || state_.wounds.empty() || i64(time * 2) == i64((time + dt) * 2)) return false;
+  const f64 s = model.voxel_size;
+  const size_t nw = state_.wounds.size();
+  std::vector<u8> changed(model.parts.size(), 0);
+  i64 work = 0;
+  size_t done = 0;
+  for (; done < nw && work < stain_work_; ++done) {
+    const auto& w = state_.wounds[(stain_next_ + done) % nw];
+    if (w.bleeding <= 0) continue;
+    const V3 origin = model.skeleton->rest_head[size_t(w.bone)] + w.rest;
+    const f64 radius = std::min(.14, .025 + std::sqrt(w.bleeding * w.age) * .22), down = std::min(.4, w.age * w.bleeding * 1.5);
+    const V3 gravity = rotate(conj(pose.q[size_t(w.bone)]), V3{0, 0, -1});
+    const f64 reach = radius + down + s;
+    const u8 shade = u8(std::max(55.0, 100 - std::min(45.0, w.age * 2)));
+    for (size_t pi = 0; pi < model.parts.size(); ++pi) {
+      auto& p = model.parts[pi];
+      if (p.bone != w.bone) continue;
+      std::array<i32, 3> lo, hi;
+      bool none = false;
+      for (int a = 0; a < 3; ++a) {
+        lo[size_t(a)] = std::max(0, i32(std::floor((origin[a] - reach) / s)) - p.origin[size_t(a)]);
+        hi[size_t(a)] = std::min(p.dims[size_t(a)], i32(std::floor((origin[a] + reach) / s)) - p.origin[size_t(a)] + 1);
+        none = none || lo[size_t(a)] >= hi[size_t(a)];
       }
-    if (changed) {
-      ++p.version;
-      any = true;
+      if (none) continue;
+      for (i32 z = lo[2]; z < hi[2]; ++z)
+        for (i32 y = lo[1]; y < hi[1]; ++y)
+          for (i32 x = lo[0]; x < hi[0]; ++x) {
+            ++work;
+            const auto n = size_t(p.index(x, y, z));
+            if (!p.cells[n]) continue;
+            const Tissue t = model.tissue_at(p, n);
+            if (t == Tissue::Flesh || t == Tissue::Bone) continue;
+            const V3 at = model.cell_centre(x + p.origin[0], y + p.origin[1], z + p.origin[2]), d = at - origin;
+            if (norm(d - gravity * clamp(dot(d, gravity), 0.0, down)) > radius) continue;
+            bool surface = false;
+            for (int axis = 0; axis < 3 && !surface; ++axis)
+              for (int sign : {-1, 1}) {
+                std::array<i32, 3> a{x, y, z};
+                a[size_t(axis)] += sign;
+                if (a[size_t(axis)] < 0 || a[size_t(axis)] >= p.dims[size_t(axis)] || !p.cells[size_t(p.index(a[0], a[1], a[2]))]) surface = true;
+              }
+            if (!surface) continue;
+            if (p.stain.empty()) p.stain.assign(p.cells.size(), 0);
+            if (!p.stain[n] || p.stain[n] > shade) {
+              p.stain[n] = shade;
+              changed[pi] = 1;
+            }
+          }
     }
   }
+  stain_next_ = (stain_next_ + done) % nw;
+  bool any = false;
+  for (size_t pi = 0; pi < model.parts.size(); ++pi)
+    if (changed[pi]) {
+      ++model.parts[pi].version;
+      any = true;
+    }
   return any;
 }
 }  // namespace svx::anim

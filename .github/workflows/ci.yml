@@ -14,6 +14,12 @@ jobs:
         run: scripts/fetch_freedoom.sh
       - name: Configure + build
         run: cmake --preset native-release && cmake --build --preset native-release -j
+      # The structure (docs/CORE.md §1): each library includes only what it is built on, and none
+      # calls the platform's transcendental maths (it differs in the last bit between libms).
+      - name: Layers and deterministic maths
+        run: |
+          python3 scripts/check_engine.py layers
+          python3 scripts/check_engine.py libm build/native-release
       - name: Test
         run: ctest --test-dir build/native-release --output-on-failure
       # The engine's behaviour pinned (docs/BASELINE.md): its own world hashes, and the structural

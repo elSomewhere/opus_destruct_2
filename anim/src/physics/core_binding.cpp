@@ -133,6 +133,12 @@ bool CoreBinding::adopt(World& w, RigidSystem& s, ArticulationId id) {
   return true;
 }
 
+void CoreBinding::release() {
+  id_ = 0;
+  if (sys_) sys_->external = false;
+  sys_ = nullptr;
+}
+
 void CoreBinding::unbind(World& w) {
   if (id_ != 0) w.remove_articulation(id_);
   id_ = 0;

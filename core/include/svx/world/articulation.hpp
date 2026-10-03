@@ -90,11 +90,13 @@ struct ArticulationControl {
   // centres of mass), for a host that moves it (a shoulder that follows its clavicle); left empty,
   // or not finite: where it was made
   std::vector<V3> anchor_parent, anchor_child;
-  // Per point target: a movable attachment point in its link's body frame.
-  // Missing or invalid entries leave the point unchanged (heel -> toe in a gait).
+  // Per point target: a movable attachment point in its link's body frame (heel -> toe in a
+  // gait). Valid only under 8 m from the link's centre of mass: a missing, non-finite or farther
+  // entry leaves the point unchanged.
   std::vector<V3> target_local;
-  // Optional second link for a point target (a hand gripping a carried object).
-  // -1 or missing: world target. The second link receives the opposite impulse.
+  // Optional second link for a point target (a hand gripping a carried object), and the point
+  // on it in its body frame (under 8 m, as above). -1, missing or an invalid entry: a world
+  // target. The second link receives the opposite impulse.
   std::vector<i32> target_reference;
   std::vector<V3> target_reference_local;
   f64 max_spin = 80.0;               // rad/s: no link spins faster (a limp body's: much less)

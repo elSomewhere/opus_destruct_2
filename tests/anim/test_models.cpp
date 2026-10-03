@@ -94,7 +94,7 @@ TEST_CASE("anim models: soldier and civilian models build with a part per voxel-
   CHECK(m.index_count > 0);
   CHECK(m.index_count % 3 == 0);
   CHECK(m.vertices.size() == size_t(m.vertex_count) * kCharVertexStride);
-  const PropPtr rifle = make_rifle();
+  const PropPtr rifle = prop_archetype("rifle");
   CHECK(rifle->model->voxel_count() > 100);
   CHECK(mesh_part(rifle->model->parts[0], rifle->model->voxel_size).vertex_count > 0);
 }
@@ -162,7 +162,7 @@ TEST_CASE("anim models: procedural anatomy and exterior geometry match the appro
       {"pistol", 127, 0x65466cb6u, 912, 0xa9b71bfbu, 0},
       {"knife", 54, 0xaa892ef0u, 568, 0xd23f29a9u, 0},
   };
-  const PropPtr made_props[] = {make_rifle(kDefaultVoxelSize, 1), make_smg(), make_lmg(), make_pistol(), make_knife()};
+  const PropPtr made_props[] = {prop_archetype("rifle_scoped"), prop_archetype("smg"), prop_archetype("lmg"), prop_archetype("pistol"), prop_archetype("knife")};
   for (size_t i = 0; i < std::size(props); ++i) {
     const Golden& g = props[i];
     const VoxelModel& m = *made_props[i]->model;
@@ -382,16 +382,16 @@ TEST_CASE("anim models: specs, palettes, props and furniture") {
   CHECK(pal[Slot::Flesh][0] == static_cast<f32>(hex(0x8c1c1c)[0]));
   CHECK(pal[Slot::Blood][2] == static_cast<f32>(hex(0x5c0808)[2]));
 
-  const PropPtr rifle = make_rifle(), pistol = make_pistol(), knife = make_knife();
+  const PropPtr rifle = prop_archetype("rifle"), pistol = prop_archetype("pistol"), knife = prop_archetype("knife");
   CHECK(rifle->long_gun());
   CHECK(!rifle->one_handed);
   CHECK(pistol->one_handed);
   CHECK(!pistol->long_gun());
   CHECK(knife->has("short_blade"));
   CHECK(rifle->model->name == "rifle-0");
-  CHECK(make_rifle(kDefaultVoxelSize, 1)->model->voxel_count() > rifle->model->voxel_count());  // (the scope)
+  CHECK(prop_archetype("rifle_scoped")->model->voxel_count() > rifle->model->voxel_count());  // (the scope)
   CHECK(pistol->model->voxel_size == kDefaultVoxelSize / 2.0);
-  CHECK(rifle->muzzle.y == doctest::Approx(0.544));
+  CHECK(rifle->tip.y == doctest::Approx(0.544));
 
   const Furniture bench = make_bench(), desk = make_desk(), table = make_cafe_table();
   CHECK(bench.kind == FurnitureKind::Bench);

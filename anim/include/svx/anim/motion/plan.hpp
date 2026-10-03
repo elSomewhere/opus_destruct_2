@@ -41,6 +41,7 @@
 #include "svx/anim/damage/capabilities.hpp"
 #include "svx/anim/characters/attachments.hpp"
 #include "svx/anim/motion/actions.hpp"
+#include "svx/anim/profile.hpp"
 #include "svx/anim/motion/arms.hpp"
 #include "svx/anim/motion/feet.hpp"
 #include "svx/anim/motion/gait.hpp"
@@ -66,6 +67,10 @@ struct SeatInfo {
   std::optional<f64> desk_height;  // the desk top above the floor (m), for sitting at a desk
   std::optional<SitVariant> variant;
 };
+
+// A chair for a character of size k (1 ~ 1.78 m) standing at `root`, facing `yaw`: its seat
+// behind the heels at a chair's height, with a backrest, and a desk in front for SitVariant::Desk.
+SeatInfo chair_behind(const V3& root, f64 yaw, f64 k, SitVariant variant);
 
 struct MotionInput {
   f64 crouch = 0.0;  // 0 standing .. 1 crouched (standing stance)
@@ -126,7 +131,7 @@ struct AnimEvent {
   Limb limb = Limb::None;
   std::string feature;
   u64 prop_instance = 0;
-  V3 pos;                    // the world position of the limb (fist, foot, blade tip, muzzle) at the event
+  V3 pos;                    // the world position of the limb (fist, foot, blade tip, tip) at the event
   std::optional<V3> target;  // the action's target (world), if any
 };
 
@@ -134,6 +139,9 @@ class MotionPlan {
  public:
   MotionPlan(SkeletonPtr skeleton, const CollisionWorld* collision, f64 seed = 1.0);
   MotionPlan(const MotionPlan&) = delete;
+  // What it does by itself standing still (the character's profile's; its first waits restart).
+  void set_autonomy(const IdleAutonomy& autonomy);
+  const IdleAutonomy& autonomy() const { return autonomy_; }
   MotionPlan& operator=(const MotionPlan&) = delete;
 
   SkeletonPtr skeleton;
@@ -209,6 +217,17 @@ class MotionPlan {
   // `target` (strikes). A held posture (guard, idle pose) goes on the pose layer. False if the body
   // cannot (down, mid transition), or there is no such action.
   bool play(std::string_view name, std::optional<V3> target = std::nullopt, f64 rate = 1.0);
+  // Whether play would take the action now (false: why, as action_refusal would say). Nothing
+  // changes.
+  bool can_play(const ActionDef& def, std::string* why = nullptr) const;
+  // The stance the plan goes to: the host's (input.stance) as far as the body allows it - kneeling
+  // when the legs only half carry it, prone when they do not (crawling, immobile). The input stays
+  // the host's.
+  Stance effective_stance() const {
+    if (capabilities.mobility == Mobility::Crawl || capabilities.mobility == Mobility::Immobile) return Stance::Prone;
+    if (capabilities.mobility == Mobility::Kneel) return Stance::Kneel;
+    return input.stance;
+  }
   // Stops the running one-shot action (a hit interrupts it).
   void interrupt(bool hard = true);
   // Updates the target of the running action (a strike follows a moving opponent).
@@ -246,7 +265,7 @@ class MotionPlan {
 
   // The world position of a limb's striking point (in the plan's pose).
   V3 limb_pos(Limb limb = Limb::None) const;
-  // The world position of a point on the held prop (prop space), its muzzle say.
+  // The world position of a point on the held prop (prop space), its tip say.
   V3 prop_point(const V3& p) const { return weapon_pos + rotate(weapon_rot, p); }
   // The skin matrix of the held prop (its model's single bone; 16 floats).
   void write_prop_skin(f32* out) const { write_rigid(out, weapon_pos, weapon_rot, V3{}); }
@@ -356,6 +375,7 @@ class MotionPlan {
   const ActionDef* manual_pose_ = nullptr;
   std::array<ArmReturn, 2> arm_return_{};
   ChannelFrame ch_pose_, ch_act_;
+  IdleAutonomy autonomy_;
   f64 idle_time_ = 0.0;
   f64 next_fidget_ = 6.0;
   f64 next_idle_pose_ = 3.0;

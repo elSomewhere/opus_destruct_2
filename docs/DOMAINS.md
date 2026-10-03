@@ -1,6 +1,6 @@
 # Character test domains
 
-`load_domain(Game&, DomainConfig)` builds a deterministic test world in the game library. It loads and bakes the voxel terrain before adding free objects. `Game::ensure_characters()` installs the normal character system and render host without requiring a city road network or spawning a pedestrian population.
+`load_domain(Game&, DomainConfig)` (`svx/procgen/domain.hpp`) builds a deterministic test world: a level of `svx_procgen`, beside the test levels - the game harness knows nothing of how levels are made. It loads and bakes the voxel terrain before adding free objects. `Game::ensure_characters()` installs the normal character system and render host without requiring a city road network or spawning a pedestrian population.
 
 The configuration contains a seed, terrain (`Flat`, `Stairs`, `Rough`, `Obstacles`, `Mixed`), difficulty in 0..1 and 0..32 loose objects. Courses use 12.5 cm cells, a clear starting area, and a finite 16 × 20 m footprint. Stairs have 50 cm treads and 12.5/25 cm risers. Rough patches have enough area for a sole. Mixed terrain includes a cycling native floor mover when objects are requested. Wooden crates enter through `Game::add_drop`, detach from their initial grids and become ordinary core pieces.
 

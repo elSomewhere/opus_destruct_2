@@ -409,7 +409,7 @@ TEST_CASE("behaviour: a heavy blow drops the body; it stays down, then gets up")
     run(s, c, 0.5);
     const V3 head = c.pose.p[H::head];
     c.melee(V3{head.x, head.y + 0.1, head.z + 0.05}, V3{0, -1, 0}, HitKind::Blunt, 3.0);
-    CHECK(c.knocked_out);
+    CHECK(c.knocked_out());
     f64 lay = 0.0;
     run(s, c, 4.0, 0.0, [&](Character& x, f64, Host&) {
       if (x.behaviours.mode == BodyMode::Lying) lay += DT;
@@ -418,7 +418,7 @@ TEST_CASE("behaviour: a heavy blow drops the body; it stays down, then gets up")
     CHECK(lay > 1.5);
     run(s, c, 12.0);
     CHECK(c.behaviours.mode == BodyMode::Animated);
-    CHECK(!c.knocked_out);
+    CHECK(!c.knocked_out());
   }
 }
 

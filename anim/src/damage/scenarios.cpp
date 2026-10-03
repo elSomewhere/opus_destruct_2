@@ -74,9 +74,18 @@ std::vector<DamageDescriptor> damage_scenario(const Character& c, std::string_vi
   } else if (name == "blast3m") {
     d.kind = DamageKind::Blast;
     d.point = c.pose.p[H::pelvis] + V3{0, 3, 0};
+    // (a hand grenade: 38 kPa over the ambient at 3 m, its fragments of a gram at 350 m/s; the
+    // scripted blast's own terms without blast_from_source)
     d.radius = 3;
-    d.pressure = 100000;
-    d.fragments = 24;
+    if (c.profile.blast_from_source) {
+      d.pressure = 101325 + 38000;
+      d.fragments = 3900;
+      d.mass = .001;
+      d.speed = 350;
+    } else {
+      d.pressure = 100000;
+      d.fragments = 24;
+    }
     out.push_back(d);
     return out;
   } else if (name == "gutStab") {

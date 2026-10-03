@@ -20,13 +20,13 @@ TEST_CASE("city materials: the city's own classes are registered at their ids, p
     REQUIRE(t.registered(id));
     CHECK(t[id].name == "city_" + c.name);
     CHECK(t[id].rho == doctest::Approx(c.rho));
-    CHECK(t[id].decorative == (c.name == "foliage"));
+    CHECK(t[id].non_structural == (c.name == "foliage"));
     CHECK(t[id].passable == (c.name == "foliage"));
   }
   CHECK(own == 6);
   CHECK(t[static_cast<MaterialId>(city::kCityMaterialBase + 3)].grip == doctest::Approx(0.1));  // (ice: slippery)
   CHECK(t[static_cast<MaterialId>(city::kCityMaterialBase + 2)].crush > 0.0);                  // (soft: it gives)
-  CHECK((t.vox_kind(make_vox(static_cast<MaterialId>(city::kCityMaterialBase + 5), false)) & kVoxDecorative) != 0);  // (foliage voxels)
+  CHECK((t.vox_kind(make_vox(static_cast<MaterialId>(city::kCityMaterialBase + 5), false)) & kVoxNonStructural) != 0);  // (foliage voxels)
 }
 
 TEST_CASE("city materials: fire facets - furnishings and plants burn, partitions weaken, ice does not") {

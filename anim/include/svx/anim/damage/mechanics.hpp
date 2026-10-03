@@ -21,5 +21,13 @@ struct WoundMechanics {
     return vnorm(source.direction) * source.momentum() - exit_direction * std::sqrt(2 * source.mass * remaining_energy);
   }
 };
-WoundMechanics wound_mechanics(VoxelModel& model, std::span<const f32> skin, const DamageDescriptor& descriptor, const PropMaterial* material = nullptr);
+struct MechanicsTuning {
+  f64 crush_remove_energy = 1200;  // J: a crush above this removes the tissue it overcomes (CharacterProfile)
+};
+// What a cause does to a model's cells: removes what it overcomes (marking it in `removed`), deposits
+// energy in what it reaches (`tissue`), and stains the rims of what it removed. A prop's material
+// (`material`) replaces the tissues' resistance, and under a blunt blow absorbs at most its
+// `fracture` energy: the rest remains (remaining_energy) for what the prop rests on.
+WoundMechanics wound_mechanics(VoxelModel& model, std::span<const f32> skin, const DamageDescriptor& descriptor, const PropMaterial* material = nullptr,
+                               const MechanicsTuning& tuning = {});
 }  // namespace svx::anim

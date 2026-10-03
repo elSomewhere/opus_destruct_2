@@ -50,6 +50,7 @@ Zone zone_of_part(i32 part);
 class Injuries {
  public:
   std::deque<Injury> list;
+  size_t cap = 12;  // injuries kept: past it they join others of their zone (CharacterProfile::max_injuries)
   // summaries (0..1), updated by `update`
   f64 legL = 0.0, legR = 0.0, armL = 0.0, armR = 0.0, trunk = 0.0, head = 0.0;
   f64 pain = 0.0;  // overall pain (0..1): hunched, slower, breathing hard

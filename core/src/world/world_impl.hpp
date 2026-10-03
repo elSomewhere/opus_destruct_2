@@ -254,6 +254,12 @@ struct World::Impl {
   // yet, no bond to another grid's voxels. (Read only: a pure function of voxels, bonds and residency.)
   bool free_component(const GVox& v, i64 max_voxels, std::vector<FragKey>* out);
   i64 loosen(GridId id, const IVec3& voxel, const V3& impulse);
+  // ---- host records (world_records.cpp): a host's state archived with its region
+  bool archive_host_record(u32 owner, u64 id, const V3& at, std::vector<u8> data);
+  std::vector<HostRecord> take_host_records(u32 owner);
+  void restore_host_records();  // (those whose chunks are known again: back to their owners)
+  bool forget_host_record(u64 key);  // (its region forgotten; false: not a record's key)
+  void write_host_records(std::vector<u8>& out) const;  // (sessions, v8)
   // (bake) a free component with seams on a solid voxel beneath one of its voxels: it stays
   bool resting(const std::vector<FragKey>& members);
   // A link of an articulation presses on a voxel of no structure: its component comes loose if
@@ -276,14 +282,14 @@ struct World::Impl {
   };
   LayerCache layer_cache_;
 
-  // ---- decorative voxels (world.cpp; Material::decorative): never anchored, shed when orphaned
-  Vox entry_vox(Vox v) const {  // (a voxel coming into the world: a decorative one holds nothing)
-    return (v & kAnchorBit) && (mats_->vox_kind(v) & kVoxDecorative) ? static_cast<Vox>(v & ~kAnchorBit) : v;
+  // ---- non-structural voxels (world.cpp; Material::non_structural): never anchored, shed when orphaned
+  Vox entry_vox(Vox v) const {  // (a voxel coming into the world: a non-structural one holds nothing)
+    return (v & kAnchorBit) && (mats_->vox_kind(v) & kVoxNonStructural) ? static_cast<Vox>(v & ~kAnchorBit) : v;
   }
-  void undecorate(VoxelGrid& g) const;      // (entry_vox over a grid coming in)
-  void note_decorative_near(const GVox& v);  // (a voxel left: the decorative voxels next to it are looked at)
+  void unanchor_non_structural(VoxelGrid& g) const;      // (entry_vox over a grid coming in)
+  void note_non_structural_near(const GVox& v);  // (a voxel left: the non-structural voxels next to it are looked at)
   void shed_orphans();                       // (those with no other solid voxel next to them go)
-  std::vector<GVox> deco_check_;
+  std::vector<GVox> shed_check_;
   std::unordered_set<FragKey, FragKeyHash> loose_checked_;
   i64 loose_tick_ = -1;
 
@@ -322,6 +328,8 @@ struct World::Impl {
                    const std::vector<size_t>& wheels) const;
   bool read_group(world_detail::Rd& in, SessionDelta* s, u8 version) const;
   void add_group(SessionDelta& s);
+  bool read_host_records(world_detail::Rd& in, SessionDelta* s) const;  // (sessions, v8: world_records.cpp)
+  void apply_host_records(SessionDelta& s);
   // Pieces out of range (a streamed world): a group (pieces joined by joints or touching, ids
   // sorted) archived with its joints and dead loads in the change archive's budget, with its
   // chunks' region; back when every chunk it needs is resident again; gone with its region.
@@ -659,6 +667,10 @@ struct World::Impl {
     std::unordered_set<JointId> archived_joints;
     // archive key ((3 << 62) | (1 << 61) | id) -> the chunks it needs
     std::map<u64, std::vector<u64>> archived_arts;
+    // host records: archive key ((3 << 62) | (1 << 60) | serial) -> the chunks it needs
+    std::map<u64, std::vector<u64>> archived_records;
+    u64 next_record = 1;
+    std::map<u32, std::vector<HostRecord>> restored_records;  // owner -> back, not taken yet
     std::vector<u64> evicted_chunks;
     std::vector<V3> focus;
     bool focus_set = false;

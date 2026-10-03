@@ -1,10 +1,12 @@
 // Explicit little-endian records: no struct padding, pointer values or native enums on disk.
 #pragma once
+#include <algorithm>
 #include <bit>
 #include <span>
 #include <string>
 #include <vector>
 #include "svx/anim/math.hpp"
+#include "svx/anim/voxel/model.hpp"
 namespace svx::anim::record {
 struct Writer {
   std::vector<u8> bytes;
@@ -75,4 +77,29 @@ struct Reader {
   }
   bool done() const { return ok && at == bytes.size(); }
 };
+// A part's cells and what is kept per cell (VoxelPart: slot, shade, stain, tissue). `channels`
+// false: cells and shades only (the records before stains and tissues had their own channels).
+inline void write_cells(Writer& w, const VoxelPart& p) {
+  w.block(p.cells);
+  w.block(p.shade);
+  w.block(p.stain);
+  w.block(p.tissue);
+}
+inline bool read_cells(Reader& r, VoxelPart& p, size_t cells, bool channels) {
+  const auto data = r.block(), shade = r.block();
+  const auto stain = channels ? r.block() : std::span<const u8>{}, tissue = channels ? r.block() : std::span<const u8>{};
+  if (!r.ok || data.size() != cells) return false;
+  for (const auto& b : {shade, stain, tissue})
+    if (!b.empty() && b.size() != cells) return false;
+  for (u8 v : data)
+    if (v > kSlotCount) return false;
+  for (u8 v : tissue)
+    if (v > kTissueCount) return false;
+  p.cells.assign(data.begin(), data.end());
+  p.shade.assign(shade.begin(), shade.end());
+  p.stain.assign(stain.begin(), stain.end());
+  p.tissue.assign(tissue.begin(), tissue.end());
+  p.count = i32(std::count_if(p.cells.begin(), p.cells.end(), [](u8 c) { return c != 0; }));
+  return true;
+}
 }  // namespace svx::anim::record

@@ -28,6 +28,8 @@ class CoreBinding {
   bool bind(World& w, RigidSystem& s, u32 group = 0, u32 tag = 0, std::vector<u8> data = {});
   // Removes the articulation; the system keeps the bodies' last state and is its own again.
   void unbind(World& w);
+  // Lets go of the articulation without removing it (the world keeps it, unbound).
+  void release();
   // Binds to an articulation that is already in the world (a session loaded, one back from the
   // streaming archive): the system's layout must be the one it was made from.
   bool adopt(World& w, RigidSystem& s, ArticulationId id);

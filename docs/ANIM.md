@@ -20,8 +20,9 @@ A character is
   capture point, stepping, staggering, flinching and bracing, holding wounds, tripping, falling,
   lying, crawling, getting up, dying, knockouts),
 - a `Character` that ties them together with health, hit zones and wounds, and a
-  `CharacterSystem` that owns characters in a core `World`. `Brawler` choreographs fist and knife
-  fights between two characters; `GibSystem` (`physics/debris`) moves what comes off them - limbs
+  `CharacterSystem` that owns characters in a core `World`. `StrikeResolver` lands one
+  character's strikes on another (whom to fight and what to throw are a host's: the game's
+  `svx::Brawler`, `svx/game/brawler.hpp`); `GibSystem` (`physics/debris`) moves what comes off them - limbs
   severed, wound fragments - and their blood (drops that stain the
   surfaces they hit).
 
@@ -95,7 +96,18 @@ character again - the host's `restore` callback turns the record into a model an
 damage is cut into a copy of it - and adopts the body where it lies, wounds and all.
 
 Models are shared between characters until the first wound (then copied); meshes are made per
-model and geometry version. The system's memory is in the world's report (`systems`).
+model and geometry version. The system's memory is in the world's report (`systems`), and it
+counts everything a character keeps: its model if it owns one, wounds, injuries, effects, props
+and their damaged models. All of it is bounded (§9: wounds join the nearest past
+`max_wounds`, injuries past `max_injuries` join another of their zone, staining visits at most `stain_work` cells
+a frame; at most 256 loose props, those below the kill plane gone). A corpse's record is written
+again only when its geometry, damage or props change (and every 600 ticks), not every tick.
+
+Loose props go with their region: on eviction the system archives each in the core's change
+archive as a host record (CORE.md §5) and takes it back when the region comes back. A record
+names its archetype; the registry resolves it (the catalogue's or one the host defined), and a
+character or prop that cannot be restored is counted (`CharacterStats::restore_failures`) rather
+than coming back pristine.
 
 ## 5. The city's people (svx_game)
 
@@ -177,7 +189,13 @@ characters, melee), those with a body on both paths; bodies in a world (a heavy 
 body down, and the body feels the blow). `svx_game_tests` (`pedestrians:`): people walk the
 sidewalks, wait and cross; replays the same; they come and go with the viewer in bounded memory;
 the dead stay where they fell across the streaming, with their wounds; a car driven into someone
-knocks them down; a rocket wounds and throws people while retaining coherent bodies.
+knocks them down; a rocket wounds and throws people while retaining coherent bodies. Fights
+between two characters (`svx::Brawler`) are `svx_game_tests`' (`tests/game/test_brawl.cpp`).
+`tests/anim/test_audit.cpp` pins the architecture audit's fixes: a blunt transcript hashed bit for
+bit (natively and in WASM), an empty blast, a host's own archetype restored, bounded memory,
+stains that keep a cell's tissue, deaths in the parallel phase the same on 1 and 4 threads, the
+arm a strike is thrown with, girth, the loss of the head, blunt blows through props, the legacy
+profile, content round trips, volleys and the fixtures below.
 
 ## 8. Known limits
 
@@ -188,9 +206,65 @@ knocks them down; a rocket wounds and throws people while retaining coherent bod
 - What the host does not know how to make again (a `restore` that returns nothing: a look it
   no longer has) stays in the world as a stranger's body (an articulation no one draws).
 
+## 9. Profiles: behaviour as data, with a switch back
+
+`CharacterProfile` (`svx/anim/profile.hpp`, `CharacterOptions::profile`, `CharacterDesc::profile`)
+holds what the motor behaviours, the body and the damage would otherwise hard-code: arm and neck
+tone at ease and when recruited, tone per mode, spin caps, the joint-target rate on the ground,
+the planted foot's assists, the arm muscles, the shallow solver's clamps, the hit response, the
+damage model and its policies (severed pieces carry momentum, a blunt blow passes a prop, a blast
+comes from its source), the bounds of §4 and the physiology thresholds. There is no
+process-global tuning.
+
+`CharacterProfile{}` is the current behaviour. `legacy_profile()` restores svx_anim as it was on
+engine `main` (0eda3ca) wherever a mechanism changed: zone hit points and collapse below 30%
+instead of tissue mechanics (`DamageModel::Zones`), the authored shove and spin
+(`HitResponse::Shove`), the scripted blast and gibbing, and the arm, solver, spin and foot tuning
+of the time. `profile_set` / `profile_get` read and write any field by name, for hosts that keep
+tuning in their own data. The solver clamps are the shallow body's only: a deep body is the core's
+articulation and has its own limits (MOTION.md), so a change to either solver is made to both or
+behind a switch, and the behaviour tests run on both paths.
+
+## 10. Content as data
+
+Models and props are data (`svx/anim/content.hpp`): `model_json` / `read_model` write and read a
+voxel model (`svx-anim-voxel-model` version 2: the build, the voxel size, a tissue per slot, and
+per part its cells, shades and per-cell tissue, run-length coded), `prop_json` / `read_prop` /
+`read_props` a prop archetype (its model, mass, material, hold, sockets, points and features).
+Every field is checked; a bad file gives null and a reason. The library's own catalogue is such
+data (`data/content/props.json`, embedded at build time: `svx/anim/content_data.hpp`), generated
+by `tools/prop_catalog` from the sculpting code, which is not part of the library.
+
+A cell's material for damage is its tissue (`Tissue`: soft, flesh, bone, metal), separate from
+its palette slot (its colour): a model maps slots to tissues and a cell may override its slot's.
+Blood on a cell is a stain over its colour (`VoxelPart::stain`); it never changes the tissue.
+
+## 11. What a host is given
+
+A host steers characters and decides what they do; the library keeps the mechanics. Beside the
+plan's input and `TravelState`:
+
+- `StrikeResolver` (`svx/anim/damage/strike.hpp`): one character's strikes landed on another, the
+  momentum loading the striker's grip or limb back. `StrikeTracker::box_contact` meets a sweep with
+  a still box (a pad, a target).
+- `Character::hold_force(part, N)`: a steady push on a part until changed, applied each frame in
+  the sequential phase.
+- `chair_behind(root, yaw, k, variant)`: a seat for a character with no chair in the world.
+- `derive_muscles(Capabilities&)`: per-part muscle from capabilities authored per limb (an
+  override, a test), beside `derive_mobility`.
+- A `DamageDescriptor` volley: `pellets` rounds spread over `spread` rad by a spiral turned by
+  `seed` - the same for the same seed (WOUNDS.md).
+- Names for display: `kBodyName` (body parts), `kSlotName` (palette slots), `kBodyModeName`.
+
+Determinism holds across platforms and thread counts: the library's maths is the core's bundled
+`svx::dm` (sin, cos, exp, pow, cbrt... built from IEEE basic operations; the core's CI checks the
+built libraries for platform transcendental calls), and characters stepped side by side in the
+parallel phase read the world only - deaths and knockouts decided there are carried out in the
+sequential push, one character at a time.
+
 ## Game-world character domains
 
-The Foundry now hosts a full `Game` and `CharacterSystem` and draws through the game WebGPU renderer. `Game::ensure_characters()` also supports roadless test worlds. Seeded stairs, rough ground, obstacles, native movers and falling objects are defined in the game library. `TravelState` handles collision-aware host root requests; foot placement and muscle response remain in `svx_anim`. See [DOMAINS.md](DOMAINS.md) for setup, backend differences and regression coverage.
+The Foundry now hosts a full `Game` and `CharacterSystem` and draws through the game WebGPU renderer. `Game::ensure_characters()` also supports roadless test worlds. Seeded stairs, rough ground, obstacles, native movers and falling objects are a level of `svx_procgen` (`svx/procgen/domain.hpp`). `TravelState` handles collision-aware host root requests; foot placement and muscle response remain in `svx_anim`. See [DOMAINS.md](DOMAINS.md) for setup, backend differences and regression coverage.
 
 Prone movement has a separate hand planner (`motion/crawl.hpp`). Free, usable hands alternate reaches; the supporting palm stays at its surface while the shoulder passes over it. The planner queries the collision world and refuses support over a gap. Hand springs can yield under load, and the plan still works without a physical body. One-arm crawls use the remaining hand; a scoot retains its own stance.
 

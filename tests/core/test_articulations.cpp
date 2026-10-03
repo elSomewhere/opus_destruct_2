@@ -980,3 +980,68 @@ TEST_CASE("articulations: a relative point target shares momentum and survives s
   CHECK(loaded->target_reference[0] == 0);
   CHECK(norm(loaded->target_reference_local[0] - V3{.4, 0, 0}) < 1e-12);
 }
+
+TEST_CASE("articulations: a link's mass changes only with valid values, acts at once and is saved") {
+  World w;
+  w.load(ground());
+  ArticulationDesc d;
+  d.links = {ball({-1, 0, 4}, .05, 1), ball({1, 0, 4}, .05, 1)};
+  d.links[1].mass = 0;  // kinematic
+  const auto id = w.add_articulation(d);
+  REQUIRE(id != 0);
+  const V3 inertia{.02, .03, .04};
+  const f64 nan = std::numeric_limits<f64>::quiet_NaN();
+  CHECK_FALSE(w.set_link_mass(id + 1, 0, 4, inertia));
+  CHECK_FALSE(w.set_link_mass(id, 2, 4, inertia));
+  CHECK_FALSE(w.set_link_mass(id, 1, 4, inertia));  // a kinematic link has no mass to change
+  CHECK_FALSE(w.set_link_mass(id, 0, 0, inertia));
+  CHECK_FALSE(w.set_link_mass(id, 0, -1, inertia));
+  CHECK_FALSE(w.set_link_mass(id, 0, nan, inertia));
+  CHECK_FALSE(w.set_link_mass(id, 0, 4, V3{.02, 0, .04}));
+  CHECK_FALSE(w.set_link_mass(id, 0, 4, V3{.02, nan, .04}));
+  ArticulationState s;
+  REQUIRE(w.articulation_state(id, &s));
+  CHECK(s.links[0].mass == 1.0);
+  REQUIRE(w.set_link_mass(id, 0, 4, inertia));
+  REQUIRE(w.articulation_state(id, &s));
+  CHECK(s.links[0].mass == 4.0);
+  World restored;
+  restored.load(ground());
+  REQUIRE(restored.load_delta(w.save_delta()));
+  // the same off-centre impulse gives the same velocities in both: mass and inertia were kept
+  for (World* world : {&w, &restored}) {
+    REQUIRE(world->articulation_state(id, &s));
+    const V3 at = s.links[0].pos + V3{0, .05, 0};
+    REQUIRE(world->apply_link_impulse(id, 0, at, V3{8, 0, 0}));
+    ArticulationState after;
+    REQUIRE(world->articulation_state(id, &after));
+    CHECK(after.links[0].mass == 4.0);
+    CHECK(std::abs(after.links[0].vel.x - s.links[0].vel.x - 2) < 1e-9);       // J / m
+    CHECK(std::abs(after.links[0].ang.z - s.links[0].ang.z + .4 / .04) < 1e-9);  // (r x J) / I
+  }
+}
+
+#include "fixtures/articulation_v1_session.inc"
+
+TEST_CASE("articulations: a session saved with articulation records v1 still loads and steps as it did") {
+  World w;
+  w.load(ground());
+  const std::vector<u8> bytes(std::begin(kArticulationV1Session), std::end(kArticulationV1Session));
+  REQUIRE(w.load_delta(bytes));
+  REQUIRE(w.articulations().size() == 1);
+  const ArticulationId id = w.articulations()[0];
+  const auto* control = w.articulation_control(id);
+  REQUIRE(control);
+  REQUIRE(control->targets.size() == 1);
+  CHECK(control->targets[0].on);
+  REQUIRE(control->target_local.size() == 1);
+  CHECK(norm(control->target_local[0] - V3{.01, 0, 0}) < 1e-12);
+  // v1 knew no second link for a point target: the target stays a world target
+  REQUIRE(control->target_reference.size() == 1);
+  CHECK(control->target_reference[0] == -1);
+  for (int i = 0; i < 30; ++i) w.tick();
+  ArticulationState s;
+  REQUIRE(w.articulation_state(id, &s));
+  for (int i = 0; i < 2; ++i)
+    CHECK(norm(s.links[i].pos - V3{kArticulationV1After[i][0], kArticulationV1After[i][1], kArticulationV1After[i][2]}) < 1e-12);
+}

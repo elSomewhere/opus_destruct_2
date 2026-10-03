@@ -75,7 +75,7 @@ std::vector<StrikeSweep> StrikeTracker::sample(const Character& c, f64 dt) {
       s.speed_limit = f ? 22.0 : (event.limb == Limb::FootL || event.limb == Limb::FootR ? 16.0 : 12.0);
       d.swept_length = vdist(s.a, s.b);
       d = s.impact(.5, (s.a + s.b) * .5);
-      const size_t hand = action->left_handed ? 0 : 1;
+      const size_t hand = action->strike_arm();
       const bool active = c.motion.strike_weight[hand] > .05 || c.motion.strike_weight[2] > .05 || c.motion.strike_weight[3] > .05 ||
                           std::abs(c.motion.action_time() - event.t) < .1;
       if (active && old != previous_.end() && std::max(norm(s.velocity(0)), norm(s.velocity(1))) > .05) out.push_back(std::move(s));
@@ -83,6 +83,34 @@ std::vector<StrikeSweep> StrikeTracker::sample(const Character& c, f64 dt) {
   previous_ = std::move(current);
   return out;
 }
+std::optional<DamageDescriptor> StrikeTracker::box_contact(const StrikeSweep& s, const V3& lo, const V3& hi, f64 step) {
+  std::optional<DamageDescriptor> contact;
+  f64 first = 2;
+  const int samples = std::clamp(int(std::ceil(std::max(vdist(s.a, s.b), vdist(s.previous_a, s.previous_b)) / std::max(step, 1e-3))), 1, 256);
+  for (int i = 0; i <= samples; ++i) {
+    const f64 t = f64(i) / samples;
+    const V3 from = vlerp(s.previous_a, s.previous_b, t), to = vlerp(s.a, s.b, t), delta = to - from;
+    f64 near = 0, far = 1;
+    bool miss = false;
+    for (int axis = 0; axis < 3; ++axis) {
+      if (std::abs(delta[axis]) < 1e-9) {
+        if (from[axis] < lo[axis] || from[axis] > hi[axis]) miss = true;
+      } else {
+        f64 a = (lo[axis] - from[axis]) / delta[axis], b = (hi[axis] - from[axis]) / delta[axis];
+        if (a > b) std::swap(a, b);
+        near = std::max(near, a);
+        far = std::min(far, b);
+      }
+    }
+    if (miss || near > far || near >= first) continue;
+    const DamageDescriptor d = s.impact(t, from + delta * near, {}, near);
+    if (d.speed <= .05) continue;
+    contact = d;
+    first = near;
+  }
+  return contact;
+}
+
 std::optional<DamageDescriptor> StrikeTracker::contact(const StrikeSweep& s, const Character& target) {
   std::optional<DamageDescriptor> result;
   f64 best = 1e30;
@@ -129,5 +157,42 @@ std::optional<DamageDescriptor> StrikeTracker::contact(const StrikeSweep& s, con
     }
   }
   return result;
+}
+std::vector<LandedBlow> StrikeResolver::resolve(f64 dt) {
+  std::vector<LandedBlow> out;
+  const auto sweeps = tracker_.sample(self, dt);
+  if (!opponent) return out;
+  for (const auto& sweep : sweeps) {
+    if (landed_serial_ == sweep.serial) continue;
+    auto descriptor = StrikeTracker::contact(sweep, *opponent);
+    if (!descriptor) continue;
+    LandedBlow blow;
+    blow.attacker = &self;
+    blow.victim = opponent;
+    blow.point = descriptor->point;
+    blow.dir = descriptor->direction;
+    blow.kind = descriptor->kind == DamageKind::Edge || descriptor->kind == DamageKind::Point ? HitKind::Blade : HitKind::Blunt;
+    blow.blocked = descriptor->blocked;
+    blow.descriptor = *descriptor;
+    blow.result = opponent->damage(*descriptor);
+    if (blow.result.absorbed_energy <= 0) continue;
+    landed_serial_ = sweep.serial;
+    blow.blocked = blow.blocked || blow.result.blocked;
+    // The same absorbed momentum loads the striking grip in the opposite
+    // direction. A successful block can wrench the attacker's prop loose.
+    if (const auto item = self.attachments().held(); item && item->id == descriptor->prop) {
+      self.wrench(item->point, -blow.result.impulse, descriptor->point);
+    } else if (!descriptor->prop) {
+      if (const auto* action = action_def(self.motion.action_name())) {
+        const auto event = std::find_if(action->events.begin(), action->events.end(), [](const auto& e) { return e.name == "strike"; });
+        if (event != action->events.end()) {
+          const i32 part = event->limb == Limb::FootL ? B::footL : event->limb == Limb::FootR ? B::footR : event->limb == Limb::HandL ? B::handL : B::handR;
+          self.pushed_at(part, -blow.result.impulse, descriptor->point);
+        }
+      }
+    }
+    out.push_back(std::move(blow));
+  }
+  return out;
 }
 }  // namespace svx::anim

@@ -4,6 +4,8 @@
 #include <cmath>
 #include <string>
 
+#include "svx/base/dmath.hpp"
+
 namespace svx {
 
 namespace {
@@ -77,7 +79,7 @@ class CitySource final : public GameSource {
         g.origin = V3{h_ * c[0], h_ * c[1], 0.0};
         const f64 deg = 10.0 + static_cast<f64>((lot_traits(bx, by) >> 16) % 26);
         const f64 t = 0.5 * deg * 3.14159265358979323846 / 180.0;
-        g.rot = Quat{0.0, 0.0, std::sin(t), std::cos(t)};
+        g.rot = Quat{0.0, 0.0, dm::sin(t), dm::cos(t)};
         out.push_back(g);
       }
     return out;

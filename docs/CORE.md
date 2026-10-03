@@ -48,6 +48,12 @@ be rewritten without touching the core. Each layer has its own tests:
   Doom maps and movers, replays, vehicles, pedestrians, the C ABI).
 - `tools/baseline/golden.sh` pins the engine's world hashes in fixed scenarios, and the
   structural reference's, reproduced bit for bit with its switches ([`BASELINE.md`](BASELINE.md)).
+- `scripts/check_engine.py layers` holds the rule in CI: each library includes only itself and
+  what it is built on (the table above), another library only through its public headers, and a
+  third-party header (nlohmann) only from its sources; `scripts/check_engine.py libm BUILD` reads
+  the built libraries' undefined symbols and fails on any of the platform's transcendental
+  functions (sin, exp, pow, cbrt, hypot..., `sincos` the compiler fuses): `svx/base/dmath.hpp`'s
+  are the deterministic ones.
 - `examples/core_minimal` (C++) and `examples/c_api` (C) are complete hosts in ~80 lines.
 
 **Inside the core.** `World` is its public API and nothing else: `svx/world/world.hpp` declares
@@ -111,16 +117,16 @@ material around them, tying a member together. Register or override a world's ma
 it loads (what it builds from them - fragments, structures, pieces - keeps what it was built
 with).
 
-**Decorative** materials (`Material::decorative`: plants - leaves, grass, a hedge) are solid to
-rendering and raycasts, burn and are cut like any solid, but are never structure: the fragmenter
-skips them, so they have no bond, no stress node, are never a support and never extracted, and a
-decorative voxel is never anchored (the anchor bit is dropped where one comes into a world).
-They follow what they grow on: after a change near them - a cut, an edit, something they grew on
-coming loose as a piece - a component of decorative voxels (6-connected, up to 8,192) that touches
-no other solid voxel is shed: removed with a dust event (falling leaves; carrying them with the
-piece is not done yet). **Passable** decorative materials (leaves, grass) collide with nothing:
-pieces, characters' links, wheels and the player's box go through them; a hedge is not passable.
-A world with no decorative material behaves as before.
+**Non-structural** materials (`Material::non_structural`; plants say - leaves, grass, a hedge) are
+solid to rendering and raycasts, burn and are cut like any solid, but are never structure: the
+fragmenter skips them, so they have no bond, no stress node, are never a support and never
+extracted, and a non-structural voxel is never anchored (the anchor bit is dropped where one comes
+into a world). They follow what they rest on: after a change near them - a cut, an edit, something
+they grew on coming loose as a piece - a component of non-structural voxels (6-connected, up to
+8,192) that touches no other solid voxel is shed: removed with a dust event (falling leaves;
+carrying them with the piece is not done yet). **Passable** non-structural materials (leaves,
+grass) collide with nothing: pieces, articulations' links, wheels and the host's boxes go through
+them; a hedge is not passable. A world with no non-structural material behaves as before.
 
 **Fragments** are the pre-scored rubble pieces the free voxels are grouped into (a jittered
 Voronoi partition per material, within each chunk). Fragments never break; **bonds** between
@@ -322,6 +328,12 @@ must be resident: one point per player, camera or AI of interest.
 - `ChunkSource::region(chunk)` names the unit a chunk's changes are remembered and forgotten
   with. The default is 8 × 8 chunk columns; the city generator uses its blocks, so a building
   never comes back in half.
+- A host keeps its own state with a place the same way: `archive_host_record(owner, id, at,
+  data)` puts bytes into the archive with the region of `at` (a prop dropped there, a mark); when
+  the chunks about `at` are known again they come back, and `take_host_records(owner)` hands back
+  what came back since its last call, in archiving order. A region forgotten forgets its records
+  (`archived_records`, `forgotten_records` in the stats); saved sessions keep them. The core never
+  reads the bytes: what they mean is the host's (svx_anim archives loose props so, ANIM.md §4).
 
 A bounded level too large to keep resident streams the same way, from a source that reads the
 level (a file, a compressed grid). It then usually keeps every change (`archive_mb = 0`), since
@@ -351,8 +363,9 @@ streamed world's pieces archived out of range. `load_delta()` applies one:
 Given the same world, configuration and commands at the same ticks, a session is bit-identical:
 
 - on any thread count;
-- natively and in WASM, on ARM and x86 (no transcendental functions on the simulation path at the
-  default substeps of whole multiples of 1/120 s).
+- natively and in WASM, on ARM and x86 (no transcendental functions of the platform's anywhere in
+  the libraries - `svx::dm`'s, built from IEEE basic operations, instead; CI checks the built
+  libraries' symbols - at the default substeps of whole multiples of 1/120 s).
 
 This is what lockstep networking and replays need (see `game/include/svx/game/replay.hpp`).
 Things that break it:
@@ -488,7 +501,10 @@ points, without touching the core. `svx_env` ([`ENV.md`](ENV.md)) is built on th
   every solve. New or changed loads extract the structures under them, and the design pass
   designs for them. (A producer writing its loads chunk by chunk makes them cheap to apply
   every tick.)
-- **Forces on pieces** (`apply_force`, for the next tick only; `wake_piece`).
+- **Forces on pieces** (`apply_force`, for the next tick only; `wake_piece`), and what is awake:
+  `awake_pieces()` gives the pieces awake now and their bounding boxes (a host's level of detail
+  asks what may touch its objects before long), so no host reads the rigid solver's state.
+- **Host records** with the region archive (§3, Streaming).
 - **Systems** (`add_system(std::shared_ptr<WorldSystem>)`): objects stepped at the end of every
   tick, in the order added (and, before the mechanics, `pre_step`: what they drive - an
   articulation's muscles and targets - is set there; they may add and remove articulations in

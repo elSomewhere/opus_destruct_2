@@ -539,7 +539,7 @@ void Pedestrians::move(Walker& w, anim::Character& c, f64 dt) {
     w.vel.y = dt > 0.0 ? rm.y / dt : 0.0;
   } else if (w.on_ground) {
     const V3 v = steer(w.vel, has_dir ? want_dir : V3{dm::cos(w.yaw), dm::sin(w.yaw), 0.0}, has_dir ? want_speed : 0.0, dt, steer_options(has_dir ? want_speed : w.pace));
-    const f64 k = 1.0 - std::exp(-6.0 * dt);
+    const f64 k = 1.0 - dm::exp(-6.0 * dt);
     w.vel.x = v.x + sep.x * k;
     w.vel.y = v.y + sep.y * k;
   }
@@ -601,7 +601,7 @@ void Pedestrians::move(Walker& w, anim::Character& c, f64 dt) {
     else if (has_dir && !locked) want_yaw = dm::atan2(want_dir.y, want_dir.x);
     else if (hypot2(w.vel.x, w.vel.y) > 0.3 && !locked) want_yaw = dm::atan2(w.vel.y, w.vel.x);
     if (want_yaw) turn(w.yaw, w.yaw_rate, *want_yaw, dt, 3.2, 9.0);
-    else w.yaw_rate *= std::exp(-12.0 * dt);
+    else w.yaw_rate *= dm::exp(-12.0 * dt);
   }
 }
 

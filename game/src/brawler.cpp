@@ -1,28 +1,28 @@
-#include "svx/anim/brawl.hpp"
+#include "svx/game/brawler.hpp"
 
 #include <array>
 
-namespace svx::anim {
+namespace svx {
+
+using namespace svx::anim;
 
 namespace {
 
-// Each strike's force (~1 a punch) and where it aims (a bone of the opponent's).
-struct StrikeSpec {
+// Where each strike aims (a bone of the opponent's).
+struct StrikeAim {
   std::string_view name;
-  f64 force;
   i32 aim;
 };
-constexpr StrikeSpec kStrikeSpecs[] = {
-    {"jab", 0.7, H::head},        {"cross", 1.2, H::head},           {"hook", 1.45, H::head},      {"uppercut", 1.55, H::head},
-    {"frontKick", 1.9, H::spine}, {"roundhouse", 2.3, H::chest},     {"stab", 1.1, H::spine},      {"slash", 0.9, H::chest},
-    {"gutStab", 1.2, H::spine},   {"forehandSlash", 0.95, H::chest}, {"riflePush", 1.3, H::chest},
+constexpr StrikeAim kStrikeAims[] = {
+    {"jab", H::head},        {"cross", H::head},          {"hook", H::head},           {"uppercut", H::head},
+    {"frontKick", H::spine}, {"roundhouse", H::chest},    {"stab", H::spine},          {"slash", H::chest},
+    {"gutStab", H::spine},   {"forehandSlash", H::chest}, {"riflePush", H::chest},
 };
 
-// (null: not a strike)
-const StrikeSpec* strike_spec(std::string_view name) {
-  for (const StrikeSpec& s : kStrikeSpecs)
-    if (s.name == name) return &s;
-  return nullptr;
+i32 aim_of(std::string_view name) {
+  for (const StrikeAim& s : kStrikeAims)
+    if (s.name == name) return s.aim;
+  return H::chest;
 }
 
 // An action's name without the mirror image's ".m".
@@ -40,13 +40,12 @@ bool striking(std::string_view name) {
 
 }  // namespace
 
-Brawler::Brawler(Character& c, const BrawlerOptions& o) : self(c), rng_(o.seed * 977.0 + 3.0), aggression_(o.aggression), skill_(o.skill) {}
+Brawler::Brawler(Character& c, const BrawlerOptions& o) : self(c), rng_(o.seed * 977.0 + 3.0), aggression_(o.aggression), skill_(o.skill), resolver_(c) {}
 
 // The opponent's body point a strike aims at.
 V3 Brawler::aim_point(std::string_view strike) const {
   const Character& o = *opponent;
-  const StrikeSpec* s = strike_spec(strike);
-  const i32 b = s ? s->aim : H::chest;
+  const i32 b = aim_of(strike);
   const WorldPose& w = o.pose;
   if (b == H::head) {
     const V3 h = o.model->skeleton->rest_head[H::head];
@@ -113,7 +112,7 @@ void Brawler::update(f64 dt) {
     }
   }
   if (theirs.empty()) reacted_.clear();
-  // attack
+  // attack: what the body can throw now (MotionPlan::can_play), as this fighter would
   cooldown_ -= dt;
   if (!o_down && cooldown_ <= 0.0 && !a.busy() && d < want + 0.3) {
     std::vector<const ActionDef*> candidates;
@@ -122,22 +121,18 @@ void Brawler::update(f64 dt) {
     const bool left = cap.arms[0].strength == cap.arms[1].strength ? a.props.wield.left_handed : cap.arms[0].strength > cap.arms[1].strength;
     for (const auto& action : actions()) {
       if (!action.targeted || (held && action.left_handed != left)) continue;
-      if (held) {
-        if (action.requires_tags.empty() || !held->archetype->satisfies(action.requires_tags)) continue;
-      } else if (!action.requires_tags.empty())
-        continue;
-      if (action.two_hands && (!held || held->style != WieldStyle::TwoHands)) continue;
-      if (action.one_hand && held && held->style == WieldStyle::TwoHands) continue;
-      if (action.reverse_grip && (!held || held->style != WieldStyle::Reverse)) continue;
+      if (held ? action.requires_tags.empty() : !action.requires_tags.empty()) continue;  // (with a prop, its strikes; without, the body's)
+      if (!a.can_play(action)) continue;
+      // (a careful fighter: no kick close in, off balance or on a weak leg; the stronger arm)
       const bool kick = action.drives(Channel::StrikeFootR) || action.drives(Channel::StrikeFootL);
       if (kick && (d < 1.05 || me.controlled() || std::min(cap.legs[0].support, cap.legs[1].support) < .6)) continue;
-      const size_t arm = action.drives(Channel::StrikeL) ? 0 : 1;
-      if (cap.arms[arm].strength < action.minimum_arm || cap.arms[1 - arm].strength - cap.arms[arm].strength > .2) continue;
+      const size_t arm = action.strike_arm();
+      if (cap.arms[1 - arm].strength - cap.arms[arm].strength > .2) continue;
       candidates.push_back(&action);
     }
     if (!candidates.empty()) {
       const auto& action = *candidates[std::min(candidates.size() - 1, size_t(rng_.next() * candidates.size()))];
-      if (a.play(action.name, aim_point(base_of(action.name)))) last_strike_ = action.name;
+      a.play(action.name, aim_point(base_of(action.name)));
       cooldown_ = (.45 + rng_.next() * 1.1) * (1.4 - aggression_) / std::max(.25, cap.vigor);
     }
   }
@@ -150,44 +145,9 @@ void Brawler::update(f64 dt) {
   }
 }
 
-std::vector<LandedBlow> Brawler::resolve(const std::vector<AnimEvent>& events) {
-  (void)events;
-  std::vector<LandedBlow> out;
-  const auto sweeps = tracker_.sample(self, dt_);
-  if (!opponent) return out;
-  for (const auto& sweep : sweeps) {
-    if (landed_serial_ == sweep.serial) continue;
-    auto descriptor = StrikeTracker::contact(sweep, *opponent);
-    if (!descriptor) continue;
-    LandedBlow blow;
-    blow.attacker = &self;
-    blow.victim = opponent;
-    blow.point = descriptor->point;
-    blow.dir = descriptor->direction;
-    blow.kind = descriptor->kind == DamageKind::Edge || descriptor->kind == DamageKind::Point ? HitKind::Blade : HitKind::Blunt;
-    blow.blocked = descriptor->blocked;
-    blow.descriptor = *descriptor;
-    blow.result = opponent->damage(*descriptor);
-    if (blow.result.absorbed_energy <= 0) continue;
-    landed_serial_ = sweep.serial;
-    blow.blocked = blow.blocked || blow.result.blocked;
-    // The same absorbed momentum loads the striking grip in the opposite
-    // direction. A successful block can wrench the attacker's prop loose.
-    if (const auto item = self.attachments().held(); item && item->id == descriptor->prop) {
-      self.wrench(item->point, -blow.result.impulse, descriptor->point);
-    } else if (!descriptor->prop) {
-      const auto* action = action_def(self.motion.action_name());
-      if (action) {
-        const auto event = std::find_if(action->events.begin(), action->events.end(), [](const auto& e) { return e.name == "strike"; });
-        if (event != action->events.end()) {
-          const i32 part = event->limb == Limb::FootL ? B::footL : event->limb == Limb::FootR ? B::footR : event->limb == Limb::HandL ? B::handL : B::handR;
-          self.pushed_at(part, -blow.result.impulse, descriptor->point);
-        }
-      }
-    }
-    out.push_back(std::move(blow));
-  }
-  return out;
+std::vector<LandedBlow> Brawler::resolve() {
+  resolver_.opponent = opponent;
+  return resolver_.resolve(dt_);
 }
 
-}  // namespace svx::anim
+}  // namespace svx

@@ -1,4 +1,4 @@
-#include "svx/game/domain.hpp"
+#include "svx/procgen/domain.hpp"
 #include <algorithm>
 
 namespace svx {

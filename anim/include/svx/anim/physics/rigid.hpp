@@ -64,6 +64,7 @@ class RigidBody {
   // external force and torque (world) applied every substep of the next step, then cleared
   V3 force, torque;
   f64 friction = 0.8;  // (against the world)
+  f64 max_turn = 0.15;  // rad: the most one positional correction turns it (0: unbounded, as the original)
   // touched the world during the last step, the last contact normal, and where (world)
   bool contact = false;
   V3 contact_normal{0, 0, 1};
@@ -217,6 +218,9 @@ class RigidSystem {
   // The fastest any body may spin (rad/s): a limp body's parts turn no faster than a limb flung
   // loose does (an impact on a light part does not set it whirling).
   f64 spin_cap = 80.0;
+  // Per substep, a pose turns no further than spin_cap allows and a damper exerts no more than its
+  // muscle's torque (CharacterProfile::solver_clamps; off: as the original).
+  bool clamps = true;
   // the most the constraints change a body's velocity in one substep (m/s, rad/s)
   f64 max_dv = 1.2, max_dw = 12.0;
   f64 linear_drag = 0.98, angular_drag = 0.9;  // air drag: velocity kept per second

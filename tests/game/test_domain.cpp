@@ -1,5 +1,5 @@
 #include "doctest.h"
-#include "svx/game/domain.hpp"
+#include "svx/procgen/domain.hpp"
 #include "svx/anim/system.hpp"
 #include "svx/anim/characters/humans.hpp"
 #include "svx/anim/motion/travel.hpp"

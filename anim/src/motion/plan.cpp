@@ -6,6 +6,11 @@
 
 namespace svx::anim {
 
+SeatInfo chair_behind(const V3& root, f64 yaw, f64 k, SitVariant variant) {
+  return SeatInfo{root + rotate(qz(yaw - kPi / 2), V3{0, -.18 * k, .48 * k}), true,
+                  variant == SitVariant::Desk ? std::optional<f64>(.75 * k) : std::nullopt, variant};
+}
+
 void PlanControl::reset() {
   arms[0].reset();
   arms[1].reset();
@@ -145,65 +150,53 @@ void MotionPlan::carry_root(const V3& pos_in, f64 yaw) {
   if (std::abs(pos.z - vis_z_.x) > 0.3 * k) vis_z_.x = pos.z;
 }
 
+bool MotionPlan::can_play(const ActionDef& def, std::string* why) const {
+  auto refuse = [&](std::string_view reason) {
+    if (why) *why = reason;
+    return false;
+  };
+  if (!def.requires_tags.empty() && (!weapon || !weapon->satisfies(def.requires_tags))) return refuse("held prop lacks the action capabilities");
+  if (stance == Stance::Down || lying_ || stance_p_ < 1.0) return refuse("body is down or changing stance");
+  if (capabilities.consciousness < .2 || capabilities.vigor < .1) return refuse("incapacitated");
+  if (def.targeted) {
+    const bool kick = def.drives(Channel::StrikeFootR) || def.drives(Channel::StrikeFootL);
+    if (kick && std::min(capabilities.legs[0].support, capabilities.legs[1].support) < .45) return refuse("kick needs a working striking and support leg");
+    if (capabilities.arms[def.strike_arm()].strength < def.minimum_arm) return refuse("striking arm is too weak");
+  }
+  if (def.free_hands && (!props.free_hand(true) || !props.free_hand(false))) return refuse("action requires free hands");
+  const auto held = props.held();
+  if (def.one_hand && held && held->style == WieldStyle::TwoHands) return refuse("action requires a one-handed grip");
+  if (def.two_hands && (!held || held->style != WieldStyle::TwoHands)) return refuse("action requires a two-handed grip");
+  if (def.reverse_grip && (!held || held->style != WieldStyle::Reverse)) return refuse("action requires a reverse grip");
+  if (held && !def.requires_tags.empty()) {
+    // (the prop changes hands for an action of the other hand: it must be able to)
+    const auto point = def.left_handed ? AttachPoint::LeftHand : AttachPoint::RightHand;
+    if (point != held->point) {
+      Attachments trial = props;
+      trial.slots[size_t(held->point)].reset();
+      if (!trial.accepts(*held->archetype, point, held->socket, held->style)) return refuse(trial.refusal);
+    }
+  }
+  return true;
+}
+
 bool MotionPlan::play(std::string_view name, std::optional<V3> target, f64 rate) {
   action_refusal.clear();
   const ActionDef* def = action_def(name);
   if (!def || !std::isfinite(rate) || rate <= 0.0) return false;
   if (target && !std::isfinite(norm(*target))) return false;
-  if (!def->requires_tags.empty() && (!weapon || !weapon->satisfies(def->requires_tags))) {
-    action_refusal = "held prop lacks the action capabilities";
-    return false;
-  }
-  if (stance == Stance::Down || lying_ || stance_p_ < 1.0) {
-    action_refusal = "body is down or changing stance";
-    return false;
-  }
-  if (auto held = props.held()) weapon_hand = attachment_bone(held->point);
-  if (capabilities.consciousness < .2 || capabilities.vigor < .1) {
-    action_refusal = "incapacitated";
-    return false;
-  }
-  if (def->targeted) {
-    const bool kick = def->drives(Channel::StrikeFootR) || def->drives(Channel::StrikeFootL);
-    if (kick && std::min(capabilities.legs[0].support, capabilities.legs[1].support) < .45) {
-      action_refusal = "kick needs a working striking and support leg";
-      return false;
-    }
-    const size_t hand = def->left_handed ? 0 : 1;
-    if (capabilities.arms[hand].strength < def->minimum_arm) {
-      action_refusal = "striking arm is too weak";
-      return false;
-    }
-    rate *= std::max(.25, capabilities.arms[hand].strength * capabilities.vigor);
-  }
-  if (def->free_hands && (!props.free_hand(true) || !props.free_hand(false))) {
-    action_refusal = "action requires free hands";
-    return false;
-  }
-  if (def->one_hand && props.held() && props.held()->style == WieldStyle::TwoHands) {
-    action_refusal = "action requires a one-handed grip";
-    return false;
-  }
-  if (def->two_hands && (!props.held() || props.held()->style != WieldStyle::TwoHands)) {
-    action_refusal = "action requires a two-handed grip";
-    return false;
-  }
-  if (def->reverse_grip && (!props.held() || props.held()->style != WieldStyle::Reverse)) {
-    action_refusal = "action requires a reverse grip";
-    return false;
-  }
+  if (!can_play(*def, &action_refusal)) return false;
+  if (def->targeted) rate *= std::max(.25, capabilities.arms[def->strike_arm()].strength * capabilities.vigor);
   if (weapon && !def->requires_tags.empty()) rate /= 1 + .12 * std::max(0.0, weapon->mass - .25);
   if (!props.wield.practised && def->targeted) rate *= .85;
   if (auto item = props.held(); item && !def->requires_tags.empty()) {
     const auto point = def->left_handed ? AttachPoint::LeftHand : AttachPoint::RightHand;
-    if (point != item->point) {
-      if (!props.regrip(item->point, point, item->socket, item->style)) {
-        action_refusal = props.refusal;
-        return false;
-      }
-      weapon_hand = attachment_bone(point);
+    if (point != item->point && !props.regrip(item->point, point, item->socket, item->style)) {
+      action_refusal = props.refusal;
+      return false;
     }
   }
+  if (auto held = props.held()) weapon_hand = attachment_bone(held->point);
   if (def->layer == ActionLayer::Pose) {
     manual_pose_ = def;
     set_pose_action(def);
@@ -257,12 +250,19 @@ void MotionPlan::step_in(const ActionDef& def, const V3& target, f64 rate) {
   feet_planner.step(i, V3{p.x + (dx / h) * need * 1.15, p.y + (dy / h) * need * 1.15, p.z}, std::max(0.12, strike_at / rate));
 }
 
+void MotionPlan::set_autonomy(const IdleAutonomy& a) {
+  autonomy_ = a;
+  next_idle_pose_ = a.first_pose;
+  next_fidget_ = a.first_fidget;
+  next_gesture_ = a.first_gesture;
+}
+
 void MotionPlan::interrupt(bool hard) {
   manual_pose_ = nullptr;
   if (hard && act_ && !act_->def->name.starts_with("block")) act_->stop();
   if (pose_act_ && pose_act_->def->name != "guard" && pose_act_->def->name != "knifeGuard") pose_act_->stop();
   idle_time_ = 0.0;
-  next_idle_pose_ = 4.0 + rng_.next() * 4.0;
+  next_idle_pose_ = autonomy_.pose_restart + rng_.next() * autonomy_.pose_restart_spread;
 }
 
 void MotionPlan::aim_action(const V3& target) {
@@ -292,7 +292,7 @@ void MotionPlan::take_events(std::vector<AnimEvent>& out) {
 void MotionPlan::fire(f64 strength) {
   if (!weapon) return;
   hold.fire(*weapon, strength);
-  recoil_.kick((weapon->has("handgun") ? 0.15 : 0.35) * strength);
+  recoil_.kick(weapon->hold.recoil * strength);
 }
 
 void MotionPlan::lie(const V3& root, f64 yaw, bool back) {
@@ -366,7 +366,7 @@ void MotionPlan::update_stance(f64 dt) {
     return;
   }
   if (lying_) return;
-  Stance want = input.stance;
+  Stance want = effective_stance();
   if (want == Stance::Sit && !input.seat) want = Stance::Stand;
   if (want == Stance::Down) want = Stance::Stand;
   if (want != stance) {
@@ -526,7 +526,7 @@ void MotionPlan::update(f64 dt_in) {
   inv_ = inv;
   const V3 v_local = rotate(inv, vel);
   const V3 a_local = rotate(inv, accel_);
-  const bool armed = weapon && weapon->has("firearm");
+  const bool armed = weapon && weapon->hold.aims();
   const bool aiming = armed && (inp.carry == Carry::Aim || inp.carry == Carry::Hip) && inp.aim_at.has_value();
   const f64 stand_w = weight_of(Stance::Stand);
 
@@ -537,7 +537,7 @@ void MotionPlan::update(f64 dt_in) {
     const f64 th = atan2(-v_local.x, v_local.y);
     if (std::abs(th) < 1.75) lower = clamp(th, -1.0, 1.0) * 0.65;
     else lower = clamp(wrap_angle(th - kPi), -1.0, 1.0) * 0.65;
-  } else if (aiming && weapon->has("long_firearm")) {
+  } else if (aiming && weapon->hold.style == HoldStyle::Shouldered) {
     lower = -0.42;
   }
   lower_yaw_.update(lower, dt);
@@ -825,7 +825,7 @@ void MotionPlan::update(f64 dt_in) {
   // peeking round a corner is done standing (or crouched) still: walking, the body is upright
   lean_s_.update(clamp(inp.lean, -1.0, 1.0) * (1.0 - smoothstep(0.25, 0.7, speed)), dt);
   const f64 aw = aim_w_.x;
-  const bool rifle = weapon && weapon->has("long_firearm");
+  const bool rifle = weapon && weapon->hold.style == HoldStyle::Shouldered;
   // a long gun bladed: the trunk turns off the target (from the hip more, so the support hand
   // reaches the handguard)
   const f64 blade = aw * (rifle ? (inp.carry == Carry::Aim ? 0.3 : inp.carry == Carry::Hip ? 0.5 : 0.0) : 0.0);
@@ -944,18 +944,16 @@ void MotionPlan::update(f64 dt_in) {
     if (item && hand_point(item->point)) {
       if (item == props.held()) weapon_hand = attachment_bone(item->point);
       const bool left = item->point == AttachPoint::LeftHand;
-      if (!item->archetype->has("firearm") && (!input.guard || item->archetype->has("non_combat")) && !act_) {
+      const PropHold& hold = item->archetype->hold;
+      if (!hold.aims() && (!input.guard || hold.guard.empty()) && !act_) {
         V3 offset{(left ? -1 : 1) * .25 * k, .06 * k, (-.5 - .003 * item->archetype->mass) * k};
         std::optional<Quat> palm;
         const Side side = left ? Side::L : Side::R;
-        if (item->archetype->has("communication") && input.carry == Carry::Ready)
-          offset = {(left ? -1 : 1) * .14 * k, .03 * k, .25 * k};
-        else if ((item->archetype->has("long_blade") || item->archetype->has("club")) && input.carry != Carry::Relaxed) {
-          offset = {(left ? -1 : 1) * .2 * k, .3 * k, -.12 * k};
-          palm = qx(.45);
-        } else if (item->archetype->has("club") && item->style == WieldStyle::TwoHands) {
-          offset = {(left ? -1 : 1) * .23 * k, .12 * k, .12 * k};
-          palm = qx(2.2);
+        const bool ready = hold.ready.on && (input.carry == Carry::Ready || (hold.ready_at_aim && input.carry != Carry::Relaxed));
+        const CarryPose* pose = ready ? &hold.ready : hold.two_hands.on && item->style == WieldStyle::TwoHands ? &hold.two_hands : nullptr;
+        if (pose) {
+          offset = {(left ? -1 : 1) * pose->offset.x * k, pose->offset.y * k, pose->offset.z * k};
+          if (pose->palm) palm = qx(*pose->palm);
         }
         V3 target = fk.p[H::chest] + rotate(fk.q[H::chest], offset);
         if (!palm && stance == Stance::Stand && item->style != WieldStyle::Hanging) {
@@ -996,7 +994,7 @@ void MotionPlan::update(f64 dt_in) {
   task_w_[1].update(ctl.arms[1] ? clamp(ctl.arms[1]->weight, 0.0, 1.0) : 0.0, dt);
   const bool free_left = task_w_[0].x > 0.35;
   bool held_prop = false;
-  if (weapon && weapon->has("firearm")) {
+  if (weapon && weapon->hold.aims()) {
     HoldContext hc;
     hc.carry = inp.carry;
     if (inp.aim_at) hc.aim_at = to_model(*inp.aim_at);
@@ -1024,7 +1022,7 @@ void MotionPlan::update(f64 dt_in) {
   // action hands: the posture layer, then one-shots on top
   if (ch_p && w_p > 0.0) action_hands(*ch_p, w_p, *pose_act_, held_prop);
   if (ch_a && w_a > 0.0) action_hands(*ch_a, w_a, *act_, held_prop);
-  if (auto item = props.held(); item && item->style == WieldStyle::TwoHands && !item->archetype->has("firearm")) {
+  if (auto item = props.held(); item && item->style == WieldStyle::TwoHands && !item->archetype->hold.aims()) {
     const bool left = item->point == AttachPoint::LeftHand;
     const Side primary = left ? Side::L : Side::R, secondary = left ? Side::R : Side::L;
     const i32 bone = left ? H::handL : H::handR;
@@ -1138,7 +1136,7 @@ void MotionPlan::update(f64 dt_in) {
   world.compute(pose, origin, root_q);
   weapon_in_hand = false;
   if (weapon) {
-    if (weapon->has("short_blade") || !held_prop || task_w_[1].x > 0.5) {
+    if (weapon->hold.in_hand || !held_prop || task_w_[1].x > 0.5) {
       prop_in_hand(weapon_hand);
       weapon_in_hand = true;
     } else {
@@ -1155,7 +1153,7 @@ void MotionPlan::update_actions(f64 dt) {
   const MotionInput& inp = input;
   const f64 speed = hypot2(velocity.x, velocity.y);
   const bool free = stance == Stance::Stand && stance_p_ >= 1.0 && inp.mood == Mood::Normal && !control.busy;
-  const bool armed = weapon && weapon->has("firearm");
+  const bool armed = weapon && weapon->hold.aims();
   // (a pause with the weapon down: standing still, not aiming)
   armed_idle_ = armed && free && speed < 0.15 && inp.carry != Carry::Aim && inp.carry != Carry::Hip ? armed_idle_ + dt : 0.0;
   // the posture layer: guard, talk, idle poses
@@ -1165,14 +1163,9 @@ void MotionPlan::update_actions(f64 dt) {
   } else if (inp.guard && free) {
     want = "guard";
     if (weapon) {
-      if (weapon->has("short_blade"))
-        want = "knifeGuard";
-      else if (weapon->has("long_blade"))
-        want = "bladeGuard";
-      else if (weapon->has("club"))
-        want = props.held()->style == WieldStyle::TwoHands ? "batStance" : "clubGuard";
-      else if (weapon->has("non_combat"))
-        want = {};
+      const PropHold& hold = weapon->hold;
+      want = props.held() && props.held()->style == WieldStyle::TwoHands && !hold.guard_two_hands.empty() ? std::string_view(hold.guard_two_hands)
+                                                                                                     : std::string_view(hold.guard);
       if (!want.empty() && weapon_hand == H::handL)
         if (const auto* mirror = action_def(std::string(want) + ".m")) want = mirror->name;
     }
@@ -1183,13 +1176,13 @@ void MotionPlan::update_actions(f64 dt) {
   } else if (inp.idle && free && !armed && speed < 0.15 && !inp.aim_at) {
     idle_time_ += dt;
     if (idle_time_ > next_idle_pose_) {
-      next_idle_pose_ = idle_time_ + 7.0 + rng_.next() * 12.0 * (1.2 - style.fidget);
-      idle_choice_ = rng_.chance(0.3) ? std::string_view() : idle_pose_for(false);
+      next_idle_pose_ = idle_time_ + autonomy_.pose_every + rng_.next() * autonomy_.pose_spread * (1.2 - style.fidget);
+      idle_choice_ = rng_.chance(autonomy_.pose_none) ? std::string_view() : idle_pose_for(false);
     }
-    want = idle_time_ > 2.0 ? idle_choice_ : std::string_view();
+    want = idle_time_ > autonomy_.pose_after ? idle_choice_ : std::string_view();
   } else {
     idle_time_ = 0.0;
-    next_idle_pose_ = 2.0 + rng_.next() * 2.0;
+    next_idle_pose_ = autonomy_.pose_resume + rng_.next() * autonomy_.pose_resume_spread;
   }
   if (!want.empty()) set_pose_action(action_def(want));
   else if (pose_act_ && !pose_act_->done()) pose_act_->stop();
@@ -1198,30 +1191,30 @@ void MotionPlan::update_actions(f64 dt) {
     if (inp.talk == Talk::Speak) {
       next_gesture_ -= dt;
       if (next_gesture_ <= 0.0) {
-        next_gesture_ = 1.2 + rng_.next() * 2.8;
+        next_gesture_ = autonomy_.speak_every + rng_.next() * autonomy_.speak_spread;
         static constexpr std::array<std::string_view, 2> kNods = {"nod", "shakeHead"};
-        if (rng_.chance(0.25)) play(rng_.pick(kNods));
+        if (rng_.chance(autonomy_.speak_nod)) play(rng_.pick(kNods));
         else play(rng_.pick(kGestures));
       }
     } else if (inp.talk == Talk::Listen) {
       next_gesture_ -= dt;
       if (next_gesture_ <= 0.0) {
-        next_gesture_ = 1.5 + rng_.next() * 3.0;
+        next_gesture_ = autonomy_.listen_every + rng_.next() * autonomy_.listen_spread;
         const f64 r = rng_.next();
         play(r < 0.65 ? "nod" : r < 0.8 ? "laugh" : r < 0.9 ? "shakeHead" : "shrug");
       }
-    } else if (inp.idle && !armed && speed < 0.15 && idle_time_ > 3.0 && !inp.aim_at) {
+    } else if (inp.idle && !armed && speed < 0.15 && idle_time_ > autonomy_.fidget_after && !inp.aim_at) {
       next_fidget_ -= dt;
       if (next_fidget_ <= 0.0) {
-        next_fidget_ = 5.0 + rng_.next() * 10.0 * (1.3 - style.fidget);
-        if (rng_.chance(0.7)) play(rng_.pick(kFidgets));
+        next_fidget_ = autonomy_.fidget_every + rng_.next() * autonomy_.fidget_spread * (1.3 - style.fidget);
+        if (rng_.chance(autonomy_.fidget_chance)) play(rng_.pick(kFidgets));
       }
-    } else if (inp.idle && armed && armed_idle_ > 2.5) {
+    } else if (inp.idle && armed && armed_idle_ > autonomy_.armed_after) {
       // an armed body in a pause: the helmet, the brow, the shoulders, the weapon, a look round
       next_fidget_ -= dt;
       if (next_fidget_ <= 0.0) {
-        next_fidget_ = 6.0 + rng_.next() * 9.0 * (1.3 - style.fidget);
-        if (rng_.chance(0.75)) play(rng_.pick(kArmedFidgets));
+        next_fidget_ = autonomy_.armed_every + rng_.next() * autonomy_.armed_spread * (1.3 - style.fidget);
+        if (rng_.chance(autonomy_.armed_chance)) play(rng_.pick(kArmedFidgets));
       }
     }
   }
@@ -1282,7 +1275,7 @@ V3 MotionPlan::limb_pos(Limb limb) const {
     }
     case Limb::Blade:
     case Limb::Muzzle:
-      if (weapon) return prop_point(weapon->muzzle);
+      if (weapon) return prop_point(weapon->tip);
       return w.point_of(H::handR, sk.rest_tail[H::handR]);
     default:
       return w.p[H::chest];
@@ -1422,7 +1415,7 @@ void MotionPlan::prop_in_hand(i32 b) {
   const Quat q = w.q[size_t(b)] * conj(arms.canonical(side));
   const V3 palm = w.p[size_t(b)] + rotate(w.q[size_t(b)], arms.palm_offset(side));
   weapon_pos = palm;
-  // a knife points out of the fist along the knuckles; a pistol hangs muzzle down-forward; a long
+  // a knife points out of the fist along the knuckles; a pistol hangs tip down-forward; a long
   // gun hangs from the hand
   const auto item = props.held();
   const auto socket = item ? item->archetype->socket(item->socket) : nullptr;

@@ -436,6 +436,7 @@ struct WorldStats {
   i64 forgotten_regions = 0, forgotten_chunks = 0;  // changes forgotten (the archive full, or forget_after_s)
   i64 archived_pieces = 0, forgotten_pieces = 0;    // pieces out of range, in the archive now; gone with their regions (totals)
   i64 archived_articulations = 0, forgotten_articulations = 0;  // (the same for articulations)
+  i64 archived_records = 0, forgotten_records = 0;  // (the same for host records: World::archive_host_record)
   // memory budgets (MemoryBudget): what they removed
   i64 culled_pieces = 0, dropped_structures = 0, dropped_fragment_caches = 0, dropped_events = 0;
   i64 released_solvers = 0;  // awake pieces' fracture solvers released over the pieces' budget (release_solvers)
@@ -458,6 +459,20 @@ struct MemoryReport {
   i64 sources = 0;     // a streamed world's source's own (ChunkSource::memory_bytes: a generator's caches)
   i32 chunks = 0, fragment_chunks = 0, structure_count = 0, piece_count = 0, archived_chunks = 0;
   i64 total() const { return grid + fragments + structures + pieces + archive + caches + queues + systems + sources; }
+};
+
+// A piece's bounding box (World::awake_pieces).
+struct PieceBox {
+  i64 id = 0;
+  V3 lo, hi;  // (world)
+};
+
+// A host's state kept with a place (World::archive_host_record).
+struct HostRecord {
+  u32 owner = 0;  // (the host's: which of its systems it is for)
+  u64 id = 0;     // (the host's)
+  V3 at;          // where it belongs (world)
+  std::vector<u8> data;
 };
 
 class World;
@@ -702,6 +717,18 @@ class World {
   // something. Returns the piece (0: held, too large, not a free voxel, smaller than a piece -
   // WorldConfig::min_body_voxels: dust - or from inside a tick).
   i64 loosen(GridId grid, const IVec3& voxel, const V3& impulse);
+  // Host records (docs/CORE.md §3, Streaming): a host's state that belongs to a place - an object
+  // dropped there, a mark - kept by the region archive while the place is out of range, as the
+  // world keeps its own changes there. archive_host_record takes `data` into the archive with the
+  // region of `at` (false: not streaming, or no room for it even with every region out of range
+  // forgotten); when the chunks about `at` are known again it comes back, and
+  // take_host_records(owner) hands back what came back since its last call (in archiving order).
+  // A region forgotten forgets its records; sessions save them.
+  bool archive_host_record(u32 owner, u64 id, const V3& at, std::vector<u8> data);
+  std::vector<HostRecord> take_host_records(u32 owner);
+  // The pieces awake now (not the links of articulations) and their bounding boxes, by id: what may
+  // touch something before long.
+  std::vector<PieceBox> awake_pieces() const;
   // A piece the host keeps: never culled over max_bodies or the pieces' memory budget (a joint's
   // pieces - a machine's parts, what hangs on it - are kept anyway). Its parts keep it when it
   // breaks.

@@ -18,6 +18,9 @@ i32 attachment_bone(AttachPoint p) {
 }
 V3 PropInstance::centre_of_mass() const {
   if (!damaged_model || geometry_version == 0) return archetype->centre;
+  if (centre_version_ == geometry_version) return centre_;
+  centre_version_ = geometry_version;
+  centre_ = archetype->centre;
   // Damaged and merged geometry uses the same voxel centre as loose debris.
   V3 sum;
   size_t count = 0;
@@ -30,15 +33,29 @@ V3 PropInstance::centre_of_mass() const {
             sum += V3{x + p.origin[0] + .5, y + p.origin[1] + .5, z + p.origin[2] + .5} * m.voxel_size;
             ++count;
           }
-  return count ? sum * (1.0 / count) : archetype->centre;
+  if (count) centre_ = sum * (1.0 / count);
+  return centre_;
 }
-PropRegistry::PropRegistry(const CollisionWorld* c) : loose_(c) {
-  // Persistent items are never subject to the bounded blood/debris eviction policy.
+PropRegistry::PropRegistry(const CollisionWorld* c, const PropRegistryOptions& o) : options(o), loose_(c) {
+  // The registry bounds its loose instances itself (bound_loose, kill_z): the debris pool never
+  // drops one of them behind its back.
   loose_.max_gibs = std::numeric_limits<i32>::max();
   loose_.kill_z = -std::numeric_limits<f64>::infinity();
 }
+void PropRegistry::define(PropPtr a) {
+  if (a && a->model && !a->id.empty()) defined_[a->id] = std::move(a);
+}
+PropPtr PropRegistry::archetype(std::string_view id) const {
+  if (const auto it = defined_.find(id); it != defined_.end()) return it->second;
+  if (resolver)
+    if (PropPtr p = resolver(id)) return p;
+  return prop_archetype(id);
+}
 PropInstancePtr PropRegistry::create(PropPtr a) {
   if (!a || !a->model) return {};
+  // (an archetype of the host's own: its records name it, so it must resolve - ids are unique per
+  // registry, the first one defined keeps its id)
+  if (!defined_.contains(a->id) && archetype(a->id) != a) define(a);
   auto p = std::make_shared<PropInstance>();
   p->id = next_++;
   p->archetype = std::move(a);
@@ -65,6 +82,7 @@ PropInstancePtr PropRegistry::restore(const PropInstancePtr& saved) {
 void PropRegistry::release(const PropInstancePtr& p) {
   p->location = PropLocation::Loose;
   p->character = 0;
+  p->loose_since = ++released_;
   // Physical allocation happens in update, in instance order, after parallel character work.
 }
 void PropRegistry::reclaim(const PropInstancePtr& p) {
@@ -87,10 +105,11 @@ void PropRegistry::update(f64 dt) {
         // spawn uses the voxel pivot; set_mass can replace it with an authored
         // centre while preserving every point's position and velocity.
         p->loose_body->vel -= cross(p->angular, rotate(p->rotation, centre - p->loose_body->pivot));
-        loose_.set_mass(p->loose_body, p->archetype->mass + p->retained_mass, p->archetype->inertia, &centre);
+        loose_.set_mass(p->loose_body, p->mass(), p->archetype->inertia * (p->mass() / p->archetype->mass), &centre);
       }
     }
   loose_.update(dt);
+  std::vector<PropInstancePtr> fallen;
   for (auto& [id, p] : items_)
     if (p->location == PropLocation::Loose && p->loose_body) {
       const auto& g = *p->loose_body;
@@ -98,7 +117,32 @@ void PropRegistry::update(f64 dt) {
       p->pos = g.pos - rotate(g.rot, g.pivot);
       p->velocity = g.vel;
       p->angular = g.ang;
+      if (p->pos.z < options.kill_z) fallen.push_back(p);
     }
+  for (const auto& p : fallen) retire(p);
+  bound_loose();
+}
+void PropRegistry::bound_loose() {
+  std::vector<PropInstancePtr> loose;
+  for (const auto& [id, p] : items_)
+    if (p->location == PropLocation::Loose) loose.push_back(p);
+  if (i64(loose.size()) <= i64(std::max(0, options.max_loose))) return;
+  // (the longest loose first; ties - restored together - by id)
+  std::stable_sort(loose.begin(), loose.end(), [](const auto& a, const auto& b) { return a->loose_since < b->loose_since; });
+  const size_t extra = loose.size() - size_t(std::max(0, options.max_loose));
+  for (size_t i = 0; i < extra; ++i) retire(loose[i]);
+}
+i64 PropRegistry::memory_bytes() const {
+  i64 n = i64(sizeof(*this)) + loose_.memory_bytes();
+  for (const auto& [id, p] : items_) {
+    n += i64(sizeof(PropInstance) + sizeof(void*) * 4);
+    if (p->damaged_model)
+      for (const VoxelPart& part : p->damaged_model->parts)
+        n += i64(part.cells.capacity() + part.shade.capacity() + part.stain.capacity() + part.tissue.capacity());
+    for (const auto& item : p->state.contents) n += i64(item.capacity());
+  }
+  for (const auto& [id, a] : defined_) n += i64(id.capacity() + sizeof(PropPtr) + sizeof(void*) * 4);
+  return n;
 }
 Attachments::Attachments() : registry(std::make_shared<PropRegistry>()) {}
 PropInstancePtr Attachments::at(AttachPoint p) const { return size_t(p) < slots.size() ? slots[size_t(p)] : PropInstancePtr{}; }

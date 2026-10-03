@@ -7,7 +7,7 @@ f64 segment_distance(const V3& p, const V3& a, const V3& b) {
   const V3 d = b - a;
   return norm(p - (a + d * clamp(dot(p - a, d) / std::max(1e-12, dot(d, d)), 0.0, 1.0)));
 }
-f64 tissue_resistance(u8 slot) { return slot == Slot::Bone ? 5e6 : slot == Slot::Flesh ? 5e5 : slot == Slot::Metal ? 2e6 : 3e5; }
+f64 tissue_resistance(Tissue t) { return t == Tissue::Bone ? 5e6 : t == Tissue::Flesh ? 5e5 : t == Tissue::Metal ? 2e6 : 3e5; }
 std::vector<VitalRegion> anatomy_regions(const Skeleton& sk) {
   const f64 k = sk.rest_head[H::pelvis].z / .97;
   std::vector<VitalRegion> out;
@@ -37,20 +37,22 @@ std::vector<VitalRegion> anatomy_regions(const Skeleton& sk) {
   }
   return out;
 }
-void fill_interior(VoxelModel& m) {
-  std::set<std::array<i32, 3>> occupied;
+void fill_interior(VoxelModel& m, Enclosure enclosure) {
+  // (cells by the part they count for: all one in the body, each its own part's)
+  auto owner = [&](i32 bone) { return enclosure == Enclosure::Part ? bone : -1; };
+  std::set<std::array<i32, 4>> occupied;
   for (const auto& p : m.parts)
     for (i32 z = 0; z < p.dims[2]; ++z)
       for (i32 y = 0; y < p.dims[1]; ++y)
         for (i32 x = 0; x < p.dims[0]; ++x)
-          if (p.cells[size_t(p.index(x, y, z))]) occupied.insert({p.origin[0] + x, p.origin[1] + y, p.origin[2] + z});
+          if (p.cells[size_t(p.index(x, y, z))]) occupied.insert({owner(p.bone), p.origin[0] + x, p.origin[1] + y, p.origin[2] + z});
   const auto& sk = *m.skeleton;
   const f64 k = sk.rest_head[H::pelvis].z / .97, s = m.voxel_size;
-  auto enclosed = [&](const std::array<i32, 3>& at) {
+  auto enclosed = [&](i32 bone, const std::array<i32, 3>& at) {
     for (int axis = 0; axis < 3; ++axis)
       for (int sign : {-1, 1}) {
-        auto next = at;
-        next[size_t(axis)] += sign;
+        std::array<i32, 4> next{owner(bone), at[0], at[1], at[2]};
+        next[size_t(axis) + 1] += sign;
         if (!occupied.contains(next)) return false;
       }
     return true;
@@ -70,7 +72,7 @@ void fill_interior(VoxelModel& m) {
           for (i32 x = 0; x < p.dims[0]; ++x) {
             if (!p.cells[size_t(p.index(x, y, z))]) continue;
             const std::array<i32, 3> at{p.origin[0] + x, p.origin[1] + y, p.origin[2] + z};
-            if (!enclosed(at)) continue;
+            if (!enclosed(p.bone, at)) continue;
             const V3 v = m.cell_centre(at[0], at[1], at[2]);
             const auto key = std::pair{p.bone, section(p.bone, v)};
             const f64 distance = segment_distance(v, sk.rest_head[size_t(p.bone)], sk.rest_tail[size_t(p.bone)]);
@@ -86,7 +88,7 @@ void fill_interior(VoxelModel& m) {
           const size_t n = size_t(p.index(x, y, z));
           if (!p.cells[n]) continue;
           const std::array<i32, 3> at{p.origin[0] + x, p.origin[1] + y, p.origin[2] + z};
-          if (!enclosed(at)) continue;
+          if (!enclosed(p.bone, at)) continue;
           const V3 v = m.cell_centre(at[0], at[1], at[2]);
           bool bone = false;
           for (int b = 0; b < 22; ++b) bone |= segment_distance(v, sk.rest_head[size_t(b)], sk.rest_tail[size_t(b)]) < .025 * k;

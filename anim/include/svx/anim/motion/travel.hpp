@@ -13,11 +13,13 @@ struct TravelState {
       root += motion; yaw = c.motion.root_yaw; speed = 0; vertical_speed = 0;
       return;
     }
-    const bool low = c.motion.input.stance == Stance::Prone || c.capabilities().mobility >= Mobility::Crawl;
-    const f64 turn = low ? .65 : 2.4;
+    const Stance stance = c.motion.effective_stance();
+    const bool low = stance == Stance::Prone;
+    const f64 turn = std::min(low ? .65 : 2.4, c.max_turn_rate());
     yaw += clamp(wrap_angle(wanted_yaw - yaw), -turn * dt, turn * dt);
-    f64 target = c.motion.transitioning() || int(c.motion.input.stance) >= 3 ? 0 :
-        std::min(wanted_speed, c.capabilities().max_speed) / (1 + .35 * c.motion.load_fraction);
+    const bool seated = stance == Stance::Sit || stance == Stance::Ground || stance == Stance::Down;
+    f64 target = c.motion.transitioning() || seated ? 0 :
+        std::min(wanted_speed / (1 + .35 * c.motion.load_fraction), c.max_travel_speed());
     const f64 k = c.motion.k;
     const V3 forward{cos(yaw), sin(yaw), 0};
     if (low && c.behaviours.physical && c.capabilities().crawl != CrawlStyle::Scoot) {

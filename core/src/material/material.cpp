@@ -56,7 +56,7 @@ Material sanitized(const Material& in) {
   m.crush = std::isfinite(m.crush) ? std::clamp(m.crush, 0.0, 1e12) : 0.0;
   m.penetration = std::isfinite(m.penetration) ? std::clamp(m.penetration, 0.0, 1e15) : 0.0;
   m.grip = std::isfinite(m.grip) ? std::clamp(m.grip, 0.0, 10.0) : 0.0;
-  m.passable = m.passable && m.decorative;  // (structure is never passable)
+  m.passable = m.passable && m.non_structural;  // (structure is never passable)
   return m;
 }
 
@@ -108,7 +108,7 @@ void MaterialTable::reset() {
 }
 
 void MaterialTable::refresh_kinds() {
-  any_decorative_ = any_passable_ = false;
+  any_non_structural_ = any_passable_ = false;
   kind_[0] = 0;
   for (int v = 1; v < 256; ++v) {
     const int low = v & 0x7F;
@@ -117,8 +117,8 @@ void MaterialTable::refresh_kinds() {
       continue;
     }
     const Material& m = (*this)[static_cast<MaterialId>(low - 1)];
-    kind_[size_t(v)] = static_cast<u8>((m.decorative ? kVoxDecorative : 0) | (m.passable ? kVoxPassable : 0));
-    any_decorative_ = any_decorative_ || m.decorative;
+    kind_[size_t(v)] = static_cast<u8>((m.non_structural ? kVoxNonStructural : 0) | (m.passable ? kVoxPassable : 0));
+    any_non_structural_ = any_non_structural_ || m.non_structural;
     any_passable_ = any_passable_ || m.passable;
   }
 }

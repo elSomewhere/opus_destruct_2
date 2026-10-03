@@ -569,11 +569,4 @@ std::vector<Gib*> blast_gibs(GibSystem& gibs, const Character& c, const BlastRes
   return out;
 }
 
-Gib* drop_weapon_gib(GibSystem& gibs, Character& c, const V3& dir, u64 user) {
-  std::optional<GibSpec> w = c.drop_weapon();
-  if (!w) return nullptr;
-  w->vel = w->vel + dir * 1.5;
-  return spawn_gib(gibs, *w, 0.0, user);
-}
-
 }  // namespace svx::anim

@@ -44,6 +44,8 @@
 namespace svx::anim {
 
 enum class BodyMode : u8 { Animated, Reacting, Falling, Lying, Rising, Dying, Dead };
+constexpr int kBodyModeCount = 7;
+extern const std::array<const char*, kBodyModeCount> kBodyModeName;  // ("lying")
 const char* body_mode_name(BodyMode m);
 
 enum class PerceptionKind : u8 { Impact, Whiz, Blast, Blow };
@@ -67,12 +69,12 @@ struct Brace {
   f64 age = 0.0;
 };
 
-void set_arms_at_ease(f64 t);  // (tuning)
-
 class Behaviours {
  public:
-  Behaviours(MotionPlan& plan, HumanoidBody& body, f64 seed = 1.0);
+  // (profile: its tuning - the character's, which outlives it; null: the defaults)
+  Behaviours(MotionPlan& plan, HumanoidBody& body, f64 seed = 1.0, const CharacterProfile* profile = nullptr);
 
+  const CharacterProfile& profile;
   MotionPlan& plan;
   HumanoidBody& body;
   DamageState damage;
@@ -99,7 +101,7 @@ class Behaviours {
   std::array<f64, kRegionCount> region_tone{1, 1, 1, 1, 1, 1};  // tone per region this frame (for tests and debugging)
   std::string lost_why;  // why the last reaction ended in a fall (debugging)
   std::array<bool, kBodyCount> lost{};  // body parts shot off (a limb and all below it)
-  bool legless = false;  // a leg is gone: the body will not stand again (it can still crawl)
+  bool legless = false;  // both legs are gone: the body will not stand again (it can still crawl)
   bool writhing = false;  // down and writhing in pain (see collapse)
 
   f64 k() const { return plan.k; }
@@ -125,7 +127,9 @@ class Behaviours {
   // Too badly hurt to stand: the legs give, the body goes down and writhes (clutching the wound,
   // curling up, rocking) for `seconds`, then struggles back up.
   void collapse(f64 seconds);
-  void knock_out(f64 seconds);  // the body drops and stays down `seconds`
+  void knock_out(f64 seconds, bool down_only = false);  // the body drops and stays down `seconds`
+  // Knocked out (not only knocked down: down_only): unconscious, then down until it is up again.
+  bool knocked_out() const { return knocked_out_; }
   // Death: the muscles fade over `collapse` seconds (0: at once, a head shot or a blast), the last
   // wound held while they last.
   void die(f64 collapse);
@@ -142,6 +146,19 @@ class Behaviours {
   V3 take_root_motion();  // the root displacement the body made (hosts move their character by it)
 
  private:
+  // (drive_pre's phases, and what they share)
+  struct Drive {
+    f64 dt = 0, idt = 0;
+    bool ground_motion = false, standing = false;
+    std::array<f64, kRegionCount> region_t{};
+  };
+  void drive_track(Drive& f);
+  void drive_tone(Drive& f);
+  void drive_assists(Drive& f);
+  void drive_feet(Drive& f);
+  void drive_hands(Drive& f);
+  bool knocked_out_ = false;
+  Zone hit_shove(const HitInfo& info, i32 part, const WorldPose& pose, Zone zone, f64 f, const V3& d);
   struct Threat {
     V3 point;
     f64 amount = 0.0;

@@ -26,12 +26,13 @@ struct Walk {
 PropPtr rifle() {
   auto p = std::make_shared<Prop>();
   p->tags = {"firearm", "long_firearm", "two_handed"};
+  p->hold.style = HoldStyle::Shouldered;
   p->support = V3{0, 0.3 * 0.8, 0.03};
-  p->stock = V3{0, -0.43 * 0.8, 0.05};
-  p->muzzle = V3{0, 0.68 * 0.8, 0.068};
-  p->magazine = V3{0, 0.12 * 0.8, -0.06};
-  p->model = make_rifle()->model;
-  p->sockets = {{"primary", p->grip}, {"secondary", p->support}};
+  p->butt = V3{0, -0.43 * 0.8, 0.05};
+  p->tip = V3{0, 0.68 * 0.8, 0.068};
+  p->reload_point = V3{0, 0.12 * 0.8, -0.06};
+  p->model = prop_archetype("rifle")->model;
+  p->sockets = {{"primary", p->grip, Quat{}}, {"secondary", p->support, Quat{}}};
   return p;
 }
 
@@ -107,10 +108,10 @@ TEST_CASE("anim plan: a shouldered rifle points at the target and both hands hol
   const Walk r = walk(0, 2, 0.0, true, true);
   const MotionPlan& an = *r.an;
   const Prop& rf = *an.weapon;
-  const V3 muzzle = an.prop_point(rf.muzzle);
-  const V3 stock = an.prop_point(rf.stock);
-  const V3 dir = muzzle - stock;
-  const V3 to_t = V3{20, 5, 1.4} - stock;
+  const V3 tip = an.prop_point(rf.tip);
+  const V3 butt = an.prop_point(rf.butt);
+  const V3 dir = tip - butt;
+  const V3 to_t = V3{20, 5, 1.4} - butt;
   const f64 cos = dot(dir, to_t) / (hypot3(dir.x, dir.y, dir.z) * hypot3(to_t.x, to_t.y, to_t.z));
   CHECK(cos > 0.995);
   const V3 grip = an.prop_point(rf.grip);

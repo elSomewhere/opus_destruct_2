@@ -2,6 +2,43 @@
 
 namespace svx::anim {
 
+const std::array<const char*, kSlotCount> kSlotName = {"skin",   "hair",  "top",       "top variation", "bottom", "bottom variation",
+                                                        "shoes",  "gear",  "gear dark", "metal",         "furniture", "detail",
+                                                        "accent", "flesh", "bone",      "blood"};
+
+std::array<Tissue, kSlotCount> default_tissues() {
+  std::array<Tissue, kSlotCount> t;
+  t.fill(Tissue::Soft);
+  t[Slot::Flesh] = Tissue::Flesh;
+  t[Slot::Bone] = Tissue::Bone;
+  t[Slot::Metal] = Tissue::Metal;
+  return t;
+}
+
+void VoxelPart::copy_cell(size_t n, const VoxelPart& from, size_t m) {
+  cells[n] = from.cells[m];
+  if (!shade.empty()) shade[n] = from.shade.empty() ? u8(128) : from.shade[m];
+  if (!from.stain.empty() && from.stain[m]) {
+    if (stain.empty()) stain.assign(cells.size(), 0);
+    stain[n] = from.stain[m];
+  } else if (!stain.empty()) {
+    stain[n] = 0;
+  }
+  if (!from.tissue.empty() && from.tissue[m]) {
+    if (tissue.empty()) tissue.assign(cells.size(), 0);
+    tissue[n] = from.tissue[m];
+  } else if (!tissue.empty()) {
+    tissue[n] = 0;
+  }
+}
+
+void VoxelPart::clear_cell(size_t n) {
+  cells[n] = 0;
+  if (!shade.empty()) shade[n] = 0;
+  if (!stain.empty()) stain[n] = 0;
+  if (!tissue.empty()) tissue[n] = 0;
+}
+
 VoxelModel::VoxelModel(SkeletonPtr sk, f64 s, std::vector<VoxelPart> ps, std::string nm)
     : skeleton(std::move(sk)), voxel_size(s), parts(std::move(ps)), name(std::move(nm)) {
   part_of_bone.assign(size_t(skeleton->count), -1);
@@ -11,7 +48,11 @@ VoxelModel::VoxelModel(SkeletonPtr sk, f64 s, std::vector<VoxelPart> ps, std::st
   }
 }
 
-std::shared_ptr<VoxelModel> VoxelModel::clone() const { return std::make_shared<VoxelModel>(skeleton, voxel_size, parts, name); }
+std::shared_ptr<VoxelModel> VoxelModel::clone() const {
+  auto m = std::make_shared<VoxelModel>(skeleton, voxel_size, parts, name);
+  m->tissue = tissue;
+  return m;
+}
 
 i32 VoxelModel::voxel_count() const {
   i32 n = 0;
@@ -57,8 +98,7 @@ VoxelPart shrink_part(const VoxelPart& p) {
       for (i32 x = 0; x < out.dims[0]; ++x) {
         const size_t src = size_t(x + x0 + nx * (y + y0 + ny * (z + z0)));
         const size_t dst = size_t(x + out.dims[0] * (y + out.dims[1] * z));
-        out.cells[dst] = p.cells[src];
-        out.shade[dst] = p.shade[src];
+        out.copy_cell(dst, p, src);
         if (out.cells[dst] != 0) ++out.count;
       }
   return out;

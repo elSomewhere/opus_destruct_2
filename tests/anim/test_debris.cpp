@@ -255,7 +255,7 @@ TEST_CASE("anim debris: gibs come to rest on the voxels of a core World (WorldCo
 TEST_CASE("anim debris: a nearby blast peppers and throws a coherent body, with bounded blood") {
   for (Path path : kPaths) {
     Scene s(path);
-    auto& c = s.add(make_soldier(4), 1, kPi / 2, {0, 0, s.ground}, make_rifle());
+    auto& c = s.add(make_soldier(4), 1, kPi / 2, {0, 0, s.ground}, prop_archetype("rifle"));
     for (int i = 0; i < 30; ++i) s.frame({&c});
     const int before = c.model->voxel_count();
     const V3 centre = c.pose.p[H::pelvis] + V3{.3, .5, -.5};
@@ -273,7 +273,7 @@ TEST_CASE("anim debris: a nearby blast peppers and throws a coherent body, with 
 
 TEST_CASE("anim debris: a cut that severs a forearm sprays blood; the forearm flies off bleeding and comes to rest") {
   Scene s(Path::Shallow);
-  Character& c = s.add(make_soldier(4), 1.0, kPi / 2.0, V3{0, 0, s.ground}, make_rifle());
+  Character& c = s.add(make_soldier(4), 1.0, kPi / 2.0, V3{0, 0, s.ground}, prop_archetype("rifle"));
   for (i32 i = 0; i < 30; ++i) s.frame({&c});
   GibSystem gibs(s.col.get());
   std::vector<Gib*> pieces;

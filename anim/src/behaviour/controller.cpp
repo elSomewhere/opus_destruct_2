@@ -4,18 +4,15 @@
 
 namespace svx::anim {
 
+const std::array<const char*, kBodyModeCount> kBodyModeName = {"animated", "reacting", "falling", "lying", "rising", "dying", "dead"};
+
 namespace {
 
 constexpr f64 G = 9.81;
-f64 g_arms_at_ease = 0.82;
+// (HitResponse::Shove) how a shove along a round spreads over the body: the trunk and the arms
+// most, the feet least
+constexpr f64 kShoveUpper[kBodyCount] = {0.9, 1.05, 1.15, 1.2, 1.1, 1.1, 1.1, 1.1, 1.1, 1.1, 0.8, 0.55, 0.35, 0.8, 0.55, 0.35};
 constexpr i32 kParentOf[kBodyCount] = {-1, B::pelvis, B::spine, B::chest, B::chest, B::upperarmL, B::forearmL, B::chest, B::upperarmR, B::forearmR, B::pelvis, B::thighL, B::shinL, B::pelvis, B::thighR, B::shinR};
-
-f64 wrap_pi(f64 a) {
-  f64 x = std::fmod(a, kPi * 2.0);
-  if (x > kPi) x -= kPi * 2.0;
-  else if (x <= -kPi) x += kPi * 2.0;
-  return x;
-}
 
 size_t region_index(Region r) { return static_cast<size_t>(r); }
 
@@ -39,8 +36,6 @@ const char* body_mode_name(BodyMode m) {
   return "animated";
 }
 
-void set_arms_at_ease(f64 t) { g_arms_at_ease = t; }
-
 Quat palm_frame(const V3& palm, const V3& fingers) {
   const V3 z = vnorm(palm * -1.0);
   V3 y = fingers - z * dot(fingers, z);
@@ -50,7 +45,15 @@ Quat palm_frame(const V3& palm, const V3& fingers) {
   return qfrom_basis(x, y, z);
 }
 
-Behaviours::Behaviours(MotionPlan& p, HumanoidBody& b, f64 seed) : plan(p), body(b), rng_(seed * 977 + 5) { writhe_seed_ = rng_.next() * 100.0; }
+namespace {
+const CharacterProfile kDefaultProfile{};
+}  // namespace
+
+Behaviours::Behaviours(MotionPlan& p, HumanoidBody& b, f64 seed, const CharacterProfile* profile)
+    : profile(profile ? *profile : kDefaultProfile), plan(p), body(b), rng_(seed * 977 + 5) {
+  writhe_seed_ = rng_.next() * 100.0;
+  damage.configure(this->profile);
+}
 
 bool Behaviours::needs_physics() const {
   if (mode != BodyMode::Animated) return true;
@@ -81,6 +84,97 @@ void Behaviours::set_mode(BodyMode m) {
 
 // ---- events ------------------------------------------------------------------------------------
 
+// (HitResponse::Shove: as the original - an authored shove by kind, a spin about the lever arm, a
+// share for the whole body and now and then a hard knock-back)
+Zone Behaviours::hit_shove(const HitInfo& info, i32 part, const WorldPose& pose, Zone zone, f64 f, const V3& d) {
+  // how hard it shoves (N s): a round mostly stings, a kick or a blast moves the body
+  f64 J = info.kind == HitKind::Bullet ? 14.0 + 12.0 * std::min(f, 2.5) : info.kind == HitKind::Blunt ? 34.0 * f : info.kind == HitKind::Blade ? 9.0 * f : 55.0 * f;
+  // (a fist on the jaw snaps the head round on the neck: the head moves away from it, it does not
+  // carry the body with it as a blow to the trunk does)
+  if (part == B::head && info.kind == HitKind::Blunt) J = std::min(J, (2.2 + 1.1 * f) * body.parts[B::head]->mass);
+  body.system.wake();
+  // a light part cannot take it all: what it cannot passes up the limb to its parent
+  const f64 dv_max = info.kind == HitKind::Blunt ? 7.0 : info.kind == HitKind::Blast ? 10.0 : 4.0;
+  f64 left = J;
+  i32 p = part;
+  for (i32 hop = 0; hop < 3 && left > 0.0 && p >= 0; ++hop) {
+    RigidBody& pb = *body.parts[size_t(p)];
+    const f64 take = std::min(left, dv_max * pb.mass * (hop == 0 ? 1.0 : 1.5));
+    const V3 r = hop == 0 ? info.point - pb.x : V3{};
+    pb.apply_impulse(V3{d.x * take, d.y * take, d.z * take * 0.3}, r);
+    left -= take;
+    p = p == B::pelvis ? -1 : kParentOf[p];
+  }
+  // the struck part spins about the blow's lever arm, its parent with it
+  {
+    const RigidBody& hb = *body.parts[size_t(part)];
+    const Joint* jt = part > 0 ? body.joints[size_t(part)] : nullptr;
+    const V3 pivot = jt ? hb.point(jt->anchor_b) : hb.x;
+    const V3 r = info.point - pivot;
+    const V3 ax = cross(r, d);
+    const f64 al = norm(ax);
+    if (al > 1e-4) {
+      const bool trunk_hit = part == B::pelvis || part == B::spine || part == B::chest;
+      const f64 rate = std::min(trunk_hit ? 4.2 : 9.0, (trunk_hit ? 3.2 : part == B::head ? 3.6 : 4.0) * std::min(f, 2.5) *
+                                                           (info.kind == HitKind::Blade ? 0.4 : 1.0) * clamp(al / 0.12, 0.3, 1.2));
+      i32 q = part;
+      for (i32 hop = 0; hop < 2 && q >= 0; ++hop, q = kParentOf[q]) {
+        V3& w = body.parts[size_t(q)]->w;
+        const f64 k2 = (hop == 0 ? 1.0 : part == B::head ? 0.2 : 0.55) * rate / al;
+        w.x += ax.x * k2;
+        w.y += ax.y * k2;
+        w.z += ax.z * k2;
+      }
+    }
+  }
+  // the rest of the body takes a share (it is connected)
+  const f64 share = info.kind == HitKind::Bullet ? 0.15 : info.kind == HitKind::Blast ? 0.6 : 0.3;
+  const f64 dv = (J * share + std::max(0.0, left)) / body.total_mass;
+  body.shove(V3{d.x * dv, d.y * dv, 0.0});
+  // some rounds knock it a step or two back, now and then one drives it back hard
+  i32 hard = 0;
+  if (info.kind == HitKind::Bullet && alive) {
+    const bool trunk_zone = zone == Zone::Chest || zone == Zone::Gut || zone == Zone::Pelvis;
+    const f64 r = rng_.next() - 0.25 * capabilities().pain;
+    hard = trunk_zone ? (r < 0.12 ? 2 : r < 0.38 ? 1 : 0) : zone == Zone::LegL || zone == Zone::LegR ? (r < 0.3 ? 1 : 0) : 0;
+    if (hard > 0) {
+      const f64 h = hard == 2 ? 1.25 + 0.4 * rng_.next() : 0.6 + 0.3 * rng_.next();
+      f64 hl = hypot2(d.x, d.y);
+      if (hl == 0.0) hl = 1.0;
+      if (trunk_zone) {
+        body.shove(V3{(d.x / hl) * h, (d.y / hl) * h, 0.0}, kShoveUpper);
+      } else {
+        const i32 leg[2] = {zone == Zone::LegL ? B::thighL : B::thighR, zone == Zone::LegL ? B::shinL : B::shinR};
+        for (i32 b : leg) stun_[size_t(b)] = std::max(stun_[size_t(b)], 0.9f);
+      }
+    }
+  }
+  const bool trunk_part = part == B::pelvis || part == B::spine || part == B::chest;
+  const f64 s = clamp(0.35 + 0.3 * f, 0.0, trunk_part ? 0.65 : 0.95);
+  stun_part(part, s);
+  shock_ = std::max(shock_, clamp(0.3 + 0.25 * f, 0.0, 0.8) * (info.kind == HitKind::Blade ? 0.5 : part == B::head ? 0.6 : 1.0));
+  if (part > 0) stun_part(kParentOf[part], s * 0.5);
+  if (zone == Zone::Head && info.kind == HitKind::Blunt) daze_ = std::max(daze_, clamp(0.25 * f, 0.0, 0.9));
+  if (info.kind == HitKind::Blast) daze_ = std::max(daze_, clamp(0.4 * f, 0.0, 0.85));
+  if (info.kind == HitKind::Bullet || info.kind == HitKind::Blade) {
+    const size_t bone = size_t(kBodyBone[size_t(part)]);
+    const Quat q = pose.q[bone];
+    const V3 local = rotate(conj(q), info.point - pose.p[bone]) - body.com_local[size_t(part)];
+    const V3 nrm = vnorm(rotate(conj(q), d * -1.0));
+    damage.reaction(part, local, nrm, info.kind, f);
+  }
+  threats_.push_back(Threat{info.point - d * 0.6, clamp(0.25 + 0.15 * f, 0.0, 0.7), -0.18, 0.1});
+  plan.interrupt(f > 0.8);
+  V3 from = info.point - d * 6.0;
+  from.z = std::max(from.z, info.point.z);
+  hit_from_ = from;
+  hit_at_ = time_;
+  upset_ = 0.4;
+  const f64 body_dv = (J * (zone == Zone::Head ? 0.35 : 1.0) * (1.0 + share)) / body.total_mass;
+  if (hard > 0 || body_dv > 0.55 || ((zone == Zone::LegL || zone == Zone::LegR) && f > 0.7 && info.kind != HitKind::Blunt) || daze_ > 0.4) force_react_ = true;
+  return zone;
+}
+
 Zone Behaviours::hit(const HitInfo& info, i32 part, const WorldPose& pose) {
   if (part < 0 || part >= kBodyCount) return Zone::Chest;
   const Zone zone = zone_of_part(part);
@@ -88,6 +182,7 @@ Zone Behaviours::hit(const HitInfo& info, i32 part, const WorldPose& pose) {
       !std::isfinite(norm(info.dir)) || norm(info.dir) < 1e-9 || !std::isfinite(info.impulse_ns)) return zone;
   const f64 f = clamp(info.force, 0.0, 8.0);
   const V3 d = vnorm(info.dir);
+  if (profile.hit_response == HitResponse::Shove) return hit_shove(info, part, pose, zone, f, d);
   const f64 J = info.impulse_ns >= 0.0 ? clamp(info.impulse_ns, 0.0, 500.0) : default_hit_impulse(info.kind, f);
   body.system.wake();
   // a light part cannot take it all: what it cannot passes up the limb to its parent
@@ -245,7 +340,6 @@ void Behaviours::lose_limb(i32 part) {
   const bool leg = part >= B::thighL;
   if (leg) {
     legless = (lost[B::thighL] || lost[B::shinL]) && (lost[B::thighR] || lost[B::shinR]);
-    damage.lost(part);
     if (alive) {
       writhing = false;
       collapse(30.0);
@@ -262,8 +356,9 @@ void Behaviours::collapse(f64 seconds) {
   force_react_ = true;
 }
 
-void Behaviours::knock_out(f64 seconds) {
+void Behaviours::knock_out(f64 seconds, bool down_only) {
   conscious = false;
+  if (!down_only) knocked_out_ = true;
   daze_ = 1.0;
   down_until_ = time_ + seconds;
   upset_ = 1.0;
@@ -412,13 +507,11 @@ void Behaviours::prepare(f64 dt, const WorldPose& pose) {
   grip_[0] = grip_[1] = 0.0;
   damage.update(dt, pressed_part);
   plan.capabilities = capabilities();
-  // Resolve the host's requested stance before recovery reads it. Hosts may
-  // keep asking to stand every tick, even after both legs have been lost.
-  if (capabilities().mobility == Mobility::Kneel) plan.input.stance = Stance::Kneel;
-  if (capabilities().mobility == Mobility::Crawl || capabilities().mobility == Mobility::Immobile) {
-    plan.input.stance = Stance::Prone;
-    if ((mode == BodyMode::Animated || mode == BodyMode::Reacting) && plan.stance != Stance::Prone) collapse(2);
-  }
+  // (the plan goes to the stance the body allows - MotionPlan::effective_stance: hosts may keep
+  // asking to stand every tick, even after both legs have been lost)
+  if ((capabilities().mobility == Mobility::Crawl || capabilities().mobility == Mobility::Immobile) &&
+      (mode == BodyMode::Animated || mode == BodyMode::Reacting) && plan.stance != Stance::Prone)
+    collapse(2);
   for (i32 i = 0; i < kBodyCount; ++i) {
     const f64 s = stun_[size_t(i)];
     stun_[size_t(i)] = static_cast<f32>(std::max(0.0, s - dt * (0.9 + 0.8 * s)));
@@ -540,7 +633,7 @@ void Behaviours::carry_root() {
   const f64 z = mode == BodyMode::Reacting ? plan.root_pos.z + clamp(ground_z - plan.root_pos.z, -0.05, 0.05) : ground_z;
   root_motion.z += z - plan.root_pos.z;
   // (the heading follows the pelvis while reacting; lying, the plan's own)
-  plan.carry_root(V3{r.x, r.y, z}, mode == BodyMode::Reacting ? plan.root_yaw + clamp(wrap_pi(body_yaw - plan.root_yaw), -0.05, 0.05) : plan.root_yaw);
+  plan.carry_root(V3{r.x, r.y, z}, mode == BodyMode::Reacting ? plan.root_yaw + clamp(wrap_angle(body_yaw - plan.root_yaw), -0.05, 0.05) : plan.root_yaw);
 }
 
 V3 Behaviours::take_root_motion() {
@@ -557,6 +650,8 @@ void Behaviours::modes(f64 dt, const WorldPose& pose) {
     // up. Release the locomotion assists in either case and settle where it is.
     set_mode(BodyMode::Falling);
   }
+  // (knocked out until it is off the ground again, conscious)
+  if (knocked_out_ && conscious && mode != BodyMode::Lying) knocked_out_ = false;
   switch (mode) {
     case BodyMode::Animated: {
       if (!physical) {
@@ -642,7 +737,7 @@ void Behaviours::modes(f64 dt, const WorldPose& pose) {
       if (!conscious && time_ >= down_until_) conscious = true;
       // A body with usable arms can turn over and crawl; an incapacitated body
       // stays down instead of retrying the get-up sequence every few seconds.
-      const bool crawl = (writhing || legless || capabilities().mobility == Mobility::Crawl) && plan.input.stance == Stance::Prone && mode_time > 1.5;
+      const bool crawl = (writhing || legless || capabilities().mobility == Mobility::Crawl) && plan.effective_stance() == Stance::Prone && mode_time > 1.5;
       if (alive && conscious && capabilities().mobility != Mobility::Immobile && mode_time > 0.8 &&
           ((time_ >= down_until_ && !legless) || crawl)) set_mode(BodyMode::Rising);
       break;
@@ -1173,20 +1268,39 @@ f64 Behaviours::arm_held(i32 i) const {
   return std::max(smoothstep(-0.42 * kk, -0.18 * kk, hz), plan.input.mood == Mood::Normal ? 0.0 : 0.8);
 }
 
+// The drives for the coming step, in phases: the spin caps and joint targets (drive_track), the
+// muscles' tone (drive_tone), the assists that hold the body up and steer it (drive_assists), the
+// feet (drive_feet) and the hands (drive_hands).
 void Behaviours::drive_pre(f64 dt) {
+  Drive f;
+  f.dt = dt;
+  f.idt = dt > 0.0 ? 1.0 / dt : 0.0;
+  f.ground_motion = mode == BodyMode::Falling || mode == BodyMode::Lying || mode == BodyMode::Rising || plan.stance == Stance::Prone ||
+                    plan.stance == Stance::Down;
+  drive_track(f);
+  drive_tone(f);
+  drive_assists(f);
+  drive_feet(f);
+  drive_hands(f);
+}
+
+void Behaviours::drive_track(Drive& f) {
   HumanoidBody& bd = body;
   const f64 kk = k();
   const f64 m = bd.total_mass;
+  const f64 dt = f.dt, idt = f.idt;
   const WorldPose& target = plan.world;
   const WorldPose& prev_t = plan.prev_world;
-  const bool ground_motion = mode == BodyMode::Falling || mode == BodyMode::Lying || mode == BodyMode::Rising ||
-      plan.stance == Stance::Prone || plan.stance == Stance::Down;
+  const bool ground_motion = f.ground_motion;
+  const CharacterProfile& pf = profile;
+  (void)kk, (void)m, (void)dt, (void)idt, (void)ground_motion, (void)pf;
   // Ground recovery must keep the same dissipative body as the landing. Raising
   // the spin allowance from 14 to 80 on entering Lying let a trapped wrist whirl.
-  if (mode == BodyMode::Lying && mode_time > .3) bd.system.spin_cap = 4;
-  else if (ground_motion || mode == BodyMode::Dead || mode == BodyMode::Dying) bd.system.spin_cap = 14;
-  else if (mode == BodyMode::Reacting) bd.system.spin_cap = 24;
-  else bd.system.spin_cap = plan.busy() ? 60 : 36;
+  if (!pf.spin_by_mode) bd.system.spin_cap = mode == BodyMode::Dead || mode == BodyMode::Dying || mode == BodyMode::Falling ? 14.0 : 80.0;
+  else if (mode == BodyMode::Lying && mode_time > .3) bd.system.spin_cap = pf.spin_lying;
+  else if (ground_motion || mode == BodyMode::Dead || mode == BodyMode::Dying) bd.system.spin_cap = pf.spin_ground;
+  else if (mode == BodyMode::Reacting) bd.system.spin_cap = pf.spin_reacting;
+  else bd.system.spin_cap = plan.busy() ? pf.spin_busy : pf.spin_calm;
   if (alive) bd.system.angular_drag = ground_motion && (bd.parts[B::pelvis]->contact || bd.parts[B::chest]->contact) ? .08 : .9;
   // A broad trunk contact resists spinning about the floor normal. The sphere
   // contacts supply sliding friction but have no contact-patch torsion of their own.
@@ -1197,9 +1311,19 @@ void Behaviours::drive_pre(f64 dt) {
     const f64 inverse = dot(n, b.inv_inertia_mul(n));
     if (inverse > 0) b.torque -= n * clamp(dot(b.w, n) * 18 / inverse, -b.mass * G * .12, b.mass * G * .12);
   }
-  bd.track(target, plan.pose, &prev_t, dt, ground_motion ? 7.0 : 30.0);
-  const f64 idt = dt > 0.0 ? 1.0 / dt : 0.0;
+  bd.track(target, plan.pose, &prev_t, dt, ground_motion ? pf.ground_target_rate : 30.0);
+}
 
+void Behaviours::drive_tone(Drive& f) {
+  HumanoidBody& bd = body;
+  const f64 kk = k();
+  const f64 m = bd.total_mass;
+  const f64 dt = f.dt, idt = f.idt;
+  const WorldPose& target = plan.world;
+  const WorldPose& prev_t = plan.prev_world;
+  const bool ground_motion = f.ground_motion;
+  const CharacterProfile& pf = profile;
+  (void)kk, (void)m, (void)dt, (void)idt, (void)ground_motion, (void)pf;
   // ---- tone ----
   f64 base = 1.0;
   f64 legs = 1.0, arms = 1.0, neck = 1.0, trunk = 1.0;
@@ -1207,33 +1331,35 @@ void Behaviours::drive_pre(f64 dt) {
     case BodyMode::Animated:
       // at ease the arms and the head are carried loosely (they swing and settle with the body's
       // motion); what an action moves is firmer (see limb_t)
-      arms = g_arms_at_ease;
-      neck = 0.8;
+      arms = pf.arms_at_ease;
+      neck = pf.neck_at_ease;
       break;
     case BodyMode::Reacting:
-      arms = 0.8;
+    case BodyMode::Falling: {
+      // (falling: braced for the ground, not fighting it)
+      const ModeTone& t = mode == BodyMode::Reacting ? pf.tone_reacting : pf.tone_falling;
+      base = t.base;
+      legs = t.legs;
+      arms = t.arms;
+      neck = t.neck;
+      trunk = t.trunk;
       break;
-    case BodyMode::Falling:
-      // (braced for the ground, not fighting it)
-      legs = 0.35;
-      trunk = 0.55;
-      neck = 0.8;
-      arms = 0.9;
-      break;
+    }
     case BodyMode::Lying:
-      base = !conscious ? 0.06 : writhing ? 0.75 : 0.22;
+      base = !conscious ? pf.tone_lying_unconscious : writhing ? pf.tone_lying_writhing : pf.tone_lying;
       break;
     case BodyMode::Rising:
-      base = lerp(0.25, 1.0, smoothstep(0.1, 0.9, mode_time));
+      base = lerp(pf.tone_rising_from, 1.0, smoothstep(0.1, 0.9, mode_time));
       break;
     case BodyMode::Dying: {
       // the knees go first, the arms drop, the trunk and the neck keep their shape longest
       const f64 u = clamp(mode_time / dying_for_, 0.0, 1.0);
-      base = dying_head_ ? 0.02 : 0.9 * pow(1.0 - u, 0.8) + 0.02;
+      base = dying_head_ ? 0.02 : pf.tone_dying * pow(1.0 - u, 0.8) + 0.02;
       // (and a body tipping over goes limp in the legs: it collapses, it does not fall like a plank
-      // and swing its legs up over itself)
-      legs = 0.0;
-      arms = pow(1.0 - u, 0.7) * 0.8;
+      // and swing its legs up over itself - dying_legs_hold > 0: they hold while it is upright)
+      const f64 up_z = rotate(bd.parts[B::chest]->q, V3{0, 0, 1}).z;
+      legs = pf.dying_legs_hold > 0.0 ? pow(1.0 - u, 1.2) * pf.dying_legs_hold * smoothstep(0.35, 0.8, up_z) : 0.0;
+      arms = pow(1.0 - u, 0.7) * pf.tone_dying_arms;
       break;
     }
     case BodyMode::Dead:
@@ -1251,10 +1377,14 @@ void Behaviours::drive_pre(f64 dt) {
       load = clamp(held->archetype->mass / 8.0, .2, 1.0);
     else if (const auto held = plan.props.held(); held && held->style == WieldStyle::TwoHands)
       load = clamp(held->archetype->mass / 16.0, .2, 1.0);
+    if (!pf.arm_activation) {
+      arm_activation_[i] = arm_held(i32(i));
+      continue;
+    }
     const f64 want = mode == BodyMode::Animated ? std::max({arm_held(i32(i)), plan.effort[i], turn, load}) : 0.0;
     arm_activation_[i] += (want - arm_activation_[i]) * (1.0 - exp(-(want > arm_activation_[i] ? 24.0 : 4.0) * dt));
   }
-  auto arm_base = [&](i32 i) { return lerp(arms, std::max(arms, 1.15), arm_activation_[size_t(i)]); };
+  auto arm_base = [&](i32 i) { return lerp(arms, std::max(arms, pf.arm_recruit), arm_activation_[size_t(i)]); };
   std::array<f64, kRegionCount> region_t{};
   region_t[region_index(Region::Trunk)] = base * trunk * dz * tense * (1.0 - 0.3 * (1 - capabilities().trunk));
   region_t[region_index(Region::Neck)] = base * neck * dz * tense * (1.0 - 0.3 * (1 - capabilities().neck));
@@ -1263,6 +1393,7 @@ void Behaviours::drive_pre(f64 dt) {
   region_t[region_index(Region::LegL)] = base * legs * dz * (1.0 - 0.45 * (1 - capabilities().legs[0].control));
   region_t[region_index(Region::LegR)] = base * legs * dz * (1.0 - 0.45 * (1 - capabilities().legs[1].control));
   region_tone = region_t;
+  f.region_t = region_t;
   // a limb that strikes is thrown hard (tensed), one an action moves is firmer
   auto limb_t = [&](Region r) {
     const i32 i = r == Region::ArmL ? 0 : r == Region::ArmR ? 1 : r == Region::LegL ? 2 : r == Region::LegR ? 3 : -1;
@@ -1287,7 +1418,7 @@ void Behaviours::drive_pre(f64 dt) {
     const bool planted = leg && feet[i < B::thighR ? 0 : 1].planted && (mode == BodyMode::Animated || mode == BodyMode::Reacting || mode == BodyMode::Rising);
     bd.hold_weight[size_t(i)] = planted || mode == BodyMode::Lying ? 0.0f : 1.0f;
   }
-  if (auto held = plan.props.held(); held && held->style == WieldStyle::TwoHands && !held->archetype->has("firearm")) {
+  if (auto held = plan.props.held(); held && held->style == WieldStyle::TwoHands && !held->archetype->hold.aims()) {
     const bool left = held->point == AttachPoint::RightHand;
     const size_t side = left ? 0 : 1;
     if (plan.striking[1 - side]) {
@@ -1303,6 +1434,18 @@ void Behaviours::drive_pre(f64 dt) {
   bd.apply_tone();
   bd.compensate_gravity();
 
+}
+
+void Behaviours::drive_assists(Drive& f) {
+  HumanoidBody& bd = body;
+  const f64 kk = k();
+  const f64 m = bd.total_mass;
+  const f64 dt = f.dt, idt = f.idt;
+  const WorldPose& target = plan.world;
+  const WorldPose& prev_t = plan.prev_world;
+  const bool ground_motion = f.ground_motion;
+  const CharacterProfile& pf = profile;
+  (void)kk, (void)m, (void)dt, (void)idt, (void)ground_motion, (void)pf;
   // ---- assists: how much the legs hold the body up and where ----
   const V3 pel = target.p[H::pelvis];
   const V3 vel_t = plan.velocity;
@@ -1310,6 +1453,7 @@ void Behaviours::drive_pre(f64 dt) {
   Attachment& steer = *bd.steer;
   Orienter& up = *bd.upright;
   const bool standing = plan.stance == Stance::Stand && plan.stance_progress() >= 1.0 && !plan.down();
+  f.standing = standing;
   const f64 legs_s = leg_strength();
   sup.enabled = steer.enabled = up.enabled = false;
   bd.chest_turn->enabled = false;
@@ -1412,6 +1556,20 @@ void Behaviours::drive_pre(f64 dt) {
     }
   }
 
+}
+
+void Behaviours::drive_feet(Drive& f) {
+  HumanoidBody& bd = body;
+  const f64 kk = k();
+  const f64 m = bd.total_mass;
+  const f64 dt = f.dt, idt = f.idt;
+  const WorldPose& target = plan.world;
+  const WorldPose& prev_t = plan.prev_world;
+  const bool ground_motion = f.ground_motion;
+  const CharacterProfile& pf = profile;
+  (void)kk, (void)m, (void)dt, (void)idt, (void)ground_motion, (void)pf;
+  const auto& feet = plan.feet_planner.feet;
+  const bool standing = f.standing;
   // ---- feet: planted ones pinned, swinging ones led (an obstacle can stop them) ----
   for (i32 i = 0; i < 2; ++i) {
     const auto& f = feet[size_t(i)];
@@ -1451,13 +1609,13 @@ void Behaviours::drive_pre(f64 dt) {
       // a kick: the foot is driven to where the action puts it
       const f64 e = plan.effort[size_t(2 + i)];
       pin.stiffness = fm * 3000.0 * e;
-      pin.max_force = 80.0 + 600.0 * e * (plan.striking[size_t(2 + i)] ? 1.0 : 0.6);
+      pin.max_force = pf.foot_pin_force + pf.foot_pin_effort * e * (plan.striking[size_t(2 + i)] ? 1.0 : pf.foot_pin_idle_share);
       pin.damping = fm * 60.0;
       const V3 pa = prev_t.p[foot_bone];
       pin.target_vel = (a - pa) * idt;
       turn.stiffness = 200.0;
       turn.max_torque = 60.0;
-      turn.damping = 12.0;
+      turn.damping = pf.foot_turn_damping;
     } else {
       // (the leg's muscles swing it; this only guides the foot to its spot, gently, so the whole
       // body is not dragged by it and an obstacle can stop it; up a stair the knee is lifted with a
@@ -1484,6 +1642,20 @@ void Behaviours::drive_pre(f64 dt) {
     bd.feet_turn[side]->stiffness *= control;
   }
 
+}
+
+void Behaviours::drive_hands(Drive& f) {
+  HumanoidBody& bd = body;
+  const f64 kk = k();
+  const f64 m = bd.total_mass;
+  const f64 dt = f.dt, idt = f.idt;
+  const WorldPose& target = plan.world;
+  const WorldPose& prev_t = plan.prev_world;
+  const bool ground_motion = f.ground_motion;
+  const CharacterProfile& pf = profile;
+  (void)kk, (void)m, (void)dt, (void)idt, (void)ground_motion, (void)pf;
+  const auto& feet = plan.feet_planner.feet;
+  (void)feet;
   // ---- hands: on the weapon, or where a behaviour sends them ----
   for (i32 i = 0; i < 2; ++i) {
     Attachment& att = *bd.hands[size_t(i)];
@@ -1494,14 +1666,14 @@ void Behaviours::drive_pre(f64 dt) {
     const size_t hand_bone = size_t(i == 0 ? H::handL : H::handR);
     const auto& arm = capabilities().arms[size_t(i)];
     const f64 control = clamp(std::min(arm.strength, arm.control) * capabilities().consciousness, 0.0, 1.0);
-    const f64 tone = region_t[region_index(i == 0 ? Region::ArmL : Region::ArmR)] * control;
+    const f64 tone = f.region_t[region_index(i == 0 ? Region::ArmL : Region::ArmR)] * control;
     const std::optional<ArmTask>& task = plan.control.arms[size_t(i)];
     f64 grip = grip_[size_t(i)];
     // the weapon: the gun hand keeps its aim, the support hand its hold
     const auto held = plan.props.held();
     const bool on_weapon = held && (held->style == WieldStyle::TwoHands || attachment_bone(held->point) == i32(hand_bone)) && (!task || task->weight < .35);
     if (on_weapon && tone > 0.3 && (mode == BodyMode::Animated || mode == BodyMode::Reacting || mode == BodyMode::Rising)) grip = std::max(grip, i == 1 ? 0.8 : 0.6);
-    // (an action's hand: a fist thrown at a jaw, a hand on a magazine)
+    // (an action's hand: a fist thrown at a jaw, a hand on a reload_point)
     if (mode == BodyMode::Animated && plan.effort[size_t(i)] > 0.05) grip = std::max(grip, plan.effort[size_t(i)] * (plan.striking[size_t(i)] ? 1.0 : 0.5));
     // (hands held up - on the head, raised, over the face - are held where they are meant)
     grip = std::max(grip, 0.5 * arm_held(i));

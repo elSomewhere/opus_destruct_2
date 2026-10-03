@@ -66,6 +66,20 @@ TEST_CASE("dmath: sin / cos / atan2 / exp / log / pow match the platform libm wi
   CHECK(dm::ipow(2.0, -2) == 0.25);
 }
 
+TEST_CASE("dmath: cbrt is within an ulp or two of the platform's, keeps the sign and is exact on small cubes") {
+  Lcg r;
+  f64 worst = 0;
+  for (int k = 0; k < 200000; ++k) {
+    const f64 x = k % 2 ? r.next(-1e6, 1e6) : r.next(-1e-6, 1e-6);
+    worst = std::max(worst, ulps(dm::cbrt(x), std::cbrt(x)));
+  }
+  MESSAGE("worst ulps: cbrt " << worst);
+  CHECK(worst <= 2.0);
+  CHECK(dm::cbrt(0.0) == 0.0);
+  CHECK(dm::cbrt(-8.0) == -2.0);
+  for (int n = 1; n <= 40; ++n) CHECK(dm::cbrt(f64(n) * n * n) == f64(n));
+}
+
 TEST_CASE("dmath: golden digest of the output bits (identical on every build)") {
   Lcg r;
   u64 h = 1469598103934665603ull;

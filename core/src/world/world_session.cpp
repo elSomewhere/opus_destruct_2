@@ -626,6 +626,8 @@ std::vector<u8> World::Impl::session_entries() const {
     put32(out, static_cast<u32>(rec.size()));
     out.insert(out.end(), rec.begin(), rec.end());
   }
+  // (v8) host records out of range, and those back but not taken yet
+  write_host_records(out);
   return out;
 }
 
@@ -702,6 +704,7 @@ bool World::Impl::read_session(Rd& in, SessionDelta* s, u32 version) const {
       s->archived_articulations.push_back(std::move(a));
     }
   }
+  if (version >= 8 && !read_host_records(in, s)) return false;
   return in.ok;
 }
 
@@ -784,6 +787,7 @@ void World::Impl::apply_session(SessionDelta&& s) {
       strm_.archived_arts[a.key] = std::move(a.chunks);
       ++st_.archived_articulations;
     }
+  apply_host_records(s);
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -876,6 +880,7 @@ void World::Impl::restore_groups() {
 }
 
 void World::Impl::forget_group(u64 key) {
+  if (forget_host_record(key)) return;  // (a host's record, not a group's)
   if (key & (1ull << 61)) {
     forget_articulation(key);  // (an articulation's record, not a group's)
     return;

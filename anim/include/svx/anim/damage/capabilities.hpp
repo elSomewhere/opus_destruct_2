@@ -32,4 +32,7 @@ struct Capabilities {
   std::optional<CareTarget> care;
 };
 void derive_mobility(Capabilities& capabilities);
+// Each body part's muscle from what its limb can do (capabilities authored per limb - an override,
+// a test): a leg's support, an arm's strength, the neck's and the trunk's.
+void derive_muscles(Capabilities& capabilities);
 }  // namespace svx::anim

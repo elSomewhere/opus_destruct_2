@@ -914,6 +914,17 @@ struct World::Impl::SessionDelta {
     u64 home = 0;  // (the chunk of its first link)
   };
   std::vector<ArchivedArticulation> archived_articulations;
+  // (v8) host records archived out of range (World::archive_host_record), and those back but not
+  // taken yet
+  struct ArchivedRecord {
+    u64 key = 0;
+    std::vector<u64> chunks;
+    std::vector<u8> record;
+  };
+  bool host_records = false;
+  u64 next_record = 1;
+  std::vector<ArchivedRecord> archived_records;
+  std::vector<HostRecord> restored_records;
 };
 
 // A grid of the world (docs/GRIDS.md): its frame, voxels (oriented grids; the world grid's are

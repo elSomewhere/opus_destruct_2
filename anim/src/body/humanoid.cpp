@@ -4,6 +4,10 @@
 
 namespace svx::anim {
 
+const std::array<const char*, kBodyCount> kBodyName = {"pelvis",          "spine",          "chest",      "head",
+                                                       "left upper arm",  "left forearm",   "left hand",  "right upper arm",
+                                                       "right forearm",   "right hand",     "left thigh", "left shin",
+                                                       "left foot",       "right thigh",    "right shin", "right foot"};
 const std::array<i32, kBodyCount> kBodyBone = {H::pelvis, H::spine,  H::chest,  H::head,   H::upperarmL, H::forearmL, H::handL, H::upperarmR,
                                                H::forearmR, H::handR, H::thighL, H::shinL, H::footL,     H::thighR,   H::shinR, H::footR};
 
@@ -19,28 +23,26 @@ namespace {
 // Segment mass fractions (Winter): head+neck, trunk thirds, arm, leg segments.
 constexpr f64 kMass[kBodyCount] = {0.142, 0.139, 0.216, 0.081, 0.028, 0.016, 0.006, 0.028, 0.016, 0.006, 0.1, 0.0465, 0.0145, 0.1, 0.0465, 0.0145};
 
-// Joint muscle frequency (rad/s) and damping ratio by child body.
-constexpr f64 kMuscle[kBodyCount][2] = {
-    {0, 0},
-    {15, 0.95},  // lower back
-    {15, 0.95},  // upper back
-    {13, 1.0},   // neck
-    // The shoulder yields to momentum; the distal joints actively carry the hand.
-    // Giving the wrist the shoulder's slow response made it trail every turn and
-    // oscillate through action releases. Tone still controls injury and ragdoll.
-    {16, 1.05},  // shoulder
-    {19, 1.05},  // elbow
-    {28, 1.15},  // wrist
-    {16, 1.05},
-    {19, 1.05},
-    {28, 1.15},
-    {17, 0.95},  // hip
-    {18, 0.95},  // knee
-    {16, 0.95},  // ankle
-    {17, 0.95},
-    {18, 0.95},
-    {16, 0.95},
-};
+// Joint muscle frequency (rad/s) and damping ratio by child body; the arms' come from the options
+// (CharacterProfile::arm_muscles: the shoulder yields to momentum, the distal joints carry the hand).
+std::array<std::array<f64, 2>, kBodyCount> muscle_table(const HumanoidBodyOptions& o) {
+  std::array<std::array<f64, 2>, kBodyCount> t{{
+      {0, 0},
+      {15, 0.95},  // lower back
+      {15, 0.95},  // upper back
+      {13, 1.0},   // neck
+      {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0}, {0, 0},
+      {17, 0.95},  // hip
+      {18, 0.95},  // knee
+      {16, 0.95},  // ankle
+      {17, 0.95},
+      {18, 0.95},
+      {16, 0.95},
+  }};
+  for (size_t side = 0; side < 2; ++side)
+    for (size_t j = 0; j < 3; ++j) t[size_t(B::upperarmL) + side * 3 + j] = o.arm_muscles[j];
+  return t;
+}
 
 // Where a foot's sole rests relative to its ankle (rest model space, per unit height).
 constexpr f64 kSoleDrop = 0.085;
@@ -54,6 +56,8 @@ HumanoidBody::HumanoidBody(SkeletonPtr sk, const CollisionWorld* collision, cons
   const std::vector<V3>& rh = skeleton->rest_head;
   const std::vector<V3>& rt = skeleton->rest_tail;
   k = rh[H::pelvis].z / 0.97;
+  muscle_ = muscle_table(o);
+  system.clamps = o.solver_clamps;
   const f64 girth = o.girth;
   const f64 total = o.mass > 0.0 ? o.mass : 75.0 * k * k * k * girth;
   total_mass = total;
@@ -276,6 +280,7 @@ HumanoidBody::HumanoidBody(SkeletonPtr sk, const CollisionWorld* collision, cons
     jo.frame_b = frame;
     joints[size_t(i)] = system.add_joint(std::make_unique<Joint>(parts[size_t(p)], parts[size_t(i)], jo));
   }
+  for (RigidBody* part : parts) part->max_turn = o.solver_clamps ? part->max_turn : 0.0;
   // muscle stiffness from the inertia each joint moves
   for (i32 i = 1; i < kBodyCount; ++i) {
     const V3 jp = joint_point(i);
@@ -285,7 +290,7 @@ HumanoidBody::HumanoidBody(SkeletonPtr sk, const CollisionWorld* collision, cons
       const V3& ii = inert[size_t(c)];
       I += kMass[c] * total * (d.x * d.x + d.y * d.y + d.z * d.z) + (ii.x + ii.y + ii.z) / 3.0;
     }
-    const f64 w = kMuscle[i][0], zeta = kMuscle[i][1];
+    const f64 w = muscle_[size_t(i)][0], zeta = muscle_[size_t(i)][1];
     inertia_at[size_t(i)] = static_cast<f32>(I);
     base_stiffness[size_t(i)] = static_cast<f32>(I * w * w);
     base_damping[size_t(i)] = static_cast<f32>(2.0 * zeta * w * I);
@@ -431,7 +436,7 @@ void HumanoidBody::refresh_mass() {
       const V3 d = skeleton->rest_head[size_t(kBodyBone[size_t(c)])] + com_local[size_t(c)] - jp;
       I += b.mass * dot(d, d) + (1 / b.inv_i.x + 1 / b.inv_i.y + 1 / b.inv_i.z) / 3;
     }
-    const f64 w = kMuscle[i][0], zeta = kMuscle[i][1];
+    const f64 w = muscle_[size_t(i)][0], zeta = muscle_[size_t(i)][1];
     inertia_at[size_t(i)] = f32(I);
     base_stiffness[size_t(i)] = f32(I * w * w);
     base_damping[size_t(i)] = f32(2 * zeta * w * I);

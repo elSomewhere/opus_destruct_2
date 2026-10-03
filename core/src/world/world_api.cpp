@@ -98,6 +98,14 @@ i32 World::set_voxels(const std::vector<VoxelEdit>& edits, u32 flags) { return i
 i32 World::set_voxels(GridId grid, const std::vector<VoxelEdit>& edits, u32 flags) { return impl_->set_voxels(grid, edits, flags); }
 bool World::apply_impulse(i64 piece, const V3& point, const V3& impulse) { return impl_->apply_impulse(piece, point, impulse); }
 i64 World::loosen(GridId grid, const IVec3& voxel, const V3& impulse) { return impl_->loosen(grid, voxel, impulse); }
+bool World::archive_host_record(u32 owner, u64 id, const V3& at, std::vector<u8> data) { return impl_->archive_host_record(owner, id, at, std::move(data)); }
+std::vector<HostRecord> World::take_host_records(u32 owner) { return impl_->take_host_records(owner); }
+std::vector<PieceBox> World::awake_pieces() const {
+  std::vector<PieceBox> out;
+  for (const auto& bp : impl_->rigid_.bodies)
+    if (!bp->link && !bp->asleep) out.push_back(PieceBox{bp->id, bp->box_lo, bp->box_hi});
+  return out;
+}
 bool World::remove_piece(i64 piece) { return impl_->remove_piece(piece); }
 bool World::set_piece_keep(i64 piece, bool keep) { return impl_->set_piece_keep(piece, keep); }
 void World::tick() { impl_->tick(); }

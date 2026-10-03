@@ -55,8 +55,9 @@ enum : i32 {
 }  // namespace B
 constexpr i32 kBodyCount = 16;
 
-// The rig bone each body moves.
+// The rig bone each body moves, and its name ("left upper arm").
 extern const std::array<i32, kBodyCount> kBodyBone;
+extern const std::array<const char*, kBodyCount> kBodyName;
 // Each body's parent body (-1: the pelvis). Joint i connects kBodyParent[i] and body i (i >= 1).
 extern const std::array<i32, kBodyCount> kBodyParent;
 
@@ -68,6 +69,9 @@ extern const std::array<Region, kBodyCount> kRegion;
 struct HumanoidBodyOptions {
   f64 mass = 0.0;   // total mass (kg); 0: 75 kg scaled with the rig's height cubed
   f64 girth = 1.0;  // body thickness (collision radii)
+  // the arm muscles {natural frequency rad/s, damping ratio}: shoulder, elbow, wrist (CharacterProfile)
+  std::array<std::array<f64, 2>, 3> arm_muscles{{{16, 1.05}, {19, 1.05}, {28, 1.15}}};
+  bool solver_clamps = true;  // (CharacterProfile::solver_clamps)
 };
 
 class HumanoidBody {
@@ -137,6 +141,7 @@ class HumanoidBody {
   i64 memory_bytes() const;
 
  private:
+  std::array<std::array<f64, 2>, kBodyCount> muscle_{};  // per joint: natural frequency (rad/s), damping ratio
   // the plan's relative angular acceleration per joint (parent frame, rad/s^2)
   std::array<V3, kBodyCount> target_acc_{};
   // local rotations the physics does not have (neck share, clavicles, toes), from the plan

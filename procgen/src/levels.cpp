@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <cmath>
 
+#include "svx/base/dmath.hpp"
 #include "svx/procgen/reinforce.hpp"
 
 namespace svx {
@@ -166,8 +167,8 @@ void yard(VoxelGrid& g) {
 
 // A turn of deg degrees about the unit axis (x, y, z).
 Quat turn(f64 deg, f64 x, f64 y, f64 z) {
-  const f64 th = 0.5 * deg * 3.14159265358979323846 / 180.0, s = std::sin(th);
-  return Quat{x * s, y * s, z * s, std::cos(th)};
+  const f64 th = 0.5 * deg * 3.14159265358979323846 / 180.0, s = dm::sin(th);
+  return Quat{x * s, y * s, z * s, dm::cos(th)};
 }
 
 // Structures off the lattice, each in a grid of its own (docs/GRIDS.md): what they stand on or are
@@ -213,7 +214,7 @@ void angles(Level& w, Rng& rng) {
   // both (welded: a junction is as strong as the faces that overlap).
   for (int x : {160, 208}) box(g, x, x + 3, 40, 43, 0, 44, steel);
   box(g, 160, 211, 40, 43, 44, 47, steel);
-  const f64 brace = std::atan2(36.0, 51.0) * 180.0 / 3.14159265358979323846;
+  const f64 brace = dm::atan2(36.0, 51.0) * 180.0 / 3.14159265358979323846;
   for (f64 a : {-brace, brace}) box(place({185, 41, 22}, turn(a, 0, 1, 0)), -32, 32, -1, 2, -1, 2, steel);
   // Masonry walls (8 m, 3 m high, 3 voxels thick) turned 20 degrees (with a doorway under a
   // masonry lintel) and 45 degrees.
@@ -315,7 +316,7 @@ void machines(Level& w) {
     for (int k = 0; k < 3; ++k) {
       const f64 a = 2.1 * k, r = 1.6;
       Drop c;
-      c.desc.frame = GridFrame{V3{h * 239.5 + r * std::cos(a) - 1.5 * h, h * 63.5 + r * std::sin(a) - 1.5 * h, h * 5.5 + 0.5 * h + 0.02}, id};
+      c.desc.frame = GridFrame{V3{h * 239.5 + r * dm::cos(a) - 1.5 * h, h * 63.5 + r * dm::sin(a) - 1.5 * h, h * 5.5 + 0.5 * h + 0.02}, id};
       c.desc.base = false;
       c.voxels.h = h;
       box(c.voxels, 0, 4, 0, 4, 0, 4, wood);
@@ -370,7 +371,7 @@ void machines(Level& w) {
     rope.damping = 2e4;
     const f64 a = 60.0 * kPi / 180.0, r = 5.2;
     LevelGrid pg;
-    pg.frame = GridFrame{V3{h * 95.5 + r * std::cos(a), h * 223.5 + r * std::sin(a), 0.0}, Quat{0.0, 0.0, std::sin(0.5 * a), std::cos(0.5 * a)}};
+    pg.frame = GridFrame{V3{h * 95.5 + r * dm::cos(a), h * 223.5 + r * dm::sin(a), 0.0}, Quat{0.0, 0.0, dm::sin(0.5 * a), dm::cos(0.5 * a)}};
     pg.grid.h = h;
     box(pg.grid, -12, 12, -1, 1, 0, 32, masonry);
     w.grids.push_back(std::move(pg));
@@ -383,7 +384,7 @@ void machines(Level& w) {
   const V3 pivot = wp(245.5, 223.5, 43.5);  // (the beam's underside)
   {
     const f64 L = 3.0, th = 60.0 * kPi / 180.0;
-    const V3 bob{pivot.x + L * std::sin(th), pivot.y, pivot.z - L * std::cos(th)};
+    const V3 bob{pivot.x + L * dm::sin(th), pivot.y, pivot.z - L * dm::cos(th)};
     LevelGrid pg;
     pg.frame = GridFrame{bob, id};
     pg.grid.h = h;

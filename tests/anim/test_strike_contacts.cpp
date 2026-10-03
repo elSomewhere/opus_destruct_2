@@ -1,7 +1,7 @@
 // Contact velocity belongs to the point that landed, on each moving body.
 #include "doctest.h"
 #include "scene.hpp"
-#include "svx/anim/brawl.hpp"
+#include "svx/anim/damage/strike.hpp"
 
 using namespace scene;
 
@@ -216,11 +216,11 @@ TEST_CASE("strikes: a stopped attack transfers momentum to the blocking arm and 
       source->pos = point + V3{0, .05, 0} - weapon->feature("tip")->b;
       REQUIRE(attacker.motion.play("stab"));
       attacker.motion.strike_weight[1] = 1;
-      Brawler fighter(attacker);
+      StrikeResolver fighter(attacker);
       fighter.opponent = &defender;
-      CHECK(fighter.resolve({}).empty());
+      CHECK(fighter.resolve(DT).empty());
       source->pos.y -= .1;
-      const auto blows = fighter.resolve({});
+      const auto blows = fighter.resolve(DT);
       REQUIRE(blows.size() == 1);
       const auto& hit = blows[0];
       CHECK(hit.blocked);

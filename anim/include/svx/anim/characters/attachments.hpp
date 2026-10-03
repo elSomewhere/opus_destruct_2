@@ -1,7 +1,8 @@
 // svx_anim — one place for prop identity, attachment occupancy and loose items.
 #pragma once
-#include <map>
 #include <array>
+#include <functional>
+#include <map>
 #include <span>
 #include "svx/anim/characters/props.hpp"
 #include "svx/anim/physics/debris.hpp"
@@ -19,7 +20,7 @@ struct WieldProfile {
 };
 struct PropState {
   f64 condition = 1.0, strap = 1.0;
-  i32 ammunition = 0;
+  i32 charges = 0;
   std::vector<std::string> contents;
 };
 struct PropInstance {
@@ -37,12 +38,19 @@ struct PropInstance {
   f64 strength = 1, load = 0, impulse_load = 0;
   f64 support_gap_time = 0;  // a second hand trying, but unable, to retain its grip
   ReleaseReason last_release = ReleaseReason::Voluntary;
+  u64 loose_since = 0;  // (the registry's serial when it went loose: the longest loose go first)
   ModelPtr damaged_model;
   u32 geometry_version = 0;
   f64 retained_mass = 0;  // a severed hand that still grips this item
+  f64 mass_fraction = 1;  // of the archetype's material still there (damage carves it away)
   Gib* loose_body = nullptr;
   const VoxelModel& model() const { return *(damaged_model ? damaged_model : archetype->model); }
-  V3 centre_of_mass() const;
+  f64 mass() const { return archetype->mass * mass_fraction + retained_mass; }
+  V3 centre_of_mass() const;  // (damaged: of its cells, cached per geometry_version)
+
+ private:
+  mutable u32 centre_version_ = 0;
+  mutable V3 centre_;
 };
 using PropInstancePtr = std::shared_ptr<PropInstance>;
 struct AttachmentEvent {
@@ -57,9 +65,20 @@ struct LoadoutEntry {
   std::string socket = "primary";
   WieldStyle style = WieldStyle::OneHand;
 };
+struct PropRegistryOptions {
+  i32 max_loose = 256;  // loose instances kept: beyond, the longest loose goes (Gone)
+  f64 kill_z = -200.0;  // a loose instance below this height goes (m)
+};
 class PropRegistry {
  public:
-  explicit PropRegistry(const CollisionWorld* collision = nullptr);
+  explicit PropRegistry(const CollisionWorld* collision = nullptr, const PropRegistryOptions& o = {});
+  PropRegistryOptions options;
+  // Archetypes by id, as instances and their records name them: the host's own (define, or an
+  // instance made from one), then `resolver`, then the built-in catalogue (prop_catalog). A record
+  // whose archetype does not resolve is refused.
+  void define(PropPtr archetype);
+  PropPtr archetype(std::string_view id) const;
+  std::function<PropPtr(std::string_view id)> resolver;
   PropInstancePtr create(PropPtr archetype);
   PropInstancePtr get(u64 id) const;
   PropInstancePtr restore(const PropInstancePtr& saved);
@@ -71,12 +90,19 @@ class PropRegistry {
   void update(f64 dt);
   std::vector<u8> record_loose() const;
   bool restore_loose(std::span<const u8> bytes);
+  // One loose instance's record (record_loose's, for one: what a region keeps of it) and back.
+  std::vector<u8> record_item(const PropInstance& p) const;
+  PropInstancePtr restore_item(std::span<const u8> bytes);
   void collision(const CollisionWorld* c) { loose_.collision = c; }
+  i64 memory_bytes() const;
 
  private:
   u64 next_ = 1;
+  u64 released_ = 0;  // (a serial: which loose instance went loose first)
   std::map<u64, PropInstancePtr> items_;
+  std::map<std::string, PropPtr, std::less<>> defined_;
   GibSystem loose_;
+  void bound_loose();
 };
 class Attachments {
  public:

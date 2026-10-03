@@ -67,7 +67,7 @@ std::vector<Cell> path(const VoxelModel& model, std::span<const f32> skin, const
   return hits;
 }
 }  // namespace
-WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const DamageDescriptor& d, const PropMaterial* material) {
+WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const DamageDescriptor& d, const PropMaterial* material, const MechanicsTuning& tuning) {
   WoundMechanics out;
   if (!d.valid() || d.kind == DamageKind::Thermal) return out;
   out.remaining_energy = d.energy();
@@ -81,7 +81,7 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
     auto& p = m.parts[c.part];
     if (!p.cells[c.index]) return;
     out.removed.push_back({p.bone, c.rest, u8(p.cells[c.index] - 1), p.shade.empty() ? u8(128) : p.shade[c.index]});
-    p.cells[c.index] = 0;
+    p.clear_cell(c.index);
     --p.count;
     changed.insert(c.part);
   };
@@ -96,7 +96,7 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
       const Cell c = cells[index];
       auto& p = m.parts[c.part];
       if (!p.cells[c.index]) continue;
-      const u8 slot = u8(p.cells[c.index] - 1);
+      const Tissue slot = m.tissue_at(p, c.index);
       const f64 cost = (material ? material->penetration : tissue_resistance(slot)) * volume;
       // A fast projectile also displaces tissue. Paying only for deleted cells
       // made a faster round transfer *less* momentum, regardless of its drag.
@@ -109,7 +109,7 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
         drag = 1 - exp(-1060 * .6 * area * c.weight / d.mass);
       }
       const f64 take = std::min(energy, cost + energy * drag);
-      out.tissue.push_back({p.bone, c.rest, take, energy >= cost ? 1.0 : 0.0, slot == Slot::Bone});
+      out.tissue.push_back({p.bone, c.rest, take, energy >= cost ? 1.0 : 0.0, slot == Tissue::Bone});
       if (energy < cost) {
         energy = 0;
         break;
@@ -135,11 +135,11 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
             const size_t n = size_t(p.index(ix, iy, iz));
             if (!p.cells[n]) continue;
             const Cell adjacent{c.part, n, at, c.t};
-            const u8 tissue = u8(p.cells[n] - 1);
+            const Tissue tissue = m.tissue_at(p, n);
             const f64 resistance = (material ? material->penetration : tissue_resistance(tissue)) * volume;
             if (vdist(at, c.rest) <= channel && energy >= resistance) {
               energy -= resistance;
-              out.tissue.push_back({p.bone, at, resistance, 1, tissue == Slot::Bone});
+              out.tissue.push_back({p.bone, at, resistance, 1, tissue == Tissue::Bone});
               remove(adjacent);
             } else if (halo > channel) bruised.push_back(adjacent);
           }
@@ -152,7 +152,7 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
       // Bone can turn a penetrator, with less deviation as the remaining energy
       // rises. The lattice coordinates choose the side, so this adds no
       // backend-dependent randomness.
-      if (!material && slot == Slot::Bone && d.kind == DamageKind::Projectile && energy > 0 && deflections < 2) {
+      if (!material && slot == Tissue::Bone && d.kind == DamageKind::Projectile && energy > 0 && deflections < 2) {
         const f64 side = std::fmod(std::abs(c.rest.x * 73 + c.rest.y * 151 + c.rest.z * 199), 2) < 1 ? -1 : 1;
         const V3 tangent = vnorm(cross(ray, V3{0, 0, 1}), V3{1, 0, 0});
         ray = vnorm(ray + tangent * (side * clamp(cost / std::max(cost, energy) * .25, .008, .18)));
@@ -179,10 +179,11 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
             if (ix < 0 || iy < 0 || iz < 0 || ix >= p.dims[0] || iy >= p.dims[1] || iz >= p.dims[2]) continue;
             const size_t n = size_t(p.index(ix, iy, iz));
             if (!p.cells[n]) continue;
-            const f64 cost = (material ? material->penetration : tissue_resistance(p.cells[n] - 1)) * volume;
+            const Tissue tissue = m.tissue_at(p, n);
+            const f64 cost = (material ? material->penetration : tissue_resistance(tissue)) * volume;
             if (energy >= cost) {
               energy -= cost;
-              out.tissue.push_back({p.bone, at, cost, 1, p.cells[n] == Slot::Bone + 1});
+              out.tissue.push_back({p.bone, at, cost, 1, tissue == Tissue::Bone});
               remove({final_cell.part, n, at, 0});
             }
           }
@@ -194,14 +195,39 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
     const f64 cutting = edged ? clamp(d.sharpness * d.alignment, .01, 1.0) : 1;
     const f64 depth = clamp(energy * cutting / (edged ? 1800.0 : 5000.0), edged ? .005 : .08, .35);
     const f64 length = std::max(d.swept_length, s), radius = std::sqrt(d.area / kPi);
+    // (the farthest a touching cell's centre can be from the point: only the cells within it are
+    // visited - the same cells, in the same order, as a scan of every cell)
+    f64 reach = -1;
+    if (edged) {
+      const f64 c = dot(edge, direction), sine = std::sqrt(std::max(0.0, 1 - c * c));
+      const f64 along = depth + s, across = length * .5 + s * .5, thin = s * .55;
+      if (sine > .1) {
+        const f64 side = (across + along * std::abs(c)) / sine;
+        reach = std::sqrt(along * along + side * side + thin * thin);
+      }
+    } else {
+      const f64 along = depth + s * .5, spread = radius + s * .5 + along * .5;
+      reach = std::sqrt(along * along + spread * spread);
+    }
     std::vector<Cell> contacts;
     for (size_t pi = 0; pi < m.parts.size(); ++pi) {
       const auto& p = m.parts[pi];
       if (!p.count || size_t(p.bone * 16 + 16) > skin.size()) continue;
       const auto* mat = skin.data() + p.bone * 16;
-      for (i32 z = 0; z < p.dims[2]; ++z)
-        for (i32 y = 0; y < p.dims[1]; ++y)
-          for (i32 x = 0; x < p.dims[0]; ++x) {
+      std::array<i32, 3> lo{0, 0, 0}, hi = p.dims;
+      if (reach >= 0) {
+        const V3 local = rest(mat, d.point);
+        bool none = false;
+        for (int a = 0; a < 3; ++a) {
+          lo[size_t(a)] = std::max(0, i32(std::floor((local[a] - reach) / s)) - p.origin[size_t(a)] - 1);
+          hi[size_t(a)] = std::min(p.dims[size_t(a)], i32(std::floor((local[a] + reach) / s)) - p.origin[size_t(a)] + 2);
+          none = none || lo[size_t(a)] >= hi[size_t(a)];
+        }
+        if (none) continue;
+      }
+      for (i32 z = lo[2]; z < hi[2]; ++z)
+        for (i32 y = lo[1]; y < hi[1]; ++y)
+          for (i32 x = lo[0]; x < hi[0]; ++x) {
             const size_t n = size_t(p.index(x, y, z));
             if (!p.cells[n]) continue;
             const V3 at = m.cell_centre(x + p.origin[0], y + p.origin[1], z + p.origin[2]), delta = world(mat, at) - d.point;
@@ -213,7 +239,7 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
             // Pressure spreads inward from the contact patch. A larger impact
             // no longer bruises an arbitrary sphere behind, beside and above
             // its point of entry.
-            if (touches) contacts.push_back({pi, n, at, along, edged ? 1 : std::exp(-radial2 / (spread * spread) - std::max(0.0, along) / depth)});
+            if (touches) contacts.push_back({pi, n, at, along, edged ? 1 : exp(-radial2 / (spread * spread) - std::max(0.0, along) / depth)});
           }
     }
     // Spend the budget front to back. Bone-array order must not decide which
@@ -222,17 +248,17 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
     const size_t first_contact = out.tissue.size();
     for (const auto& c : contacts) {
       auto& p = m.parts[c.part];
-      const u8 slot = u8(p.cells[c.index] - 1);
+      const Tissue slot = m.tissue_at(p, c.index);
       const f64 cost = (material ? material->penetration : tissue_resistance(slot)) * volume / cutting;
       if (edged) {
         if (energy <= 0) break;
         const bool removed = energy >= cost;
-        out.tissue.push_back({p.bone, c.rest, std::min(cost, energy), removed ? 1.0 : 0.0, slot == Slot::Bone});
+        out.tissue.push_back({p.bone, c.rest, std::min(cost, energy), removed ? 1.0 : 0.0, slot == Tissue::Bone});
         energy = std::max(0.0, energy - cost);
         if (removed) remove(c);
       } else {
-        out.tissue.push_back({p.bone, c.rest, 0, 0, slot == Slot::Bone});
-        if (d.kind == DamageKind::Crush && d.energy() > 1200 && energy >= cost) {
+        out.tissue.push_back({p.bone, c.rest, 0, 0, slot == Tissue::Bone});
+        if (d.kind == DamageKind::Crush && d.energy() > tuning.crush_remove_energy && energy >= cost) {
           energy -= cost;
           out.tissue.back().energy = cost;
           out.tissue.back().removed = 1;
@@ -242,12 +268,13 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
     }
     if (!edged && !contacts.empty()) {
       // Removal spends its tissue resistance first; compression absorbs the
-      // rest.
+      // rest - a prop only what deforming it takes, the rest passes through it.
+      const f64 compression = material ? std::min(energy, material->fracture) : energy;
       f64 weight = 0;
       for (const auto& c : contacts) weight += c.weight;
       for (size_t i = first_contact; i < out.tissue.size(); ++i) {
         const auto& c = contacts[i - first_contact];
-        out.tissue[i].energy += energy * c.weight / weight;
+        out.tissue[i].energy += compression * c.weight / weight;
         auto& p = m.parts[c.part];
         if (out.tissue[i].energy <= 0 || !p.cells[c.index]) continue;
         if (p.shade.empty()) p.shade.resize(p.cells.size(), 128);
@@ -255,7 +282,7 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
         changed.insert(c.part);
       }
       std::erase_if(out.tissue, [](const auto& t) { return t.energy <= 0; });
-      energy = 0;
+      energy -= compression;
     }
   }
   // Dark wound rims leave exposed flesh and bone intact and readable.
@@ -271,9 +298,15 @@ WoundMechanics wound_mechanics(VoxelModel& m, std::span<const f32> skin, const D
           if (a < 0 || b < 0 || c < 0 || a >= p.dims[0] || b >= p.dims[1] || c >= p.dims[2]) continue;
           const size_t n = size_t(p.index(a, b, c));
           if (!p.cells[n]) continue;
-          if (p.cells[n] != Slot::Bone + 1 && p.cells[n] != Slot::Flesh + 1) p.cells[n] = Slot::Blood + 1;
-          if (p.shade.empty()) p.shade.resize(p.cells.size(), 128);
-          p.shade[n] = 90;
+          const Tissue t = m.tissue_at(p, n);
+          if (t != Tissue::Bone && t != Tissue::Flesh) {
+            // (blood over the rim; what the cell is made of stays)
+            if (p.stain.empty()) p.stain.assign(p.cells.size(), 0);
+            p.stain[n] = 90;
+          } else {
+            if (p.shade.empty()) p.shade.resize(p.cells.size(), 128);
+            p.shade[n] = 90;
+          }
           changed.insert(pi);
         }
       }

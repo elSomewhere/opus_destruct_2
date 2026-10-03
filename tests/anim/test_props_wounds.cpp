@@ -539,7 +539,7 @@ TEST_CASE("wounds: capabilities drive automatic crawl and action refusal without
     for (size_t i = 10; i < 16; ++i) cap.muscle[i] = 0;
     c.behaviours.damage.override_capabilities(cap);
     for (int i = 0; i < 180; ++i) s.frame({&c});
-    CHECK(c.motion.input.stance == Stance::Prone);
+    CHECK(c.motion.effective_stance() == Stance::Prone);
     CHECK_FALSE(c.motion.play("frontKick"));
     CHECK(c.pose.p[H::pelvis].z - s.ground < .5);
     for (const auto& p : c.pose.p) CHECK(std::isfinite(norm(p)));
@@ -625,7 +625,7 @@ TEST_CASE("wounds: anatomical presets distinguish soft tissue, fractures, severi
       if (name == "shotgunLegs") CHECK(c.capabilities().mobility == Mobility::Crawl);
       for (int i = 0; i < 180; ++i) s.frame({&c});
       for (const auto& point : c.pose.p) CHECK(std::isfinite(norm(point)));
-      if (name == "shotgunLegs") CHECK(c.motion.input.stance == Stance::Prone);
+      if (name == "shotgunLegs") CHECK(c.motion.effective_stance() == Stance::Prone);
       if (name == "blast3m") CHECK(c.model->voxel_count() > cells / 2);
     }
 }
@@ -656,7 +656,18 @@ TEST_CASE("wounds: pressure reduces only the pressed wound, and blood loss incap
     d.point = c.body.parts[B::chest]->x;
     c.damage(d);
   }
+  // Each blow keeps its own wound (each drips) until the profile's bound; past it they join.
   CHECK(c.behaviours.damage.inspect().wounds.size() > 12);
+  for (int i = 0; i < 400; ++i) {
+    DamageDescriptor d;
+    d.kind = DamageKind::Blunt;
+    d.mass = 1;
+    d.speed = 2;
+    d.point = c.body.parts[size_t(i % kBodyCount)]->x + V3{.01 * (i % 7), .01 * (i % 5), .01 * (i % 3)};
+    c.damage(d);
+  }
+  CHECK(c.behaviours.damage.inspect().wounds.size() <= size_t(c.profile.max_wounds + kBodyCount));
+  CHECK(c.behaviours.damage.wound_count() <= size_t(c.profile.max_wounds + kBodyCount + c.profile.max_injuries));
 }
 TEST_CASE("props: physiological releases and strong severed grips keep their identity") {
   for (Path path : {Path::Shallow, Path::Deep}) {
@@ -700,7 +711,7 @@ TEST_CASE("props: one-hand strikes refuse a two-hand wield and report the mismat
 TEST_CASE("wounds: an erased joint releases its descendants even without a severed fragment") {
   for (Path path : {Path::Shallow, Path::Deep}) for (bool empty : {false, true}) {
     Scene s(path);auto look=make_soldier(4);look.model=look.model->clone();
-    auto& c=s.add(look,7,kPi/2,{0,0,s.ground},make_pistol());
+    auto& c=s.add(look,7,kPi/2,{0,0,s.ground},prop_archetype("pistol"));
     s.frame({&c});
     auto& part=c.model->parts[size_t(c.model->part_of_bone[H::forearmR])];
     const auto& sk=*c.model->skeleton;

@@ -87,8 +87,18 @@ endif()
 
 if(SVX_BUILD_ANIM)
   file(GLOB_RECURSE SVX_ANIM_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/anim/src/*.cpp)
-  add_library(svx_anim STATIC ${SVX_ANIM_SOURCES})
-  target_include_directories(svx_anim PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/anim/include> $<INSTALL_INTERFACE:include>)
+  # (its content: data/content/*.json, embedded - svx/anim/content_data.hpp)
+  file(GLOB_RECURSE SVX_ANIM_DATA_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/content/*.json)
+  set(SVX_ANIM_DATA_CPP ${CMAKE_CURRENT_BINARY_DIR}/generated/anim_content.cpp)
+  add_custom_command(OUTPUT ${SVX_ANIM_DATA_CPP}
+                     COMMAND ${CMAKE_COMMAND} -DDIR=${CMAKE_CURRENT_SOURCE_DIR}/data/content -DOUT=${SVX_ANIM_DATA_CPP}
+                             -DHEADER=svx/anim/content_data.hpp -DNAMESPACE=svx::anim -DFUNCTION=embedded_content
+                             -P ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_data.cmake
+                     DEPENDS ${SVX_ANIM_DATA_FILES} ${CMAKE_CURRENT_SOURCE_DIR}/cmake/embed_data.cmake
+                     COMMENT "Embedding the characters' content")
+  add_library(svx_anim STATIC ${SVX_ANIM_SOURCES} ${SVX_ANIM_DATA_CPP})
+  target_include_directories(svx_anim PUBLIC $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/anim/include> $<INSTALL_INTERFACE:include>
+                             PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/third_party/nlohmann)
   target_link_libraries(svx_anim PUBLIC svx_core)
   target_compile_options(svx_anim PRIVATE -fno-exceptions -fno-rtti ${SVX_WARNINGS})
 endif()
@@ -129,6 +139,10 @@ if(SVX_BUILD_GAME)
   # Procedural generation (to be replaced: a module of its own): the test levels, the streamed
   # city and the endless drive city, made of the game's materials and paints.
   file(GLOB SVX_PROCGEN_SOURCES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/procgen/src/*.cpp)
+  if(NOT SVX_BUILD_CITY)
+    # (the city generator's adapter - CityWorldSource, its roads and materials - needs it)
+    list(FILTER SVX_PROCGEN_SOURCES EXCLUDE REGEX "/procgen/src/city_(source|roads|materials)\\.cpp$")
+  endif()
   # (the presets, data/presets/**/*.json, embedded: svx/procgen/presets.hpp)
   file(GLOB_RECURSE SVX_PRESET_FILES CONFIGURE_DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/data/presets/*.json)
   set(SVX_PRESETS_CPP ${CMAKE_CURRENT_BINARY_DIR}/generated/presets_data.cpp)

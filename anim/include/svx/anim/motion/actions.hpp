@@ -93,7 +93,7 @@ struct ActionDef {
   // Needs a prop in the right hand (a knife).
   std::vector<std::string> requires_tags;
   bool free_hands = false, one_hand = false, two_hands = false, reverse_grip = false;
-  f64 minimum_leg = .25, minimum_arm = .2;
+  f64 minimum_arm = .2;  // (targeted) the striking arm's strength it needs
   f64 target_height = 1.5;  // untargeted strikes aim here, metres at height scale 1
   i32 lead_side = 0;       // combat support step: -1 left lead, +1 right lead; 0 no step
   f64 support_turn = 0.12; // outward angle of the lead foot (rad)
@@ -103,6 +103,8 @@ struct ActionDef {
   // values per key are kept.
   void set(Channel c, std::vector<Key> keys);
   bool drives(Channel c) const { return (driven_ >> u32(c)) & 1u; }
+  // The arm a strike is thrown with (0 left, 1 right): the hand strike channel it drives.
+  size_t strike_arm() const { return drives(Channel::StrikeL) && !drives(Channel::StrikeR) ? 0 : 1; }
   u32 driven() const { return driven_; }  // (bit per channel)
   const std::vector<Key>& keys(Channel c) const { return keys_[size_t(c)]; }
   const Track& track(Channel c) const { return tracks_[size_t(c)]; }

@@ -101,6 +101,13 @@ target_link_libraries(svx_env_bench PRIVATE svx_game svx_procgen)
 svx_wasm_exe_options(svx_env_bench)
 endif()  # SVX_BUILD_GAME
 
+# The library's prop catalogue, authored (data/content/props.json: svx_prop_catalog > it).
+if(SVX_BUILD_ANIM)
+  add_executable(svx_prop_catalog prop_catalog/main.cpp)
+  target_link_libraries(svx_prop_catalog PRIVATE svx_anim)
+  svx_wasm_exe_options(svx_prop_catalog)
+endif()
+
 # The physics core alone for JavaScript hosts (docs/CORE.md): the C API of svx/svx_core.h.
 if(SVX_WASM)
   add_executable(svx_core_web wasm_core/module.cpp)

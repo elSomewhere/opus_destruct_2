@@ -12,6 +12,7 @@
 #include <cstring>
 
 #include "svx/base/diag.hpp"
+#include "svx/base/dmath.hpp"
 #include "svx/base/mem.hpp"
 #include "svx/base/parallel.hpp"
 #include "svx/world/tunables.hpp"
@@ -135,7 +136,7 @@ void World::Impl::load(VoxelGrid&& g) {
   seamed_ = false;
   loose_checked_.clear();
   loose_tick_ = -1;
-  deco_check_.clear();
+  shed_check_.clear();
   // the grid's layers are the world's (by name: a grid made with layers of its own keeps them)
   for (const LayerSpec& spec : g.layers())
     if (std::none_of(ext_.layers.begin(), ext_.layers.end(), [&](const LayerSpec& l) { return l.name == spec.name; }) &&
@@ -143,7 +144,7 @@ void World::Impl::load(VoxelGrid&& g) {
       ext_.layers.push_back(spec);
   g.adopt_layers(ext_.layers);
   g.sanitize();
-  undecorate(g);
+  unanchor_non_structural(g);
   // (a voxel size the world can work with: a NaN, zero or negative one is the default's)
   g.h = g.h > 0.0 && std::isfinite(g.h) ? std::clamp(g.h, 1e-3, 1e2) : VoxelGrid{}.h;
   grid_ = std::move(g);
@@ -894,38 +895,38 @@ void World::Impl::link_contact(const GVox& v, const FragKey& f) {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Decorative voxels (Material::decorative)
+// Non-structural voxels (Material::non_structural)
 
-void World::Impl::undecorate(VoxelGrid& g) const {
-  if (!mats_->any_decorative()) return;
+void World::Impl::unanchor_non_structural(VoxelGrid& g) const {
+  if (!mats_->any_non_structural()) return;
   std::array<Vox, 256> to;
   for (int v = 0; v < 256; ++v) to[size_t(v)] = entry_vox(static_cast<Vox>(v));
   g.remap(to);
 }
 
-void World::Impl::note_decorative_near(const GVox& v) {
+void World::Impl::note_non_structural_near(const GVox& v) {
   const VoxelGrid& G = vg(v.grid);
   for (int a = 0; a < 3; ++a)
     for (int s = -1; s <= 1; s += 2) {
       IVec3 q = v.p;
       q[a] += s;
-      if (mats_->vox_kind(G.get(q)) & kVoxDecorative) deco_check_.push_back(GVox{q, v.grid});
+      if (mats_->vox_kind(G.get(q)) & kVoxNonStructural) shed_check_.push_back(GVox{q, v.grid});
     }
 }
 
 void World::Impl::shed_orphans() {
-  // A component of decorative voxels (6-connected: a crown of leaves, a vine) next to what left
+  // A component of non-structural voxels (6-connected: a crown of leaves, a vine) next to what left
   // that touches no other solid voxel - nothing it grows on - is shed: removed, with a dust event
   // (falling leaves). One too large to walk (kMaxShed) is kept; the unknown world holds it.
-  std::vector<GVox> todo = std::move(deco_check_);
-  deco_check_.clear();
+  std::vector<GVox> todo = std::move(shed_check_);
+  shed_check_.clear();
   constexpr size_t kMaxShed = 8192;
   std::unordered_set<GKey, GKeyHash> seen;
   std::vector<IVec3> comp, stack;
   for (const GVox& v0 : todo) {
     if (!live(v0.grid)) continue;
     VoxelGrid& G = vg(v0.grid);
-    if (!(mats_->vox_kind(G.get(v0.p)) & kVoxDecorative)) continue;
+    if (!(mats_->vox_kind(G.get(v0.p)) & kVoxNonStructural)) continue;
     if (!seen.insert(GKey{v0.grid, key3(v0.p[0], v0.p[1], v0.p[2])}).second) continue;
     comp.clear();
     stack.assign(1, v0.p);
@@ -945,7 +946,7 @@ void World::Impl::shed_orphans() {
           }
           const Vox vq = G.get(q);
           if (!vox_solid(vq)) continue;
-          if (!(mats_->vox_kind(vq) & kVoxDecorative)) {
+          if (!(mats_->vox_kind(vq) & kVoxNonStructural)) {
             held = true;  // (it grows on something)
             break;
           }
@@ -1468,7 +1469,7 @@ void World::Impl::judge(Structure& s) {
         const SBond& B = s.P.bonds[size_t(b)];
         if (B.broken) continue;
         const BondLoad L = s.P.bond_load(b, s.u);
-        if (std::abs(L.N) + std::hypot(L.V1, L.V2) < 1.5e6) continue;
+        if (std::abs(L.N) + std::sqrt(L.V1 * L.V1 + L.V2 * L.V2) < 1.5e6) continue;
         std::printf("      [big] b%d at (%.2f %.2f %.2f) n (%.2f %.2f %.2f) faces %d area %.4f sup %d junction %d (%d samples) la %.3f lb %.3f N %.0f V %.0f %.0f M %.0f %.0f\n", b,
                     B.p.x, B.p.y, B.p.z, B.n.x, B.n.y, B.n.z, B.faces, B.area, B.b < 0 ? 1 : 0, s.jstart[size_t(b) + 1] > s.jstart[size_t(b)] ? 1 : 0,
                     s.jstart[size_t(b) + 1] - s.jstart[size_t(b)], B.la, B.lb, L.N, L.V1, L.V2, L.M1, L.M2);
@@ -1596,7 +1597,7 @@ void World::Impl::dust_event(const V3& p, const V3& v, i32 voxels, bool crushed)
   ev.vel = v;
   ev.voxels = voxels;
   ev.strength = crushed ? 1.0 : 0.0;
-  ev.radius = 0.5 * grid_.h * std::cbrt(static_cast<f64>(voxels));
+  ev.radius = 0.5 * grid_.h * dm::cbrt(static_cast<f64>(voxels));
   events_.push_back(std::move(ev));
 }
 
@@ -2419,8 +2420,8 @@ void World::Impl::seed_near(const std::vector<GVox>& removed) {
         if (vox_free(G.get(q))) seeds_.push_back(GVox{q, v.grid});
       }
   }
-  if (mats_->any_decorative())
-    for (const GVox& v : removed) note_decorative_near(v);
+  if (mats_->any_non_structural())
+    for (const GVox& v : removed) note_non_structural_near(v);
   // (what other grids held through junctions to it: their voxels around it; and the chunk it
   // was in learns of it now - its fragments rebuilt, its owners stale - since the seeds may all
   // be in other grids)
@@ -2482,7 +2483,7 @@ void World::Impl::recheck_vacated(u16 g, const BodyShape& S) {
   u64 ck = 0;
   u64 last_ck = ~0ull;  // (the fragment seeded last: runs of voxels of one fragment seed it once)
   i32 last_f = -1;
-  const bool deco = mats_->any_decorative();
+  const bool shed = mats_->any_non_structural();
   const i32 cells = static_cast<i32>(S.vox.size());
   for (i32 i = 0; i < cells; ++i) {
     if (!vox_solid(S.vox[size_t(i)])) continue;
@@ -2505,8 +2506,8 @@ void World::Impl::recheck_vacated(u16 g, const BodyShape& S) {
           const i32 li = chunk_index(q);
           const Vox vq = ch->uniform ? ch->value : ch->v[size_t(li)];
           if (!vox_free(vq)) continue;
-          if (deco && (mats_->vox_kind(vq) & kVoxDecorative)) {
-            deco_check_.push_back(GVox{q, g});  // (what grew on it is looked at)
+          if (shed && (mats_->vox_kind(vq) & kVoxNonStructural)) {
+            shed_check_.push_back(GVox{q, g});  // (what grew on it is looked at)
             continue;
           }
           if (fc) {
@@ -2901,7 +2902,7 @@ void World::Impl::tick() {
   st_.loads_ms = loads_ms;
   const auto ts = Clock::now();
   step_structures();
-  if (!deco_check_.empty()) shed_orphans();  // (leaves on what came loose, was cut)
+  if (!shed_check_.empty()) shed_orphans();  // (leaves on what came loose, was cut)
   if (cfg_.pretouch_radius > 0.0 && strm_.source) pretouch();
   st_.structural_ms = ms_since(ts);
   static const bool tprof = diag("SVX_PROFILE_TICK");

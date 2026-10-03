@@ -3,8 +3,9 @@
 namespace svx::anim {
 std::vector<u8> DamageState::record() const {
   record::Writer w;
-  w.integer(1);
+  w.integer(2);
   w.integer(physical_wounds_, 1);
+  w.integer(stain_next_);
   for (const auto& p : state_.parts) {
     for (f64 x : {p.flesh, p.muscle, p.vessel, p.bleeding, p.pain, p.nerve}) w.number(x);
     w.integer(u8(p.bone), 1);
@@ -27,8 +28,10 @@ std::vector<u8> DamageState::record() const {
 }
 bool DamageState::restore(std::span<const u8> data) {
   record::Reader r{data};
-  if (r.integer() != 1) return false;
+  const auto version = r.integer();
+  if (version != 1 && version != 2) return false;
   const bool physical = r.integer(1) != 0;
+  const auto next = version >= 2 ? r.integer() : 0;
   PhysiologySnapshot s;
   auto unit = [&]() {
     const f64 v = r.number();
@@ -72,9 +75,14 @@ bool DamageState::restore(std::span<const u8> data) {
   }
   if (!r.done()) return false;
   state_ = std::move(s);
+  stain_next_ = state_.wounds.empty() ? 0 : size_t(next % state_.wounds.size());
+  ++revision_;
   physical_wounds_ = physical;
   injuries_ = Injuries{};
   update(0);
   return true;
+}
+i64 DamageState::memory_bytes() const {
+  return i64(sizeof(*this)) + i64(state_.wounds.capacity() * sizeof(PersistentWound)) + i64(injuries_.list.size() * sizeof(Injury));
 }
 }  // namespace svx::anim

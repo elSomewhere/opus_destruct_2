@@ -94,7 +94,7 @@ class Scene {
     if (on_ground) at.z += ground;
     return add(make_civilian(static_cast<i32>(seed)), seed, yaw, at);
   }
-  Character& soldier() { return add(make_soldier(4), 4.0, 1.5707963267948966, V3{0, 0, ground}, make_rifle()); }
+  Character& soldier() { return add(make_soldier(4), 4.0, 1.5707963267948966, V3{0, 0, ground}, prop_archetype("rifle")); }
 
   // One frame: `host` does what a game does before the characters' frame (their roots, their
   // obstacles), then the characters' frames - on the deep path in two halves about the world's

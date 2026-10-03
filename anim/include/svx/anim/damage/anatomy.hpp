@@ -10,7 +10,11 @@ struct VitalRegion {
   V3 centre, radii;
 };
 std::vector<VitalRegion> anatomy_regions(const Skeleton& skeleton);
-void fill_interior(VoxelModel& model);
-f64 tissue_resistance(u8 slot);
+// What is inside a model: a cell with a neighbour on all six sides, in the whole body (Body) or in
+// its own part only (Part: a part's faces against another stay its surface, as they show when the
+// joint between them bends). Its enclosed cells become flesh, and bone where the rig says.
+enum class Enclosure : u8 { Body, Part };
+void fill_interior(VoxelModel& model, Enclosure enclosure = Enclosure::Body);
+f64 tissue_resistance(Tissue t);  // J/m^3: the energy density removing it takes
 f64 segment_distance(const V3& p, const V3& a, const V3& b);
 }  // namespace svx::anim

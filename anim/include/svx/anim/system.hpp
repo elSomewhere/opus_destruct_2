@@ -55,7 +55,9 @@ struct CharacterSystemConfig {
 };
 
 struct CharacterDesc {
+  CharacterProfile profile;  // (its tuning: svx/anim/profile.hpp)
   ModelPtr model;
+  f64 girth = 1.0;  // (the model's build: its collision radii)
   Palette palette{};
   PropPtr weapon;
   std::vector<LoadoutEntry> loadout;
@@ -71,6 +73,7 @@ struct CharacterDesc {
 
 struct CharacterStats {
   i32 characters = 0, deep = 0, shallow = 0, plan_only = 0, asleep = 0;
+  i64 restore_failures = 0;  // bodies given back whose damage record did not fit (left in the world, no one's)
   f64 pre_ms = 0.0, step_ms = 0.0;  // (last tick)
 };
 
@@ -124,7 +127,9 @@ class CharacterSystem final : public WorldSystem {
     std::unique_ptr<Character> c;
     ArticulationId recorded = 0;  // (the articulation its record was written to, and ...)
     bool recorded_alive = true;   // (... whether it was alive then, ...)
-    u32 recorded_geometry = 0;    // (... and its model's version)
+    u32 recorded_geometry = 0;    // (... its model's version, its damage's, its props', and when)
+    u64 recorded_damage = 0, recorded_props = 0;
+    i64 recorded_tick = 0;
   };
   std::vector<ArticulationId> strangers_;  // (the world's articulations that are not the system's: ascending)
   i64 scan_tick_ = -1;
@@ -133,6 +138,7 @@ class CharacterSystem final : public WorldSystem {
   std::vector<Entry> chars_;  // ascending ids
   CharacterId next_ = 1;
   CharacterStats stats_;
+  i64 restore_failures_ = 0;
   Entry* entry(CharacterId id);
   const Entry* entry(CharacterId id) const;
   void level_of_detail(World& w);

@@ -144,16 +144,21 @@ TEST_CASE("layers: a regenerable layer reads the source's values and stores none
   CHECK(src->look_calls > 0);
   CHECK(s.w.layer(s.look, {30, 5, 10}) == 0);  // (air)
   CHECK_FALSE(s.w.modified());
-  // read from four threads at once: the same values
+  // read from four threads at once: the same values (one after another where there are no threads:
+  // WASM without pthreads)
   std::atomic<i64> wrong{0};
+  auto reads = [&](int k) {
+    for (i32 z = 8 + k; z < 40; z += 2)
+      for (i32 y = 0; y < 64; ++y)
+        if (s.w.layer(s.look, {42, y, z}) != look(42, y, z)) ++wrong;
+  };
+#if defined(__EMSCRIPTEN__) && !defined(__EMSCRIPTEN_PTHREADS__)
+  for (int k = 0; k < 4; ++k) reads(k);
+#else
   std::vector<std::thread> th;
-  for (int k = 0; k < 4; ++k)
-    th.emplace_back([&, k] {
-      for (i32 z = 8 + k; z < 40; z += 2)
-        for (i32 y = 0; y < 64; ++y)
-          if (s.w.layer(s.look, {42, y, z}) != look(42, y, z)) ++wrong;
-    });
+  for (int k = 0; k < 4; ++k) th.emplace_back(reads, k);
   for (auto& t : th) t.join();
+#endif
   CHECK(wrong == 0);
   // written in play: the chunk's own values now (the others kept), a change
   REQUIRE(s.w.set_layer(s.look, {{{41, 3, 20}, 200}}) == 1);

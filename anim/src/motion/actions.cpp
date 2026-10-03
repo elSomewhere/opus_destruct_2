@@ -91,7 +91,6 @@ ActionDef mirror_action(const ActionDef& def, std::string name) {
   out.two_hands = def.two_hands;
   out.one_hand = def.one_hand;
   out.reverse_grip = def.reverse_grip;
-  out.minimum_leg = def.minimum_leg;
   out.minimum_arm = def.minimum_arm;
   out.target_height = def.target_height;
   out.lead_side = -def.lead_side;

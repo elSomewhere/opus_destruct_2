@@ -420,7 +420,7 @@ ModelPtr sculpt_human(const HumanSpec& spec) {
            Slot::Gear, hard);
     // shoulder straps
     for (const Side& d : kSides) sc.add(box(V3{d.sx * 0.095 * sh, -0.01 * k, 1.425 * k}, V3{0.035, 0.1 * g, 0.025}), H::chest, Slot::Gear, hard);
-    // magazine pouches and a radio
+    // reload_point pouches and a radio
     for (const f64 x : {-0.07, 0.0, 0.07}) sc.add(box(V3{x * sh, 0.14 * g + 0.012, 1.215 * k}, V3{0.03, 0.022, 0.048}, 0.008), H::chest, Slot::GearDark, hard);
     sc.add(box(V3{0.1 * sh, 0.13 * g + 0.01, 1.36 * k}, V3{0.022, 0.018, 0.04}, 0.006), H::chest, Slot::GearDark, hard);
     sc.add(box(V3{0.1 * sh, 0.13 * g + 0.012, 1.41 * k}, V3{0.006, 0.006, 0.03}), H::chest, Slot::Metal, hard);

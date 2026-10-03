@@ -204,7 +204,7 @@ namespace {
 //   (v6) as v5; the session also has the articulations, and those archived out of range
 //   (v7) as v6; the wheels also have their material (what one becomes when it comes off)
 constexpr u32 kGridsMagic = 0x47585653;  // "SVXG"
-constexpr u32 kGridsVersion = 7;
+constexpr u32 kGridsVersion = 8;
 
 using world_detail::put32;
 using world_detail::put64;
@@ -314,7 +314,7 @@ std::vector<u8> World::Impl::save_delta() const {
   std::sort(archived.begin(), archived.end(), [](const auto& a, const auto& b) { return a.first < b.first; });  // (keys are unique)
   // (a world of the world grid alone, with no pieces or joints, saves as it always did)
   if (gds.empty() && removed.empty() && archived.empty() && rigid_.bodies.empty() && att_.joints.empty() && att_.wheels.empty() && strm_.archived_groups.empty() &&
-      arts_.empty() && strm_.archived_arts.empty())
+      arts_.empty() && strm_.archived_arts.empty() && strm_.archived_records.empty() && strm_.restored_records.empty())
     return out;
   put32(out, kGridsMagic);
   put32(out, kGridsVersion);
@@ -491,8 +491,11 @@ void World::Impl::reset_archive(size_t bytes) {
   strm_.archived_groups.clear();
   strm_.archived_joints.clear();
   strm_.archived_arts.clear();
+  strm_.archived_records.clear();
+  strm_.restored_records.clear();
   st_.archived_pieces = 0;
   st_.archived_articulations = 0;
+  st_.archived_records = 0;
 }
 
 void World::Impl::enable_streaming(std::shared_ptr<const ChunkSource> src, const StreamConfig& sc) {
@@ -721,8 +724,8 @@ void World::Impl::insert_generated(u64 key, bool any, std::vector<Vox>&& v, bool
   if (any)
     for (Vox& x : v)
       if (!vox_valid(x)) x = kAir;
-  if (any && mats_->any_decorative())
-    for (Vox& x : v) x = entry_vox(x);  // (decorative voxels are never anchored)
+  if (any && mats_->any_non_structural())
+    for (Vox& x : v) x = entry_vox(x);  // (non-structural voxels are never anchored)
   strm_.generated.insert(key);
   ext_.sys_generated.push_back(key);
   {
@@ -1321,6 +1324,7 @@ int World::Impl::stream_update() {
   // pieces and articulations archived out of range whose chunks are all resident again: back
   restore_groups();
   restore_articulations();
+  restore_host_records();
   const bool every_tick = cfg_.evict_scan_ticks <= 1;  // (the reference's way: forgets after the scan)
   if (!every_tick && st_.ticks % 60 == 0) forget_stale_regions();
   // (the rest walks every resident chunk: every evict_scan_ticks (and on the memory budget's), or

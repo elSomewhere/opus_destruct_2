@@ -83,19 +83,19 @@ struct Material {
   // Wheel grip on it (the friction coefficient of a wheel's contact on it - a tyre on a road;
   // 0: 1.35 x its friction).
   f64 grip = 0.0;
-  // Decorative (plants: leaves, grass, a hedge - docs/CORE.md §2): solid to rendering and
+  // Non-structural (docs/CORE.md §2; plants say: leaves, grass, a hedge): solid to rendering and
   // raycasts, burned and carved like any solid, but never structure - in no fragment, no bond, no
-  // support (its voxels are never anchored), never extracted. It follows what it grows on: what
+  // support (its voxels are never anchored), never extracted. It follows what it rests on: what
   // has no other voxel next to it after a change near it (what held it came loose, was cut) is
-  // shed - removed with a dust event: falling leaves.
-  bool decorative = false;
-  // (decorative) Nothing collides with it: pieces, characters' links, wheels and the player go
+  // shed - removed with a dust event (falling leaves).
+  bool non_structural = false;
+  // (non-structural) Nothing collides with it: pieces, characters' links, wheels and the player go
   // through (leaves, grass; a hedge is not passable).
   bool passable = false;
 };
 
 // A voxel value's material kind (MaterialTable::vox_kind).
-constexpr u8 kVoxDecorative = 1;
+constexpr u8 kVoxNonStructural = 1;
 constexpr u8 kVoxPassable = 2;
 
 // Other modules keep their own per-material properties (the fire module: combustion and heat;
@@ -119,17 +119,17 @@ class MaterialTable {
   bool registered(MaterialId id) const;
   MaterialId find(const char* name, bool* ok = nullptr) const;  // (not found: Concrete, *ok false)
   void reset();                                                 // back to the standard presets only
-  // The kind of a voxel value's material (kVoxDecorative, kVoxPassable; air: none) - for the hot
+  // The kind of a voxel value's material (kVoxNonStructural, kVoxPassable; air: none) - for the hot
   // paths, a table by value.
   u8 vox_kind(u8 v) const { return kind_[v]; }
-  bool any_decorative() const { return any_decorative_; }
+  bool any_non_structural() const { return any_non_structural_; }
   bool any_passable() const { return any_passable_; }
 
  private:
   std::array<Material, kMaxMaterials> m_;
   std::array<bool, kMaxMaterials> used_{};
   std::array<u8, 256> kind_{};
-  bool any_decorative_ = false, any_passable_ = false;
+  bool any_non_structural_ = false, any_passable_ = false;
   void refresh_kinds();
 };
 

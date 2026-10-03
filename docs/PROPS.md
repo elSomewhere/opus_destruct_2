@@ -7,8 +7,16 @@ transforms and persistent instance IDs. They do not extend either array.
 
 `characters/props.hpp` defines immutable archetypes: stable string ID, display
 name, voxel model, mass, centre of mass, diagonal inertia, dimensions, material,
-tags, sockets, named points and contact features. `prop_catalog()` owns the shared
-definitions. Code selects capabilities with `has()` and `satisfies()`.
+tags, sockets, named points, contact features and a **hold**. The archetypes are data:
+`data/content/props.json` (written by `tools/prop_catalog`, embedded in the library), read with
+`read_props` (`svx/anim/content.hpp`); `prop_catalog()` owns the shared definitions. Code selects
+capabilities with `has()` and `satisfies()`; tags describe an archetype for actions' requirements
+and for hosts, and no mechanism branches on a weapon's name.
+
+The hold (`PropHold`) is how the body carries it: its style (free, aimed at arm's length,
+shouldered), whether the hand keeps it in its grip (a short blade), its recoil and kick for a
+shot, the guard pose it is raised in (with one or two hands), and its carry poses at the ready
+and in both hands. The game maps "rifle" to a hold by authoring it in the archetype.
 
 The catalog contains rifle, SMG, LMG, pistol, knife, long dagger, machete, sword,
 baton, bat, phone, bottle, briefcase, suitcase, backpack, shoulder bag and shopping
@@ -16,8 +24,11 @@ bag. The shopping bag is the extensibility example: one definition uses the
 existing hanging-container path, with no new hold, action or damage branch.
 
 `PropInstance` owns condition, strap integrity, reserved ammunition and contents,
-an optional damaged model, location and velocities. `PropRegistry` allocates IDs
-in deterministic order. A location is attached, loose or gone. Character and
+an optional damaged model (and the fraction of its mass left), location and velocities.
+`PropRegistry` allocates IDs in deterministic order. Its archetypes are the catalogue and any
+the host defines (`define`); `archetype(id)` resolves both, and saved props are restored through
+it. A registry keeps at most `max_loose` loose props (256: the oldest go) and removes those that
+fall below `kill_z`; loose props are archived with their region (ANIM.md §4). A location is attached, loose or gone. Character and
 motion-plan `weapon` members are compatibility views of the attachment slots;
 neither owns another prop pointer.
 
@@ -103,8 +114,9 @@ cannot start. Mass, practice and capability change its rate.
 The new sets include reverse knife strikes; long-blade chops, slashes and thrusts;
 one-handed club strikes; two-handed bat swings and jabs; guards, blocking,
 overcommit recovery, fumbles and releasing a prop to break a fall. Every action
-has a mirrored definition. `Brawler` chooses from these requirements, reach and
-the character's capabilities.
+has a mirrored definition. A host's fight AI (the game's `svx::Brawler`) chooses from these
+requirements, reach and the character's capabilities, and `MotionPlan::can_play` tells it what
+the plan would refuse.
 
 Strike events name a contact feature. `StrikeTracker` samples its endpoints in
 the physical pose, then traces the swept surface during the contact window.
@@ -123,7 +135,7 @@ authored `normal` points out of the blade's flat side. Cutting alignment compare
 the relative motion with that plane as well as the edge direction; a flat strike
 uses blunt wound mechanics and the projected face area.
 
-Absorbed contact momentum reaches the defender at the hit point. `Brawler` applies
+Absorbed contact momentum reaches the defender at the hit point. `StrikeResolver` applies
 the opposite impulse to the attacking limb or grip. Either grip can release in
 a hard block, and `WoundResult` reports the absorbed energy and contact impulse.
 The existing endpoint speed ceilings remain 22 m/s for props, 16 m/s for feet
@@ -151,4 +163,4 @@ same attachment path; core articulation records are version 2 and still read ver
 
 The second hand targets the physical secondary socket, including firearm carries. Actions that explicitly move that hand can release it; actions requiring two hands keep it constrained. If an engaged secondary grip stays more than 18 cm (scaled by build) from its socket for 0.2 seconds, it gives way: a one-handed-capable item stays in the primary hand, otherwise it is released as wrenched. The timer is runtime solver state, reset on attachment. The Foundry interpolates attachment transforms and body poses at the same render time.
 
-Single-hand blade and club strikes now declare `one_hand` in the action definition. The motion plan refuses them with a clear reason while the instance uses two hands; `Brawler` applies the same filter. This prevents a free-hand guard in a single-hand clip fighting the physical secondary grip.
+Single-hand blade and club strikes now declare `one_hand` in the action definition. The motion plan refuses them with a clear reason while the instance uses two hands; a host asking `can_play` gets the same answer. This prevents a free-hand guard in a single-hand clip fighting the physical secondary grip.

@@ -34,6 +34,7 @@
 #include "svx/anim/behaviour/controller.hpp"
 #include "svx/anim/characters/props.hpp"
 #include "svx/anim/physics/core_binding.hpp"
+#include "svx/anim/profile.hpp"
 #include "svx/anim/voxel/damage.hpp"
 
 namespace svx::anim {
@@ -72,6 +73,7 @@ struct BlastResult {
 };
 
 struct CharacterOptions {
+  CharacterProfile profile;  // its tuning (svx/anim/profile.hpp; legacy_profile(): the old behaviour)
   ModelPtr model;
   Palette palette{};
   const CollisionWorld* collision = nullptr;
@@ -82,6 +84,7 @@ struct CharacterOptions {
   f64 health = 100.0;
   f64 seed = 1.0;
   f64 mass = 0.0;  // total mass (kg); 0: by the rig's height
+  f64 girth = 1.0;  // body thickness: the collision radii (the model's HumanoidBuild::girth)
   BodyBackend backend = BodyBackend::Shallow;
   World* world = nullptr;  // (deep: the world its body is an articulation of)
   // (deep: the articulation's host data - what the character is to its host; see CoreBinding)
@@ -95,6 +98,7 @@ class Character {
   Character& operator=(const Character&) = delete;
   ~Character();
 
+  const CharacterProfile profile;  // (fixed at construction: the body and behaviours are made from it)
   ModelPtr model;  // the model drawn: shared until the first wound, then this character's own copy
   Palette palette;
   MotionPlan motion;       // what the character means to do (the host's inputs, actions, stances)
@@ -110,7 +114,6 @@ class Character {
   bool owns_model = false;   // true once `model` is this character's own copy
   std::vector<f32> skin;     // skin matrices of the current pose (16 floats per bone)
   f64 flash = 0.0;           // hit flash 0..1 (the host tints the character)
-  bool knocked_out = false;  // beaten unconscious (a melee knockout): down until it comes to
   f64 dead_time = 0.0;       // seconds since death
   bool physics = true;       // physics even while calm (the host's level of detail; bodies that need it always get it)
   V3 weapon_pos;             // the held prop's transform (world)
@@ -131,6 +134,7 @@ class Character {
   bool gun_hand_lost() const { return behaviours.lost[motion.weapon_hand == H::handL ? B::handL : B::handR]; }
   bool writhing() const { return behaviours.writhing; }
   bool down() const;    // down on the ground (knocked down or out), or getting up
+  bool knocked_out() const { return behaviours.knocked_out(); }  // beaten unconscious: down until it is up again
   bool asleep() const;  // the body rests (a corpse that stopped moving)
 
   // ---- where the body is simulated
@@ -146,10 +150,20 @@ class Character {
   // (deep) Its articulation is gone from the world (removed, archived, out of the world): the body
   // is its own again, where it last was.
   void unbound();
+  // (deep) Lets go of its articulation and leaves it in the world (a body it could not become).
+  void release_articulation() {
+    binding_.release();
+    pending_post_ = false;
+  }
 
   // ---- the host's side
   void place(const V3& pos, f64 yaw);           // feet on the ground at pos, facing yaw
   void set_root(const V3& pos, f64 yaw);        // the host's root this frame (ignored while the body leads: see take_root_motion)
+  // What the body can travel (set_root holds the host's root to it): its speed (m/s, from its
+  // capabilities and load) and its turning (rad/s: a crawling body turns as its hands drag it;
+  // unbounded otherwise).
+  f64 max_travel_speed() const;
+  f64 max_turn_rate() const;
   std::vector<AnimEvent> take_events();         // the motion's events since the last call, the limb positions from the body
   V3 take_root_motion();                        // how far the body moved the root since the last call
   void fire();                                  // a shot fired (recoil)
@@ -191,6 +205,9 @@ class Character {
   void set_obstacles(const std::vector<Obstacle>& list);
   // Another body's push on one of this body's parts (an impulse, N s, at a world point).
   void pushed_at(i32 part, const V3& j, const V3& at);
+  // A steady force (N) held on a part until it is changed (zero: none): its impulse each frame at
+  // the part's centre, as a push (a hand on the back, a rope).
+  void hold_force(i32 part, const V3& force);
   void impulse(const V3& point, const V3& dv, f64 carry = 0.0);  // a push at `point` (velocity change dv), alive or dead
   // A radial push from `center`: the body gains up to `speed` away from it.
   void blast_push(const V3& center, f64 radius, f64 speed);
@@ -210,7 +227,7 @@ class Character {
   // Death: the muscles fade over `collapse` seconds; a killing blow at `point` (velocity change
   // `dv`) sends the body its way.
   void die(const V3* point = nullptr, const V3* dv = nullptr, f64 collapse = 0.6);
-  std::optional<GibSpec> drop_weapon();  // the held prop as a gib (on death); the character lets go of it
+  PropInstancePtr drop_weapon();  // lets go of the held prop: the instance, loose in its registry (null: none held)
   // A blast at `center` (radius of full effect, m; strength 1 ~ a rocket).
   BlastResult blast(const V3& center, f64 radius, f64 strength = 1.0);
   // The damage it took, to keep with its body (a corpse the world archives comes back as it was):
@@ -220,9 +237,12 @@ class Character {
   // limbs gone and the body without their use, a gun hand's prop let go. False if the record does
   // not fit the model (nothing changes).
   bool restore_damage(std::span<const u8> record);
+  // A hash of everything damage_record keeps (determinism checks), without making the record: the
+  // model's cells are hashed again only when its geometry changed.
+  u64 damage_hash() const;
 
   // ---- where things are
-  V3 muzzle() const;
+  V3 tip() const;
   V3 prop_point(const V3& p) const;
   void write_prop_skin(f32* out) const;
   V3 eyes() const;
@@ -257,6 +277,12 @@ class Character {
   WorldPose switch_from_;
   bool placed_ = false;
   bool pending_post_ = false;  // (deep: begin pushed the drives; end takes what the tick made of them)
+  enum class Fate : u8 { None, Die, KnockOut };
+  Fate pending_fate_ = Fate::None;  // (decided in begin_body, carried out in begin_push)
+  i32 held_part_ = -1;
+  V3 held_force_;
+  mutable u32 cells_hash_version_ = ~0u;
+  mutable u64 cells_hash_ = 0;
   f64 frame_dt_ = 0.0;         // (the frame begun)
   Rng rng_;                    // (what the original left to Math.random: a character's own)
 
@@ -268,8 +294,20 @@ class Character {
   void place_weapon();
   void own_model();
   V3 rest_dir(i32 b, const V3& dir) const;
-  std::vector<GibSpec> sever_after_damage(i32 bone, const V3& dir);
-  GibSpec gib_spec(VoxelPart p, const V3& dir, f64 speed);
+  // (impulse: the wound's - the pieces move on with the part, and their share of it)
+  std::vector<GibSpec> sever_after_damage(i32 bone, const V3& dir, const V3& impulse = {}, f64 dv_max = 4.0);
+  GibSpec gib_spec(VoxelPart p, const V3& dir, f64 speed, const V3* impulse = nullptr, f64 dv_max = 4.0);
+  WoundResult blast_damage(const DamageDescriptor& d);    // (damage/blast.cpp)
+  WoundResult scripted_blast(const DamageDescriptor& d);  // (CharacterProfile::blast_from_source off)
+  // (a blast's wind within half its radius: the nearest forearm or shin torn, two within a fifth)
+  WoundResult blast_tear(const DamageDescriptor& d, f64 distance, f64 energy);
+  WoundResult volley(const DamageDescriptor& d);          // (pellets > 1: one round each)
+  // (DamageModel::Zones: damage/zones.cpp)
+  WoundResult zone_damage(const DamageDescriptor& d);
+  WoundResult zone_wound(const CharacterHit& hit, const V3& dir, f64 damage, f64 radius, f64 impulse_speed);
+  WoundResult zone_melee(const V3& point, const V3& dir, HitKind kind, f64 force);
+  BlastResult zone_blast(const V3& center, f64 radius, f64 strength);
+  std::vector<GibSpec> zone_sever(i32 bone, const V3& dir);
   f64 random() { return rng_.next(); }
 };
 

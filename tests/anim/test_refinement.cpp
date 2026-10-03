@@ -37,12 +37,12 @@ TEST_CASE("refinement: standalone strikes aim forward and manual poses remain he
   CHECK(p.pose_action_name()=="handsOnHips");p.interrupt();
   for(int i=0;i<60;++i)p.update(DT);
   CHECK(p.pose_action_name().empty());
-  p.weapon=make_knife();REQUIRE(p.play("slash.m"));p.update(DT);CHECK(p.weapon_hand==H::handL);
+  p.weapon=prop_archetype("knife");REQUIRE(p.play("slash.m"));p.update(DT);CHECK(p.weapon_hand==H::handL);
   CHECK_FALSE(p.play("jab",V3{0,std::numeric_limits<double>::quiet_NaN(),1}));
 }
 
 TEST_CASE("refinement: mirrored knife ownership follows the left weapon hand") {
-  Scene s(Path::Shallow);auto& c=s.add(make_civilian(7),7,kPi/2,V3{},make_knife());run(s,c,.5);
+  Scene s(Path::Shallow);auto& c=s.add(make_civilian(7),7,kPi/2,V3{},prop_archetype("knife"));run(s,c,.5);
   REQUIRE(c.motion.play("slash.m"));c.behaviours.lose_limb(B::handR);CHECK_FALSE(c.gun_hand_lost());
   c.behaviours.lose_limb(B::handL);CHECK(c.gun_hand_lost());
 }

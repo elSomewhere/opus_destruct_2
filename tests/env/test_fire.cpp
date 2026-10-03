@@ -450,7 +450,7 @@ TEST_CASE("fire: a tree's leaves (decorative) burn away; they never held anythin
   Material leaves;
   leaves.name = "leaves";
   leaves.rho = 80.0;
-  leaves.decorative = true;
+  leaves.non_structural = true;
   leaves.passable = true;
   MaterialId lid{};
   REQUIRE(w.register_material(leaves, &lid));

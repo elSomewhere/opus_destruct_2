@@ -78,16 +78,15 @@ Quat ArmRig::grip_l(bool pistol) const {
 }
 
 void WeaponHold::fire(const Prop& prop, f64 strength) {
-  const bool pistol = prop.has("handgun");
-  kick_back.kick((pistol ? 0.8 : 1.1) * strength);
-  kick_pitch.kick((pistol ? 12.0 : 7.0) * strength);
+  kick_back.kick(prop.hold.kick_back * strength);
+  kick_pitch.kick(prop.hold.kick_pitch * strength);
 }
 
 bool WeaponHold::hold(f64 dt, ArmRig& arms, const Prop& prop, const HoldContext& c) {
   Pose& pose = *arms.pose;
   ModelFK& fk = *arms.fk;
   const f64 k = c.k;
-  const bool pistol = prop.has("handgun");
+  const bool pistol = prop.hold.style == HoldStyle::Aimed;
   ready_w.update(c.carry == Carry::Relaxed ? 0.0 : 1.0, dt);
   hip_w.update(c.carry == Carry::Hip ? 1.0 : 0.0, dt);
   sprint_w.update(c.moving && !c.aiming ? c.run : 0.0, dt);
@@ -113,7 +112,7 @@ bool WeaponHold::hold(f64 dt, ArmRig& arms, const Prop& prop, const HoldContext&
   V3 pos;
   bool two_handed = !c.free_left;
   if (pistol) {
-    // lowered (in the hand) -> low ready (two hands, muzzle down) -> aimed (two hands at eye
+    // lowered (in the hand) -> low ready (two hands, tip down) -> aimed (two hands at eye
     // level) or one-handed (arm out at the target)
     const Quat ready_rot = aim_rot * qeuler(-0.7, 0, 0);
     const V3 ready_grip = chest_p + rotate(chest_yaw_q, V3{handed * 0.03 * k, 0.34 * k, 0.02 * k});
@@ -128,10 +127,10 @@ bool WeaponHold::hold(f64 dt, ArmRig& arms, const Prop& prop, const HoldContext&
     // (a heavy machine gun is carried across the body, lower)
 
     const Quat ready_rot = aim_rot * qeuler(prop.ready_pitch, 0, prop.ready_roll);
-    const V3 ready_stock = pocket + rotate(chest_q, prop.ready_stock_offset * k);
-    const V3 ready_grip = ready_stock - rotate(ready_rot, prop.stock);
-    const V3 aim_grip = pocket - rotate(aim_rot, prop.stock);
-    // hip fire: the stock under the arm, level at the target (machine guns on the move)
+    const V3 ready_stock = pocket + rotate(chest_q, prop.ready_butt_offset * k);
+    const V3 ready_grip = ready_stock - rotate(ready_rot, prop.butt);
+    const V3 aim_grip = pocket - rotate(aim_rot, prop.butt);
+    // hip fire: the butt under the arm, level at the target (machine guns on the move)
     const Quat hip_rot = qnlerp(aim_rot, frame_rotation(V3{0, 1, 0}, V3{0, 0, 1}, vnorm(V3{aim_dir.x, aim_dir.y, aim_dir.z * 0.5}), V3{0, 0, 1}), 0.5);
     const V3 hip_grip = chest_p + rotate(chest_yaw_q, V3{handed * 0.13 * k, 0.2 * k, -0.2 * k});
     const Quat port_rot = chest_yaw_q * frame_rotation(V3{0, 1, 0}, V3{0, 0, 1}, vnorm(V3{-0.55, 0.3, 0.78}), vnorm(V3{0.1, 1, 0.1}));
@@ -146,7 +145,7 @@ bool WeaponHold::hold(f64 dt, ArmRig& arms, const Prop& prop, const HoldContext&
     rot = qnlerp(rot, aim_r, aw);
     pos = vlerp(pos, aim_p, aw);
     if (c.free_left) {
-      // one hand on a long gun: it hangs lower, muzzle down
+      // one hand on a long gun: it hangs lower, tip down
       rot = qnlerp(rot, chest_yaw_q * qeuler(-1.15, 0.1, 0.35), 0.7);
       pos = vlerp(pos, chest_p + rotate(chest_yaw_q, V3{handed * .2 * k, 0.12 * k, -0.28 * k}), 0.7);
     }
